@@ -30,3 +30,7 @@ path = "src/lib/mod.rs"
 [features]
 default = []
 validation = []
+
+[profile.dev]
+lto = false
+codegen-units = 4
