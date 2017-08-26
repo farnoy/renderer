@@ -26,9 +26,11 @@ pub mod texture;
 use ash::vk;
 use std::default::Default;
 use ash::version::{DeviceV1_0, EntryV1_0, InstanceV1_0};
-use ash::extensions::{Surface, Swapchain, XlibSurface};
-#[cfg(target = "windows")]
+use ash::extensions::{Surface, Swapchain};
+#[cfg(windows)]
 use ash::extensions::Win32Surface;
+#[cfg(all(unix, not(target_os = "android")))]
+use ash::extensions::XlibSurface;
 use std::cell::RefCell;
 use std::ops::Drop;
 use std::ptr;
@@ -134,7 +136,7 @@ unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::windows::WindowExt;
     let hwnd = window.get_hwnd() as *mut winapi::windef::HWND__;
-    let hinstance = unsafe { user32::GetWindow(hwnd, 0) as *const vk::c_void };
+    let hinstance = user32::GetWindow(hwnd, 0) as *const vk::c_void;
     let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
         s_type: vk::StructureType::Win32SurfaceCreateInfoKhr,
         p_next: ptr::null(),

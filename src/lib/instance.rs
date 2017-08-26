@@ -1,7 +1,9 @@
 use ash;
-use ash::extensions::{DebugReport, Surface, XlibSurface};
-#[cfg(target = "windows")]
+use ash::extensions::{DebugReport, Surface};
+#[cfg(windows)]
 use ash::extensions::Win32Surface;
+#[cfg(all(unix, not(target_os = "android")))]
+use ash::extensions::XlibSurface;
 use ash::vk;
 use ash::version;
 use ash::version::EntryV1_0;
