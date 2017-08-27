@@ -7,6 +7,7 @@ use ash::extensions::Win32Surface;
 use ash::vk;
 use ash::version;
 use ash::version::InstanceV1_0;
+use std::ffi::{CStr, CString};
 use std::ops;
 use std::ptr;
 use std::sync::Arc;
@@ -31,6 +32,8 @@ pub struct Device {
     instance: Arc<Instance>,
 }
 
+static VK_EXT_DEBUG_MARKER: &str = "VK_EXT_debug_marker";
+
 impl Device {
     pub fn new(
         instance: &Arc<Instance>,
@@ -38,7 +41,29 @@ impl Device {
         queue_family_index: u32,
     ) -> Result<Arc<Device>, ash::DeviceError> {
         let device = {
-            let device_extension_names_raw = [Swapchain::name().as_ptr()];
+            let ext = CString::new(VK_EXT_DEBUG_MARKER).unwrap();
+            let device_extension_names_raw = if cfg!(feature = "debug-marker") {
+                unsafe {
+                    if instance
+                        .vk()
+                        .enumerate_device_extension_properties(physical_device)
+                        .unwrap()
+                        .iter()
+                        .any(|ext| {
+                            CStr::from_ptr(ext.extension_name.as_ref().as_ptr())
+                                .to_str()
+                                .unwrap() == VK_EXT_DEBUG_MARKER
+                        })
+                    {
+                        vec![Swapchain::name().as_ptr(), ext.as_ptr()]
+                    } else {
+                        vec![Swapchain::name().as_ptr()]
+
+                    }
+                }
+            } else {
+                vec![Swapchain::name().as_ptr()]
+            };
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 ..Default::default()

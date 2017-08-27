@@ -29,7 +29,8 @@ path = "src/lib/mod.rs"
 
 [features]
 default = []
-validation = []
+debug-marker = []
+validation = ["debug-marker"]
 
 [profile.dev]
 lto = false
