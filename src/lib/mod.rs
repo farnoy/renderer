@@ -495,7 +495,7 @@ impl ExampleBase {
                 };
                 device.cmd_pipeline_barrier(setup_command_buffer,
                                             vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                            vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                            vk::PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                                             vk::DependencyFlags::empty(),
                                             &[],
                                             &[],
