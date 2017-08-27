@@ -22,8 +22,10 @@ pub mod device;
 pub mod command_buffer;
 pub mod ecs;
 pub mod entry;
+pub mod graphics_pipeline;
 pub mod instance;
 pub mod mesh;
+pub mod renderpass;
 pub mod texture;
 
 use ash::vk;
