@@ -1,9 +1,12 @@
 #[macro_use]
 extern crate ash;
 extern crate cgmath;
+extern crate futures;
+extern crate futures_cpupool;
 extern crate gltf;
 extern crate gltf_importer;
 extern crate image;
+extern crate petgraph;
 extern crate specs;
 #[macro_use]
 extern crate specs_derive;

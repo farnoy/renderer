@@ -1,8 +1,10 @@
 mod systems;
 mod components;
+mod render_dag;
 
 pub use self::systems::*;
 pub use self::components::*;
+pub use self::render_dag::*;
 
 use specs;
 use std::ops::{Deref, DerefMut};
