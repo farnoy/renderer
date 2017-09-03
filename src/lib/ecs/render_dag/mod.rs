@@ -29,7 +29,7 @@ pub enum Node {
     VertexShader(PathBuf),
     FragmentShader(PathBuf),
     PipelineLayout,
-    VertexInputBinding(u32 /*, stride, rate */),
+    VertexInputBinding(u32, u32, vk::VertexInputRate),
     /// Binding, location, format, offset
     VertexInputAttribute(u32, u32, vk::Format, u32),
     GraphicsPipeline,
@@ -77,8 +77,6 @@ impl RenderDAG {
             self.graph.map(|_ix, _node| None, |_ix, edge| edge);
             */
         for node in petgraph::algo::toposort(&self.graph) {
-            println!("arrived at {}", (self.graph[node].0));
-
             match &self.graph[node].1 {
                 &NodeRuntime::BeginRenderPass(renderpass) => {
                     let clear_values = [
@@ -110,7 +108,7 @@ impl RenderDAG {
                         );
                     }
                 }
-                &NodeRuntime::BeginSubPass(ix) => println!("subpass {}", ix),
+                &NodeRuntime::BeginSubPass(ix) => (),
                 &NodeRuntime::BindPipeline(pipeline, ref scissors_opt, ref viewport_opt) => unsafe {
                     base.device.cmd_bind_pipeline(
                         command_buffer,
@@ -130,7 +128,7 @@ impl RenderDAG {
 
                 },
                 &NodeRuntime::DrawCommands(ref f) => f(base, world, command_buffer),
-                &NodeRuntime::EndSubPass(ix) => println!("end subpass {}", ix),
+                &NodeRuntime::EndSubPass(ix) => (),
                 &NodeRuntime::EndRenderPass(_renderpass) => unsafe { base.device.cmd_end_render_pass(command_buffer) },
             }
 
@@ -190,7 +188,7 @@ impl RenderDAGBuilder {
         let pipeline_layout = graph.add_node((String::from("pipeline_layout"), Node::PipelineLayout));
         let vertex_binding = graph.add_node((
             String::from("vertex_binding"),
-            Node::VertexInputBinding(0),
+            Node::VertexInputBinding(0, 4*4, vk::VertexInputRate::Vertex),
         ));
         let vertex_attribute = graph.add_node((
             String::from("vertex_attribute"),
@@ -206,7 +204,6 @@ impl RenderDAGBuilder {
             String::from("draw_commands"),
             Node::DrawCommands(Arc::new(|base, world, command_buffer| {
                 use specs::Join;
-                println!("drawing SimpleColorMesh");
                 for mesh in world.read::<SimpleColorMesh>().join() {
                     unsafe {
                         base.device.cmd_bind_vertex_buffers(
@@ -425,10 +422,10 @@ impl RenderDAGBuilder {
                     let vertex_bindings = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            Node::VertexInputBinding(binding) => Some(vk::VertexInputBindingDescription {
+                            Node::VertexInputBinding(binding, stride, rate) => Some(vk::VertexInputBindingDescription {
                                 binding: binding,
-                                stride: 0,
-                                input_rate: vk::VertexInputRate::Vertex,
+                                stride: stride,
+                                input_rate: rate,
                             }),
                             _ => None,
                         })

@@ -52,7 +52,7 @@ impl Mesh for SimpleColor {
                         };
 
                         // let vertex_buffer = Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
-                        let positions = vec![[1.0f32, 1.0f32, 0f32, 1f32], [-1.0, 10.0, 0.0, 1.0], [0.0, -1.0, 0.0, 1.0]];
+                        let positions = vec![[1.0f32, 1.0f32, 0f32, 1f32], [-1.0, 1.0, 0.0, 1.0], [0.0, -1.0, 0.0, 1.0]];
                         let vertex_buffer = Buffer::upload_from::<[f32; 4], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions.iter().cloned());
 
 /*
