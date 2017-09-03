@@ -28,7 +28,11 @@ pub enum Node {
     RenderPass,
     VertexShader(PathBuf),
     FragmentShader(PathBuf),
+    /// Binding, type, stage, count
+    DescriptorBinding(u32, vk::DescriptorType, vk::ShaderStageFlags, u32),
+    DescriptorSet,
     PipelineLayout,
+    /// Binding, stride, rate
     VertexInputBinding(u32, u32, vk::VertexInputRate),
     /// Binding, location, format, offset
     VertexInputAttribute(u32, u32, vk::Format, u32),
@@ -46,7 +50,7 @@ impl fmt::Debug for Node {
 type NodeResult<T> = Arc<Shared<CpuFuture<T, ()>>>;
 
 #[derive(Clone)]
-enum NodeRuntime {
+pub enum NodeRuntime {
     BeginRenderPass(vk::RenderPass),
     BeginSubPass(u8),
     BindPipeline(vk::Pipeline, Option<vk::Rect2D>, Option<vk::Viewport>),
@@ -61,11 +65,12 @@ impl fmt::Debug for NodeRuntime {
     }
 }
 
-type BuilderGraph = petgraph::Graph<(String, Node), ()>;
-type RuntimeGraph = petgraph::Graph<(String, NodeRuntime), ()>;
+type BuilderGraph = petgraph::Graph<(&'static str, Node), ()>;
+type RuntimeGraph = petgraph::Graph<(&'static str, NodeRuntime), ()>;
 
 pub struct RenderDAG {
-    graph: RuntimeGraph,
+    pub graph: RuntimeGraph,
+    descriptor_sets: HashMap<&'static str, vk::DescriptorSet>,
 }
 
 impl RenderDAG {
@@ -159,95 +164,24 @@ impl RenderDAG {
 }
 
 pub struct RenderDAGBuilder {
-    graph: BuilderGraph,
+    pub graph: BuilderGraph,
+    name_mapping: HashMap<&'static str, petgraph::graph::NodeIndex>,
 }
 
 impl RenderDAGBuilder {
     pub fn new() -> RenderDAGBuilder {
-        let mut graph = BuilderGraph::new();
-        let start = graph.add_node((String::from("acquire_image"), Node::AcquirePresentImage));
-        let swapchain_attachment = graph.add_node((
-            String::from("swapchain_attachment"),
-            Node::SwapchainAttachment(0),
-        ));
-        let depth_attachment = graph.add_node((String::from("depth_attachment"), Node::DepthAttachment(1)));
-        let subpass = graph.add_node((String::from("subpass"), Node::Subpass(0)));
-        let renderpass = graph.add_node((String::from("renderpass"), Node::RenderPass));
-        let vs = graph.add_node((
-            String::from("vertex_shader"),
-            Node::VertexShader(
-                PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv"),
-            ),
-        ));
-        let fs = graph.add_node((
-            String::from("fragment_shader"),
-            Node::FragmentShader(
-                PathBuf::from(env!("OUT_DIR")).join("simple_color.frag.spv"),
-            ),
-        ));
-        let pipeline_layout = graph.add_node((String::from("pipeline_layout"), Node::PipelineLayout));
-        let vertex_binding = graph.add_node((
-            String::from("vertex_binding"),
-            Node::VertexInputBinding(0, 4*4, vk::VertexInputRate::Vertex),
-        ));
-        let vertex_attribute = graph.add_node((
-            String::from("vertex_attribute"),
-            Node::VertexInputAttribute(
-                0,
-                0,
-                vk::Format::R32g32b32a32Sfloat,
-                0,
-            ),
-        ));
-        let graphics_pipeline = graph.add_node((String::from("graphics_pipeline"), Node::GraphicsPipeline));
-        let draw_commands = graph.add_node((
-            String::from("draw_commands"),
-            Node::DrawCommands(Arc::new(|base, world, command_buffer| {
-                use specs::Join;
-                for mesh in world.read::<SimpleColorMesh>().join() {
-                    unsafe {
-                        base.device.cmd_bind_vertex_buffers(
-                            command_buffer,
-                            0,
-                            &[mesh.0.vertex_buffer.buffer()],
-                            &[0],
-                        );
-                        base.device.cmd_bind_index_buffer(
-                            command_buffer,
-                            mesh.0.index_buffer.buffer(),
-                            0,
-                            mesh.0.index_type,
-                        );
-                        base.device.cmd_draw_indexed(
-                            command_buffer,
-                            mesh.0.index_count,
-                            1,
-                            0,
-                            0,
-                            0,
-                        );
-                    }
-                }
-            })),
-        ));
-        let end = graph.add_node((String::from("present_image"), Node::PresentImage));
-        graph.add_edge(start, end, ());
-        graph.add_edge(start, swapchain_attachment, ());
-        graph.add_edge(start, depth_attachment, ());
-        graph.add_edge(subpass, renderpass, ());
-        graph.add_edge(subpass, graphics_pipeline, ());
-        graph.add_edge(subpass, draw_commands, ());
-        graph.add_edge(swapchain_attachment, renderpass, ());
-        graph.add_edge(depth_attachment, renderpass, ());
-        graph.add_edge(vs, graphics_pipeline, ());
-        graph.add_edge(fs, graphics_pipeline, ());
-        graph.add_edge(renderpass, graphics_pipeline, ());
-        graph.add_edge(vertex_binding, graphics_pipeline, ());
-        graph.add_edge(vertex_attribute, graphics_pipeline, ());
-        graph.add_edge(pipeline_layout, graphics_pipeline, ());
-        graph.add_edge(graphics_pipeline, draw_commands, ());
-        graph.add_edge(draw_commands, end, ());
-        RenderDAGBuilder { graph: graph }
+        RenderDAGBuilder { graph: BuilderGraph::new(), name_mapping: HashMap::new() }
+    }
+
+    pub fn add_node(&mut self, name: &'static str, value: Node) {
+        let ix = self.graph.add_node((name, value));
+        assert!(self.name_mapping.insert(name, ix).is_none());
+    }
+
+    pub fn add_edge(&mut self, from: &'static str, to: &'static str) {
+        let from_ix = self.name_mapping.get(from).unwrap();
+        let to_ix = self.name_mapping.get(to).unwrap();
+        self.graph.add_edge(from_ix.clone(), to_ix.clone(), ());
     }
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
@@ -256,6 +190,8 @@ impl RenderDAGBuilder {
         let mut subpasses: HashMap<&str, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, u8)> = HashMap::new();
         let mut pipeline_layouts: HashMap<&str, vk::PipelineLayout> = HashMap::new();
         let mut pipelines: HashMap<&str, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
+        let mut descriptor_set_layouts: HashMap<&str, vk::DescriptorSetLayout> = HashMap::new();
+        let mut descriptor_sets: HashMap<&str, vk::DescriptorSet> = HashMap::new();
         for node in petgraph::algo::toposort(&self.graph) {
             println!("{:?}", self.graph[node]);
             let inputs = self.graph
@@ -354,17 +290,17 @@ impl RenderDAGBuilder {
                     let subpasses = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0.as_str()),
+                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
 
                     let start = output_graph.add_node((
-                        String::from("begin_render_pass"),
+                        "begin_render_pass",
                         NodeRuntime::BeginRenderPass(renderpass),
                     ));
                     let end = output_graph.add_node((
-                        String::from("end_render_pass"),
+                        "end_render_pass",
                         NodeRuntime::EndRenderPass(renderpass),
                     ));
                     for &(start_subpass, end_subpass, _) in subpasses {
@@ -373,25 +309,34 @@ impl RenderDAGBuilder {
                     }
                     output_graph.add_edge(start, end, ());
 
-                    renderpasses.insert(self.graph[node].0.as_str(), (start, end, renderpass));
+                    renderpasses.insert(self.graph[node].0, (start, end, renderpass));
                 }
                 Node::Subpass(ix) => {
                     let start = output_graph.add_node((
-                        String::from("begin_subpass"),
+                        "begin_subpass",
                         NodeRuntime::BeginSubPass(ix),
                     ));
-                    let end = output_graph.add_node((String::from("end_subpass"), NodeRuntime::EndSubPass(ix)));
+                    let end = output_graph.add_node(("end_subpass", NodeRuntime::EndSubPass(ix)));
                     output_graph.add_edge(start, end, ());
 
-                    subpasses.insert(self.graph[node].0.as_str(), (start, end, ix));
+                    subpasses.insert(self.graph[node].0, (start, end, ix));
                 }
                 Node::PipelineLayout => {
+                    let set_layouts = inputs
+                        .iter()
+                        .filter_map(|node| match node.1 {
+                            Node::DescriptorSet => 
+                                Some(descriptor_set_layouts.get(node.0).unwrap().clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+
                     let create_info = vk::PipelineLayoutCreateInfo {
                         s_type: vk::StructureType::PipelineLayoutCreateInfo,
                         p_next: ptr::null(),
                         flags: Default::default(),
-                        set_layout_count: 0,
-                        p_set_layouts: ptr::null(),
+                        set_layout_count: set_layouts.len() as u32,
+                        p_set_layouts: set_layouts.as_ptr(),
                         push_constant_range_count: 0,
                         p_push_constant_ranges: ptr::null(),
                     };
@@ -402,7 +347,7 @@ impl RenderDAGBuilder {
                             .unwrap()
                     };
 
-                    pipeline_layouts.insert(self.graph[node].0.as_str(), pipeline_layout);
+                    pipeline_layouts.insert(self.graph[node].0, pipeline_layout);
                 }
                 Node::GraphicsPipeline => {
                     let vertex_attributes = inputs
@@ -476,7 +421,7 @@ impl RenderDAGBuilder {
                     let pipeline_layout = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::PipelineLayout) => pipeline_layouts.get(name.as_str()),
+                            &(ref name, Node::PipelineLayout) => pipeline_layouts.get(name),
                             _ => None,
                         })
                         .next()
@@ -488,7 +433,7 @@ impl RenderDAGBuilder {
                     let &(begin_renderpass, end_renderpass, renderpass) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::RenderPass) => renderpasses.get(name.as_str()),
+                            &(ref name, Node::RenderPass) => renderpasses.get(name),
                             _ => None,
                         })
                         .next()
@@ -658,13 +603,13 @@ impl RenderDAGBuilder {
                     let graphics_pipeline = graphics_pipelines[0];
 
                     let bind = output_graph.add_node((
-                        String::from("bind_pipeline"),
+                        "bind_pipeline",
                         NodeRuntime::BindPipeline(graphics_pipeline, Some(scissors[0].clone()), Some(viewports[0].clone())),
                     ));
                     let &(subpass_start, subpass_end, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0.as_str()),
+                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0),
                             _ => None,
                         })
                         .next()
@@ -673,13 +618,13 @@ impl RenderDAGBuilder {
                     output_graph.add_edge(subpass_start, bind, ());
                     output_graph.add_edge(bind, subpass_end, ());
 
-                    pipelines.insert(self.graph[node].0.as_str(), (bind, graphics_pipeline));
+                    pipelines.insert(self.graph[node].0, (bind, graphics_pipeline));
                 }
                 Node::DrawCommands(ref f) => {
                     let &(pipeline_bind, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::GraphicsPipeline) => pipelines.get(node.0.as_str()),
+                            &(ref name, Node::GraphicsPipeline) => pipelines.get(node.0),
                             _ => None,
                         })
                         .next()
@@ -687,37 +632,94 @@ impl RenderDAGBuilder {
                     let &(subpass_start, subpass_end, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0.as_str()),
+                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0),
                             _ => None,
                         })
                         .next()
                         .expect("No subpass specified for DrawCommands");
 
                     let draw = output_graph.add_node((
-                        String::from("draw_commands"),
+                        "draw_commands",
                         NodeRuntime::DrawCommands(f.clone()),
                     ));
                     output_graph.add_edge(pipeline_bind, draw, ());
                     output_graph.add_edge(draw, subpass_end, ());
                 }
+                Node::DescriptorSet => {
+                    let descriptor_sizes = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => 
+Some(vk::DescriptorPoolSize {
+                typ,
+                descriptor_count: count,
+            }),
+
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+        let descriptor_pool_info = vk::DescriptorPoolCreateInfo {
+            s_type: vk::StructureType::DescriptorPoolCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            pool_size_count: descriptor_sizes.len() as u32,
+            p_pool_sizes: descriptor_sizes.as_ptr(),
+            max_sets: 1,
+        };
+        let descriptor_pool = unsafe {base.device
+            .create_descriptor_pool(&descriptor_pool_info, None)
+            .unwrap()};
+
+                    let bindings = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => 
+Some(vk::DescriptorSetLayoutBinding {
+                binding: binding,
+                descriptor_type: typ,
+                descriptor_count: count,
+                stage_flags: stage,
+                p_immutable_samplers: ptr::null(),
+            }),
+
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+
+        let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
+            s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            binding_count: bindings.len() as u32,
+            p_bindings: bindings.as_ptr(),
+        };
+
+
+        let desc_set_layouts = [
+            unsafe {
+            base.device
+                .create_descriptor_set_layout(&descriptor_info, None)
+                .unwrap()
+            }
+        ];
+        let desc_alloc_info = vk::DescriptorSetAllocateInfo {
+            s_type: vk::StructureType::DescriptorSetAllocateInfo,
+            p_next: ptr::null(),
+            descriptor_pool: descriptor_pool,
+            descriptor_set_count: desc_set_layouts.len() as u32,
+            p_set_layouts: desc_set_layouts.as_ptr(),
+        };
+        let new_descriptor_sets = unsafe {base.device
+            .allocate_descriptor_sets(&desc_alloc_info)
+            .unwrap()};
+
+            descriptor_set_layouts.insert(self.graph[node].0, desc_set_layouts[0]);
+            descriptor_sets.insert(self.graph[node].0, new_descriptor_sets[0]);
+
+                }
                 _ => println!("* not doing anything"),
             }
         }
-        RenderDAG { graph: output_graph }
-    }
-}
-
-pub fn test_renderdag(base: &ExampleBase) {
-    let builder = RenderDAGBuilder::new();
-    {
-        let dot = petgraph::dot::Dot::new(&builder.graph);
-        println!("{:?}", dot);
-    }
-    let built = builder.build(base);
-    let dot = petgraph::dot::Dot::new(&built.graph);
-    println!("{:?}", dot);
-    println!("and its final toposort");
-    for node in petgraph::algo::toposort(&built.graph) {
-        println!("arrived at {}", (built.graph[node].0));
+        RenderDAG { graph: output_graph, descriptor_sets: descriptor_sets }
     }
 }

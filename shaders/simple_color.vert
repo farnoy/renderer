@@ -1,8 +1,8 @@
 #version 450
 
-// layout(set = 0, binding = 0) uniform UBO {
-    // mat4 mvp;
-// } ubo;
+layout(set = 0, binding = 0) uniform UBO {
+    mat4 mvp;
+} ubo;
 // layout(push_constant) uniform PushConstants {
     // int entityId;
 // } pushConstants; 
@@ -13,7 +13,6 @@ layout (location = 0) in vec4 position;
 
 void main() {
     // texCoord = uv;
-    // gl_Position = ubo.mvp * position;
-    gl_Position = position;
+    gl_Position = ubo.mvp * position;
 }
 
