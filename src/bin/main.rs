@@ -29,6 +29,7 @@ struct Vertex {
 
 fn main() {
     let base = ExampleBase::new(1920, 1080);
+    test_renderdag(&base);
     unsafe {
         use renderpass::RenderPass;
         let renderpass = renderpass::simple_color::SimpleColor::setup(&base);
@@ -54,8 +55,12 @@ fn main() {
             .collect();
 
         use graphics_pipeline::GraphicsPipeline;
-        let graphic_pipeline =
-            graphics_pipeline::textured_mesh::TexturedMeshPipeline::new(&base, &renderpass);
+        let graphic_pipeline = graphics_pipeline::textured_mesh::TexturedMeshPipeline::new(&base, &renderpass);
+
+        let renderdag = {
+            let builder = RenderDAGBuilder::new();
+            builder.build(&base)
+        };
 
         let mut world = World::new(&base.device);
 
@@ -88,6 +93,8 @@ fn main() {
                                         &[base.present_complete_semaphore],
                                         &[base.rendering_complete_semaphore],
                                         |device, draw_command_buffer| {
+                renderdag.run(&base, &world, framebuffer, draw_command_buffer);
+                                        /*
                 renderpass
                     .record_commands(&base,
                     framebuffer,
@@ -99,6 +106,7 @@ fn main() {
                     // device.cmd_set_scissor(draw_command_buffer, &scissors);
 
                 });
+                */
             });
             //let mut present_info_err = mem::uninitialized();
             let present_info = vk::PresentInfoKHR {

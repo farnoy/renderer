@@ -86,12 +86,8 @@ impl Buffer {
         self.store_in_memory_known_count(base, iter, count);
     }
 
-    pub unsafe fn store_in_memory_known_count<T, I>(
-        &mut self,
-        base: &ExampleBase,
-        iter: I,
-        count: u64,
-    ) where
+    pub unsafe fn store_in_memory_known_count<T, I>(&mut self, base: &ExampleBase, iter: I, count: u64)
+    where
         T: Copy,
         I: Iterator<Item = T>,
     {
@@ -110,12 +106,7 @@ impl Buffer {
 
     }
 
-    pub unsafe fn create_specific_buffer(
-        base: &ExampleBase,
-        usage: vk::BufferUsageFlags,
-        memory_type: vk::MemoryPropertyFlags,
-        size: u64,
-    ) -> Buffer {
+    pub unsafe fn create_specific_buffer(base: &ExampleBase, usage: vk::BufferUsageFlags, memory_type: vk::MemoryPropertyFlags, size: u64) -> Buffer {
         let buffer_create_info = vk::BufferCreateInfo {
             s_type: vk::StructureType::BufferCreateInfo,
             p_next: ptr::null(),
@@ -136,11 +127,7 @@ impl Buffer {
             s_type: vk::StructureType::MemoryAllocateInfo,
             p_next: ptr::null(),
             allocation_size: memory_req.size,
-            memory_type_index: find_memorytype_index(
-                &memory_req,
-                &base.device_memory_properties,
-                memory_type,
-            ).unwrap(),
+            memory_type_index: find_memorytype_index(&memory_req, &base.device_memory_properties, memory_type).unwrap(),
         };
 
         let memory = base.device.allocate_memory(&info, None).unwrap();

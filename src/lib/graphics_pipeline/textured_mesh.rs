@@ -17,7 +17,7 @@ use super::GraphicsPipeline;
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
     pos: [f32; 4],
-    color: [f32; 4],
+    // color: [f32; 4],
 }
 
 pub struct TexturedMeshPipeline {
@@ -39,10 +39,8 @@ macro_rules! offset_of{
 
 impl GraphicsPipeline for TexturedMeshPipeline {
     fn new<R: RenderPass>(base: &ExampleBase, renderpass: &R) -> TexturedMeshPipeline {
-        let vertex_spv_file = File::open(Path::new(env!("OUT_DIR")).join("simple_color.vert.spv"))
-            .expect("Could not find vertex shader.");
-        let frag_spv_file = File::open(Path::new(env!("OUT_DIR")).join("simple_color.frag.spv"))
-            .expect("Could not find fragment shader.");
+        let vertex_spv_file = File::open(Path::new(env!("OUT_DIR")).join("simple_color.vert.spv")).expect("Could not find vertex shader.");
+        let frag_spv_file = File::open(Path::new(env!("OUT_DIR")).join("simple_color.frag.spv")).expect("Could not find fragment shader.");
 
         let vertex_bytes: Vec<u8> = vertex_spv_file
             .bytes()
@@ -125,13 +123,14 @@ impl GraphicsPipeline for TexturedMeshPipeline {
                 binding: 0,
                 format: vk::Format::R32g32b32a32Sfloat,
                 offset: offset_of!(Vertex, pos) as u32,
-            },
+            } /*
             vk::VertexInputAttributeDescription {
                 location: 1,
                 binding: 0,
                 format: vk::Format::R32g32b32a32Sfloat,
                 offset: offset_of!(Vertex, color) as u32,
             },
+            */,
         ];
         let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
             s_type: vk::StructureType::PipelineVertexInputStateCreateInfo,
@@ -276,11 +275,7 @@ impl GraphicsPipeline for TexturedMeshPipeline {
         };
         let graphics_pipelines = unsafe {
             base.device
-                .create_graphics_pipelines(
-                    vk::PipelineCache::null(),
-                    &[graphic_pipeline_info],
-                    None,
-                )
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[graphic_pipeline_info], None)
                 .expect("Unable to create graphics pipeline")
         };
 

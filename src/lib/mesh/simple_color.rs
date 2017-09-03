@@ -10,9 +10,10 @@ use super::super::device::AshDevice;
 use super::super::texture::Texture;
 
 pub struct SimpleColor {
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
-    index_type: vk::IndexType,
+    pub vertex_buffer: Buffer,
+    pub index_buffer: Buffer,
+    pub index_type: vk::IndexType,
+    pub index_count: u32,
     base_color_image: Texture,
     tex_coords: Buffer,
 }
@@ -26,12 +27,7 @@ impl Mesh for SimpleColor {
 
         for scene in loaded.scenes() {
             for node in scene.nodes() {
-                fn for_mesh<P: Into<PathBuf> + Clone>(
-                    base: &ExampleBase,
-                    path: P,
-                    ret: &mut Option<SimpleColor>,
-                    mesh: &gltf::Loaded<gltf::Mesh>,
-                ) {
+                fn for_mesh<P: Into<PathBuf> + Clone>(base: &ExampleBase, path: P, ret: &mut Option<SimpleColor>, mesh: &gltf::Loaded<gltf::Mesh>) {
                     if ret.is_some() {
                         return;
                     }
@@ -48,52 +44,43 @@ impl Mesh for SimpleColor {
                         let positions = primitive.positions().unwrap();
 
                         let base_color_image = match base_color_texture.source().data() {
-                            gltf::image::Data::FromBufferView { .. } => {
-                                panic!(
-                                    "reading textures from embedded buffers is still unsupported"
-                                )
-                            }
+                            gltf::image::Data::FromBufferView { .. } => panic!("reading textures from embedded buffers is still unsupported"),
                             gltf::image::Data::External { uri, .. } => {
-                                let actual_path =
-                                    path.clone().into().as_path().parent().unwrap().join(uri);
+                                let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
                                 Texture::load(base, actual_path, vk::IMAGE_USAGE_SAMPLED_BIT)
                             }
                         };
 
-                        let vertex_buffer = Buffer::upload_from(
-                            base,
-                            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                            &positions,
-                        );
+                        // let vertex_buffer = Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
+                        let positions = vec![[1.0f32, 1.0f32, 0f32, 1f32], [-1.0, 10.0, 0.0, 1.0], [0.0, -1.0, 0.0, 1.0]];
+                        let vertex_buffer = Buffer::upload_from::<[f32; 4], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions.iter().cloned());
 
-                        let (index_buffer, index_type) = match indices {
+/*
+                        let (index_buffer, index_type, index_count) = match indices {
                             gltf::mesh::Indices::U8(iter) => panic!("u8 indices are not supported"),
                             gltf::mesh::Indices::U16(iter) => (
-                                Buffer::upload_from(
-                                    base,
-                                    vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    &iter,
-                                ),
+                                Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &iter),
                                 vk::IndexType::Uint16,
+                                iter.len(),
                             ),
                             gltf::mesh::Indices::U32(iter) => (
-                                Buffer::upload_from(
-                                    base,
-                                    vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    &iter,
-                                ),
+                                Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &iter),
                                 vk::IndexType::Uint32,
+                                iter.len(),
                             ),
+                        };
+                        */
+                        let (index_buffer, index_type, index_count) = {
+                            let indices = vec![0 as u32, 1, 2];
+                            (
+                                Buffer::upload_from::<u32, _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &indices.iter().cloned()),
+                                vk::IndexType::Uint32,
+                                3,
+                            )
                         };
 
                         let tex_coords = match primitive.tex_coords(0).unwrap() {
-                            gltf::mesh::TexCoords::F32(iter) => {
-                                Buffer::upload_from(
-                                    base,
-                                    vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                    &iter,
-                                )
-                            }
+                            gltf::mesh::TexCoords::F32(iter) => Buffer::upload_from(base, vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT, &iter),
                             _ => panic!("texture coordinates of this type are unsupported"),
                         };
 
@@ -103,17 +90,13 @@ impl Mesh for SimpleColor {
                             vertex_buffer: vertex_buffer,
                             index_buffer: index_buffer,
                             index_type: index_type,
+                            index_count: index_count as u32,
                             base_color_image: base_color_image,
                             tex_coords: tex_coords,
                         });
                     }
                 }
-                fn browse<P: Into<PathBuf> + Clone>(
-                    base: &ExampleBase,
-                    path: P,
-                    ret: &mut Option<SimpleColor>,
-                    node: &gltf::Loaded<gltf::Node>,
-                ) {
+                fn browse<P: Into<PathBuf> + Clone>(base: &ExampleBase, path: P, ret: &mut Option<SimpleColor>, node: &gltf::Loaded<gltf::Node>) {
                     for mesh in node.mesh() {
                         for_mesh(base, path.clone(), ret, &mesh)
                     }

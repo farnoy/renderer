@@ -35,11 +35,7 @@ pub struct Device {
 static VK_EXT_DEBUG_MARKER: &str = "VK_EXT_debug_marker";
 
 impl Device {
-    pub fn new(
-        instance: &Arc<Instance>,
-        physical_device: vk::PhysicalDevice,
-        queue_family_index: u32,
-    ) -> Result<Arc<Device>, ash::DeviceError> {
+    pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queue_family_index: u32) -> Result<Arc<Device>, ash::DeviceError> {
         let device = {
             let ext = CString::new(VK_EXT_DEBUG_MARKER).unwrap();
             let device_extension_names_raw = if cfg!(feature = "debug-marker") {
@@ -106,13 +102,11 @@ impl Device {
             let debug_info = vk::DebugReportCallbackCreateInfoEXT {
                 s_type: vk::StructureType::DebugReportCallbackCreateInfoExt,
                 p_next: ptr::null(),
-                flags: vk::DEBUG_REPORT_ERROR_BIT_EXT | vk::DEBUG_REPORT_WARNING_BIT_EXT |
-                    vk::DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
+                flags: vk::DEBUG_REPORT_ERROR_BIT_EXT | vk::DEBUG_REPORT_WARNING_BIT_EXT | vk::DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
                 pfn_callback: vulkan_debug_callback,
                 p_user_data: ptr::null_mut(),
             };
-            let debug_report_loader = DebugReport::new(instance.entry().vk(), instance.vk())
-                .expect("Unable to load debug report");
+            let debug_report_loader = DebugReport::new(instance.entry().vk(), instance.vk()).expect("Unable to load debug report");
             let debug_call_back = unsafe {
                 debug_report_loader
                     .create_debug_report_callback_ext(&debug_info, None)

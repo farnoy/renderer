@@ -61,8 +61,7 @@ impl SimpleColor {
             dst_subpass: Default::default(),
             src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             src_access_mask: Default::default(),
-            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         };
         let subpass = vk::SubpassDescription {
@@ -111,14 +110,13 @@ impl RenderPass for SimpleColor {
         subpass_contents: vk::SubpassContents,
         f: F,
     ) {
-        let clear_values =
-            [
-                vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
-                vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
-                    depth: 1.0,
-                    stencil: 0,
-                }),
-            ];
+        let clear_values = [
+            vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
+            vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
+                depth: 1.0,
+                stencil: 0,
+            }),
+        ];
 
         let render_pass_begin_info = vk::RenderPassBeginInfo {
             s_type: vk::StructureType::RenderPassBeginInfo,
