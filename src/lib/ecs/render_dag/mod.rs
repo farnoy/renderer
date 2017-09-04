@@ -83,7 +83,7 @@ impl RenderDAG {
         let mut g: petgraph::Graph<Option<Shared<CpuFuture<ExecResult, ()>>>, _> =
             self.graph.map(|_ix, _node| None, |_ix, edge| edge);
             */
-        for node in petgraph::algo::toposort(&self.graph) {
+        for node in petgraph::algo::toposort(&self.graph, None).expect("RenderDAG has cycles").iter().cloned() {
             let inputs = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
                 .map(|ix| self.graph[ix].clone())
@@ -218,7 +218,7 @@ impl RenderDAGBuilder {
         let mut pipelines: HashMap<&str, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
         let mut descriptor_set_layouts: HashMap<&str, vk::DescriptorSetLayout> = HashMap::new();
         let mut descriptor_sets: HashMap<&str, vk::DescriptorSet> = HashMap::new();
-        for node in petgraph::algo::toposort(&self.graph) {
+        for node in petgraph::algo::toposort(&self.graph, None).expect("RenderDAGBuilder has cycles").iter().cloned() {
             println!("{:?}", self.graph[node]);
             let inputs = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
