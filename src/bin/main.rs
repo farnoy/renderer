@@ -52,8 +52,16 @@ fn main() {
             Node::VertexInputBinding(0, 3 * 4, vk::VertexInputRate::Vertex),
         );
         builder.add_node(
+            "uv_binding",
+            Node::VertexInputBinding(1, 2 * 4, vk::VertexInputRate::Vertex),
+        );
+        builder.add_node(
             "vertex_attribute",
             Node::VertexInputAttribute(0, 0, vk::Format::R32g32b32Sfloat, 0),
+        );
+        builder.add_node(
+            "uv_attribute",
+            Node::VertexInputAttribute(1, 1, vk::Format::R32g32Sfloat, 0),
         );
         builder.add_node("graphics_pipeline", Node::GraphicsPipeline);
         builder.add_node(
@@ -117,7 +125,9 @@ fn main() {
         builder.add_edge("fragment_shader", "graphics_pipeline");
         builder.add_edge("renderpass", "graphics_pipeline");
         builder.add_edge("vertex_binding", "graphics_pipeline");
+        builder.add_edge("uv_binding", "graphics_pipeline");
         builder.add_edge("vertex_attribute", "graphics_pipeline");
+        builder.add_edge("uv_attribute", "graphics_pipeline");
         builder.add_edge("pipeline_layout", "graphics_pipeline");
         builder.add_edge("graphics_pipeline", "draw_commands");
         builder.add_edge("draw_commands", "present_image");
@@ -207,8 +217,18 @@ fn main() {
                 1,
             ),
         );
+        builder.add_node(
+            "color_texture",
+            Node::DescriptorBinding(
+                0,
+                vk::DescriptorType::CombinedImageSampler,
+                vk::SHADER_STAGE_FRAGMENT_BIT,
+                1,
+            ),
+        );
         builder.add_node("main_descriptor_layout", Node::DescriptorSet);
         builder.add_edge("mvp_ubo", "main_descriptor_layout");
+        builder.add_edge("color_texture", "main_descriptor_layout");
         builder.add_edge("main_descriptor_layout", "pipeline_layout");
         {
             let dot = petgraph::dot::Dot::new(&builder.graph);

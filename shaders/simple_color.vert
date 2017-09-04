@@ -8,11 +8,10 @@ layout(set = 0, binding = 0) uniform UBO {
 // } pushConstants; 
 
 layout (location = 0) in vec3 position;
-// layout (location = 1) in vec2 uv;
-// layout (location = 0) out vec2 texCoord;
+layout (location = 1) in vec2 uv;
+layout (location = 0) out vec2 texCoord;
 
 void main() {
-    // texCoord = uv;
+    texCoord = uv;
     gl_Position = ubo.mvp * vec4(position, 1.0);
 }
-
