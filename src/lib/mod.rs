@@ -5,6 +5,7 @@ extern crate futures;
 extern crate futures_cpupool;
 extern crate gltf;
 extern crate gltf_importer;
+extern crate gltf_utils;
 extern crate image;
 extern crate petgraph;
 extern crate specs;
