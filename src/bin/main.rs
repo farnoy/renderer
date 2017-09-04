@@ -229,7 +229,8 @@ fn main() {
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
-            .with::<Scale>(Scale(1.0))
+            .with::<Scale>(Scale(0.2))
+            .with::<MVP>(MVP(cgmath::Matrix4::one()))
             .with::<SimpleColorMesh>(SimpleColorMesh(
                 mesh::Mesh::from_gltf(
                     &base,
@@ -238,7 +239,71 @@ fn main() {
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)));
 
-        base.render_loop(|| {
+        base.render_loop(&mut || {
+            {
+                let projection = cgmath::Matrix4::look_at(
+                    cgmath::Point3::new(10.0, 10.0, 10.0),
+                    cgmath::Point3::new(0.0, 0.0, 0.0),
+                    cgmath::vec3(0.0, 1.0, 0.0),
+                );
+                let view = cgmath::perspective(
+                    cgmath::Deg(60.0),
+                    base.surface_resolution.width as f32 / base.surface_resolution.height as f32,
+                    0.1,
+                    15.0,
+                );
+                let mut dispatcher = specs::DispatcherBuilder::new()
+                    .add(SteadyRotation, "steady_rotation", &[])
+                    .add(
+                        MVPCalculation { projection, view },
+                        "mvp",
+                        &["steady_rotation"],
+                    )
+                    .build();
+
+                dispatcher.dispatch(&mut world.res);
+            }
+            {
+                use specs::Join;
+                let mut mvps = vec![];
+                for mvp in world.read::<MVP>().join() {
+                    mvps.push(mvp.clone());
+                }
+
+                let ubo_buffer = buffer::Buffer::upload_from::<MVP, _>(
+                    &base,
+                    vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                    &mvps.iter().cloned(),
+                );
+                let ubo_mvp = render_dag
+                    .descriptor_sets
+                    .get("main_descriptor_layout")
+                    .unwrap();
+                unsafe {
+                    base.device.update_descriptor_sets(
+                        &[
+                            vk::WriteDescriptorSet {
+                                s_type: vk::StructureType::WriteDescriptorSet,
+                                p_next: ptr::null(),
+                                dst_set: ubo_mvp.clone(),
+                                dst_binding: 0,
+                                dst_array_element: 0,
+                                descriptor_count: mvps.len() as u32,
+                                descriptor_type: vk::DescriptorType::UniformBuffer,
+                                p_image_info: ptr::null(),
+                                p_buffer_info: &vk::DescriptorBufferInfo {
+                                    buffer: ubo_buffer.buffer(),
+                                    offset: 0,
+                                    range: (mvps.len() * mem::size_of::<MVP>()) as u64,
+                                },
+                                p_texel_buffer_view: ptr::null(),
+                            },
+                        ],
+                        &[],
+                    );
+                }
+            }
+
             let present_index = base.swapchain_loader
                 .acquire_next_image_khr(
                     base.swapchain,

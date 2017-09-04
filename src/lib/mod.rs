@@ -215,7 +215,7 @@ pub struct ExampleBase {
 }
 
 impl ExampleBase {
-    pub fn render_loop<F: Fn()>(&self, f: F) {
+    pub fn render_loop<F: FnMut()>(&self, mut f: F) {
         let mut should_continue = true;
         while should_continue {
             self.events_loop.borrow_mut().poll_events(

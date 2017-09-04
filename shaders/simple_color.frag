@@ -13,5 +13,5 @@ layout (location = 0) out vec4 uFragColor;
 
 void main() {
     // uFragColor = texture(s, texCoord);
-    uFragColor = vec4(1.0, 0.0, 0.0, 0.0);
+    uFragColor = vec4(1.0, 1.0, 1.0, 1.0);
 }

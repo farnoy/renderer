@@ -29,6 +29,6 @@ pub struct Light {
     pub strength: f32,
 }
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, Component, Debug)]
 #[component(VecStorage)]
 pub struct MVP(pub cgmath::Matrix4<f32>);

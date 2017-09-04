@@ -51,19 +51,8 @@ impl Mesh for SimpleColor {
                             }
                         };
 
-                        // let vertex_buffer = Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
-                        let positions = vec![
-                            [1.0f32, 1.0f32, 0f32, 1f32],
-                            [-1.0, 1.0, 0.0, 1.0],
-                            [0.0, -1.0, 0.0, 1.0],
-                        ];
-                        let vertex_buffer = Buffer::upload_from::<[f32; 4], _>(
-                            base,
-                            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                            &positions.iter().cloned(),
-                        );
+                        let vertex_buffer = Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
 
-                        /*
                         let (index_buffer, index_type, index_count) = match indices {
                             gltf::mesh::Indices::U8(iter) => panic!("u8 indices are not supported"),
                             gltf::mesh::Indices::U16(iter) => (
@@ -76,19 +65,6 @@ impl Mesh for SimpleColor {
                                 vk::IndexType::Uint32,
                                 iter.len(),
                             ),
-                        };
-                        */
-                        let (index_buffer, index_type, index_count) = {
-                            let indices = vec![0 as u32, 1, 2];
-                            (
-                                Buffer::upload_from::<u32, _>(
-                                    base,
-                                    vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    &indices.iter().cloned(),
-                                ),
-                                vk::IndexType::Uint32,
-                                3,
-                            )
                         };
 
                         let tex_coords = match primitive.tex_coords(0).unwrap() {
