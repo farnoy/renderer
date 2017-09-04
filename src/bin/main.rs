@@ -49,19 +49,37 @@ fn main() {
         builder.add_node("pipeline_layout", Node::PipelineLayout);
         builder.add_node(
             "vertex_binding",
-            Node::VertexInputBinding(0, 4 * 4, vk::VertexInputRate::Vertex),
+            Node::VertexInputBinding(0, 3 * 4, vk::VertexInputRate::Vertex),
         );
         builder.add_node(
             "vertex_attribute",
-            Node::VertexInputAttribute(0, 0, vk::Format::R32g32b32a32Sfloat, 0),
+            Node::VertexInputAttribute(0, 0, vk::Format::R32g32b32Sfloat, 0),
         );
         builder.add_node("graphics_pipeline", Node::GraphicsPipeline);
         builder.add_node(
             "draw_commands",
-            Node::DrawCommands(Arc::new(|base, world, command_buffer| {
+            Node::DrawCommands(Arc::new(|base, world, render_dag, command_buffer| {
                 use specs::Join;
                 for mesh in world.read::<SimpleColorMesh>().join() {
                     unsafe {
+                        base.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::Graphics,
+                            render_dag
+                                .pipeline_layouts
+                                .get("pipeline_layout")
+                                .unwrap()
+                                .clone(),
+                            0,
+                            &[
+                                render_dag
+                                    .descriptor_sets
+                                    .get("main_descriptor_layout")
+                                    .unwrap()
+                                    .clone(),
+                            ],
+                            &[0],
+                        );
                         base.device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
@@ -131,7 +149,7 @@ fn main() {
             builder.add_node("triangle_graphics_pipeline", Node::GraphicsPipeline);
             builder.add_node(
                 "triangle_draw_commands",
-                Node::DrawCommands(Arc::new(|base, world, command_buffer| {
+                Node::DrawCommands(Arc::new(|base, world, render_dag, command_buffer| {
                     use specs::Join;
                     for mesh in world.read::<TriangleMesh>().join() {
                         unsafe {
@@ -229,7 +247,7 @@ fn main() {
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
-            .with::<Scale>(Scale(0.2))
+            .with::<Scale>(Scale(1.0))
             .with::<MVP>(MVP(cgmath::Matrix4::one()))
             .with::<SimpleColorMesh>(SimpleColorMesh(
                 mesh::Mesh::from_gltf(
@@ -241,16 +259,16 @@ fn main() {
 
         base.render_loop(&mut || {
             {
-                let projection = cgmath::Matrix4::look_at(
-                    cgmath::Point3::new(10.0, 10.0, 10.0),
-                    cgmath::Point3::new(0.0, 0.0, 0.0),
-                    cgmath::vec3(0.0, 1.0, 0.0),
-                );
-                let view = cgmath::perspective(
+                let projection = cgmath::perspective(
                     cgmath::Deg(60.0),
                     base.surface_resolution.width as f32 / base.surface_resolution.height as f32,
                     0.1,
-                    15.0,
+                    100.0,
+                );
+                let view = cgmath::Matrix4::look_at(
+                    cgmath::Point3::new(4.0, 1.5, 3.0),
+                    cgmath::Point3::new(0.0, 0.0, 0.0),
+                    cgmath::vec3(0.0, 1.0, 0.0),
                 );
                 let mut dispatcher = specs::DispatcherBuilder::new()
                     .add(SteadyRotation, "steady_rotation", &[])

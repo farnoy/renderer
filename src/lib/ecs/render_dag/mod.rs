@@ -37,7 +37,7 @@ pub enum Node {
     /// Binding, location, format, offset
     VertexInputAttribute(u32, u32, vk::Format, u32),
     GraphicsPipeline,
-    DrawCommands(Arc<Fn(&ExampleBase, &World, vk::CommandBuffer)>),
+    DrawCommands(Arc<Fn(&ExampleBase, &World, &RenderDAG, vk::CommandBuffer)>),
     PresentImage,
 }
 
@@ -54,7 +54,7 @@ pub enum NodeRuntime {
     BeginRenderPass(vk::RenderPass),
     BeginSubPass(u8),
     BindPipeline(vk::Pipeline, Option<vk::Rect2D>, Option<vk::Viewport>),
-    DrawCommands(Arc<Fn(&ExampleBase, &World, vk::CommandBuffer)>),
+    DrawCommands(Arc<Fn(&ExampleBase, &World, &RenderDAG, vk::CommandBuffer)>),
     EndSubPass(u8), // TODO: we should only have BeginSubPass if possible, to model vulkan
     EndRenderPass(vk::RenderPass),
 }
@@ -70,6 +70,7 @@ type RuntimeGraph = petgraph::Graph<(&'static str, NodeRuntime), ()>;
 
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
+    pub pipeline_layouts: HashMap<&'static str, vk::PipelineLayout>,
     pub descriptor_sets: HashMap<&'static str, vk::DescriptorSet>,
     pub renderpasses: HashMap<&'static str, vk::RenderPass>,
 }
@@ -154,7 +155,7 @@ impl RenderDAG {
                     }
 
                 },
-                &NodeRuntime::DrawCommands(ref f) => f(base, world, command_buffer),
+                &NodeRuntime::DrawCommands(ref f) => f(base, world, &self, command_buffer),
                 &NodeRuntime::EndSubPass(ix) => (),
                 &NodeRuntime::EndRenderPass(_renderpass) => unsafe { base.device.cmd_end_render_pass(command_buffer) },
             }
@@ -792,6 +793,7 @@ impl RenderDAGBuilder {
         use std::iter::FromIterator;
         RenderDAG {
             graph: output_graph,
+            pipeline_layouts,
             descriptor_sets: descriptor_sets,
             renderpasses: HashMap::from_iter(renderpasses.iter().map(|(k, v)| (*k, v.2))),
         }

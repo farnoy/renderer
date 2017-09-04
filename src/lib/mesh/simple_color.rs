@@ -32,7 +32,7 @@ impl Mesh for SimpleColor {
                         return;
                     }
                     for primitive in mesh.primitives().take(1) {
-                        println!("primitive");
+                        println!("primitive mode {:?}", primitive.mode());
                         let base_color_texture = primitive
                             .material()
                             .pbr_metallic_roughness()
@@ -51,17 +51,17 @@ impl Mesh for SimpleColor {
                             }
                         };
 
-                        let vertex_buffer = Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
+                        let vertex_buffer = Buffer::upload_from::<[f32; 3], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
 
                         let (index_buffer, index_type, index_count) = match indices {
                             gltf::mesh::Indices::U8(iter) => panic!("u8 indices are not supported"),
                             gltf::mesh::Indices::U16(iter) => (
-                                Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &iter),
+                                Buffer::upload_from::<u16, _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &iter),
                                 vk::IndexType::Uint16,
                                 iter.len(),
                             ),
                             gltf::mesh::Indices::U32(iter) => (
-                                Buffer::upload_from(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &iter),
+                                Buffer::upload_from::<u32, _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &iter),
                                 vk::IndexType::Uint32,
                                 iter.len(),
                             ),
