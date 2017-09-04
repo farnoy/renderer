@@ -129,7 +129,10 @@ impl RenderDAG {
                         );
                     }
                     if let &Some(ref scissors) = scissors_opt {
-                        base.device.cmd_set_scissor(command_buffer, &[scissors.clone()]);
+                        base.device.cmd_set_scissor(
+                            command_buffer,
+                            &[scissors.clone()],
+                        );
                     }
 
                 },
@@ -303,10 +306,7 @@ impl RenderDAGBuilder {
                         "begin_render_pass",
                         NodeRuntime::BeginRenderPass(renderpass),
                     ));
-                    let end = output_graph.add_node((
-                        "end_render_pass",
-                        NodeRuntime::EndRenderPass(renderpass),
-                    ));
+                    let end = output_graph.add_node(("end_render_pass", NodeRuntime::EndRenderPass(renderpass)));
                     for &(start_subpass, end_subpass, _) in subpasses {
                         output_graph.add_edge(start, start_subpass, ());
                         output_graph.add_edge(end_subpass, end, ());
@@ -316,10 +316,7 @@ impl RenderDAGBuilder {
                     renderpasses.insert(self.graph[node].0, (start, end, renderpass));
                 }
                 Node::Subpass(ix) => {
-                    let start = output_graph.add_node((
-                        "begin_subpass",
-                        NodeRuntime::BeginSubPass(ix),
-                    ));
+                    let start = output_graph.add_node(("begin_subpass", NodeRuntime::BeginSubPass(ix)));
                     let end = output_graph.add_node(("end_subpass", NodeRuntime::EndSubPass(ix)));
                     output_graph.add_edge(start, end, ());
 
@@ -329,8 +326,7 @@ impl RenderDAGBuilder {
                     let set_layouts = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            Node::DescriptorSet => 
-                                Some(descriptor_set_layouts.get(node.0).unwrap().clone()),
+                            Node::DescriptorSet => Some(descriptor_set_layouts.get(node.0).unwrap().clone()),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -608,7 +604,11 @@ impl RenderDAGBuilder {
 
                     let bind = output_graph.add_node((
                         "bind_pipeline",
-                        NodeRuntime::BindPipeline(graphics_pipeline, Some(scissors[0].clone()), Some(viewports[0].clone())),
+                        NodeRuntime::BindPipeline(
+                            graphics_pipeline,
+                            Some(scissors[0].clone()),
+                            Some(viewports[0].clone()),
+                        ),
                     ));
                     let &(subpass_start, subpass_end, _) = inputs
                         .iter()
@@ -642,10 +642,7 @@ impl RenderDAGBuilder {
                         .next()
                         .expect("No subpass specified for DrawCommands");
 
-                    let draw = output_graph.add_node((
-                        "draw_commands",
-                        NodeRuntime::DrawCommands(f.clone()),
-                    ));
+                    let draw = output_graph.add_node(("draw_commands", NodeRuntime::DrawCommands(f.clone())));
                     output_graph.add_edge(pipeline_bind, draw, ());
                     output_graph.add_edge(draw, subpass_end, ());
                 }
@@ -653,78 +650,84 @@ impl RenderDAGBuilder {
                     let descriptor_sizes = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => 
-Some(vk::DescriptorPoolSize {
-                typ,
-                descriptor_count: count,
-            }),
+                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorPoolSize {
+                                typ,
+                                descriptor_count: count,
+                            }),
 
                             _ => None,
                         })
                         .collect::<Vec<_>>();
-        let descriptor_pool_info = vk::DescriptorPoolCreateInfo {
-            s_type: vk::StructureType::DescriptorPoolCreateInfo,
-            p_next: ptr::null(),
-            flags: Default::default(),
-            pool_size_count: descriptor_sizes.len() as u32,
-            p_pool_sizes: descriptor_sizes.as_ptr(),
-            max_sets: 1,
-        };
-        let descriptor_pool = unsafe {base.device
-            .create_descriptor_pool(&descriptor_pool_info, None)
-            .unwrap()};
+                    let descriptor_pool_info = vk::DescriptorPoolCreateInfo {
+                        s_type: vk::StructureType::DescriptorPoolCreateInfo,
+                        p_next: ptr::null(),
+                        flags: Default::default(),
+                        pool_size_count: descriptor_sizes.len() as u32,
+                        p_pool_sizes: descriptor_sizes.as_ptr(),
+                        max_sets: 1,
+                    };
+                    let descriptor_pool = unsafe {
+                        base.device
+                            .create_descriptor_pool(&descriptor_pool_info, None)
+                            .unwrap()
+                    };
 
                     let bindings = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => 
-Some(vk::DescriptorSetLayoutBinding {
-                binding: binding,
-                descriptor_type: typ,
-                descriptor_count: count,
-                stage_flags: stage,
-                p_immutable_samplers: ptr::null(),
-            }),
+                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorSetLayoutBinding {
+                                binding: binding,
+                                descriptor_type: typ,
+                                descriptor_count: count,
+                                stage_flags: stage,
+                                p_immutable_samplers: ptr::null(),
+                            }),
 
                             _ => None,
                         })
                         .collect::<Vec<_>>();
 
-        let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
-            s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
-            p_next: ptr::null(),
-            flags: Default::default(),
-            binding_count: bindings.len() as u32,
-            p_bindings: bindings.as_ptr(),
-        };
+                    let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
+                        s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
+                        p_next: ptr::null(),
+                        flags: Default::default(),
+                        binding_count: bindings.len() as u32,
+                        p_bindings: bindings.as_ptr(),
+                    };
 
 
-        let desc_set_layouts = [
-            unsafe {
-            base.device
-                .create_descriptor_set_layout(&descriptor_info, None)
-                .unwrap()
-            }
-        ];
-        let desc_alloc_info = vk::DescriptorSetAllocateInfo {
-            s_type: vk::StructureType::DescriptorSetAllocateInfo,
-            p_next: ptr::null(),
-            descriptor_pool: descriptor_pool,
-            descriptor_set_count: desc_set_layouts.len() as u32,
-            p_set_layouts: desc_set_layouts.as_ptr(),
-        };
-        let new_descriptor_sets = unsafe {base.device
-            .allocate_descriptor_sets(&desc_alloc_info)
-            .unwrap()};
+                    let desc_set_layouts = [
+                        unsafe {
+                            base.device
+                                .create_descriptor_set_layout(&descriptor_info, None)
+                                .unwrap()
+                        },
+                    ];
+                    let desc_alloc_info = vk::DescriptorSetAllocateInfo {
+                        s_type: vk::StructureType::DescriptorSetAllocateInfo,
+                        p_next: ptr::null(),
+                        descriptor_pool: descriptor_pool,
+                        descriptor_set_count: desc_set_layouts.len() as u32,
+                        p_set_layouts: desc_set_layouts.as_ptr(),
+                    };
+                    let new_descriptor_sets = unsafe {
+                        base.device
+                            .allocate_descriptor_sets(&desc_alloc_info)
+                            .unwrap()
+                    };
 
-            descriptor_set_layouts.insert(self.graph[node].0, desc_set_layouts[0]);
-            descriptor_sets.insert(self.graph[node].0, new_descriptor_sets[0]);
+                    descriptor_set_layouts.insert(self.graph[node].0, desc_set_layouts[0]);
+                    descriptor_sets.insert(self.graph[node].0, new_descriptor_sets[0]);
 
                 }
                 _ => println!("* not doing anything"),
             }
         }
         use std::iter::FromIterator;
-        RenderDAG { graph: output_graph, descriptor_sets: descriptor_sets, renderpasses: HashMap::from_iter(renderpasses.iter().map(|(k, v)| (*k, v.2))) }
+        RenderDAG {
+            graph: output_graph,
+            descriptor_sets: descriptor_sets,
+            renderpasses: HashMap::from_iter(renderpasses.iter().map(|(k, v)| (*k, v.2))),
+        }
     }
 }
