@@ -287,7 +287,7 @@ fn main() {
                     flags: Default::default(),
                     image: mesh.0.base_color_image.image,
                     view_type: vk::ImageViewType::Type2d,
-                    format: vk::Format::R8g8b8a8Uint,
+                    format: vk::Format::R8g8b8a8Unorm,
                     components: vk::ComponentMapping {
                         r: vk::ComponentSwizzle::Identity,
                         g: vk::ComponentSwizzle::Identity,
@@ -302,7 +302,10 @@ fn main() {
                         layer_count: 1,
                     },
                 };
-                textures.push((mesh.0.texture_sampler, base.device.create_image_view(&create_info, None).unwrap()));
+                textures.push((
+                    mesh.0.texture_sampler,
+                    base.device.create_image_view(&create_info, None).unwrap(),
+                ));
             }
             let descriptor_set = render_dag
                 .descriptor_sets
@@ -322,7 +325,7 @@ fn main() {
                             p_image_info: &vk::DescriptorImageInfo {
                                 sampler: textures[0].0,
                                 image_view: textures[0].1,
-                                image_layout: vk::ImageLayout::ShaderReadOnlyOptimal
+                                image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
                             },
                             p_buffer_info: ptr::null(),
                             p_texel_buffer_view: ptr::null(),

@@ -9,11 +9,11 @@ impl<'a> System<'a> for SteadyRotation {
     type SystemData = (WriteStorage<'a, Rotation>);
 
     fn run(&mut self, mut rotations: Self::SystemData) {
-        let rotation = Rotation(
-            cgmath::Matrix3::from_angle_y(-cgmath::Deg(time::precise_time_s() as f32 * 60.0)).into(),
-        );
+        use cgmath::Rotation3;
+        let rotation = cgmath::Quaternion::from_angle_y(-cgmath::Deg(time::precise_time_s() as f32 * 60.0));
+        let rotation2 = cgmath::Quaternion::from_angle_x(-cgmath::Deg(time::precise_time_s() as f32 * 20.0));
         for rot in (&mut rotations).join() {
-            *rot = rotation;
+            *rot = Rotation(rotation * rotation2);
         }
     }
 }

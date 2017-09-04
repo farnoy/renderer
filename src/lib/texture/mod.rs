@@ -46,7 +46,7 @@ impl Texture {
                 p_next: ptr::null(),
                 flags: Default::default(),
                 image_type: vk::ImageType::Type2d,
-                format: vk::Format::R8g8b8a8Uint,
+                format: vk::Format::R8g8b8a8Unorm,
                 extent: extent.clone(),
                 mip_levels: 1,
                 array_layers: 1,

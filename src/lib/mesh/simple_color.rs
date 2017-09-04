@@ -97,9 +97,7 @@ impl Mesh for SimpleColor {
                                 unnormalized_coordinates: 0,
                             };
 
-                            unsafe {
-                                base.device.create_sampler(&create_info, None).unwrap()
-                            }
+                            unsafe { base.device.create_sampler(&create_info, None).unwrap() }
                         };
 
                         println!("success");
