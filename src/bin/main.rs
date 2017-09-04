@@ -34,38 +34,26 @@ fn main() {
     let render_dag = {
         let mut builder = RenderDAGBuilder::new();
         builder.add_node("acquire_image", Node::AcquirePresentImage);
-        builder.add_node(
-            "swapchain_attachment",
-            Node::SwapchainAttachment(0),
-        );
+        builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
         builder.add_node("depth_attachment", Node::DepthAttachment(1));
         builder.add_node("subpass", Node::Subpass(0));
         builder.add_node("renderpass", Node::RenderPass);
         builder.add_node(
             "vertex_shader",
-            Node::VertexShader(
-                PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv"),
-            ),
+            Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv")),
         );
         builder.add_node(
             "fragment_shader",
-            Node::FragmentShader(
-                PathBuf::from(env!("OUT_DIR")).join("simple_color.frag.spv"),
-            ),
+            Node::FragmentShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.frag.spv")),
         );
         builder.add_node("pipeline_layout", Node::PipelineLayout);
         builder.add_node(
             "vertex_binding",
-            Node::VertexInputBinding(0, 4*4, vk::VertexInputRate::Vertex),
+            Node::VertexInputBinding(0, 4 * 4, vk::VertexInputRate::Vertex),
         );
         builder.add_node(
             "vertex_attribute",
-            Node::VertexInputAttribute(
-                0,
-                0,
-                vk::Format::R32g32b32a32Sfloat,
-                0,
-            ),
+            Node::VertexInputAttribute(0, 0, vk::Format::R32g32b32a32Sfloat, 0),
         );
         builder.add_node("graphics_pipeline", Node::GraphicsPipeline);
         builder.add_node(
@@ -116,21 +104,28 @@ fn main() {
         builder.add_edge("graphics_pipeline", "draw_commands");
         builder.add_edge("draw_commands", "present_image");
 
-        builder.add_node("mvp_ubo", Node::DescriptorBinding(0, vk::DescriptorType::UniformBuffer, vk::SHADER_STAGE_VERTEX_BIT, 1));
+        builder.add_node(
+            "mvp_ubo",
+            Node::DescriptorBinding(
+                0,
+                vk::DescriptorType::UniformBuffer,
+                vk::SHADER_STAGE_VERTEX_BIT,
+                1,
+            ),
+        );
         builder.add_node("main_descriptor_layout", Node::DescriptorSet);
         builder.add_edge("mvp_ubo", "main_descriptor_layout");
         builder.add_edge("main_descriptor_layout", "pipeline_layout");
         {
-        let dot = petgraph::dot::Dot::new(&builder.graph);
-        println!("{:?}", dot);
+            let dot = petgraph::dot::Dot::new(&builder.graph);
+            println!("{:?}", dot);
         }
         builder.build(&base)
     };
     let dot = petgraph::dot::Dot::new(&render_dag.graph);
     println!("{:?}", dot);
     unsafe {
-        use renderpass::RenderPass;
-        let renderpass = renderpass::simple_color::SimpleColor::setup(&base);
+        let renderpass = render_dag.renderpasses.get("renderpass").unwrap();
         let framebuffers: Vec<vk::Framebuffer> = base.present_image_views
             .iter()
             .map(|&present_image_view| {
@@ -139,7 +134,7 @@ fn main() {
                     s_type: vk::StructureType::FramebufferCreateInfo,
                     p_next: ptr::null(),
                     flags: Default::default(),
-                    render_pass: renderpass.vk(),
+                    render_pass: renderpass.clone(),
                     attachment_count: framebuffer_attachments.len() as u32,
                     p_attachments: framebuffer_attachments.as_ptr(),
                     width: base.surface_resolution.width,
@@ -151,11 +146,6 @@ fn main() {
                     .unwrap()
             })
             .collect();
-
-        let renderdag = {
-            let builder = RenderDAGBuilder::new();
-            builder.build(&base)
-        };
 
         let mut world = World::new(&base.device);
 
@@ -188,20 +178,7 @@ fn main() {
                                         &[base.present_complete_semaphore],
                                         &[base.rendering_complete_semaphore],
                                         |device, draw_command_buffer| {
-                renderdag.run(&base, &world, framebuffer, draw_command_buffer);
-                                        /*
-                renderpass
-                    .record_commands(&base,
-                    framebuffer,
-                 draw_command_buffer,
-                 vk::SubpassContents::Inline,
-                 |device, command_buffer| {
-                     graphic_pipeline.record_commands(&base, command_buffer);
-                    // device.cmd_set_viewport(draw_command_buffer, &viewports);
-                    // device.cmd_set_scissor(draw_command_buffer, &scissors);
-
-                });
-                */
+                render_dag.run(&base, &world, framebuffer, draw_command_buffer);
             });
             //let mut present_info_err = mem::uninitialized();
             let present_info = vk::PresentInfoKHR {
@@ -223,6 +200,5 @@ fn main() {
         for framebuffer in framebuffers {
             base.device.destroy_framebuffer(framebuffer, None);
         }
-        base.device.destroy_render_pass(renderpass.vk(), None);
     }
 }

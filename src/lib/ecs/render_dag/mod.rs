@@ -70,7 +70,8 @@ type RuntimeGraph = petgraph::Graph<(&'static str, NodeRuntime), ()>;
 
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
-    descriptor_sets: HashMap<&'static str, vk::DescriptorSet>,
+    pub descriptor_sets: HashMap<&'static str, vk::DescriptorSet>,
+    pub renderpasses: HashMap<&'static str, vk::RenderPass>,
 }
 
 impl RenderDAG {
@@ -170,7 +171,10 @@ pub struct RenderDAGBuilder {
 
 impl RenderDAGBuilder {
     pub fn new() -> RenderDAGBuilder {
-        RenderDAGBuilder { graph: BuilderGraph::new(), name_mapping: HashMap::new() }
+        RenderDAGBuilder {
+            graph: BuilderGraph::new(),
+            name_mapping: HashMap::new(),
+        }
     }
 
     pub fn add_node(&mut self, name: &'static str, value: Node) {
@@ -720,6 +724,7 @@ Some(vk::DescriptorSetLayoutBinding {
                 _ => println!("* not doing anything"),
             }
         }
-        RenderDAG { graph: output_graph, descriptor_sets: descriptor_sets }
+        use std::iter::FromIterator;
+        RenderDAG { graph: output_graph, descriptor_sets: descriptor_sets, renderpasses: HashMap::from_iter(renderpasses.iter().map(|(k, v)| (*k, v.2))) }
     }
 }
