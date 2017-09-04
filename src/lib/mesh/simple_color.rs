@@ -14,8 +14,9 @@ pub struct SimpleColor {
     pub index_buffer: Buffer,
     pub index_type: vk::IndexType,
     pub index_count: u32,
-    base_color_image: Texture,
-    tex_coords: Buffer,
+    pub base_color_image: Texture,
+    pub tex_coords: Buffer,
+    pub texture_sampler: vk::Sampler,
 }
 
 impl Mesh for SimpleColor {
@@ -72,6 +73,35 @@ impl Mesh for SimpleColor {
                             _ => panic!("texture coordinates of this type are unsupported"),
                         };
 
+                        let sampler = {
+                            use ash::version::DeviceV1_0;
+                            use std::ptr;
+                            let create_info = vk::SamplerCreateInfo {
+                                s_type: vk::StructureType::SamplerCreateInfo,
+                                p_next: ptr::null(),
+                                flags: Default::default(),
+                                mag_filter: vk::Filter::Linear,
+                                min_filter: vk::Filter::Linear,
+                                mipmap_mode: vk::SamplerMipmapMode::Linear,
+                                address_mode_u: vk::SamplerAddressMode::Repeat,
+                                address_mode_v: vk::SamplerAddressMode::Repeat,
+                                address_mode_w: vk::SamplerAddressMode::Repeat,
+                                mip_lod_bias: 0.0,
+                                anisotropy_enable: 1,
+                                max_anisotropy: 16.0,
+                                compare_enable: 0,
+                                compare_op: vk::CompareOp::Always,
+                                min_lod: 0.0,
+                                max_lod: 0.0,
+                                border_color: vk::BorderColor::IntOpaqueBlack,
+                                unnormalized_coordinates: 0,
+                            };
+
+                            unsafe {
+                                base.device.create_sampler(&create_info, None).unwrap()
+                            }
+                        };
+
                         println!("success");
 
                         *ret = Some(SimpleColor {
@@ -81,6 +111,7 @@ impl Mesh for SimpleColor {
                             index_count: index_count as u32,
                             base_color_image: base_color_image,
                             tex_coords: tex_coords,
+                            texture_sampler: sampler,
                         });
                     }
                 }

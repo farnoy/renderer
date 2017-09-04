@@ -476,7 +476,6 @@ impl RenderDAGBuilder {
                             _ => None,
                         })
                         .collect::<Vec<_>>();
-                    println!("Shader modules are {:?}", shader_modules);
                     let pipeline_layout = inputs
                         .iter()
                         .filter_map(|node| match node {
@@ -485,10 +484,6 @@ impl RenderDAGBuilder {
                         })
                         .next()
                         .expect("no pipeline layout specified for graphics pipeline");
-                    println!(
-                        "* creating graphics pipeline from dependencies, {:?}",
-                        inputs
-                    );
                     let &(begin_renderpass, end_renderpass, renderpass) = inputs
                         .iter()
                         .filter_map(|node| match node {
@@ -761,7 +756,6 @@ impl RenderDAGBuilder {
                         binding_count: bindings.len() as u32,
                         p_bindings: bindings.as_ptr(),
                     };
-
 
                     let desc_set_layouts = [
                         unsafe {

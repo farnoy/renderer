@@ -86,13 +86,13 @@ fn main() {
                                     .unwrap()
                                     .clone(),
                             ],
-                            &[0],
+                            &[],
                         );
                         base.device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
-                            &[mesh.0.vertex_buffer.buffer()],
-                            &[0],
+                            &[mesh.0.vertex_buffer.buffer(), mesh.0.tex_coords.buffer()],
+                            &[0, 0],
                         );
                         base.device.cmd_bind_index_buffer(
                             command_buffer,
@@ -220,13 +220,14 @@ fn main() {
         builder.add_node(
             "color_texture",
             Node::DescriptorBinding(
-                0,
+                1,
                 vk::DescriptorType::CombinedImageSampler,
                 vk::SHADER_STAGE_FRAGMENT_BIT,
                 1,
             ),
         );
         builder.add_node("main_descriptor_layout", Node::DescriptorSet);
+
         builder.add_edge("mvp_ubo", "main_descriptor_layout");
         builder.add_edge("color_texture", "main_descriptor_layout");
         builder.add_edge("main_descriptor_layout", "pipeline_layout");
@@ -276,6 +277,61 @@ fn main() {
                 ).unwrap(),
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)));
+        {
+            use specs::Join;
+            let mut textures = vec![];
+            for mesh in world.read::<SimpleColorMesh>().join() {
+                let create_info = vk::ImageViewCreateInfo {
+                    s_type: vk::StructureType::ImageViewCreateInfo,
+                    p_next: ptr::null(),
+                    flags: Default::default(),
+                    image: mesh.0.base_color_image.image,
+                    view_type: vk::ImageViewType::Type2d,
+                    format: vk::Format::R8g8b8a8Uint,
+                    components: vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::Identity,
+                        g: vk::ComponentSwizzle::Identity,
+                        b: vk::ComponentSwizzle::Identity,
+                        a: vk::ComponentSwizzle::Identity,
+                    },
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::IMAGE_ASPECT_COLOR_BIT,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                };
+                textures.push((mesh.0.texture_sampler, base.device.create_image_view(&create_info, None).unwrap()));
+            }
+            let descriptor_set = render_dag
+                .descriptor_sets
+                .get("main_descriptor_layout")
+                .unwrap();
+            unsafe {
+                base.device.update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet {
+                            s_type: vk::StructureType::WriteDescriptorSet,
+                            p_next: ptr::null(),
+                            dst_set: descriptor_set.clone(),
+                            dst_binding: 1,
+                            dst_array_element: 0,
+                            descriptor_count: 1,
+                            descriptor_type: vk::DescriptorType::CombinedImageSampler,
+                            p_image_info: &vk::DescriptorImageInfo {
+                                sampler: textures[0].0,
+                                image_view: textures[0].1,
+                                image_layout: vk::ImageLayout::ShaderReadOnlyOptimal
+                            },
+                            p_buffer_info: ptr::null(),
+                            p_texel_buffer_view: ptr::null(),
+                        },
+                    ],
+                    &[],
+                );
+            }
+        }
 
         base.render_loop(&mut || {
             {

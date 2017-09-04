@@ -12,7 +12,7 @@ use super::{ExampleBase, find_memorytype_index};
 
 #[allow(dead_code)]
 pub struct Texture {
-    image: vk::Image,
+    pub image: vk::Image,
     memory: vk::DeviceMemory,
 }
 
