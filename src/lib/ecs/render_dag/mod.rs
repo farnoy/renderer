@@ -83,6 +83,10 @@ impl RenderDAG {
             self.graph.map(|_ix, _node| None, |_ix, edge| edge);
             */
         for node in petgraph::algo::toposort(&self.graph) {
+            let inputs = self.graph
+                .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
+                .map(|ix| self.graph[ix].clone())
+                .collect::<Vec<_>>();
             match &self.graph[node].1 {
                 &NodeRuntime::BeginRenderPass(renderpass) => {
                     let clear_values = [
@@ -114,7 +118,21 @@ impl RenderDAG {
                         );
                     }
                 }
-                &NodeRuntime::BeginSubPass(ix) => (),
+                &NodeRuntime::BeginSubPass(ix) => {
+                    let previous_subpass = inputs.iter().find(|i| match i.1 {
+                        NodeRuntime::EndSubPass(_) => true,
+                        _ => false,
+                    });
+
+                    if previous_subpass.is_some() {
+                        unsafe {
+                            base.device.cmd_next_subpass(
+                                command_buffer,
+                                vk::SubpassContents::Inline,
+                            );
+                        }
+                    }
+                }
                 &NodeRuntime::BindPipeline(pipeline, ref scissors_opt, ref viewport_opt) => unsafe {
                     base.device.cmd_bind_pipeline(
                         command_buffer,
@@ -255,37 +273,65 @@ impl RenderDAGBuilder {
                         attachment: 1,
                         layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
                     };
-                    let dependency = vk::SubpassDependency {
-                        dependency_flags: Default::default(),
-                        src_subpass: vk::VK_SUBPASS_EXTERNAL,
-                        dst_subpass: Default::default(),
-                        src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        src_access_mask: Default::default(),
-                        dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    };
-                    let subpass = vk::SubpassDescription {
-                        color_attachment_count: 1,
-                        p_color_attachments: &color_attachment_ref,
-                        p_depth_stencil_attachment: &depth_attachment_ref,
-                        flags: Default::default(),
-                        pipeline_bind_point: vk::PipelineBindPoint::Graphics,
-                        input_attachment_count: 0,
-                        p_input_attachments: ptr::null(),
-                        p_resolve_attachments: ptr::null(),
-                        preserve_attachment_count: 0,
-                        p_preserve_attachments: ptr::null(),
-                    };
+                    let mut subpass_descs = inputs
+                        .iter()
+                        .filter_map(|node| match node.1 {
+                            Node::Subpass(ix) => Some((
+                                ix,
+                                vk::SubpassDescription {
+                                    color_attachment_count: 1,
+                                    p_color_attachments: &color_attachment_ref,
+                                    p_depth_stencil_attachment: &depth_attachment_ref,
+                                    flags: Default::default(),
+                                    pipeline_bind_point: vk::PipelineBindPoint::Graphics,
+                                    input_attachment_count: 0,
+                                    p_input_attachments: ptr::null(),
+                                    p_resolve_attachments: ptr::null(),
+                                    preserve_attachment_count: 0,
+                                    p_preserve_attachments: ptr::null(),
+                                },
+                            )),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    subpass_descs.sort_by(|&(lhs, _), &(rhs, _)| lhs.cmp(&rhs));
+                    let subpass_descs = subpass_descs
+                        .iter()
+                        .map(|&(_, ref desc)| desc)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let mut dependencies = vec![
+                        vk::SubpassDependency {
+                            dependency_flags: Default::default(),
+                            src_subpass: vk::VK_SUBPASS_EXTERNAL,
+                            dst_subpass: 0,
+                            src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            src_access_mask: Default::default(),
+                            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        },
+                    ];
+                    for (ix, subpass) in subpass_descs.iter().enumerate() {
+                        dependencies.push(vk::SubpassDependency {
+                            dependency_flags: Default::default(),
+                            src_subpass: ix as u32,
+                            dst_subpass: ix as u32 + 1,
+                            src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            src_access_mask: Default::default(),
+                            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        });
+                    }
                     let renderpass_create_info = vk::RenderPassCreateInfo {
                         s_type: vk::StructureType::RenderPassCreateInfo,
                         flags: Default::default(),
                         p_next: ptr::null(),
                         attachment_count: attachments.len() as u32,
                         p_attachments: attachments.as_ptr(),
-                        subpass_count: 1,
-                        p_subpasses: &subpass,
-                        dependency_count: 1,
-                        p_dependencies: &dependency,
+                        subpass_count: subpass_descs.len() as u32,
+                        p_subpasses: subpass_descs.as_ptr(),
+                        dependency_count: dependencies.len() as u32,
+                        p_dependencies: dependencies.as_ptr(),
                     };
                     let renderpass = unsafe {
                         base.device
@@ -316,9 +362,21 @@ impl RenderDAGBuilder {
                     renderpasses.insert(self.graph[node].0, (start, end, renderpass));
                 }
                 Node::Subpass(ix) => {
+                    let previous_subpasses = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref name, Node::Subpass(_)) => Some(subpasses.get(node.0).unwrap()),
+                            _ => None,
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+
                     let start = output_graph.add_node(("begin_subpass", NodeRuntime::BeginSubPass(ix)));
                     let end = output_graph.add_node(("end_subpass", NodeRuntime::EndSubPass(ix)));
                     output_graph.add_edge(start, end, ());
+                    for (_, end_subpass, _) in previous_subpasses {
+                        output_graph.add_edge(end_subpass, start, ());
+                    }
 
                     subpasses.insert(self.graph[node].0, (start, end, ix));
                 }
@@ -353,7 +411,7 @@ impl RenderDAGBuilder {
                     let vertex_attributes = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            Node::VertexInputAttribute(location, binding, format, offset) => {
+                            Node::VertexInputAttribute(binding, location, format, offset) => {
                                 Some(vk::VertexInputAttributeDescription {
                                     location: location,
                                     binding: binding,
@@ -573,6 +631,14 @@ impl RenderDAGBuilder {
                         dynamic_state_count: dynamic_state.len() as u32,
                         p_dynamic_states: dynamic_state.as_ptr(),
                     };
+                    let subpass_ix = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref name, Node::Subpass(ix)) => Some(ix),
+                            _ => None,
+                        })
+                        .next()
+                        .expect("No subpass bound to this pipeline");
                     let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo {
                         s_type: vk::StructureType::GraphicsPipelineCreateInfo,
                         p_next: ptr::null(),
@@ -590,7 +656,7 @@ impl RenderDAGBuilder {
                         p_dynamic_state: &dynamic_state_info,
                         layout: pipeline_layout.clone(),
                         render_pass: renderpass,
-                        subpass: 0,
+                        subpass: subpass_ix as u32,
                         base_pipeline_handle: vk::Pipeline::null(),
                         base_pipeline_index: 0,
                     };

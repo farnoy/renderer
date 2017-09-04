@@ -19,6 +19,10 @@ pub struct Scale(pub f32);
 #[component(VecStorage)]
 pub struct SimpleColorMesh(pub mesh::SimpleColor);
 
+#[derive(Component)]
+#[component(VecStorage)]
+pub struct TriangleMesh(pub mesh::TriangleMesh);
+
 #[derive(Clone, Copy, Component)]
 #[component(VecStorage)]
 pub struct Light {

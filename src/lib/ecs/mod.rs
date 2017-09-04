@@ -23,6 +23,7 @@ impl World {
         world.register::<Rotation>();
         world.register::<Scale>();
         world.register::<SimpleColorMesh>();
+        world.register::<TriangleMesh>();
         world.register::<Light>();
         world.register::<MVP>();
 

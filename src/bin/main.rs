@@ -36,7 +36,7 @@ fn main() {
         builder.add_node("acquire_image", Node::AcquirePresentImage);
         builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
         builder.add_node("depth_attachment", Node::DepthAttachment(1));
-        builder.add_node("subpass", Node::Subpass(0));
+        builder.add_node("subpass", Node::Subpass(1));
         builder.add_node("renderpass", Node::RenderPass);
         builder.add_node(
             "vertex_shader",
@@ -104,6 +104,82 @@ fn main() {
         builder.add_edge("graphics_pipeline", "draw_commands");
         builder.add_edge("draw_commands", "present_image");
 
+        {
+            builder.add_node("triangle_subpass", Node::Subpass(0));
+            // Triangle mesh
+            builder.add_node(
+                "triangle_vertex_shader",
+                Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("triangle.vert.spv")),
+            );
+            builder.add_node(
+                "triangle_fragment_shader",
+                Node::FragmentShader(PathBuf::from(env!("OUT_DIR")).join("triangle.frag.spv")),
+            );
+            builder.add_node("triangle_pipeline_layout", Node::PipelineLayout);
+            builder.add_node(
+                "triangle_vertex_binding",
+                Node::VertexInputBinding(0, 4 * 5, vk::VertexInputRate::Vertex),
+            );
+            builder.add_node(
+                "triangle_vertex_attribute_pos",
+                Node::VertexInputAttribute(0, 0, vk::Format::R32g32Sfloat, 0),
+            );
+            builder.add_node(
+                "triangle_vertex_attribute_color",
+                Node::VertexInputAttribute(0, 1, vk::Format::R32g32b32Sfloat, 2 * 4),
+            );
+            builder.add_node("triangle_graphics_pipeline", Node::GraphicsPipeline);
+            builder.add_node(
+                "triangle_draw_commands",
+                Node::DrawCommands(Arc::new(|base, world, command_buffer| {
+                    use specs::Join;
+                    for mesh in world.read::<TriangleMesh>().join() {
+                        unsafe {
+                            base.device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                0,
+                                &[mesh.0.vertex_buffer.buffer()],
+                                &[0],
+                            );
+                            base.device.cmd_bind_index_buffer(
+                                command_buffer,
+                                mesh.0.index_buffer.buffer(),
+                                0,
+                                mesh.0.index_type,
+                            );
+                            base.device.cmd_draw_indexed(
+                                command_buffer,
+                                mesh.0.index_count,
+                                1,
+                                0,
+                                0,
+                                0,
+                            );
+                        }
+                    }
+                })),
+            );
+
+            builder.add_edge("triangle_subpass", "renderpass");
+            builder.add_edge("triangle_subpass", "triangle_graphics_pipeline");
+            builder.add_edge("triangle_subpass", "triangle_draw_commands");
+            builder.add_edge("triangle_vertex_shader", "triangle_graphics_pipeline");
+            builder.add_edge("triangle_fragment_shader", "triangle_graphics_pipeline");
+            builder.add_edge("renderpass", "triangle_graphics_pipeline");
+            builder.add_edge("triangle_vertex_binding", "triangle_graphics_pipeline");
+            builder.add_edge(
+                "triangle_vertex_attribute_pos",
+                "triangle_graphics_pipeline",
+            );
+            builder.add_edge(
+                "triangle_vertex_attribute_color",
+                "triangle_graphics_pipeline",
+            );
+            builder.add_edge("triangle_pipeline_layout", "triangle_graphics_pipeline");
+            builder.add_edge("triangle_graphics_pipeline", "triangle_draw_commands");
+            builder.add_edge("triangle_subpass", "subpass");
+        }
+
         builder.add_node(
             "mvp_ubo",
             Node::DescriptorBinding(
@@ -159,7 +235,8 @@ fn main() {
                     &base,
                     "glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
                 ).unwrap(),
-            ));
+            ))
+            .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)));
 
         base.render_loop(|| {
             let present_index = base.swapchain_loader
