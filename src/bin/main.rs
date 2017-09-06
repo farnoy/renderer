@@ -377,6 +377,7 @@ fn main() {
 
                 dispatcher.dispatch(&mut world.res);
             }
+            let mut buffers = vec![];
             {
                 use specs::Join;
                 for (ix, mvp) in world.read::<MVP>().join().enumerate() {
@@ -414,6 +415,7 @@ fn main() {
                             &[],
                         );
                     }
+                    buffers.push(ubo_buffer);
                 }
             }
 
@@ -449,6 +451,10 @@ fn main() {
             base.swapchain_loader
                 .queue_present_khr(base.present_queue, &present_info)
                 .unwrap();
+
+            for buffer in buffers.into_iter() {
+                buffer.free(base.device.vk())
+            }
         });
 
         base.device.device_wait_idle().unwrap();
