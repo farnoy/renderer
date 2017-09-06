@@ -30,7 +30,8 @@ pub enum Node {
     FragmentShader(PathBuf),
     /// Binding, type, stage, count
     DescriptorBinding(u32, vk::DescriptorType, vk::ShaderStageFlags, u32),
-    DescriptorSet,
+    /// Count
+    DescriptorSet(u32),
     PipelineLayout,
     /// Binding, stride, rate
     VertexInputBinding(u32, u32, vk::VertexInputRate),
@@ -71,7 +72,7 @@ type RuntimeGraph = petgraph::Graph<(&'static str, NodeRuntime), ()>;
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
     pub pipeline_layouts: HashMap<&'static str, vk::PipelineLayout>,
-    pub descriptor_sets: HashMap<&'static str, vk::DescriptorSet>,
+    pub descriptor_sets: HashMap<&'static str, Vec<vk::DescriptorSet>>,
     pub renderpasses: HashMap<&'static str, vk::RenderPass>,
 }
 
@@ -217,7 +218,7 @@ impl RenderDAGBuilder {
         let mut pipeline_layouts: HashMap<&str, vk::PipelineLayout> = HashMap::new();
         let mut pipelines: HashMap<&str, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
         let mut descriptor_set_layouts: HashMap<&str, vk::DescriptorSetLayout> = HashMap::new();
-        let mut descriptor_sets: HashMap<&str, vk::DescriptorSet> = HashMap::new();
+        let mut descriptor_sets: HashMap<&str, Vec<vk::DescriptorSet>> = HashMap::new();
         for node in petgraph::algo::toposort(&self.graph, None).expect("RenderDAGBuilder has cycles").iter().cloned() {
             println!("{:?}", self.graph[node]);
             let inputs = self.graph
@@ -385,7 +386,7 @@ impl RenderDAGBuilder {
                     let set_layouts = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            Node::DescriptorSet => Some(descriptor_set_layouts.get(node.0).unwrap().clone()),
+                            Node::DescriptorSet(_) => Some(descriptor_set_layouts.get(node.0).unwrap().clone()),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -708,13 +709,13 @@ impl RenderDAGBuilder {
                     output_graph.add_edge(pipeline_bind, draw, ());
                     output_graph.add_edge(draw, subpass_end, ());
                 }
-                Node::DescriptorSet => {
+                Node::DescriptorSet(size) => {
                     let descriptor_sizes = inputs
                         .iter()
                         .filter_map(|node| match node {
                             &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorPoolSize {
                                 typ,
-                                descriptor_count: count,
+                                descriptor_count: count * size,
                             }),
 
                             _ => None,
@@ -726,7 +727,7 @@ impl RenderDAGBuilder {
                         flags: Default::default(),
                         pool_size_count: descriptor_sizes.len() as u32,
                         p_pool_sizes: descriptor_sizes.as_ptr(),
-                        max_sets: 1,
+                        max_sets: size,
                     };
                     let descriptor_pool = unsafe {
                         base.device
@@ -749,27 +750,28 @@ impl RenderDAGBuilder {
                         })
                         .collect::<Vec<_>>();
 
-                    let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
-                        s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
-                        p_next: ptr::null(),
-                        flags: Default::default(),
-                        binding_count: bindings.len() as u32,
-                        p_bindings: bindings.as_ptr(),
-                    };
+                    let layouts = (0..size).map(|_n| {
+                        let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
+                            s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
+                            p_next: ptr::null(),
+                            flags: Default::default(),
+                            binding_count: bindings.len() as u32,
+                            p_bindings: bindings.as_ptr(),
+                        };
 
-                    let desc_set_layouts = [
                         unsafe {
                             base.device
                                 .create_descriptor_set_layout(&descriptor_info, None)
                                 .unwrap()
-                        },
-                    ];
+                        }
+                    }).collect::<Vec<_>>();
+
                     let desc_alloc_info = vk::DescriptorSetAllocateInfo {
                         s_type: vk::StructureType::DescriptorSetAllocateInfo,
                         p_next: ptr::null(),
                         descriptor_pool: descriptor_pool,
-                        descriptor_set_count: desc_set_layouts.len() as u32,
-                        p_set_layouts: desc_set_layouts.as_ptr(),
+                        descriptor_set_count: layouts.len() as u32,
+                        p_set_layouts: layouts.as_ptr(),
                     };
                     let new_descriptor_sets = unsafe {
                         base.device
@@ -777,8 +779,8 @@ impl RenderDAGBuilder {
                             .unwrap()
                     };
 
-                    descriptor_set_layouts.insert(self.graph[node].0, desc_set_layouts[0]);
-                    descriptor_sets.insert(self.graph[node].0, new_descriptor_sets[0]);
+                    descriptor_set_layouts.insert(self.graph[node].0, layouts[0]);
+                    descriptor_sets.insert(self.graph[node].0, new_descriptor_sets);
 
                 }
                 _ => println!("* not doing anything"),

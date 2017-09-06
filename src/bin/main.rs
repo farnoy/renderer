@@ -68,7 +68,7 @@ fn main() {
             "draw_commands",
             Node::DrawCommands(Arc::new(|base, world, render_dag, command_buffer| {
                 use specs::Join;
-                for mesh in world.read::<SimpleColorMesh>().join() {
+                for (ix, mesh) in world.read::<SimpleColorMesh>().join().enumerate() {
                     unsafe {
                         base.device.cmd_bind_descriptor_sets(
                             command_buffer,
@@ -84,6 +84,7 @@ fn main() {
                                     .descriptor_sets
                                     .get("main_descriptor_layout")
                                     .unwrap()
+                                    [ix]
                                     .clone(),
                             ],
                             &[],
@@ -226,7 +227,7 @@ fn main() {
                 1,
             ),
         );
-        builder.add_node("main_descriptor_layout", Node::DescriptorSet);
+        builder.add_node("main_descriptor_layout", Node::DescriptorSet(2));
 
         builder.add_edge("mvp_ubo", "main_descriptor_layout");
         builder.add_edge("color_texture", "main_descriptor_layout");
@@ -277,10 +278,25 @@ fn main() {
                 ).unwrap(),
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)));
+
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(1.0, -2.0, 0.0)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
+            .with::<Scale>(Scale(1.0))
+            .with::<MVP>(MVP(cgmath::Matrix4::one()))
+            .with::<SimpleColorMesh>(SimpleColorMesh(
+                mesh::Mesh::from_gltf(
+                    &base,
+                    "glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+                ).unwrap(),
+            ))
+            .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)));
+
         {
             use specs::Join;
             let mut textures = vec![];
-            for mesh in world.read::<SimpleColorMesh>().join() {
+            for (ix, mesh) in world.read::<SimpleColorMesh>().join().enumerate() {
                 let create_info = vk::ImageViewCreateInfo {
                     s_type: vk::StructureType::ImageViewCreateInfo,
                     p_next: ptr::null(),
@@ -306,33 +322,34 @@ fn main() {
                     mesh.0.texture_sampler,
                     base.device.create_image_view(&create_info, None).unwrap(),
                 ));
-            }
-            let descriptor_set = render_dag
-                .descriptor_sets
-                .get("main_descriptor_layout")
-                .unwrap();
-            unsafe {
-                base.device.update_descriptor_sets(
-                    &[
-                        vk::WriteDescriptorSet {
-                            s_type: vk::StructureType::WriteDescriptorSet,
-                            p_next: ptr::null(),
-                            dst_set: descriptor_set.clone(),
-                            dst_binding: 1,
-                            dst_array_element: 0,
-                            descriptor_count: 1,
-                            descriptor_type: vk::DescriptorType::CombinedImageSampler,
-                            p_image_info: &vk::DescriptorImageInfo {
-                                sampler: textures[0].0,
-                                image_view: textures[0].1,
-                                image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
+                let descriptor_set = render_dag
+                    .descriptor_sets
+                    .get("main_descriptor_layout")
+                    .unwrap()
+                    [ix];
+                unsafe {
+                    base.device.update_descriptor_sets(
+                        &[
+                            vk::WriteDescriptorSet {
+                                s_type: vk::StructureType::WriteDescriptorSet,
+                                p_next: ptr::null(),
+                                dst_set: descriptor_set.clone(),
+                                dst_binding: 1,
+                                dst_array_element: 0,
+                                descriptor_count: 1,
+                                descriptor_type: vk::DescriptorType::CombinedImageSampler,
+                                p_image_info: &vk::DescriptorImageInfo {
+                                    sampler: textures[0].0,
+                                    image_view: textures[0].1,
+                                    image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
+                                },
+                                p_buffer_info: ptr::null(),
+                                p_texel_buffer_view: ptr::null(),
                             },
-                            p_buffer_info: ptr::null(),
-                            p_texel_buffer_view: ptr::null(),
-                        },
-                    ],
-                    &[],
-                );
+                        ],
+                        &[],
+                    );
+                }
             }
         }
 
@@ -362,42 +379,41 @@ fn main() {
             }
             {
                 use specs::Join;
-                let mut mvps = vec![];
-                for mvp in world.read::<MVP>().join() {
-                    mvps.push(mvp.clone());
-                }
-
-                let ubo_buffer = buffer::Buffer::upload_from::<MVP, _>(
-                    &base,
-                    vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                    &mvps.iter().cloned(),
-                );
-                let ubo_mvp = render_dag
-                    .descriptor_sets
-                    .get("main_descriptor_layout")
-                    .unwrap();
-                unsafe {
-                    base.device.update_descriptor_sets(
-                        &[
-                            vk::WriteDescriptorSet {
-                                s_type: vk::StructureType::WriteDescriptorSet,
-                                p_next: ptr::null(),
-                                dst_set: ubo_mvp.clone(),
-                                dst_binding: 0,
-                                dst_array_element: 0,
-                                descriptor_count: mvps.len() as u32,
-                                descriptor_type: vk::DescriptorType::UniformBuffer,
-                                p_image_info: ptr::null(),
-                                p_buffer_info: &vk::DescriptorBufferInfo {
-                                    buffer: ubo_buffer.buffer(),
-                                    offset: 0,
-                                    range: (mvps.len() * mem::size_of::<MVP>()) as u64,
-                                },
-                                p_texel_buffer_view: ptr::null(),
-                            },
-                        ],
-                        &[],
+                for (ix, mvp) in world.read::<MVP>().join().enumerate() {
+                    let mvps = [mvp.clone()];
+                    let ubo_buffer = buffer::Buffer::upload_from::<MVP, _>(
+                        &base,
+                        vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                        &mvps.iter().cloned(),
                     );
+                    let ubo_mvp = render_dag
+                        .descriptor_sets
+                        .get("main_descriptor_layout")
+                        .unwrap()
+                        [ix];
+                    unsafe {
+                        base.device.update_descriptor_sets(
+                            &[
+                                vk::WriteDescriptorSet {
+                                    s_type: vk::StructureType::WriteDescriptorSet,
+                                    p_next: ptr::null(),
+                                    dst_set: ubo_mvp.clone(),
+                                    dst_binding: 0,
+                                    dst_array_element: 0,
+                                    descriptor_count: 1,
+                                    descriptor_type: vk::DescriptorType::UniformBuffer,
+                                    p_image_info: ptr::null(),
+                                    p_buffer_info: &vk::DescriptorBufferInfo {
+                                        buffer: ubo_buffer.buffer(),
+                                        offset: 0,
+                                        range: (mem::size_of::<MVP>()) as u64,
+                                    },
+                                    p_texel_buffer_view: ptr::null(),
+                                },
+                            ],
+                            &[],
+                        );
+                    }
                 }
             }
 
