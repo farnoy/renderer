@@ -56,7 +56,7 @@ impl Mesh for SimpleColor {
 
                         let indices = primitive.indices_u32(buffers).unwrap();
                         let index_count = indices.len();
-                        let index_buffer = Buffer::upload_from::<u32, _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &indices);
+                        let index_buffer = Buffer::upload_from::<u32, _>(base, vk::BUFFER_USAGE_INDEX_BUFFER_BIT, &indices);
                         let index_type = vk::IndexType::Uint32;
 
                         let tex_coords_iter = primitive.tex_coords_f32(0, buffers).unwrap();
