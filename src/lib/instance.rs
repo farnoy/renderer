@@ -52,7 +52,7 @@ impl Instance {
             pp_enabled_extension_names: extension_names_raw.as_ptr(),
             enabled_extension_count: extension_names_raw.len() as u32,
         };
-        let instance: AshInstance = entry.create_instance(&create_info, None)?;
+        let instance: AshInstance = unsafe { entry.create_instance(&create_info, None)? };
 
         Ok(Arc::new(Instance {
             handle: instance,
