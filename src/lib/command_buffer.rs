@@ -73,5 +73,7 @@ pub fn one_time_submit_and_wait<F: FnOnce(vk::CommandBuffer)>(base: &ExampleBase
             .unwrap();
 
         base.device.destroy_fence(fence, None);
+
+        base.device.free_command_buffers(base.pool, &[cb]);
     }
 }
