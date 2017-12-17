@@ -53,6 +53,15 @@ impl Mesh for SimpleColor {
                         };
 
                         let vertex_buffer = Buffer::upload_from::<[f32; 3], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
+                        #[cfg(feature = "validation")]
+                        unsafe {
+                            use std::mem::transmute;
+                            base.device.set_object_name(
+                                vk::DebugReportObjectTypeEXT::Buffer,
+                                transmute::<_, _>(vertex_buffer.vk()),
+                                "SimpleColor Vertex Buffer",
+                            );
+                        }
 
                         let indices = primitive.indices_u32(buffers).unwrap();
                         let index_count = indices.len();

@@ -2,7 +2,7 @@
 name = "Renderer"
 version = "0.1.0"
 dependencies = [
- "ash 0.20.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ash 0.20.2 (git+https://github.com/farnoy/ash)",
  "cgmath 0.15.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-cpupool 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -47,7 +47,7 @@ dependencies = [
 [[package]]
 name = "ash"
 version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "git+https://github.com/farnoy/ash#cd2ae997073bdd4698b6c3be4cbbaf10aff5d02e"
 dependencies = [
  "lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.30 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -919,7 +919,7 @@ dependencies = [
 "checksum android_glue 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "000444226fcff248f2bc4c7625be32c63caccfecc2723a2b9f78a7487a49c407"
 "checksum approx 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "08abcc3b4e9339e33a3d0a5ed15d84a687350c05689d825e0f6655eef9e76a94"
 "checksum arrayvec 0.3.23 (registry+https://github.com/rust-lang/crates.io-index)" = "699e63a93b79d717e8c3b5eb1b28b7780d0d6d9e59a72eb769291c83b0c8dc67"
-"checksum ash 0.20.2 (registry+https://github.com/rust-lang/crates.io-index)" = "cc97dcade220be2a9ffe5aa3f8628d0295a90933923883be946711ad39e6f996"
+"checksum ash 0.20.2 (git+https://github.com/farnoy/ash)" = "<none>"
 "checksum atom 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)" = "4cd7b80cba09d9c6679f5ac66af2e5eb9c17fa1b914f142d690b069ba51eacaf"
 "checksum base64 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)" = "96434f987501f0ed4eb336a411e0631ecd1afa11574fe148587adc4ff96143c9"
 "checksum bitflags 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)" = "aad18937a628ec6abcd26d1489012cc0e18c21798210f491af69ded9b881106d"

@@ -1,6 +1,8 @@
 use ash;
 #[cfg(feature = "validation")]
 use ash::extensions::DebugReport;
+#[cfg(feature = "validation")]
+use ash::extensions::DebugMarker;
 use ash::extensions::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
@@ -23,6 +25,7 @@ pub struct Device {
     instance: Arc<Instance>,
     debug_call_back: vk::DebugReportCallbackEXT,
     debug_report_loader: DebugReport,
+    debug_marker_loader: Option<DebugMarker>,
 }
 
 #[cfg(not(feature = "validation"))]
@@ -32,31 +35,20 @@ pub struct Device {
     instance: Arc<Instance>,
 }
 
-static VK_EXT_DEBUG_MARKER: &str = "VK_EXT_debug_marker";
-
 impl Device {
     pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queue_family_index: u32) -> Result<Arc<Device>, ash::DeviceError> {
-        let device = {
-            let ext = CString::new(VK_EXT_DEBUG_MARKER).unwrap();
-            let device_extension_names_raw = if cfg!(feature = "debug-marker") {
-                unsafe {
-                    if instance
-                        .vk()
-                        .enumerate_device_extension_properties(physical_device)
-                        .unwrap()
-                        .iter()
-                        .any(|ext| {
-                            CStr::from_ptr(ext.extension_name.as_ref().as_ptr())
-                                .to_str()
-                                .unwrap() == VK_EXT_DEBUG_MARKER
-                        })
-                    {
-                        vec![Swapchain::name().as_ptr(), ext.as_ptr()]
-                    } else {
-                        vec![Swapchain::name().as_ptr()]
+        let debug_marker_available = unsafe {
+            instance
+                .vk()
+                .enumerate_device_extension_properties(physical_device)
+                .unwrap()
+                .iter()
+                .any(|ext| CStr::from_ptr(ext.extension_name.as_ref().as_ptr()) == DebugMarker::name())
+        };
 
-                    }
-                }
+        let device = {
+            let device_extension_names_raw = if cfg!(feature = "validation") && debug_marker_available {
+                vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
             } else {
                 vec![Swapchain::name().as_ptr()]
             };
@@ -86,17 +78,10 @@ impl Device {
                 pp_enabled_extension_names: device_extension_names_raw.as_ptr(),
                 p_enabled_features: &features,
             };
-            let device = unsafe {
-                instance.create_device(
-                    physical_device,
-                    &device_create_info,
-                    None,
-                )?
-            };
+            let device = unsafe { instance.create_device(physical_device, &device_create_info, None)? };
 
             device
         };
-
 
         #[cfg(feature = "validation")]
         {
@@ -113,11 +98,17 @@ impl Device {
                     .create_debug_report_callback_ext(&debug_info, None)
                     .unwrap()
             };
+            let debug_marker_loader = if debug_marker_available {
+                Some(DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"))
+            } else {
+                None
+            };
 
             Ok(Arc::new(Device {
                 device: device,
                 instance: instance.clone(),
                 debug_report_loader: debug_report_loader,
+                debug_marker_loader: debug_marker_loader,
                 debug_call_back: debug_call_back,
             }))
         }
@@ -132,6 +123,33 @@ impl Device {
 
     pub fn vk(&self) -> &AshDevice {
         &self.device
+    }
+
+    #[cfg(feature = "validation")]
+    pub fn set_object_name(&self, object_type: vk::DebugReportObjectTypeEXT, object: u64, name: &str) {
+        if self.debug_marker_loader.is_none() {
+            return;
+        }
+
+        unsafe {
+            use std::mem::transmute;
+            use std::ffi::CString;
+            use std::ptr;
+
+            let name = CString::new(name).unwrap();
+            let name_info = vk::DebugMarkerObjectNameInfoEXT {
+                s_type: vk::StructureType::DebugMarkerObjectNameInfoEXT,
+                p_next: ptr::null(),
+                object_type: object_type,
+                object: object,
+                p_object_name: name.as_ptr(),
+            };
+            self.debug_marker_loader
+                .as_ref()
+                .unwrap()
+                .debug_marker_set_object_name_ext(self.device.handle(), &name_info)
+                .unwrap();
+        };
     }
 }
 

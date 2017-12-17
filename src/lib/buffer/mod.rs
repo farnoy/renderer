@@ -16,7 +16,12 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    #[deprecated]
     pub unsafe fn buffer(&self) -> vk::Buffer {
+        self.buffer
+    }
+
+    pub unsafe fn vk(&self) -> vk::Buffer {
         self.buffer
     }
 
@@ -67,6 +72,16 @@ impl Buffer {
 
         unsafe {
             host_buffer.free(base.device.vk());
+        }
+
+        #[cfg(feature = "validation")]
+        unsafe {
+            use std::mem::transmute;
+            base.device.set_object_name(
+                vk::DebugReportObjectTypeEXT::DeviceMemory,
+                transmute::<_, _>(local_buffer.vk()),
+                "DeviceMemory custom",
+            );
         }
 
         local_buffer
