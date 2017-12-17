@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
 
-use super::World;
-use super::super::ExampleBase;
+use ecs::World;
+use super::ExampleBase;
 
 #[derive(Clone)]
 pub enum Node {

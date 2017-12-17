@@ -6,6 +6,7 @@ extern crate specs;
 
 use forward_renderer::*;
 use ecs::*;
+use render_dag::*;
 use mesh;
 
 use ash::vk;
