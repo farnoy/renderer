@@ -1,13 +1,8 @@
 use ash::vk;
-use std::path::PathBuf;
-use gltf;
-use gltf_importer;
 
-use super::Mesh;
 use super::super::ExampleBase;
 use super::super::buffer::Buffer;
 use super::super::device::AshDevice;
-use super::super::texture::Texture;
 
 pub struct TriangleMesh {
     pub vertex_buffer: Buffer,
@@ -20,21 +15,21 @@ impl TriangleMesh {
     pub fn dummy(base: &ExampleBase) -> TriangleMesh {
         #[derive(Copy, Clone)]
         struct Vertex {
-            pos: [f32; 2],
-            color: [f32; 3],
+            _pos: [f32; 2],
+            _color: [f32; 3],
         }
         let vertices = vec![
             Vertex {
-                pos: [1.0, 1.0],
-                color: [1.0, 0.0, 0.0],
+                _pos: [1.0, 1.0],
+                _color: [1.0, 0.0, 0.0],
             },
             Vertex {
-                pos: [-1.0, 1.0],
-                color: [0.0, 1.0, 0.0],
+                _pos: [-1.0, 1.0],
+                _color: [0.0, 1.0, 0.0],
             },
             Vertex {
-                pos: [0.0, -1.0],
-                color: [0.0, 0.0, 1.0],
+                _pos: [0.0, -1.0],
+                _color: [0.0, 0.0, 1.0],
             },
         ];
         let vertex_buffer = Buffer::upload_from::<Vertex, _>(
@@ -64,7 +59,7 @@ impl TriangleMesh {
         }
     }
 
-    unsafe fn free(self, device: &AshDevice) {
+    unsafe fn _free(self, device: &AshDevice) {
         self.vertex_buffer.free(device);
         self.index_buffer.free(device);
     }

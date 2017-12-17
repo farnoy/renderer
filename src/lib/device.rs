@@ -1,7 +1,6 @@
 use ash;
 #[cfg(feature = "validation")]
 use ash::extensions::DebugReport;
-#[cfg(feature = "validation")]
 use ash::extensions::DebugMarker;
 use ash::extensions::Swapchain;
 #[cfg(target = "windows")]
@@ -9,7 +8,7 @@ use ash::extensions::Win32Surface;
 use ash::vk;
 use ash::version;
 use ash::version::InstanceV1_0;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::ops;
 use std::ptr;
 use std::sync::Arc;
@@ -37,7 +36,7 @@ pub struct Device {
 
 impl Device {
     pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queue_family_index: u32) -> Result<Arc<Device>, ash::DeviceError> {
-        let debug_marker_available = unsafe {
+        let debug_marker_available = cfg!(feature = "validation") && unsafe {
             instance
                 .vk()
                 .enumerate_device_extension_properties(physical_device)
@@ -132,7 +131,6 @@ impl Device {
         }
 
         unsafe {
-            use std::mem::transmute;
             use std::ffi::CString;
             use std::ptr;
 

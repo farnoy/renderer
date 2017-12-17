@@ -1,10 +1,6 @@
 use ash::version::DeviceV1_0;
 use ash::vk;
-use futures;
-use futures::Future;
-use futures::future::Shared;
-use futures::sync::oneshot;
-use futures_cpupool::{CpuFuture, CpuPool};
+// use futures::future::Shared;
 use petgraph;
 use std::collections::HashMap;
 use std::fmt;
@@ -17,7 +13,6 @@ use std::sync::Arc;
 
 use super::World;
 use super::super::ExampleBase;
-use super::super::ecs::SimpleColorMesh;
 
 #[derive(Clone)]
 pub enum Node {
@@ -48,7 +43,7 @@ impl fmt::Debug for Node {
     }
 }
 
-type NodeResult<T> = Arc<Shared<CpuFuture<T, ()>>>;
+// type NodeResult<T> = Arc<Shared<CpuFuture<T, ()>>>;
 
 #[derive(Clone)]
 pub enum NodeRuntime {
@@ -78,9 +73,9 @@ pub struct RenderDAG {
 
 impl RenderDAG {
     pub fn run(&self, base: &ExampleBase, world: &World, framebuffer: vk::Framebuffer, command_buffer: vk::CommandBuffer) {
+        /*
         let pool = CpuPool::new_num_cpus();
 
-        /*
         let mut g: petgraph::Graph<Option<Shared<CpuFuture<ExecResult, ()>>>, _> =
             self.graph.map(|_ix, _node| None, |_ix, edge| edge);
             */
@@ -124,7 +119,7 @@ impl RenderDAG {
                         );
                     }
                 }
-                &NodeRuntime::BeginSubPass(ix) => {
+                &NodeRuntime::BeginSubPass(_ix) => {
                     let previous_subpass = inputs.iter().find(|i| match i.1 {
                         NodeRuntime::EndSubPass(_) => true,
                         _ => false,
@@ -151,7 +146,7 @@ impl RenderDAG {
                     }
                 },
                 &NodeRuntime::DrawCommands(ref f) => f(base, world, &self, command_buffer),
-                &NodeRuntime::EndSubPass(ix) => (),
+                &NodeRuntime::EndSubPass(_ix) => (),
                 &NodeRuntime::EndRenderPass(_renderpass) => unsafe { base.device.cmd_end_render_pass(command_buffer) },
             }
 
@@ -319,7 +314,7 @@ impl RenderDAGBuilder {
                         },
                     ];
                     // TODO: enhance with graphs
-                    for (ix, subpass) in subpass_descs.iter().enumerate().skip(1) {
+                    for (ix, _subpass) in subpass_descs.iter().enumerate().skip(1) {
                         dependencies.push(vk::SubpassDependency {
                             dependency_flags: Default::default(),
                             src_subpass: ix as u32 - 1,
@@ -351,7 +346,7 @@ impl RenderDAGBuilder {
                     let subpasses = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0),
+                            &(ref _name, Node::Subpass(_)) => subpasses.get(node.0),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -373,7 +368,7 @@ impl RenderDAGBuilder {
                     let previous_subpasses = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => Some(subpasses.get(node.0).unwrap()),
+                            &(ref _name, Node::Subpass(_)) => Some(subpasses.get(node.0).unwrap()),
                             _ => None,
                         })
                         .cloned()
@@ -489,7 +484,7 @@ impl RenderDAGBuilder {
                         })
                         .next()
                         .expect("no pipeline layout specified for graphics pipeline");
-                    let &(begin_renderpass, end_renderpass, renderpass) = inputs
+                    let &(_begin_renderpass, _end_renderpass, renderpass) = inputs
                         .iter()
                         .filter_map(|node| match node {
                             &(ref name, Node::RenderPass) => renderpasses.get(name),
@@ -633,7 +628,7 @@ impl RenderDAGBuilder {
                     let subpass_ix = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(ix)) => Some(ix),
+                            &(ref _name, Node::Subpass(ix)) => Some(ix),
                             _ => None,
                         })
                         .next()
@@ -678,7 +673,7 @@ impl RenderDAGBuilder {
                     let &(subpass_start, subpass_end, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0),
+                            &(ref _name, Node::Subpass(_)) => subpasses.get(node.0),
                             _ => None,
                         })
                         .next()
@@ -693,15 +688,15 @@ impl RenderDAGBuilder {
                     let &(pipeline_bind, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::GraphicsPipeline) => pipelines.get(node.0),
+                            &(ref _name, Node::GraphicsPipeline) => pipelines.get(node.0),
                             _ => None,
                         })
                         .next()
                         .expect("No pipeline specified for DrawCommands");
-                    let &(subpass_start, subpass_end, _) = inputs
+                    let &(_subpass_start, subpass_end, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::Subpass(_)) => subpasses.get(node.0),
+                            &(ref _name, Node::Subpass(_)) => subpasses.get(node.0),
                             _ => None,
                         })
                         .next()
@@ -715,7 +710,7 @@ impl RenderDAGBuilder {
                     let descriptor_sizes = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorPoolSize {
+                            &(ref _name, Node::DescriptorBinding(_binding, typ, _stage, count)) => Some(vk::DescriptorPoolSize {
                                 typ,
                                 descriptor_count: count * size,
                             }),
@@ -740,7 +735,7 @@ impl RenderDAGBuilder {
                     let bindings = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref name, Node::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorSetLayoutBinding {
+                            &(ref _name, Node::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorSetLayoutBinding {
                                 binding: binding,
                                 descriptor_type: typ,
                                 descriptor_count: count,

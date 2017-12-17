@@ -1,6 +1,5 @@
 extern crate ash;
 extern crate cgmath;
-#[macro_use]
 extern crate forward_renderer;
 extern crate petgraph;
 extern crate specs;
@@ -14,14 +13,9 @@ use ash::version::*;
 use cgmath::One;
 use std::default::Default;
 use std::ptr;
-use std::ffi::CString;
 use std::mem;
-use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::Read;
+use std::path::PathBuf;
 use std::sync::Arc;
-use ash::util::*;
-use std::mem::align_of;
 
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
@@ -91,12 +85,12 @@ fn main() {
                         base.device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
-                            &[mesh.0.vertex_buffer.buffer(), mesh.0.tex_coords.buffer()],
+                            &[mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk()],
                             &[0, 0],
                         );
                         base.device.cmd_bind_index_buffer(
                             command_buffer,
-                            mesh.0.index_buffer.buffer(),
+                            mesh.0.index_buffer.vk(),
                             0,
                             mesh.0.index_type,
                         );
@@ -153,15 +147,15 @@ fn main() {
             builder.add_node("triangle_graphics_pipeline", Node::GraphicsPipeline);
             builder.add_node(
                 "triangle_draw_commands",
-                Node::DrawCommands(Arc::new(|base, world, render_dag, command_buffer| {
+                Node::DrawCommands(Arc::new(|base, world, _render_dag, command_buffer| {
                     use specs::Join;
                     for mesh in world.read::<TriangleMesh>().join() {
                         unsafe {
                             base.device
-                                .cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.buffer()], &[0]);
+                                .cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.vk()], &[0]);
                             base.device.cmd_bind_index_buffer(
                                 command_buffer,
-                                mesh.0.index_buffer.buffer(),
+                                mesh.0.index_buffer.vk(),
                                 0,
                                 mesh.0.index_type,
                             );
@@ -309,29 +303,27 @@ fn main() {
                     .descriptor_sets
                     .get("main_descriptor_layout")
                     .unwrap()[ix];
-                unsafe {
-                    base.device.update_descriptor_sets(
-                        &[
-                            vk::WriteDescriptorSet {
-                                s_type: vk::StructureType::WriteDescriptorSet,
-                                p_next: ptr::null(),
-                                dst_set: descriptor_set.clone(),
-                                dst_binding: 1,
-                                dst_array_element: 0,
-                                descriptor_count: 1,
-                                descriptor_type: vk::DescriptorType::CombinedImageSampler,
-                                p_image_info: &vk::DescriptorImageInfo {
-                                    sampler: textures[0].0,
-                                    image_view: textures[0].1,
-                                    image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
-                                },
-                                p_buffer_info: ptr::null(),
-                                p_texel_buffer_view: ptr::null(),
+                base.device.update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet {
+                            s_type: vk::StructureType::WriteDescriptorSet,
+                            p_next: ptr::null(),
+                            dst_set: descriptor_set.clone(),
+                            dst_binding: 1,
+                            dst_array_element: 0,
+                            descriptor_count: 1,
+                            descriptor_type: vk::DescriptorType::CombinedImageSampler,
+                            p_image_info: &vk::DescriptorImageInfo {
+                                sampler: textures[0].0,
+                                image_view: textures[0].1,
+                                image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
                             },
-                        ],
-                        &[],
-                    );
-                }
+                            p_buffer_info: ptr::null(),
+                            p_texel_buffer_view: ptr::null(),
+                        },
+                    ],
+                    &[],
+                );
             }
         }
 
@@ -373,29 +365,27 @@ fn main() {
                         .descriptor_sets
                         .get("main_descriptor_layout")
                         .unwrap()[ix];
-                    unsafe {
-                        base.device.update_descriptor_sets(
-                            &[
-                                vk::WriteDescriptorSet {
-                                    s_type: vk::StructureType::WriteDescriptorSet,
-                                    p_next: ptr::null(),
-                                    dst_set: ubo_mvp.clone(),
-                                    dst_binding: 0,
-                                    dst_array_element: 0,
-                                    descriptor_count: 1,
-                                    descriptor_type: vk::DescriptorType::UniformBuffer,
-                                    p_image_info: ptr::null(),
-                                    p_buffer_info: &vk::DescriptorBufferInfo {
-                                        buffer: ubo_buffer.buffer(),
-                                        offset: 0,
-                                        range: (mem::size_of::<MVP>()) as u64,
-                                    },
-                                    p_texel_buffer_view: ptr::null(),
+                    base.device.update_descriptor_sets(
+                        &[
+                            vk::WriteDescriptorSet {
+                                s_type: vk::StructureType::WriteDescriptorSet,
+                                p_next: ptr::null(),
+                                dst_set: ubo_mvp.clone(),
+                                dst_binding: 0,
+                                dst_array_element: 0,
+                                descriptor_count: 1,
+                                descriptor_type: vk::DescriptorType::UniformBuffer,
+                                p_image_info: ptr::null(),
+                                p_buffer_info: &vk::DescriptorBufferInfo {
+                                    buffer: ubo_buffer.vk(),
+                                    offset: 0,
+                                    range: (mem::size_of::<MVP>()) as u64,
                                 },
-                            ],
-                            &[],
-                        );
-                    }
+                                p_texel_buffer_view: ptr::null(),
+                            },
+                        ],
+                        &[],
+                    );
                     buffers.push(ubo_buffer);
                 }
             }
@@ -416,7 +406,7 @@ fn main() {
                 &[vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
                 &[base.present_complete_semaphore],
                 &[base.rendering_complete_semaphore],
-                |device, draw_command_buffer| {
+                |_device, draw_command_buffer| {
                     render_dag.run(&base, &world, framebuffer, draw_command_buffer);
                 },
             );

@@ -1,10 +1,6 @@
-use ash;
-use ash::version::DeviceV1_0;
 use ash::vk;
 
 pub mod simple_color;
-
-use specs;
 
 use super::device::AshDevice;
 use super::ExampleBase;

@@ -1,11 +1,8 @@
-use ash;
 use ash::version::DeviceV1_0;
 use ash::vk;
-use specs;
 use std::ptr;
 
 use super::super::device::AshDevice;
-use super::super::ecs::SimpleColorMesh;
 use super::super::ExampleBase;
 use super::RenderPass;
 

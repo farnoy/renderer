@@ -16,11 +16,6 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    #[deprecated]
-    pub unsafe fn buffer(&self) -> vk::Buffer {
-        self.buffer
-    }
-
     pub unsafe fn vk(&self) -> vk::Buffer {
         self.buffer
     }
@@ -58,8 +53,8 @@ impl Buffer {
         one_time_submit_and_wait(base, |cb| unsafe {
             base.device.cmd_copy_buffer(
                 cb,
-                host_buffer.buffer(),
-                local_buffer.buffer(),
+                host_buffer.vk(),
+                local_buffer.vk(),
                 &[
                     vk::BufferCopy {
                         src_offset: 0,

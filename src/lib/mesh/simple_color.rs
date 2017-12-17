@@ -2,7 +2,7 @@ use ash::vk;
 use std::path::PathBuf;
 use gltf;
 use gltf_importer;
-use gltf_utils::{PrimitiveIterators, Source};
+use gltf_utils::PrimitiveIterators;
 
 use super::Mesh;
 use super::super::ExampleBase;
@@ -22,7 +22,7 @@ pub struct SimpleColor {
 
 impl Mesh for SimpleColor {
     fn from_gltf<P: Into<PathBuf> + Clone>(base: &ExampleBase, path: P) -> Option<SimpleColor> {
-        let mut importer = gltf_importer::import(path.clone().into());
+        let importer = gltf_importer::import(path.clone().into());
         let (loaded, buffers) = importer.unwrap();
 
         let mut ret = None;
@@ -41,7 +41,7 @@ impl Mesh for SimpleColor {
                             .base_color_texture()
                             .unwrap()
                             .texture();
-                        let base_color_sampler = base_color_texture.sampler();
+                        let _base_color_sampler = base_color_texture.sampler();
                         let positions = primitive.positions(buffers).unwrap();
 
                         let base_color_image = match base_color_texture.source().data() {

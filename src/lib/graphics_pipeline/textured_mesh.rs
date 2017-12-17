@@ -2,14 +2,11 @@ use ash::version::DeviceV1_0;
 use ash::vk;
 use std::ffi::CString;
 use std::ptr;
-use std::sync::Arc;
 use std::mem;
 use std::path::Path;
 use std::fs::File;
 use std::io::Read;
-use std::mem::align_of;
 
-use super::super::instance::Instance;
 use super::super::ExampleBase;
 use super::super::renderpass::RenderPass;
 use super::GraphicsPipeline;
@@ -22,7 +19,6 @@ struct Vertex {
 
 pub struct TexturedMeshPipeline {
     handle: vk::Pipeline,
-    instance: Arc<Instance>,
 }
 
 macro_rules! offset_of{
@@ -281,7 +277,6 @@ impl GraphicsPipeline for TexturedMeshPipeline {
 
         TexturedMeshPipeline {
             handle: graphics_pipelines[0],
-            instance: base.instance.clone(),
         }
     }
 

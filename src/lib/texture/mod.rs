@@ -114,7 +114,7 @@ impl Texture {
             );
             base.device.cmd_copy_buffer_to_image(
                 cb,
-                host_buffer.buffer(),
+                host_buffer.vk(),
                 image,
                 vk::ImageLayout::TransferDstOptimal,
                 &[

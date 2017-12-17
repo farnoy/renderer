@@ -1,8 +1,5 @@
 use ash::vk;
-use std::ptr;
-use std::sync::Arc;
 
-use super::instance::Instance;
 use super::ExampleBase;
 use super::renderpass::RenderPass;
 
