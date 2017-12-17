@@ -181,7 +181,7 @@ impl Device {
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn debug_marker_around<R, F: Fn() -> R>(&self, command_buffer: vk::CommandBuffer, name: &str, color: [f32; 4], f: F) -> R {
+    pub fn debug_marker_around<R, F: Fn() -> R>(&self, _command_buffer: vk::CommandBuffer, _name: &str, _color: [f32; 4], f: F) -> R {
         f()
     }
 }
