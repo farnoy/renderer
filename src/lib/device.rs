@@ -153,7 +153,7 @@ impl Device {
     #[cfg(feature = "validation")]
     pub fn debug_marker_around<F: Fn()>(&self, command_buffer: vk::CommandBuffer, name: &str, color: [f32; 4], f: F) {
         if self.debug_marker_loader.is_none() {
-            return;
+            return f();
         }
 
         unsafe {
