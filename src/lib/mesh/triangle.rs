@@ -43,7 +43,7 @@ impl TriangleMesh {
             (
                 Buffer::upload_from::<u32, _>(
                     base,
-                    vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    vk::BUFFER_USAGE_INDEX_BUFFER_BIT,
                     &indices.iter().cloned(),
                 ),
                 vk::IndexType::Uint32,
