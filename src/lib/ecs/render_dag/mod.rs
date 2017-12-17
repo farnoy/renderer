@@ -313,11 +313,12 @@ impl RenderDAGBuilder {
                             dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                         },
                     ];
-                    for (ix, subpass) in subpass_descs.iter().enumerate() {
+                    // TODO: enhance with graphs
+                    for (ix, subpass) in subpass_descs.iter().enumerate().skip(1) {
                         dependencies.push(vk::SubpassDependency {
                             dependency_flags: Default::default(),
-                            src_subpass: ix as u32,
-                            dst_subpass: ix as u32 + 1,
+                            src_subpass: ix as u32 - 1,
+                            dst_subpass: ix as u32,
                             src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                             src_access_mask: Default::default(),
                             dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
