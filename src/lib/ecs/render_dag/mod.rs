@@ -89,65 +89,94 @@ impl RenderDAG {
                 .map(|ix| self.graph[ix].clone())
                 .collect::<Vec<_>>();
             match &self.graph[node].1 {
-                &NodeRuntime::BeginRenderPass(renderpass) => {
-                    let clear_values = [
-                        vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
-                        vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
-                        }),
-                    ];
+                &NodeRuntime::BeginRenderPass(renderpass) => base.device.debug_marker_around(
+                    command_buffer,
+                    &format!("{} -> BeginRenderPass", self.graph[node].0),
+                    [0.0; 4],
+                    || {
+                        let clear_values = [
+                            vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
+                            vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            }),
+                        ];
 
-                    let render_pass_begin_info = vk::RenderPassBeginInfo {
-                        s_type: vk::StructureType::RenderPassBeginInfo,
-                        p_next: ptr::null(),
-                        render_pass: renderpass,
-                        framebuffer: framebuffer,
-                        render_area: vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: base.surface_resolution.clone(),
-                        },
-                        clear_value_count: clear_values.len() as u32,
-                        p_clear_values: clear_values.as_ptr(),
-                    };
+                        let render_pass_begin_info = vk::RenderPassBeginInfo {
+                            s_type: vk::StructureType::RenderPassBeginInfo,
+                            p_next: ptr::null(),
+                            render_pass: renderpass,
+                            framebuffer: framebuffer,
+                            render_area: vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: base.surface_resolution.clone(),
+                            },
+                            clear_value_count: clear_values.len() as u32,
+                            p_clear_values: clear_values.as_ptr(),
+                        };
 
-                    unsafe {
-                        base.device.cmd_begin_render_pass(
-                            command_buffer,
-                            &render_pass_begin_info,
-                            vk::SubpassContents::Inline,
-                        );
-                    }
-                }
-                &NodeRuntime::BeginSubPass(_ix) => {
-                    let previous_subpass = inputs.iter().find(|i| match i.1 {
-                        NodeRuntime::EndSubPass(_) => true,
-                        _ => false,
-                    });
-
-                    if previous_subpass.is_some() {
                         unsafe {
-                            base.device
-                                .cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                            base.device.cmd_begin_render_pass(
+                                command_buffer,
+                                &render_pass_begin_info,
+                                vk::SubpassContents::Inline,
+                            );
                         }
-                    }
+                    },
+                ),
+                &NodeRuntime::BeginSubPass(_ix) => {
+                    base.device.debug_marker_around(
+                        command_buffer,
+                        &format!("{} -> BeginSubPass", self.graph[node].0),
+                        [0.0; 4],
+                        || {
+                            let previous_subpass = inputs.iter().find(|i| match i.1 {
+                                NodeRuntime::EndSubPass(_) => true,
+                                _ => false,
+                            });
+
+                            if previous_subpass.is_some() {
+                                unsafe {
+                                    base.device
+                                        .cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                }
+                            }
+                        },
+                    );
                 }
                 &NodeRuntime::BindPipeline(pipeline, ref scissors_opt, ref viewport_opt) => unsafe {
-                    base.device
-                        .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
+                    base.device.debug_marker_around(
+                        command_buffer,
+                        &format!("{} -> BindPipeline", self.graph[node].0),
+                        [0.0; 4],
+                        || {
+                            base.device
+                                .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
 
-                    if let &Some(ref viewport) = viewport_opt {
-                        base.device
-                            .cmd_set_viewport(command_buffer, &[viewport.clone()]);
-                    }
-                    if let &Some(ref scissors) = scissors_opt {
-                        base.device
-                            .cmd_set_scissor(command_buffer, &[scissors.clone()]);
-                    }
+                            if let &Some(ref viewport) = viewport_opt {
+                                base.device
+                                    .cmd_set_viewport(command_buffer, &[viewport.clone()]);
+                            }
+                            if let &Some(ref scissors) = scissors_opt {
+                                base.device
+                                    .cmd_set_scissor(command_buffer, &[scissors.clone()]);
+                            }
+                        },
+                    );
                 },
-                &NodeRuntime::DrawCommands(ref f) => f(base, world, &self, command_buffer),
+                &NodeRuntime::DrawCommands(ref f) => base.device.debug_marker_around(
+                    command_buffer,
+                    &format!("{} -> DrawCommands", self.graph[node].0),
+                    [0.0; 4],
+                    || f(base, world, &self, command_buffer),
+                ),
                 &NodeRuntime::EndSubPass(_ix) => (),
-                &NodeRuntime::EndRenderPass(_renderpass) => unsafe { base.device.cmd_end_render_pass(command_buffer) },
+                &NodeRuntime::EndRenderPass(_renderpass) => base.device.debug_marker_around(
+                    command_buffer,
+                    &format!("{} -> EndRenderPass", self.graph[node].0),
+                    [0.0; 4],
+                    || unsafe { base.device.cmd_end_render_pass(command_buffer) },
+                ),
             }
 
             /*

@@ -47,7 +47,7 @@ dependencies = [
 [[package]]
 name = "ash"
 version = "0.20.2"
-source = "git+https://github.com/farnoy/ash#cd2ae997073bdd4698b6c3be4cbbaf10aff5d02e"
+source = "git+https://github.com/farnoy/ash#e77fdf574cde5f9a295a5e4162bdff87e9f99c86"
 dependencies = [
  "lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.30 (registry+https://github.com/rust-lang/crates.io-index)",
