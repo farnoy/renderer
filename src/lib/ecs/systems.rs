@@ -24,7 +24,12 @@ pub struct MVPCalculation {
 }
 
 impl<'a> System<'a> for MVPCalculation {
-    type SystemData = (ReadStorage<'a, Position>, ReadStorage<'a, Rotation>, ReadStorage<'a, Scale>, WriteStorage<'a, MVP>);
+    type SystemData = (
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, Rotation>,
+        ReadStorage<'a, Scale>,
+        WriteStorage<'a, MVP>,
+    );
 
     fn run(&mut self, (positions, rotations, scales, mut mvps): Self::SystemData) {
         for (pos, rot, scale, mvp) in (&positions, &rotations, &scales, &mut mvps).join() {

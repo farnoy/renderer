@@ -8,7 +8,7 @@ use std::ptr;
 use super::buffer::Buffer;
 use super::command_buffer::one_time_submit_and_wait;
 use super::device::AshDevice;
-use super::{ExampleBase, find_memorytype_index};
+use super::{find_memorytype_index, ExampleBase};
 
 #[allow(dead_code)]
 pub struct Texture {

@@ -4,7 +4,7 @@ use futures;
 use futures::Future;
 use futures::future::Shared;
 use futures::sync::oneshot;
-use futures_cpupool::{CpuPool, CpuFuture};
+use futures_cpupool::{CpuFuture, CpuPool};
 use petgraph;
 use std::collections::HashMap;
 use std::fmt;
@@ -84,7 +84,11 @@ impl RenderDAG {
         let mut g: petgraph::Graph<Option<Shared<CpuFuture<ExecResult, ()>>>, _> =
             self.graph.map(|_ix, _node| None, |_ix, edge| edge);
             */
-        for node in petgraph::algo::toposort(&self.graph, None).expect("RenderDAG has cycles").iter().cloned() {
+        for node in petgraph::algo::toposort(&self.graph, None)
+            .expect("RenderDAG has cycles")
+            .iter()
+            .cloned()
+        {
             let inputs = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
                 .map(|ix| self.graph[ix].clone())
@@ -128,33 +132,23 @@ impl RenderDAG {
 
                     if previous_subpass.is_some() {
                         unsafe {
-                            base.device.cmd_next_subpass(
-                                command_buffer,
-                                vk::SubpassContents::Inline,
-                            );
+                            base.device
+                                .cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
                         }
                     }
                 }
                 &NodeRuntime::BindPipeline(pipeline, ref scissors_opt, ref viewport_opt) => unsafe {
-                    base.device.cmd_bind_pipeline(
-                        command_buffer,
-                        vk::PipelineBindPoint::Graphics,
-                        pipeline,
-                    );
+                    base.device
+                        .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
 
                     if let &Some(ref viewport) = viewport_opt {
-                        base.device.cmd_set_viewport(
-                            command_buffer,
-                            &[viewport.clone()],
-                        );
+                        base.device
+                            .cmd_set_viewport(command_buffer, &[viewport.clone()]);
                     }
                     if let &Some(ref scissors) = scissors_opt {
-                        base.device.cmd_set_scissor(
-                            command_buffer,
-                            &[scissors.clone()],
-                        );
+                        base.device
+                            .cmd_set_scissor(command_buffer, &[scissors.clone()]);
                     }
-
                 },
                 &NodeRuntime::DrawCommands(ref f) => f(base, world, &self, command_buffer),
                 &NodeRuntime::EndSubPass(ix) => (),
@@ -213,13 +207,24 @@ impl RenderDAGBuilder {
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
         let mut output_graph = RuntimeGraph::new();
-        let mut renderpasses: HashMap<&str, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, vk::RenderPass)> = HashMap::new();
+        let mut renderpasses: HashMap<
+            &str,
+            (
+                petgraph::graph::NodeIndex,
+                petgraph::graph::NodeIndex,
+                vk::RenderPass,
+            ),
+        > = HashMap::new();
         let mut subpasses: HashMap<&str, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, u8)> = HashMap::new();
         let mut pipeline_layouts: HashMap<&str, vk::PipelineLayout> = HashMap::new();
         let mut pipelines: HashMap<&str, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
         let mut descriptor_set_layouts: HashMap<&str, vk::DescriptorSetLayout> = HashMap::new();
         let mut descriptor_sets: HashMap<&str, Vec<vk::DescriptorSet>> = HashMap::new();
-        for node in petgraph::algo::toposort(&self.graph, None).expect("RenderDAGBuilder has cycles").iter().cloned() {
+        for node in petgraph::algo::toposort(&self.graph, None)
+            .expect("RenderDAGBuilder has cycles")
+            .iter()
+            .cloned()
+        {
             println!("{:?}", self.graph[node]);
             let inputs = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
@@ -414,14 +419,12 @@ impl RenderDAGBuilder {
                     let vertex_attributes = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            Node::VertexInputAttribute(binding, location, format, offset) => {
-                                Some(vk::VertexInputAttributeDescription {
-                                    location: location,
-                                    binding: binding,
-                                    format: format,
-                                    offset: offset,
-                                })
-                            }
+                            Node::VertexInputAttribute(binding, location, format, offset) => Some(vk::VertexInputAttributeDescription {
+                                location: location,
+                                binding: binding,
+                                format: format,
+                                offset: offset,
+                            }),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -497,16 +500,14 @@ impl RenderDAGBuilder {
                     let shader_entry_name = CString::new("main").unwrap();
                     let shader_stage_create_infos = shader_modules
                         .iter()
-                        .map(|&(module, stage)| {
-                            vk::PipelineShaderStageCreateInfo {
-                                s_type: vk::StructureType::PipelineShaderStageCreateInfo,
-                                p_next: ptr::null(),
-                                flags: Default::default(),
-                                module: module,
-                                p_name: shader_entry_name.as_ptr(),
-                                p_specialization_info: ptr::null(),
-                                stage: stage,
-                            }
+                        .map(|&(module, stage)| vk::PipelineShaderStageCreateInfo {
+                            s_type: vk::StructureType::PipelineShaderStageCreateInfo,
+                            p_next: ptr::null(),
+                            flags: Default::default(),
+                            module: module,
+                            p_name: shader_entry_name.as_ptr(),
+                            p_specialization_info: ptr::null(),
+                            stage: stage,
                         })
                         .collect::<Vec<_>>();
                     let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
@@ -751,21 +752,23 @@ impl RenderDAGBuilder {
                         })
                         .collect::<Vec<_>>();
 
-                    let layouts = (0..size).map(|_n| {
-                        let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
-                            s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
-                            p_next: ptr::null(),
-                            flags: Default::default(),
-                            binding_count: bindings.len() as u32,
-                            p_bindings: bindings.as_ptr(),
-                        };
+                    let layouts = (0..size)
+                        .map(|_n| {
+                            let descriptor_info = vk::DescriptorSetLayoutCreateInfo {
+                                s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
+                                p_next: ptr::null(),
+                                flags: Default::default(),
+                                binding_count: bindings.len() as u32,
+                                p_bindings: bindings.as_ptr(),
+                            };
 
-                        unsafe {
-                            base.device
-                                .create_descriptor_set_layout(&descriptor_info, None)
-                                .unwrap()
-                        }
-                    }).collect::<Vec<_>>();
+                            unsafe {
+                                base.device
+                                    .create_descriptor_set_layout(&descriptor_info, None)
+                                    .unwrap()
+                            }
+                        })
+                        .collect::<Vec<_>>();
 
                     let desc_alloc_info = vk::DescriptorSetAllocateInfo {
                         s_type: vk::StructureType::DescriptorSetAllocateInfo,
@@ -782,7 +785,6 @@ impl RenderDAGBuilder {
 
                     descriptor_set_layouts.insert(self.graph[node].0, layouts[0]);
                     descriptor_sets.insert(self.graph[node].0, new_descriptor_sets);
-
                 }
                 _ => println!("* not doing anything"),
             }

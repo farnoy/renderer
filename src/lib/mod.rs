@@ -12,11 +12,11 @@ extern crate specs;
 #[macro_use]
 extern crate specs_derive;
 extern crate time;
-extern crate winit;
 #[cfg(windows)]
 extern crate user32;
 #[cfg(windows)]
 extern crate winapi;
+extern crate winit;
 
 pub mod buffer;
 pub mod device;
@@ -82,17 +82,17 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
             .begin_command_buffer(command_buffer, &command_buffer_begin_info)
             .expect("Begin commandbuffer");
         f(device, command_buffer);
-        device.end_command_buffer(command_buffer).expect(
-            "End commandbuffer",
-        );
+        device
+            .end_command_buffer(command_buffer)
+            .expect("End commandbuffer");
         let fence_create_info = vk::FenceCreateInfo {
             s_type: vk::StructureType::FenceCreateInfo,
             p_next: ptr::null(),
             flags: vk::FenceCreateFlags::empty(),
         };
-        let submit_fence = device.create_fence(&fence_create_info, None).expect(
-            "Create fence failed.",
-        );
+        let submit_fence = device
+            .create_fence(&fence_create_info, None)
+            .expect("Create fence failed.");
         let submit_info = vk::SubmitInfo {
             s_type: vk::StructureType::SubmitInfo,
             p_next: ptr::null(),
@@ -219,16 +219,31 @@ impl ExampleBase {
     pub fn render_loop<F: FnMut()>(&self, mut f: F) {
         let mut should_continue = true;
         while should_continue {
-            self.events_loop.borrow_mut().poll_events(
-                |event| match event {
+            self.events_loop
+                .borrow_mut()
+                .poll_events(|event| match event {
                     winit::Event::WindowEvent {
-                        event: winit::WindowEvent::KeyboardInput { input: winit::KeyboardInput { virtual_keycode: Some(winit::VirtualKeyCode::Escape), .. }, .. }, ..
-                    } |
-                    winit::Event::WindowEvent { event: winit::WindowEvent::Closed, .. } => should_continue = false,
-                    winit::Event::WindowEvent { event: winit::WindowEvent::Resized(w, h), .. } => resize_callback(w, h),
+                        event:
+                            winit::WindowEvent::KeyboardInput {
+                                input:
+                                    winit::KeyboardInput {
+                                        virtual_keycode: Some(winit::VirtualKeyCode::Escape),
+                                        ..
+                                    },
+                                ..
+                            },
+                        ..
+                    }
+                    | winit::Event::WindowEvent {
+                        event: winit::WindowEvent::Closed,
+                        ..
+                    } => should_continue = false,
+                    winit::Event::WindowEvent {
+                        event: winit::WindowEvent::Resized(w, h),
+                        ..
+                    } => resize_callback(w, h),
                     _ => (),
-                },
-            );
+                });
             f();
         }
     }
@@ -246,9 +261,9 @@ impl ExampleBase {
             let instance = instance::Instance::new(&entry).unwrap();
 
             let surface = create_surface(entry.vk(), instance.vk(), &window).unwrap();
-            let pdevices = instance.enumerate_physical_devices().expect(
-                "Physical device error",
-            );
+            let pdevices = instance
+                .enumerate_physical_devices()
+                .expect("Physical device error");
             let surface_loader = Surface::new(entry.vk(), instance.vk()).expect("Unable to load the Surface extension");
             let (pdevice, queue_family_index) = pdevices
                 .iter()
@@ -258,8 +273,8 @@ impl ExampleBase {
                         .iter()
                         .enumerate()
                         .filter_map(|(index, ref info)| {
-                            let supports_graphic_and_surface = info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT) &&
-                                surface_loader.get_physical_device_surface_support_khr(*pdevice, index as u32, surface);
+                            let supports_graphic_and_surface = info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
+                                && surface_loader.get_physical_device_surface_support_khr(*pdevice, index as u32, surface);
                             match supports_graphic_and_surface {
                                 true => Some((*pdevice, index)),
                                 _ => None,
@@ -301,9 +316,9 @@ impl ExampleBase {
                 },
                 _ => surface_capabilities.current_extent,
             };
-            let pre_transform = if surface_capabilities.supported_transforms.subset(
-                vk::SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
-            )
+            let pre_transform = if surface_capabilities
+                .supported_transforms
+                .subset(vk::SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
             {
                 vk::SURFACE_TRANSFORM_IDENTITY_BIT_KHR
             } else {
@@ -433,40 +448,43 @@ impl ExampleBase {
             device
                 .bind_image_memory(depth_image, depth_image_memory, 0)
                 .expect("Unable to bind depth image memory");
-            record_submit_commandbuffer(device.vk(),
-                                        setup_command_buffer,
-                                        present_queue,
-                                        &[vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT],
-                                        &[],
-                                        &[],
-                                        |device, setup_command_buffer| {
-                let layout_transition_barrier = vk::ImageMemoryBarrier {
-                    s_type: vk::StructureType::ImageMemoryBarrier,
-                    p_next: ptr::null(),
-                    src_access_mask: Default::default(),
-                    dst_access_mask: vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                     vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    old_layout: vk::ImageLayout::Undefined,
-                    new_layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
-                    src_queue_family_index: vk::VK_QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::VK_QUEUE_FAMILY_IGNORED,
-                    image: depth_image,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::IMAGE_ASPECT_DEPTH_BIT,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                };
-                device.cmd_pipeline_barrier(setup_command_buffer,
-                                            vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                            vk::PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                                            vk::DependencyFlags::empty(),
-                                            &[],
-                                            &[],
-                                            &[layout_transition_barrier]);
-            });
+            record_submit_commandbuffer(
+                device.vk(),
+                setup_command_buffer,
+                present_queue,
+                &[vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT],
+                &[],
+                &[],
+                |device, setup_command_buffer| {
+                    let layout_transition_barrier = vk::ImageMemoryBarrier {
+                        s_type: vk::StructureType::ImageMemoryBarrier,
+                        p_next: ptr::null(),
+                        src_access_mask: Default::default(),
+                        dst_access_mask: vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                        old_layout: vk::ImageLayout::Undefined,
+                        new_layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
+                        src_queue_family_index: vk::VK_QUEUE_FAMILY_IGNORED,
+                        dst_queue_family_index: vk::VK_QUEUE_FAMILY_IGNORED,
+                        image: depth_image,
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: vk::IMAGE_ASPECT_DEPTH_BIT,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        },
+                    };
+                    device.cmd_pipeline_barrier(
+                        setup_command_buffer,
+                        vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        vk::PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[layout_transition_barrier],
+                    );
+                },
+            );
             let depth_image_view_info = vk::ImageViewCreateInfo {
                 s_type: vk::StructureType::ImageViewCreateInfo,
                 p_next: ptr::null(),
@@ -537,14 +555,10 @@ impl Drop for ExampleBase {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
-            self.device.destroy_semaphore(
-                self.present_complete_semaphore,
-                None,
-            );
-            self.device.destroy_semaphore(
-                self.rendering_complete_semaphore,
-                None,
-            );
+            self.device
+                .destroy_semaphore(self.present_complete_semaphore, None);
+            self.device
+                .destroy_semaphore(self.rendering_complete_semaphore, None);
             self.device.free_memory(self.depth_image_memory, None);
             self.device.destroy_image_view(self.depth_image_view, None);
             self.device.destroy_image(self.depth_image, None);
@@ -552,10 +566,8 @@ impl Drop for ExampleBase {
                 self.device.destroy_image_view(image_view, None);
             }
             self.device.destroy_command_pool(self.pool, None);
-            self.swapchain_loader.destroy_swapchain_khr(
-                self.swapchain,
-                None,
-            );
+            self.swapchain_loader
+                .destroy_swapchain_khr(self.swapchain, None);
             self.surface_loader.destroy_surface_khr(self.surface, None);
         }
     }

@@ -16,7 +16,7 @@ use super::GraphicsPipeline;
 
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
-    pos: [f32; 4], 
+    pos: [f32; 4],
     // color: [f32; 4],
 }
 
@@ -123,14 +123,14 @@ impl GraphicsPipeline for TexturedMeshPipeline {
                 binding: 0,
                 format: vk::Format::R32g32b32a32Sfloat,
                 offset: offset_of!(Vertex, pos) as u32,
-            } /*
+            }, /*
             vk::VertexInputAttributeDescription {
                 location: 1,
                 binding: 0,
                 format: vk::Format::R32g32b32a32Sfloat,
                 offset: offset_of!(Vertex, color) as u32,
             },
-            */,
+            */
         ];
         let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
             s_type: vk::StructureType::PipelineVertexInputStateCreateInfo,
@@ -287,11 +287,8 @@ impl GraphicsPipeline for TexturedMeshPipeline {
 
     fn record_commands(&self, base: &ExampleBase, command_buffer: vk::CommandBuffer) {
         unsafe {
-            base.device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::Graphics,
-                self.handle,
-            );
+            base.device
+                .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, self.handle);
         }
     }
 

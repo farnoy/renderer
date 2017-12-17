@@ -118,7 +118,6 @@ impl Buffer {
         }
 
         base.device.unmap_memory(self.memory);
-
     }
 
     pub unsafe fn create_specific_buffer(base: &ExampleBase, usage: vk::BufferUsageFlags, memory_type: vk::MemoryPropertyFlags, size: u64) -> Buffer {

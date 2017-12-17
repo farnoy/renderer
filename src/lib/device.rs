@@ -171,10 +171,8 @@ impl Drop for Device {
 
         #[cfg(feature = "validation")]
         unsafe {
-            self.debug_report_loader.destroy_debug_report_callback_ext(
-                self.debug_call_back,
-                None,
-            );
+            self.debug_report_loader
+                .destroy_debug_report_callback_ext(self.debug_call_back, None);
         }
     }
 }
@@ -191,6 +189,11 @@ unsafe extern "system" fn vulkan_debug_callback(
     _: *mut vk::c_void,
 ) -> u32 {
     use std::ffi::CStr;
-    println!("{:?}", CStr::from_ptr(p_message));
+    println!(
+        "{}",
+        CStr::from_ptr(p_message)
+            .to_str()
+            .expect("Weird validation layer message")
+    );
     1
 }

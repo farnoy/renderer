@@ -83,8 +83,7 @@ fn main() {
                                 render_dag
                                     .descriptor_sets
                                     .get("main_descriptor_layout")
-                                    .unwrap()
-                                    [ix]
+                                    .unwrap()[ix]
                                     .clone(),
                             ],
                             &[],
@@ -101,14 +100,8 @@ fn main() {
                             0,
                             mesh.0.index_type,
                         );
-                        base.device.cmd_draw_indexed(
-                            command_buffer,
-                            mesh.0.index_count,
-                            1,
-                            0,
-                            0,
-                            0,
-                        );
+                        base.device
+                            .cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
                     }
                 }
             })),
@@ -164,26 +157,16 @@ fn main() {
                     use specs::Join;
                     for mesh in world.read::<TriangleMesh>().join() {
                         unsafe {
-                            base.device.cmd_bind_vertex_buffers(
-                                command_buffer,
-                                0,
-                                &[mesh.0.vertex_buffer.buffer()],
-                                &[0],
-                            );
+                            base.device
+                                .cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.buffer()], &[0]);
                             base.device.cmd_bind_index_buffer(
                                 command_buffer,
                                 mesh.0.index_buffer.buffer(),
                                 0,
                                 mesh.0.index_type,
                             );
-                            base.device.cmd_draw_indexed(
-                                command_buffer,
-                                mesh.0.index_count,
-                                1,
-                                0,
-                                0,
-                                0,
-                            );
+                            base.device
+                                .cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
                         }
                     }
                 })),
@@ -325,8 +308,7 @@ fn main() {
                 let descriptor_set = render_dag
                     .descriptor_sets
                     .get("main_descriptor_layout")
-                    .unwrap()
-                    [ix];
+                    .unwrap()[ix];
                 unsafe {
                     base.device.update_descriptor_sets(
                         &[
@@ -390,8 +372,7 @@ fn main() {
                     let ubo_mvp = render_dag
                         .descriptor_sets
                         .get("main_descriptor_layout")
-                        .unwrap()
-                        [ix];
+                        .unwrap()[ix];
                     unsafe {
                         base.device.update_descriptor_sets(
                             &[
@@ -428,15 +409,17 @@ fn main() {
                 )
                 .unwrap();
             let framebuffer = framebuffers[present_index as usize];
-            record_submit_commandbuffer(base.device.vk(),
-                                        base.draw_command_buffer,
-                                        base.present_queue,
-                                        &[vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
-                                        &[base.present_complete_semaphore],
-                                        &[base.rendering_complete_semaphore],
-                                        |device, draw_command_buffer| {
-                render_dag.run(&base, &world, framebuffer, draw_command_buffer);
-            });
+            record_submit_commandbuffer(
+                base.device.vk(),
+                base.draw_command_buffer,
+                base.present_queue,
+                &[vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
+                &[base.present_complete_semaphore],
+                &[base.rendering_complete_semaphore],
+                |device, draw_command_buffer| {
+                    render_dag.run(&base, &world, framebuffer, draw_command_buffer);
+                },
+            );
             //let mut present_info_err = mem::uninitialized();
             let present_info = vk::PresentInfoKHR {
                 s_type: vk::StructureType::PresentInfoKhr,

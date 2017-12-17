@@ -28,5 +28,4 @@ fn main() {
             .success();
         assert!(result, "failed to compile shader");
     }
-
 }

@@ -69,7 +69,7 @@ impl Mesh for SimpleColor {
                         let index_type = vk::IndexType::Uint32;
 
                         let tex_coords_iter = primitive.tex_coords_f32(0, buffers).unwrap();
-                        let tex_coords = Buffer::upload_from::<[f32; 2], _>(base, vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT, &tex_coords_iter);
+                        let tex_coords = Buffer::upload_from::<[f32; 2], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &tex_coords_iter);
 
                         let sampler = {
                             use ash::version::DeviceV1_0;

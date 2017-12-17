@@ -93,7 +93,9 @@ impl SimpleColor {
                 .create_render_pass(&renderpass_create_info, None)
                 .unwrap()
         };
-        SimpleColor { renderpass: renderpass }
+        SimpleColor {
+            renderpass: renderpass,
+        }
     }
 }
 
@@ -132,11 +134,9 @@ impl RenderPass for SimpleColor {
         };
 
         unsafe {
-            base.device.vk().cmd_begin_render_pass(
-                command_buffer,
-                &render_pass_begin_info,
-                subpass_contents,
-            );
+            base.device
+                .vk()
+                .cmd_begin_render_pass(command_buffer, &render_pass_begin_info, subpass_contents);
             f(base.device.vk(), command_buffer);
             base.device.vk().cmd_end_render_pass(command_buffer);
         }
