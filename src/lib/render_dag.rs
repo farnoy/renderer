@@ -205,6 +205,11 @@ impl RenderDAG {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct BuilderNode {
+    name: &'static str
+}
+
 pub struct RenderDAGBuilder {
     pub graph: BuilderGraph,
     name_mapping: HashMap<&'static str, petgraph::graph::NodeIndex>,
@@ -218,14 +223,15 @@ impl RenderDAGBuilder {
         }
     }
 
-    pub fn add_node(&mut self, name: &'static str, value: Node) {
+    pub fn add_node(&mut self, name: &'static str, value: Node) -> BuilderNode {
         let ix = self.graph.add_node((name, value));
-        assert!(self.name_mapping.insert(name, ix).is_none());
+        debug_assert!(self.name_mapping.insert(name, ix).is_none());
+        BuilderNode { name }
     }
 
-    pub fn add_edge(&mut self, from: &'static str, to: &'static str) {
-        let from_ix = self.name_mapping.get(from).unwrap();
-        let to_ix = self.name_mapping.get(to).unwrap();
+    pub fn add_edge(&mut self, from: BuilderNode, to: BuilderNode) {
+        let from_ix = self.name_mapping.get(from.name).unwrap();
+        let to_ix = self.name_mapping.get(to.name).unwrap();
         self.graph.add_edge(from_ix.clone(), to_ix.clone(), ());
     }
 
