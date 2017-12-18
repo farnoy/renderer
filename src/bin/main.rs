@@ -29,6 +29,7 @@ struct Vertex {
 }
 
 fn main() {
+    return playground();
     let base = ExampleBase::new(1920, 1080);
     let render_dag = {
         let mut builder = RenderDAGBuilder::new();
@@ -382,6 +383,7 @@ fn main() {
                 }
             }
 
+            /*
             record_submit_commandbuffer(
                 base.device.vk(),
                 base.draw_command_buffer,
@@ -391,9 +393,12 @@ fn main() {
                 &[base.rendering_complete_semaphore],
                 |_device, draw_command_buffer| {
                     render_dag.run(&base, &world, draw_command_buffer);
-                    println!("render_dag executed");
                 },
             );
+            */
+
+            render_dag.run(&base, &world);
+            println!("render_dag executed");
 
             /*
             command_buffer::one_time_submit_and_wait(
