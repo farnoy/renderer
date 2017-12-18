@@ -2,6 +2,7 @@ use ash::version::DeviceV1_0;
 use ash::vk;
 // use futures::future::Shared;
 use petgraph;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::ffi::CString;
@@ -10,9 +11,10 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
+use std::u64;
 
 use ecs::World;
-use super::ExampleBase;
+use super::super::ExampleBase;
 
 #[derive(Clone)]
 pub enum Node {
@@ -23,6 +25,7 @@ pub enum Node {
     RenderPass,
     VertexShader(PathBuf),
     FragmentShader(PathBuf),
+    Framebuffer,
     /// Binding, type, stage, count
     DescriptorBinding(u32, vk::DescriptorType, vk::ShaderStageFlags, u32),
     /// Count
@@ -47,12 +50,15 @@ impl fmt::Debug for Node {
 
 #[derive(Clone)]
 pub enum NodeRuntime {
+    AcquirePresentImage,
     BeginRenderPass(vk::RenderPass),
     BeginSubPass(u8),
     BindPipeline(vk::Pipeline, Option<vk::Rect2D>, Option<vk::Viewport>),
     DrawCommands(Arc<Fn(&ExampleBase, &World, &RenderDAG, vk::CommandBuffer)>),
     EndSubPass(u8), // TODO: we should only have BeginSubPass if possible, to model vulkan
     EndRenderPass(vk::RenderPass),
+    Framebuffer(Vec<vk::Framebuffer>),
+    PresentImage,
 }
 
 impl fmt::Debug for NodeRuntime {
@@ -69,10 +75,12 @@ pub struct RenderDAG {
     pub pipeline_layouts: HashMap<&'static str, vk::PipelineLayout>,
     pub descriptor_sets: HashMap<&'static str, Vec<vk::DescriptorSet>>,
     pub renderpasses: HashMap<&'static str, vk::RenderPass>,
+    pub framebuffers: HashMap<&'static str, Vec<vk::Framebuffer>>,
+    present_index: Cell<u32>,
 }
 
 impl RenderDAG {
-    pub fn run(&self, base: &ExampleBase, world: &World, framebuffer: vk::Framebuffer, command_buffer: vk::CommandBuffer) {
+    pub fn run(&self, base: &ExampleBase, world: &World, command_buffer: vk::CommandBuffer) {
         /*
         let pool = CpuPool::new_num_cpus();
 
@@ -89,6 +97,36 @@ impl RenderDAG {
                 .map(|ix| self.graph[ix].clone())
                 .collect::<Vec<_>>();
             match &self.graph[node].1 {
+                &NodeRuntime::AcquirePresentImage => {
+                    let present_index = unsafe {
+                        base.swapchain_loader
+                            .acquire_next_image_khr(
+                                base.swapchain,
+                                u64::MAX,
+                                base.present_complete_semaphore,
+                                vk::Fence::null(),
+                            )
+                            .unwrap()
+                    };
+                    println!("Acquired present index {}", present_index);
+                    self.present_index.replace(present_index);
+                }
+                &NodeRuntime::PresentImage => unsafe {
+                    let present_info = vk::PresentInfoKHR {
+                        s_type: vk::StructureType::PresentInfoKhr,
+                        p_next: ptr::null(),
+                        wait_semaphore_count: 1,
+                        p_wait_semaphores: &base.rendering_complete_semaphore,
+                        swapchain_count: 1,
+                        p_swapchains: &base.swapchain,
+                        p_image_indices: &self.present_index.get(),
+                        p_results: ptr::null_mut(),
+                    };
+                    println!("presenting index {}", self.present_index.get());
+                    base.swapchain_loader
+                        .queue_present_khr(base.present_queue, &present_info)
+                        .unwrap();
+                },
                 &NodeRuntime::BeginRenderPass(renderpass) => base.device.debug_marker_around(
                     command_buffer,
                     &format!("{} -> BeginRenderPass", self.graph[node].0),
@@ -101,12 +139,23 @@ impl RenderDAG {
                                 stencil: 0,
                             }),
                         ];
-
+                        let framebuffer = inputs
+                            .iter()
+                            .cloned()
+                            .filter_map(|i| match i.1 {
+                                NodeRuntime::Framebuffer(fb) => Some(fb),
+                                _ => None,
+                            })
+                            .next()
+                            .expect(&format!(
+                                "Framebuffer not attached to BeginRenderPass {}",
+                                self.graph[node].0
+                            ));
                         let render_pass_begin_info = vk::RenderPassBeginInfo {
                             s_type: vk::StructureType::RenderPassBeginInfo,
                             p_next: ptr::null(),
                             render_pass: renderpass,
-                            framebuffer: framebuffer,
+                            framebuffer: framebuffer[self.present_index.get() as usize],
                             render_area: vk::Rect2D {
                                 offset: vk::Offset2D { x: 0, y: 0 },
                                 extent: base.surface_resolution.clone(),
@@ -177,6 +226,7 @@ impl RenderDAG {
                     [0.0; 4],
                     || unsafe { base.device.cmd_end_render_pass(command_buffer) },
                 ),
+                &NodeRuntime::Framebuffer(_) => (),
             }
 
             /*
@@ -207,7 +257,7 @@ impl RenderDAG {
 
 #[derive(Clone, Copy)]
 pub struct BuilderNode {
-    name: &'static str
+    name: &'static str,
 }
 
 pub struct RenderDAGBuilder {
@@ -236,15 +286,10 @@ impl RenderDAGBuilder {
     }
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
+        use petgraph::graph::NodeIndex;
         let mut output_graph = RuntimeGraph::new();
-        let mut renderpasses: HashMap<
-            &str,
-            (
-                petgraph::graph::NodeIndex,
-                petgraph::graph::NodeIndex,
-                vk::RenderPass,
-            ),
-        > = HashMap::new();
+        let mut renderpasses: HashMap<&str, (NodeIndex, NodeIndex, vk::RenderPass)> = HashMap::new();
+        let mut framebuffers = HashMap::new();
         let mut subpasses: HashMap<&str, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, u8)> = HashMap::new();
         let mut pipeline_layouts: HashMap<&str, vk::PipelineLayout> = HashMap::new();
         let mut pipelines: HashMap<&str, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
@@ -255,7 +300,6 @@ impl RenderDAGBuilder {
             .iter()
             .cloned()
         {
-            println!("{:?}", self.graph[node]);
             let inputs = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
                 .map(|ix| self.graph[ix].clone())
@@ -398,6 +442,31 @@ impl RenderDAGBuilder {
                     output_graph.add_edge(start, end, ());
 
                     renderpasses.insert(self.graph[node].0, (start, end, renderpass));
+
+                    if let Some(()) = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref _name, Node::AcquirePresentImage) => Some(()),
+                            _ => None,
+                        })
+                        .next()
+                    {
+                        let acquire_image = output_graph.add_node(("acquire_present_image", NodeRuntime::AcquirePresentImage));
+                        output_graph.add_edge(acquire_image, start, ());
+                    }
+                }
+                Node::PresentImage => {
+                    if let Some(&(_, end, _)) = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref name, Node::RenderPass) => renderpasses.get(name),
+                            _ => None,
+                        })
+                        .next()
+                    {
+                        let present_image = output_graph.add_node(("present_image", NodeRuntime::PresentImage));
+                        output_graph.add_edge(end, present_image, ());
+                    }
                 }
                 Node::Subpass(ix) => {
                     let previous_subpasses = inputs
@@ -519,7 +588,7 @@ impl RenderDAGBuilder {
                         })
                         .next()
                         .expect("no pipeline layout specified for graphics pipeline");
-                    let &(_begin_renderpass, _end_renderpass, renderpass) = inputs
+                    let &(_, _, renderpass) = inputs
                         .iter()
                         .filter_map(|node| match node {
                             &(ref name, Node::RenderPass) => renderpasses.get(name),
@@ -816,7 +885,45 @@ impl RenderDAGBuilder {
                     descriptor_set_layouts.insert(self.graph[node].0, layouts[0]);
                     descriptor_sets.insert(self.graph[node].0, new_descriptor_sets);
                 }
-                _ => println!("* not doing anything"),
+                Node::Framebuffer => {
+                    let &(rp_start, _, renderpass) = inputs
+                        .iter()
+                        .filter_map(|node| match node {
+                            &(ref name, Node::RenderPass) => renderpasses.get(name),
+                            _ => None,
+                        })
+                        .next()
+                        .expect(&format!(
+                            "No renderpass specified for Framebuffer {}",
+                            self.graph[node].0
+                        ));
+                    let v: Vec<vk::Framebuffer> = base.present_image_views
+                        .iter()
+                        .map(|&present_image_view| {
+                            let framebuffer_attachments = [present_image_view, base.depth_image_view];
+                            let frame_buffer_create_info = vk::FramebufferCreateInfo {
+                                s_type: vk::StructureType::FramebufferCreateInfo,
+                                p_next: ptr::null(),
+                                flags: Default::default(),
+                                render_pass: renderpass,
+                                attachment_count: framebuffer_attachments.len() as u32,
+                                p_attachments: framebuffer_attachments.as_ptr(),
+                                width: base.surface_resolution.width,
+                                height: base.surface_resolution.height,
+                                layers: 1,
+                            };
+                            unsafe {
+                                base.device
+                                    .create_framebuffer(&frame_buffer_create_info, None)
+                                    .unwrap()
+                            }
+                        })
+                        .collect();
+                    framebuffers.insert(self.graph[node].0, v.clone());
+                    let fb = output_graph.add_node(("framebuffer", NodeRuntime::Framebuffer(v)));
+                    output_graph.add_edge(fb, rp_start, ());
+                }
+                _ => (),
             }
         }
         use std::iter::FromIterator;
@@ -824,7 +931,9 @@ impl RenderDAGBuilder {
             graph: output_graph,
             pipeline_layouts,
             descriptor_sets: descriptor_sets,
-            renderpasses: HashMap::from_iter(renderpasses.iter().map(|(k, v)| (*k, v.2))),
+            renderpasses: HashMap::from_iter(renderpasses.iter().map(|(&k, v)| (k, v.2))),
+            framebuffers: framebuffers,
+            present_index: Cell::new(0),
         }
     }
 }

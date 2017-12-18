@@ -1,6 +1,8 @@
 extern crate ash;
 extern crate cgmath;
 extern crate forward_renderer;
+extern crate futures;
+extern crate futures_cpupool;
 extern crate petgraph;
 extern crate specs;
 
@@ -13,6 +15,8 @@ use ash::vk;
 use ash::version::*;
 use cgmath::One;
 use std::default::Default;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::ptr;
 use std::mem;
 use std::path::PathBuf;
@@ -33,6 +37,8 @@ fn main() {
         let depth_attachment = builder.add_node("depth_attachment", Node::DepthAttachment(1));
         let subpass = builder.add_node("subpass", Node::Subpass(1));
         let renderpass = builder.add_node("renderpass", Node::RenderPass);
+        let framebuffer = builder.add_node("framebuffer", Node::Framebuffer);
+        builder.add_edge(renderpass, framebuffer);
         let vertex_shader = builder.add_node(
             "vertex_shader",
             Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv")),
@@ -102,9 +108,8 @@ fn main() {
             })),
         );
         let present_image = builder.add_node("present_image", Node::PresentImage);
-        builder.add_edge(acquire_image, present_image);
-        builder.add_edge(acquire_image, swapchain_attachment);
-        builder.add_edge(acquire_image, depth_attachment);
+        builder.add_edge(acquire_image, renderpass);
+        builder.add_edge(renderpass, present_image);
         builder.add_edge(subpass, renderpass);
         builder.add_edge(subpass, graphics_pipeline);
         builder.add_edge(subpass, draw_commands);
@@ -174,14 +179,8 @@ fn main() {
             builder.add_edge(triangle_fragment_shader, triangle_graphics_pipeline);
             builder.add_edge(renderpass, triangle_graphics_pipeline);
             builder.add_edge(triangle_vertex_binding, triangle_graphics_pipeline);
-            builder.add_edge(
-                triangle_vertex_attribute_pos,
-                triangle_graphics_pipeline,
-            );
-            builder.add_edge(
-                triangle_vertex_attribute_color,
-                triangle_graphics_pipeline,
-            );
+            builder.add_edge(triangle_vertex_attribute_pos, triangle_graphics_pipeline);
+            builder.add_edge(triangle_vertex_attribute_color, triangle_graphics_pipeline);
             builder.add_edge(triangle_pipeline_layout, triangle_graphics_pipeline);
             builder.add_edge(triangle_graphics_pipeline, triangle_draw_commands);
             builder.add_edge(triangle_subpass, subpass);
@@ -212,35 +211,25 @@ fn main() {
         builder.add_edge(main_descriptor_layout, pipeline_layout);
         {
             let dot = petgraph::dot::Dot::new(&builder.graph);
-            println!("{:?}", dot);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open("builder.dot")
+                .unwrap();
+            write!(f, "{:?}", dot).unwrap();
         }
         builder.build(&base)
     };
-    let dot = petgraph::dot::Dot::new(&render_dag.graph);
-    println!("{:?}", dot);
+    {
+        let dot = petgraph::dot::Dot::new(&render_dag.graph);
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open("runtime.dot")
+            .unwrap();
+        write!(f, "{:?}", dot).unwrap();
+    }
     unsafe {
-        let renderpass = render_dag.renderpasses.get("renderpass").unwrap();
-        let framebuffers: Vec<vk::Framebuffer> = base.present_image_views
-            .iter()
-            .map(|&present_image_view| {
-                let framebuffer_attachments = [present_image_view, base.depth_image_view];
-                let frame_buffer_create_info = vk::FramebufferCreateInfo {
-                    s_type: vk::StructureType::FramebufferCreateInfo,
-                    p_next: ptr::null(),
-                    flags: Default::default(),
-                    render_pass: renderpass.clone(),
-                    attachment_count: framebuffer_attachments.len() as u32,
-                    p_attachments: framebuffer_attachments.as_ptr(),
-                    width: base.surface_resolution.width,
-                    height: base.surface_resolution.height,
-                    layers: 1,
-                };
-                base.device
-                    .create_framebuffer(&frame_buffer_create_info, None)
-                    .unwrap()
-            })
-            .collect();
-
         let mut world = World::new(&base.device);
 
         world
@@ -393,15 +382,6 @@ fn main() {
                 }
             }
 
-            let present_index = base.swapchain_loader
-                .acquire_next_image_khr(
-                    base.swapchain,
-                    std::u64::MAX,
-                    base.present_complete_semaphore,
-                    vk::Fence::null(),
-                )
-                .unwrap();
-            let framebuffer = framebuffers[present_index as usize];
             record_submit_commandbuffer(
                 base.device.vk(),
                 base.draw_command_buffer,
@@ -410,23 +390,19 @@ fn main() {
                 &[base.present_complete_semaphore],
                 &[base.rendering_complete_semaphore],
                 |_device, draw_command_buffer| {
-                    render_dag.run(&base, &world, framebuffer, draw_command_buffer);
+                    render_dag.run(&base, &world, draw_command_buffer);
+                    println!("render_dag executed");
                 },
             );
-            //let mut present_info_err = mem::uninitialized();
-            let present_info = vk::PresentInfoKHR {
-                s_type: vk::StructureType::PresentInfoKhr,
-                p_next: ptr::null(),
-                wait_semaphore_count: 1,
-                p_wait_semaphores: &base.rendering_complete_semaphore,
-                swapchain_count: 1,
-                p_swapchains: &base.swapchain,
-                p_image_indices: &present_index,
-                p_results: ptr::null_mut(),
-            };
-            base.swapchain_loader
-                .queue_present_khr(base.present_queue, &present_info)
-                .unwrap();
+
+            /*
+            command_buffer::one_time_submit_and_wait(
+                &base,
+                |cmd_buffer| {
+                    render_dag.run(&base, &world, cmd_buffer);
+                }
+            );
+            */
 
             for buffer in buffers.into_iter() {
                 buffer.free(base.device.vk())
@@ -434,8 +410,5 @@ fn main() {
         });
 
         base.device.device_wait_idle().unwrap();
-        for framebuffer in framebuffers {
-            base.device.destroy_framebuffer(framebuffer, None);
-        }
     }
 }
