@@ -4,7 +4,7 @@ use futures::prelude::*;
 use futures_cpupool::*;
 use futures::future::{join_all, Shared};
 use petgraph;
-use std::cell::RefCell;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::ffi::CString;
@@ -23,6 +23,8 @@ use super::super::ExampleBase;
 #[derive(Clone)]
 pub enum NodeBuilder {
     AcquirePresentImage,
+    BeginCommandBuffer,
+    EndCommandBuffer,
     SwapchainAttachment(u8),
     DepthAttachment(u8),
     Subpass(u8),
@@ -73,15 +75,15 @@ impl fmt::Debug for NodeRuntime {
     }
 }
 
-type BuilderGraph = petgraph::Graph<(&'static str, NodeBuilder), ()>;
-type RuntimeGraph = petgraph::Graph<(&'static str, NodeResult<NodeRuntime>), ()>;
+type BuilderGraph = petgraph::Graph<(Cow<'static, str>, NodeBuilder), ()>;
+type RuntimeGraph = petgraph::Graph<(Cow<'static, str>, NodeResult<NodeRuntime>), ()>;
 
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
-    pub pipeline_layouts: HashMap<&'static str, vk::PipelineLayout>,
-    pub descriptor_sets: HashMap<&'static str, Vec<vk::DescriptorSet>>,
-    pub renderpasses: HashMap<&'static str, vk::RenderPass>,
-    pub framebuffers: HashMap<&'static str, Vec<vk::Framebuffer>>,
+    pub pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout>,
+    pub descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>>,
+    pub renderpasses: HashMap<Cow<'static, str>, vk::RenderPass>,
+    pub framebuffers: HashMap<Cow<'static, str>, Vec<vk::Framebuffer>>,
 }
 
 impl RenderDAG {
@@ -400,14 +402,35 @@ impl RenderDAG {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct BuilderNode {
-    name: &'static str,
+    name: Cow<'static, str>,
 }
 
 pub struct RenderDAGBuilder {
     pub graph: BuilderGraph,
-    name_mapping: HashMap<&'static str, petgraph::graph::NodeIndex>,
+    name_mapping: HashMap<Cow<'static, str>, petgraph::graph::NodeIndex>,
+}
+
+pub struct CommandBufferBuilder {
+    begin: BuilderNode,
+    end: BuilderNode,
+}
+
+impl CommandBufferBuilder {
+    pub fn add_node<T>(&self, builder: &mut RenderDAGBuilder, name: T, value: NodeBuilder) -> BuilderNode where T: Into<Cow<'static, str>> {
+        let node = builder.add_node(name, value);
+        builder.add_edge(&self.begin, &node);
+        node
+    }
+
+    pub fn end_before(&self, builder: &mut RenderDAGBuilder, node: &BuilderNode) {
+        builder.add_edge(&self.end, node);
+    }
+
+    pub fn end_after(&self, builder: &mut RenderDAGBuilder, node: &BuilderNode) {
+        builder.add_edge(node, &self.end);
+    }
 }
 
 impl RenderDAGBuilder {
@@ -418,29 +441,42 @@ impl RenderDAGBuilder {
         }
     }
 
-    pub fn add_node(&mut self, name: &'static str, value: NodeBuilder) -> BuilderNode {
-        let ix = self.graph.add_node((name, value));
-        assert!(self.name_mapping.insert(name, ix).is_none());
-        BuilderNode { name }
+    pub fn with_command_buffer<T>(&mut self, name: T) -> CommandBufferBuilder where T: Into<Cow<'static, str>> {
+        let name = name.into();
+        let start_name = name.clone() + "-start";
+        let end_name = name.clone() + "-end";
+        let (start, end) = (self.add_node(start_name, NodeBuilder::BeginCommandBuffer), self.add_node(end_name, NodeBuilder::EndCommandBuffer));
+        self.add_edge(&start, &end);
+        CommandBufferBuilder {
+            begin: start,
+            end: end
+        }
     }
 
-    pub fn add_edge(&mut self, from: BuilderNode, to: BuilderNode) {
-        let from_ix = self.name_mapping.get(from.name).unwrap();
-        let to_ix = self.name_mapping.get(to.name).unwrap();
-        self.graph.add_edge(from_ix.clone(), to_ix.clone(), ());
+    pub fn add_node<T>(&mut self, name: T, value: NodeBuilder) -> BuilderNode where T: Into<Cow<'static, str>> {
+        let name = name.into();
+        let ix = self.graph.add_node((name.clone(), value));
+        assert!(self.name_mapping.insert(name.clone(), ix).is_none());
+        BuilderNode { name: name }
+    }
+
+    pub fn add_edge(&mut self, from: &BuilderNode, to: &BuilderNode) {
+        let from_ix = self.name_mapping.get(&from.name).unwrap();
+        let to_ix = self.name_mapping.get(&to.name).unwrap();
+        self.graph.add_edge(*from_ix, *to_ix, ());
     }
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
         use petgraph::graph::NodeIndex;
         let mut output_graph = RuntimeGraph::new();
-        let mut renderpasses: HashMap<&str, (NodeIndex, NodeIndex, vk::RenderPass)> = HashMap::new();
+        let mut renderpasses: HashMap<Cow<'static, str>, (NodeIndex, NodeIndex, vk::RenderPass)> = HashMap::new();
         let mut framebuffers = HashMap::new();
-        let mut subpasses: HashMap<&str, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, u8)> = HashMap::new();
-        let mut pipeline_layouts: HashMap<&str, vk::PipelineLayout> = HashMap::new();
-        let mut pipelines: HashMap<&str, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
-        let mut descriptor_set_layouts: HashMap<&str, vk::DescriptorSetLayout> = HashMap::new();
-        let mut descriptor_sets: HashMap<&str, Vec<vk::DescriptorSet>> = HashMap::new();
-        let mut name_mapping: HashMap<&str, petgraph::graph::NodeIndex> = HashMap::new();
+        let mut subpasses: HashMap<Cow<'static, str>, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, u8)> = HashMap::new();
+        let mut pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout> = HashMap::new();
+        let mut pipelines: HashMap<Cow<'static, str>, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
+        let mut descriptor_set_layouts: HashMap<Cow<'static, str>, vk::DescriptorSetLayout> = HashMap::new();
+        let mut descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>> = HashMap::new();
+        let mut name_mapping: HashMap<Cow<'static, str>, petgraph::graph::NodeIndex> = HashMap::new();
         let pool = CpuPool::new(8);
 
         for node in petgraph::algo::toposort(&self.graph, None)
@@ -573,7 +609,7 @@ impl RenderDAGBuilder {
                     let subpasses = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::Subpass(_)) => subpasses.get(node.0),
+                            &(ref _name, NodeBuilder::Subpass(_)) => subpasses.get(&node.0),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -581,7 +617,7 @@ impl RenderDAGBuilder {
                     let start = {
                         let renderpass = renderpass.clone();
                         output_graph.add_node((
-                            "begin_render_pass",
+                            Cow::from("begin_render_pass"),
                             Arc::new(RwLock::new(pool.spawn_fn(move || {
                                 Ok(NodeRuntime::BeginRenderPass(renderpass))
                             }).shared())),
@@ -590,7 +626,7 @@ impl RenderDAGBuilder {
                     let end = {
                         let renderpass = renderpass.clone();
                         output_graph.add_node((
-                            "end_render_pass",
+                            Cow::from("end_render_pass"),
                             Arc::new(RwLock::new(pool.spawn_fn(move || {
                                 Ok(NodeRuntime::EndRenderPass(renderpass))
                             }).shared())),
@@ -602,7 +638,7 @@ impl RenderDAGBuilder {
                     }
                     output_graph.add_edge(start, end, ());
 
-                    renderpasses.insert(self.graph[node].0, (start, end, renderpass));
+                    renderpasses.insert(self.graph[node].0.clone(), (start, end, renderpass));
 
                     if let Some(()) = inputs
                         .iter()
@@ -613,12 +649,12 @@ impl RenderDAGBuilder {
                         .next()
                     {
                         let acquire_image = output_graph.add_node((
-                            "acquire_present_image",
+                            Cow::from("acquire_present_image"),
                             Arc::new(RwLock::new(pool.spawn_fn(|| {
                                 Ok(NodeRuntime::AcquirePresentImage(987))
                             }).shared())),
                         ));
-                        name_mapping.insert("acquire_present_image", acquire_image);
+                        name_mapping.insert(Cow::from("acquire_present_image"), acquire_image);
                         output_graph.add_edge(acquire_image, start, ());
                     }
                 }
@@ -632,7 +668,7 @@ impl RenderDAGBuilder {
                         .next()
                     {
                         let present_image = output_graph.add_node((
-                            "present_image",
+                            Cow::from("present_image"),
                             Arc::new(RwLock::new(
                                 pool.spawn_fn(|| Ok(NodeRuntime::PresentImage)).shared(),
                             )),
@@ -649,7 +685,7 @@ impl RenderDAGBuilder {
                     let previous_subpasses = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::Subpass(_)) => Some(subpasses.get(node.0).unwrap()),
+                            &(ref _name, NodeBuilder::Subpass(_)) => Some(subpasses.get(&node.0).unwrap()),
                             _ => None,
                         })
                         .cloned()
@@ -658,7 +694,7 @@ impl RenderDAGBuilder {
                     let start = {
                         let ix = ix.clone();
                         output_graph.add_node((
-                            "start_subpass",
+                            Cow::from("start_subpass"),
                             Arc::new(RwLock::new(pool.spawn_fn(move || {
                                 Ok(NodeRuntime::BeginSubPass(ix))
                             }).shared())),
@@ -667,7 +703,7 @@ impl RenderDAGBuilder {
                     let end = {
                         let ix = ix.clone();
                         output_graph.add_node((
-                            "end_subpass",
+                            Cow::from("end_subpass"),
                             Arc::new(RwLock::new(pool.spawn_fn(move || {
                                 Ok(NodeRuntime::EndSubPass(ix))
                             }).shared())),
@@ -678,13 +714,13 @@ impl RenderDAGBuilder {
                         output_graph.add_edge(end_subpass, start, ());
                     }
 
-                    subpasses.insert(self.graph[node].0, (start, end, ix));
+                    subpasses.insert(self.graph[node].0.clone(), (start, end, ix));
                 }
                 NodeBuilder::PipelineLayout => {
                     let set_layouts = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            NodeBuilder::DescriptorSet(_) => Some(descriptor_set_layouts.get(node.0).unwrap().clone()),
+                            NodeBuilder::DescriptorSet(_) => Some(descriptor_set_layouts.get(&node.0).unwrap().clone()),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -705,7 +741,7 @@ impl RenderDAGBuilder {
                             .unwrap()
                     };
 
-                    pipeline_layouts.insert(self.graph[node].0, pipeline_layout);
+                    pipeline_layouts.insert(self.graph[node].0.clone(), pipeline_layout);
                 }
                 NodeBuilder::GraphicsPipeline => {
                     let vertex_attributes = inputs
@@ -964,7 +1000,7 @@ impl RenderDAGBuilder {
                         let scissors = scissors[0].clone();
                         let viewports = viewports[0].clone();
                         output_graph.add_node((
-                            "bind_pipeline",
+                            Cow::from("bind_pipeline"),
                             Arc::new(RwLock::new(pool.spawn_fn(move || {
                                 Ok(NodeRuntime::BindPipeline(
                                     pipeline,
@@ -977,7 +1013,7 @@ impl RenderDAGBuilder {
                     let &(subpass_start, subpass_end, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::Subpass(_)) => subpasses.get(node.0),
+                            &(ref _name, NodeBuilder::Subpass(_)) => subpasses.get(&node.0),
                             _ => None,
                         })
                         .next()
@@ -986,13 +1022,13 @@ impl RenderDAGBuilder {
                     output_graph.add_edge(subpass_start, bind, ());
                     output_graph.add_edge(bind, subpass_end, ());
 
-                    pipelines.insert(self.graph[node].0, (bind, graphics_pipeline));
+                    pipelines.insert(self.graph[node].0.clone(), (bind, graphics_pipeline));
                 }
                 NodeBuilder::DrawCommands(ref f) => {
                     let &(pipeline_bind, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::GraphicsPipeline) => pipelines.get(node.0),
+                            &(ref _name, NodeBuilder::GraphicsPipeline) => pipelines.get(&node.0),
                             _ => None,
                         })
                         .next()
@@ -1000,7 +1036,7 @@ impl RenderDAGBuilder {
                     let &(_subpass_start, subpass_end, _) = inputs
                         .iter()
                         .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::Subpass(_)) => subpasses.get(node.0),
+                            &(ref _name, NodeBuilder::Subpass(_)) => subpasses.get(&node.0),
                             _ => None,
                         })
                         .next()
@@ -1009,7 +1045,7 @@ impl RenderDAGBuilder {
                     let draw = {
                         let f = f.clone();
                         output_graph.add_node((
-                            "draw_commands",
+                            Cow::from("draw_commands"),
                             Arc::new(RwLock::new(pool.spawn_fn(move || {
                                 Ok(NodeRuntime::DrawCommands(f))
                             }).shared())),
@@ -1090,8 +1126,8 @@ impl RenderDAGBuilder {
                             .unwrap()
                     };
 
-                    descriptor_set_layouts.insert(self.graph[node].0, layouts[0]);
-                    descriptor_sets.insert(self.graph[node].0, new_descriptor_sets);
+                    descriptor_set_layouts.insert(self.graph[node].0.clone(), layouts[0]);
+                    descriptor_sets.insert(self.graph[node].0.clone(), new_descriptor_sets);
                 }
                 NodeBuilder::Framebuffer => {
                     let &(rp_start, _, renderpass) = inputs
@@ -1127,9 +1163,9 @@ impl RenderDAGBuilder {
                             }
                         })
                         .collect();
-                    framebuffers.insert(self.graph[node].0, v.clone());
+                    framebuffers.insert(self.graph[node].0.clone(), v.clone());
                     let fb = output_graph.add_node((
-                        "framebuffer",
+                        Cow::from("framebuffer"),
                         Arc::new(RwLock::new(pool.spawn_fn(|| {
                             Ok(NodeRuntime::Framebuffer(v))
                         }).shared())),
@@ -1144,7 +1180,7 @@ impl RenderDAGBuilder {
             graph: output_graph,
             pipeline_layouts,
             descriptor_sets: descriptor_sets,
-            renderpasses: HashMap::from_iter(renderpasses.iter().map(|(&k, v)| (k, v.2))),
+            renderpasses: HashMap::from_iter(renderpasses.iter().map(|(k, v)| (k.clone(), v.2))),
             framebuffers: framebuffers,
         }
     }

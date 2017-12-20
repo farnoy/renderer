@@ -36,9 +36,10 @@ fn main() {
         let swapchain_attachment = builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
         let depth_attachment = builder.add_node("depth_attachment", Node::DepthAttachment(1));
         let subpass = builder.add_node("subpass", Node::Subpass(1));
-        let renderpass = builder.add_node("renderpass", Node::RenderPass);
-        let framebuffer = builder.add_node("framebuffer", Node::Framebuffer);
-        builder.add_edge(renderpass, framebuffer);
+        let command_buffer = builder.with_command_buffer("main_command_buffer");
+        let renderpass = command_buffer.add_node(&mut builder, "renderpass", Node::RenderPass);
+        let framebuffer = command_buffer.add_node(&mut builder, "framebuffer", Node::Framebuffer);
+        builder.add_edge(&renderpass, &framebuffer);
         let vertex_shader = builder.add_node(
             "vertex_shader",
             Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv")),
@@ -64,8 +65,8 @@ fn main() {
             "uv_attribute",
             Node::VertexInputAttribute(1, 1, vk::Format::R32g32Sfloat, 0),
         );
-        let graphics_pipeline = builder.add_node("graphics_pipeline", Node::GraphicsPipeline);
-        let draw_commands = builder.add_node(
+        let graphics_pipeline = command_buffer.add_node(&mut builder, "graphics_pipeline", Node::GraphicsPipeline);
+        let draw_commands = command_buffer.add_node(&mut builder,
             "draw_commands",
             Node::DrawCommands(Arc::new(|base, world, render_dag, command_buffer| {
                 use specs::Join;
@@ -107,24 +108,26 @@ fn main() {
                 }
             })),
         );
+        command_buffer.end_after(&mut builder, &draw_commands);
         let present_image = builder.add_node("present_image", Node::PresentImage);
-        builder.add_edge(acquire_image, renderpass);
-        builder.add_edge(renderpass, present_image);
-        builder.add_edge(subpass, renderpass);
-        builder.add_edge(subpass, graphics_pipeline);
-        builder.add_edge(subpass, draw_commands);
-        builder.add_edge(swapchain_attachment, renderpass);
-        builder.add_edge(depth_attachment, renderpass);
-        builder.add_edge(vertex_shader, graphics_pipeline);
-        builder.add_edge(fragment_shader, graphics_pipeline);
-        builder.add_edge(renderpass, graphics_pipeline);
-        builder.add_edge(vertex_binding, graphics_pipeline);
-        builder.add_edge(uv_binding, graphics_pipeline);
-        builder.add_edge(vertex_attribute, graphics_pipeline);
-        builder.add_edge(uv_attribute, graphics_pipeline);
-        builder.add_edge(pipeline_layout, graphics_pipeline);
-        builder.add_edge(graphics_pipeline, draw_commands);
-        builder.add_edge(draw_commands, present_image);
+        command_buffer.end_before(&mut builder, &present_image);
+        builder.add_edge(&acquire_image, &renderpass);
+        builder.add_edge(&renderpass, &present_image);
+        builder.add_edge(&subpass, &renderpass);
+        builder.add_edge(&subpass, &graphics_pipeline);
+        builder.add_edge(&subpass, &draw_commands);
+        builder.add_edge(&swapchain_attachment, &renderpass);
+        builder.add_edge(&depth_attachment, &renderpass);
+        builder.add_edge(&vertex_shader, &graphics_pipeline);
+        builder.add_edge(&fragment_shader, &graphics_pipeline);
+        builder.add_edge(&renderpass, &graphics_pipeline);
+        builder.add_edge(&vertex_binding, &graphics_pipeline);
+        builder.add_edge(&uv_binding, &graphics_pipeline);
+        builder.add_edge(&vertex_attribute, &graphics_pipeline);
+        builder.add_edge(&uv_attribute, &graphics_pipeline);
+        builder.add_edge(&pipeline_layout, &graphics_pipeline);
+        builder.add_edge(&graphics_pipeline, &draw_commands);
+        builder.add_edge(&draw_commands, &present_image);
 
         {
             let triangle_subpass = builder.add_node("triangle_subpass", Node::Subpass(0));
@@ -172,18 +175,19 @@ fn main() {
                 })),
             );
 
-            builder.add_edge(triangle_subpass, renderpass);
-            builder.add_edge(triangle_subpass, triangle_graphics_pipeline);
-            builder.add_edge(triangle_subpass, triangle_draw_commands);
-            builder.add_edge(triangle_vertex_shader, triangle_graphics_pipeline);
-            builder.add_edge(triangle_fragment_shader, triangle_graphics_pipeline);
-            builder.add_edge(renderpass, triangle_graphics_pipeline);
-            builder.add_edge(triangle_vertex_binding, triangle_graphics_pipeline);
-            builder.add_edge(triangle_vertex_attribute_pos, triangle_graphics_pipeline);
-            builder.add_edge(triangle_vertex_attribute_color, triangle_graphics_pipeline);
-            builder.add_edge(triangle_pipeline_layout, triangle_graphics_pipeline);
-            builder.add_edge(triangle_graphics_pipeline, triangle_draw_commands);
-            builder.add_edge(triangle_subpass, subpass);
+            builder.add_edge(&triangle_subpass, &renderpass);
+            builder.add_edge(&triangle_subpass, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_subpass, &triangle_draw_commands);
+            builder.add_edge(&triangle_vertex_shader, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_fragment_shader, &triangle_graphics_pipeline);
+            builder.add_edge(&renderpass, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_vertex_binding, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_vertex_attribute_pos, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_vertex_attribute_color, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_pipeline_layout, &triangle_graphics_pipeline);
+            builder.add_edge(&triangle_graphics_pipeline, &triangle_draw_commands);
+            builder.add_edge(&triangle_subpass, &subpass);
+            command_buffer.end_after(&mut builder, &triangle_draw_commands);
         }
 
         let mvp_ubo = builder.add_node(
@@ -206,11 +210,11 @@ fn main() {
         );
         let main_descriptor_layout = builder.add_node("main_descriptor_layout", Node::DescriptorSet(2));
 
-        builder.add_edge(mvp_ubo, main_descriptor_layout);
-        builder.add_edge(color_texture, main_descriptor_layout);
-        builder.add_edge(main_descriptor_layout, pipeline_layout);
+        builder.add_edge(&mvp_ubo, &main_descriptor_layout);
+        builder.add_edge(&color_texture, &main_descriptor_layout);
+        builder.add_edge(&main_descriptor_layout, &pipeline_layout);
         {
-            let dot = petgraph::dot::Dot::new(&builder.graph);
+            let dot = petgraph::dot::Dot::with_config(&builder.graph, &[petgraph::dot::Config::EdgeNoLabel]);
             let mut f = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -221,7 +225,7 @@ fn main() {
         builder.build(&base)
     };
     {
-        let dot = petgraph::dot::Dot::new(&render_dag.graph);
+        let dot = petgraph::dot::Dot::with_config(&render_dag.graph, &[petgraph::dot::Config::EdgeNoLabel]);
         let mut f = OpenOptions::new()
             .create(true)
             .write(true)
