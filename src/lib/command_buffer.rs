@@ -11,10 +11,13 @@ use super::ExampleBase;
 pub fn one_time_submit_and_wait<F: FnOnce(vk::CommandBuffer)>(base: &ExampleBase, f: F) {
     unsafe {
         let cb = {
+            let command_pool = base.pool
+                .lock()
+                .expect("failed to lock command pool from one_time_submit_and_wait");
             let info = vk::CommandBufferAllocateInfo {
                 s_type: vk::StructureType::CommandBufferAllocateInfo,
                 p_next: ptr::null(),
-                command_pool: base.pool,
+                command_pool: *command_pool,
                 level: vk::CommandBufferLevel::Primary,
                 command_buffer_count: 1,
             };
@@ -74,6 +77,11 @@ pub fn one_time_submit_and_wait<F: FnOnce(vk::CommandBuffer)>(base: &ExampleBase
 
         base.device.destroy_fence(fence, None);
 
-        base.device.free_command_buffers(base.pool, &[cb]);
+        {
+            let command_pool = base.pool
+                .lock()
+                .expect("failed to lock command pool from one_time_submit_and_wait");
+            base.device.free_command_buffers(*command_pool, &[cb]);
+        }
     }
 }

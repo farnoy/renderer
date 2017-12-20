@@ -39,7 +39,7 @@ use ash::extensions::XlibSurface;
 use std::cell::RefCell;
 use std::ops::Drop;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // Simple offset_of macro akin to C++ offsetof
 #[macro_export]
@@ -202,7 +202,7 @@ pub struct ExampleBase {
     pub present_images: Vec<vk::Image>,
     pub present_image_views: Vec<vk::ImageView>,
 
-    pub pool: vk::CommandPool,
+    pub pool: Mutex<vk::CommandPool>,
     pub draw_command_buffer: vk::CommandBuffer,
     pub setup_command_buffer: vk::CommandBuffer,
 
@@ -536,7 +536,7 @@ impl ExampleBase {
                 swapchain: swapchain,
                 present_images: present_images,
                 present_image_views: present_image_views,
-                pool: pool,
+                pool: Mutex::new(pool),
                 draw_command_buffer: draw_command_buffer,
                 setup_command_buffer: setup_command_buffer,
                 depth_image: depth_image,
@@ -564,7 +564,8 @@ impl Drop for ExampleBase {
             for &image_view in self.present_image_views.iter() {
                 self.device.destroy_image_view(image_view, None);
             }
-            self.device.destroy_command_pool(self.pool, None);
+            self.device
+                .destroy_command_pool(*self.pool.lock().unwrap(), None);
             self.swapchain_loader
                 .destroy_swapchain_khr(self.swapchain, None);
             self.surface_loader.destroy_surface_khr(self.surface, None);

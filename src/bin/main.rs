@@ -20,7 +20,7 @@ use std::io::Write;
 use std::ptr;
 use std::mem;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
@@ -35,11 +35,11 @@ fn main() {
         let acquire_image = builder.add_node("acquire_image", Node::AcquirePresentImage);
         let swapchain_attachment = builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
         let depth_attachment = builder.add_node("depth_attachment", Node::DepthAttachment(1));
-        let subpass = builder.add_node("subpass", Node::Subpass(1));
         let command_buffer = builder.with_command_buffer("main_command_buffer");
-        let renderpass = command_buffer.add_node(&mut builder, "renderpass", Node::RenderPass);
-        let framebuffer = command_buffer.add_node(&mut builder, "framebuffer", Node::Framebuffer);
-        builder.add_edge(&renderpass, &framebuffer);
+        let renderpass = command_buffer.with_renderpass(&mut builder, "renderpass");
+        let subpass = renderpass.with_subpass(&mut builder, "main_subpass", 1);
+        let framebuffer = builder.add_node("framebuffer", Node::Framebuffer);
+        renderpass.start_before(&mut builder, &framebuffer);
         let vertex_shader = builder.add_node(
             "vertex_shader",
             Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv")),
@@ -65,14 +65,16 @@ fn main() {
             "uv_attribute",
             Node::VertexInputAttribute(1, 1, vk::Format::R32g32Sfloat, 0),
         );
-        let graphics_pipeline = command_buffer.add_node(&mut builder, "graphics_pipeline", Node::GraphicsPipeline);
-        let draw_commands = command_buffer.add_node(&mut builder,
+        let graphics_pipeline = subpass.add_node(&mut builder, "graphics_pipeline", Node::GraphicsPipeline);
+        let draw_commands = subpass.add_node(
+            &mut builder,
             "draw_commands",
-            Node::DrawCommands(Arc::new(|base, world, render_dag, command_buffer| {
+            Node::DrawCommands(Arc::new(|device, world, render_dag, command_buffer| {
                 use specs::Join;
+                let world = world.read().expect("Failed to lock the world read in DrawCommands");
                 for (ix, mesh) in world.read::<SimpleColorMesh>().join().enumerate() {
                     unsafe {
-                        base.device.cmd_bind_descriptor_sets(
+                        device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::Graphics,
                             render_dag
@@ -90,37 +92,34 @@ fn main() {
                             ],
                             &[],
                         );
-                        base.device.cmd_bind_vertex_buffers(
+                        device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
                             &[mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk()],
                             &[0, 0],
                         );
-                        base.device.cmd_bind_index_buffer(
+                        device.cmd_bind_index_buffer(
                             command_buffer,
                             mesh.0.index_buffer.vk(),
                             0,
                             mesh.0.index_type,
                         );
-                        base.device
+                        device
                             .cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
                     }
                 }
             })),
         );
-        command_buffer.end_after(&mut builder, &draw_commands);
         let present_image = builder.add_node("present_image", Node::PresentImage);
         command_buffer.end_before(&mut builder, &present_image);
-        builder.add_edge(&acquire_image, &renderpass);
-        builder.add_edge(&renderpass, &present_image);
-        builder.add_edge(&subpass, &renderpass);
-        builder.add_edge(&subpass, &graphics_pipeline);
-        builder.add_edge(&subpass, &draw_commands);
-        builder.add_edge(&swapchain_attachment, &renderpass);
-        builder.add_edge(&depth_attachment, &renderpass);
+        renderpass.start_after(&mut builder, &acquire_image);
+        renderpass.end_before(&mut builder, &present_image);
+        renderpass.start_after(&mut builder, &swapchain_attachment);
+        renderpass.start_after(&mut builder, &depth_attachment);
+        builder.add_edge(&acquire_image, &present_image);
         builder.add_edge(&vertex_shader, &graphics_pipeline);
         builder.add_edge(&fragment_shader, &graphics_pipeline);
-        builder.add_edge(&renderpass, &graphics_pipeline);
+        renderpass.start_before(&mut builder, &graphics_pipeline);
         builder.add_edge(&vertex_binding, &graphics_pipeline);
         builder.add_edge(&uv_binding, &graphics_pipeline);
         builder.add_edge(&vertex_attribute, &graphics_pipeline);
@@ -130,7 +129,7 @@ fn main() {
         builder.add_edge(&draw_commands, &present_image);
 
         {
-            let triangle_subpass = builder.add_node("triangle_subpass", Node::Subpass(0));
+            let triangle_subpass = renderpass.with_subpass(&mut builder, "triangle_subpass", 0);
             // Triangle mesh
             let triangle_vertex_shader = builder.add_node(
                 "triangle_vertex_shader",
@@ -153,41 +152,45 @@ fn main() {
                 "triangle_vertex_attribute_color",
                 Node::VertexInputAttribute(0, 1, vk::Format::R32g32b32Sfloat, 2 * 4),
             );
-            let triangle_graphics_pipeline = builder.add_node("triangle_graphics_pipeline", Node::GraphicsPipeline);
-            let triangle_draw_commands = builder.add_node(
+            let triangle_graphics_pipeline = triangle_subpass.add_node(
+                &mut builder,
+                "triangle_graphics_pipeline",
+                Node::GraphicsPipeline,
+            );
+            let triangle_draw_commands = triangle_subpass.add_node(
+                &mut builder,
                 "triangle_draw_commands",
-                Node::DrawCommands(Arc::new(|base, world, _render_dag, command_buffer| {
+                Node::DrawCommands(Arc::new(|device, world, _render_dag, command_buffer| {
                     use specs::Join;
+                    let world = world.read().expect("Failed to lock the world read in DrawCommands");
                     for mesh in world.read::<TriangleMesh>().join() {
                         unsafe {
-                            base.device
+                            device
                                 .cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.vk()], &[0]);
-                            base.device.cmd_bind_index_buffer(
+                            device.cmd_bind_index_buffer(
                                 command_buffer,
                                 mesh.0.index_buffer.vk(),
                                 0,
                                 mesh.0.index_type,
                             );
-                            base.device
+                            device
                                 .cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
                         }
                     }
                 })),
             );
 
-            builder.add_edge(&triangle_subpass, &renderpass);
-            builder.add_edge(&triangle_subpass, &triangle_graphics_pipeline);
-            builder.add_edge(&triangle_subpass, &triangle_draw_commands);
             builder.add_edge(&triangle_vertex_shader, &triangle_graphics_pipeline);
             builder.add_edge(&triangle_fragment_shader, &triangle_graphics_pipeline);
-            builder.add_edge(&renderpass, &triangle_graphics_pipeline);
             builder.add_edge(&triangle_vertex_binding, &triangle_graphics_pipeline);
             builder.add_edge(&triangle_vertex_attribute_pos, &triangle_graphics_pipeline);
-            builder.add_edge(&triangle_vertex_attribute_color, &triangle_graphics_pipeline);
+            builder.add_edge(
+                &triangle_vertex_attribute_color,
+                &triangle_graphics_pipeline,
+            );
             builder.add_edge(&triangle_pipeline_layout, &triangle_graphics_pipeline);
             builder.add_edge(&triangle_graphics_pipeline, &triangle_draw_commands);
-            builder.add_edge(&triangle_subpass, &subpass);
-            command_buffer.end_after(&mut builder, &triangle_draw_commands);
+            triangle_subpass.end_before(&mut builder, &subpass.begin);
         }
 
         let mvp_ubo = builder.add_node(
@@ -218,6 +221,7 @@ fn main() {
             let mut f = OpenOptions::new()
                 .create(true)
                 .write(true)
+                .truncate(true)
                 .open("builder.dot")
                 .unwrap();
             write!(f, "{:?}", dot).unwrap();
@@ -229,6 +233,7 @@ fn main() {
         let mut f = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(true)
             .open("runtime.dot")
             .unwrap();
         write!(f, "{:?}", dot).unwrap();
@@ -323,6 +328,8 @@ fn main() {
             }
         }
 
+        let world = Arc::new(RwLock::new(world));
+
         base.render_loop(&mut || {
             {
                 let projection = cgmath::perspective(
@@ -344,12 +351,14 @@ fn main() {
                         &["steady_rotation"],
                     )
                     .build();
-
+                
+                let mut world = world.write().expect("failed to lock write world in render loop");
                 dispatcher.dispatch(&mut world.res);
             }
             let mut buffers = vec![];
             {
                 use specs::Join;
+                let world = world.read().expect("failed to lock read world in render loop");
                 for (ix, mvp) in world.read::<MVP>().join().enumerate() {
                     let mvps = [mvp.clone()];
                     let ubo_buffer = buffer::Buffer::upload_from::<MVP, _>(
@@ -400,7 +409,7 @@ fn main() {
             );
             */
 
-            render_dag.run(&base, &world);
+            render_dag.run(&base, &world).expect("RenderDAG failed");
             println!("render_dag executed");
 
             /*
