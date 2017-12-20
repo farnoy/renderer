@@ -29,7 +29,6 @@ struct Vertex {
 }
 
 fn main() {
-    return playground();
     let base = ExampleBase::new(1920, 1080);
     let render_dag = {
         let mut builder = RenderDAGBuilder::new();
