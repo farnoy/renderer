@@ -703,7 +703,7 @@ impl RenderDAGBuilder {
     pub fn add_edge(&mut self, from: &BuilderNode, to: &BuilderNode) {
         let from_ix = self.name_mapping.get(&from.name).unwrap();
         let to_ix = self.name_mapping.get(&to.name).unwrap();
-        self.graph.add_edge(*from_ix, *to_ix, ());
+        self.graph.update_edge(*from_ix, *to_ix, ());
     }
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
@@ -784,40 +784,7 @@ impl RenderDAGBuilder {
                         attachment: 1,
                         layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
                     };
-                    let mut subpass_descs = vec![
-                        (0, 
-                                vk::SubpassDescription {
-                                    color_attachment_count: 1,
-                                    p_color_attachments: &color_attachment_ref,
-                                    p_depth_stencil_attachment: &depth_attachment_ref,
-                                    flags: Default::default(),
-                                    pipeline_bind_point: vk::PipelineBindPoint::Graphics,
-                                    input_attachment_count: 0,
-                                    p_input_attachments: ptr::null(),
-                                    p_resolve_attachments: ptr::null(),
-                                    preserve_attachment_count: 0,
-                                    p_preserve_attachments: ptr::null(),
-                                }
-                        ),
-                        (1, 
-                                vk::SubpassDescription {
-                                    color_attachment_count: 1,
-                                    p_color_attachments: &color_attachment_ref,
-                                    p_depth_stencil_attachment: &depth_attachment_ref,
-                                    flags: Default::default(),
-                                    pipeline_bind_point: vk::PipelineBindPoint::Graphics,
-                                    input_attachment_count: 0,
-                                    p_input_attachments: ptr::null(),
-                                    p_resolve_attachments: ptr::null(),
-                                    preserve_attachment_count: 0,
-                                    p_preserve_attachments: ptr::null(),
-                                }
-                        )
-                    ];
-                    // TODO: outputs can't be used yet, need a prepass to build the pre-instantiated graph with
-                    //       only connections and no vulkan logic
-                    /*
-                    outputs
+                    let mut subpass_descs = outputs
                         .iter()
                         .filter_map(|node| match node.1 {
                             NodeBuilder::BeginSubpass(ix) => Some((
@@ -838,7 +805,6 @@ impl RenderDAGBuilder {
                             _ => None,
                         })
                         .collect::<Vec<_>>();
-                        */
                     subpass_descs.sort_by(|&(lhs, _), &(rhs, _)| lhs.cmp(&rhs));
                     let subpass_descs = subpass_descs
                         .iter()
