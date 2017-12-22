@@ -55,11 +55,11 @@ impl fmt::Debug for NodeBuilder {
     }
 }
 
-type NodeResult<T> = Arc<RwLock<Shared<CpuFuture<T, ()>>>>;
+type NodeResult<R, Dyn> = (R, Arc<RwLock<Shared<CpuFuture<Option<Dyn>, ()>>>>);
 
 #[derive(Clone)]
 pub enum NodeRuntime {
-    AcquirePresentImage(u32), // present index
+    AcquirePresentImage,
     BeginCommandBuffer(vk::CommandBuffer),
     BeginRenderPass(vk::RenderPass),
     BeginSubPass(u8),
@@ -74,12 +74,23 @@ pub enum NodeRuntime {
 
 impl fmt::Debug for NodeRuntime {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "NodeRuntime")
+        let output = match *self {
+            NodeRuntime::AcquirePresentImage => "AcquirePresentImage",
+            NodeRuntime::BeginCommandBuffer(_) => "BeginCommandBuffer",
+            NodeRuntime::BeginRenderPass(_) => "BeginRenderPass",
+            _ => "other",
+        };
+        write!(f, "NodeRuntime::{}", output)
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum NodeDynamic {
+    AcquirePresentImage(u32), // present index
+}
+
 type BuilderGraph = petgraph::Graph<(Cow<'static, str>, NodeBuilder), ()>;
-type RuntimeGraph = petgraph::Graph<(Cow<'static, str>, NodeResult<NodeRuntime>), ()>;
+type RuntimeGraph = petgraph::Graph<(Cow<'static, str>, NodeResult<NodeRuntime, NodeDynamic>), ()>;
 
 #[derive(Clone)]
 pub struct RenderDAG {
@@ -100,36 +111,75 @@ impl RenderDAG {
         {
             last_node = Ok(node);
             use std::ops::Deref;
-            let input_futures: Vec<Shared<CpuFuture<NodeRuntime, ()>>> = self.graph
+            let input_futures: Vec<Shared<CpuFuture<Option<NodeDynamic>, ()>>> = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
                 .map(|ix| {
                     self.graph[ix]
                         .1
+                         .1
                         .read()
                         .expect("Failed to acquire lock")
                         .deref()
                         .clone()
                 })
                 .collect();
-            let inputs: CpuFuture<Vec<NodeRuntime>, ()> = pool.spawn(
+            let inputs: Vec<NodeResult<NodeRuntime, NodeDynamic>> = self.graph
+                .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
+                .map(|ix| self.graph[ix].1.clone())
+                .collect();
+            fn select_inputs<Selector>(
+                pool: &CpuPool,
+                inputs: &Vec<NodeResult<NodeRuntime, NodeDynamic>>,
+                selector: Selector,
+            ) -> impl Future<Item = Vec<(NodeRuntime, Option<NodeDynamic>)>, Error = ()>
+            where
+                Selector: Fn(&NodeRuntime) -> bool,
+            {
+                let futures = inputs
+                    .iter()
+                    .filter_map(|&(ref runtime, ref dynamic)| match selector(&runtime) {
+                        true => {
+                            let runtime = runtime.clone();
+                            Some(
+                                dynamic
+                                    .read()
+                                    .unwrap()
+                                    .clone()
+                                    .map(move |dyn| (runtime, dyn)),
+                            )
+                        }
+                        false => None,
+                    })
+                    .collect::<Vec<_>>();
+                let fut = join_all(futures).map_err(|_| ()).map(|ref shared_fut| {
+                    shared_fut
+                        .iter()
+                        .map(|&(ref runtime, ref shared)| (runtime.clone(), (**shared).clone()))
+                        .collect()
+                });
+                pool.spawn(fut)
+            }
+            let wait_all = select_inputs(&pool, &inputs, |_| true);
+            /*
                 join_all(input_futures)
                     .map_err(|_| ())
                     .map(|ref shared_fut| shared_fut.iter().map(|shared| (**shared).clone()).collect()),
-            );
-            let mut this_lock = self.graph[node]
+                    */
+            let mut this_dynamic = self.graph[node]
                 .1
+                 .1
                 .write()
                 .expect("Failed to acquire ownership lock");
-            let this_node_fut = this_lock.clone().wait().unwrap();
-            let this_node: &NodeRuntime = &*this_node_fut;
+            let this_node_fut = this_dynamic.clone().wait().unwrap();
+            let this_node: &NodeRuntime = &(self.graph[node].1).0;
             let this_name = self.graph[node].0.clone();
-            println!("Executing {}", this_name.clone());
+            // println!("Executing {}", this_name.clone());
             match this_node {
-                &NodeRuntime::AcquirePresentImage(_) => {
+                &NodeRuntime::AcquirePresentImage => {
                     let swapchain_loader = base.swapchain_loader.clone();
                     let swapchain = base.swapchain;
                     let present_complete_semaphore = base.present_complete_semaphore;
-                    *this_lock = pool.spawn(inputs.map(move |_inputs| {
+                    *this_dynamic = pool.spawn(wait_all.map(move |_inputs| {
                         let present_index = unsafe {
                             swapchain_loader
                                 .acquire_next_image_khr(
@@ -141,7 +191,7 @@ impl RenderDAG {
                                 .unwrap()
                         };
                         println!("Acquired present index {}", present_index);
-                        NodeRuntime::AcquirePresentImage(present_index)
+                        Some(NodeDynamic::AcquirePresentImage(present_index))
                     })).shared();
                 }
                 &NodeRuntime::PresentImage => unsafe {
@@ -149,14 +199,14 @@ impl RenderDAG {
                     let present_queue = base.present_queue;
                     let rendering_complete_semaphore = base.rendering_complete_semaphore;
                     let swapchain = base.swapchain;
-                    *this_lock = pool.spawn(
-                        inputs
+                    *this_dynamic = pool.spawn(
+                        wait_all
                             .map(move |inputs| {
                                 let present_index = inputs
                                     .iter()
                                     .cloned()
                                     .filter_map(|i| match i {
-                                        NodeRuntime::AcquirePresentImage(present_index) => Some(present_index),
+                                        (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
                                         _ => None,
                                     })
                                     .next()
@@ -175,15 +225,15 @@ impl RenderDAG {
                                 swapchain_loader
                                     .queue_present_khr(present_queue, &present_info)
                                     .unwrap();
-                                NodeRuntime::PresentImage
+                                None
                             })
                             .map_err(|_| ()),
                     ).shared();
                 },
                 &NodeRuntime::BeginCommandBuffer(command_buffer) => {
                     let device = base.device.clone();
-                    *this_lock = pool.spawn(
-                        inputs
+                    *this_dynamic = pool.spawn(
+                        wait_all
                             .map(move |inputs| unsafe {
                                 device
                                     .reset_command_buffer(
@@ -200,7 +250,7 @@ impl RenderDAG {
                                 device
                                     .begin_command_buffer(command_buffer, &command_buffer_begin_info)
                                     .expect("Begin commandbuffer");
-                                NodeRuntime::BeginCommandBuffer(command_buffer)
+                                None
                             })
                             .map_err(|_| ()),
                     ).shared();
@@ -212,13 +262,13 @@ impl RenderDAG {
                     let rendering_complete_semaphore = base.rendering_complete_semaphore.clone();
                     // TODO: represent queues in the DAG
                     let submit_queue = base.present_queue.clone();
-                    *this_lock = pool.spawn(
-                        inputs
+                    *this_dynamic = pool.spawn(
+                        wait_all
                             .map(move |inputs| unsafe {
                                 let command_buffer = inputs
                                     .iter()
                                     .cloned()
-                                    .filter_map(|i| match i {
+                                    .filter_map(|i| match i.0 {
                                         NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
                                         _ => None,
                                     })
@@ -263,7 +313,7 @@ impl RenderDAG {
                                     .wait_for_fences(&[submit_fence], true, u64::MAX)
                                     .expect("Wait for fence failed.");
                                 device.destroy_fence(submit_fence, None);
-                                NodeRuntime::EndCommandBuffer
+                                None
                             })
                             .map_err(|_| ()),
                     ).shared();
@@ -273,11 +323,11 @@ impl RenderDAG {
                     let surface_resolution = base.surface_resolution;
                     let renderpass = renderpass.clone();
                     let name = self.graph[node].0.clone();
-                    *this_lock = pool.spawn(inputs.map(move |inputs| {
+                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
                         let command_buffer = inputs
                             .iter()
                             .cloned()
-                            .filter_map(|i| match i {
+                            .filter_map(|i| match i.0 {
                                 NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
                                 _ => None,
                             })
@@ -289,7 +339,7 @@ impl RenderDAG {
                         let framebuffer = inputs
                             .iter()
                             .cloned()
-                            .filter_map(|i| match i {
+                            .filter_map(|i| match i.0 {
                                 NodeRuntime::Framebuffer(fb) => Some(fb),
                                 _ => None,
                             })
@@ -302,7 +352,7 @@ impl RenderDAG {
                             .iter()
                             .cloned()
                             .filter_map(|i| match i {
-                                NodeRuntime::AcquirePresentImage(present_index) => Some(present_index),
+                                (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
                                 _ => None,
                             })
                             .next()
@@ -344,17 +394,31 @@ impl RenderDAG {
                                 }
                             },
                         );
-                        NodeRuntime::BeginRenderPass(renderpass)
+                        None
                     })).shared();
                 }
                 &NodeRuntime::BeginSubPass(ix) => {
                     let name = self.graph[node].0.clone();
                     let device = base.device.clone();
-                    *this_lock = pool.spawn(inputs.map(move |inputs| {
+                    let reversed = petgraph::visit::Reversed(&self.graph);
+                    let bfs = petgraph::visit::Bfs::new(&reversed, node);
+                    use petgraph::visit::Walker;
+                    let command_buffer = bfs.iter(&reversed)
+                        .filter_map(|parent| match (self.graph[parent].1).0 {
+                            NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                            _ => None,
+                        })
+                        .next()
+                        .expect(&format!(
+                            "BFS search couldn't find BeginCommandBuffer for {}",
+                            this_name.clone()
+                        ));
+                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
+                        /*
                         let command_buffer = inputs
                             .iter()
                             .cloned()
-                            .filter_map(|i| match i {
+                            .filter_map(|i| match i.0 {
                                 NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
                                 _ => None,
                             })
@@ -363,13 +427,14 @@ impl RenderDAG {
                                 "BeginCommandBuffer not attached to BeginSubPass {}",
                                 name
                             ));
+                            */
                         device.debug_marker_around(
                             command_buffer,
                             &format!("{} -> BeginSubPass", name),
                             [0.0; 4],
                             || {
-                                let previous_subpass = inputs.iter().find(|i| match *i {
-                                    &NodeRuntime::EndSubPass(_) => true,
+                                let previous_subpass = inputs.iter().find(|i| match i.0 {
+                                    NodeRuntime::EndSubPass(_) => true,
                                     _ => false,
                                 });
 
@@ -380,7 +445,7 @@ impl RenderDAG {
                                 }
                             },
                         );
-                        NodeRuntime::BeginSubPass(ix)
+                        None
                     })).shared();
                 }
                 &NodeRuntime::BindPipeline(pipeline, scissors_opt, viewport_opt) => unsafe {
@@ -389,19 +454,20 @@ impl RenderDAG {
                     let pipeline = pipeline.clone();
                     let scissors_opt = scissors_opt.clone();
                     let viewport_opt = viewport_opt.clone();
-                    *this_lock = pool.spawn(inputs.map(move |inputs| {
-                        let command_buffer = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i {
-                                NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "BeginCommandBuffer not attached to BindPipeline {}",
-                                name
-                            ));
+                    let reversed = petgraph::visit::Reversed(&self.graph);
+                    let bfs = petgraph::visit::Bfs::new(&reversed, node);
+                    use petgraph::visit::Walker;
+                    let command_buffer = bfs.iter(&reversed)
+                        .filter_map(|parent| match (self.graph[parent].1).0 {
+                            NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                            _ => None,
+                        })
+                        .next()
+                        .expect(&format!(
+                            "BFS search couldn't find BeginCommandBuffer for {}",
+                            this_name.clone()
+                        ));
+                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
                         device.debug_marker_around(
                             command_buffer,
                             &format!("{} -> BindPipeline", name),
@@ -417,7 +483,7 @@ impl RenderDAG {
                                 }
                             },
                         );
-                        NodeRuntime::BindPipeline(pipeline, scissors_opt, viewport_opt)
+                        None
                     })).shared();
                 },
                 &NodeRuntime::DrawCommands(ref f) => {
@@ -425,43 +491,41 @@ impl RenderDAG {
                     let f = f.clone();
                     let render_dag = self.clone();
                     let world = world.clone();
-                    *this_lock = pool.spawn(inputs.map(move |inputs| {
-                        let command_buffer = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i {
-                                NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "BeginCommandBuffer not attached to DrawCommands {}",
-                                this_name
-                            ));
+                    let reversed = petgraph::visit::Reversed(&self.graph);
+                    let bfs = petgraph::visit::Bfs::new(&reversed, node);
+                    use petgraph::visit::Walker;
+                    let command_buffer = bfs.iter(&reversed)
+                        .filter_map(|parent| match (self.graph[parent].1).0 {
+                            NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                            _ => None,
+                        })
+                        .next()
+                        .expect(&format!(
+                            "BFS search couldn't find BeginCommandBuffer for {}",
+                            this_name.clone()
+                        ));
+                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
                         let new_device = device.clone();
                         let new_f = f.clone();
                         device.debug_marker_around(
                             command_buffer,
                             &format!("{} -> DrawCommands", this_name),
                             [0.0; 4],
-                            move || {
-                                new_f(&new_device, &world, &render_dag, command_buffer)
-                            },
+                            move || new_f(&new_device, &world, &render_dag, command_buffer),
                         );
-                        NodeRuntime::DrawCommands(f)
+                        None
                     })).shared();
                 }
                 &NodeRuntime::EndSubPass(ix) => {
-                    *this_lock = pool.spawn(inputs.map(move |inputs| NodeRuntime::EndSubPass(ix)))
-                        .shared();
+                    *this_dynamic = pool.spawn(wait_all.map(|_| None)).shared();
                 }
                 &NodeRuntime::EndRenderPass => {
                     let device = base.device.clone();
-                    *this_lock = pool.spawn(inputs.map(move |inputs| {
+                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
                         let command_buffer = inputs
                             .iter()
                             .cloned()
-                            .filter_map(|i| match i {
+                            .filter_map(|i| match i.0 {
                                 NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
                                 _ => None,
                             })
@@ -473,7 +537,7 @@ impl RenderDAG {
                         let _renderpass = inputs
                             .iter()
                             .cloned()
-                            .filter_map(|i| match i {
+                            .filter_map(|i| match i.0 {
                                 NodeRuntime::BeginRenderPass(rp) => Some(rp),
                                 _ => None,
                             })
@@ -489,7 +553,7 @@ impl RenderDAG {
                             || unsafe { device.cmd_end_render_pass(command_buffer) },
                         );
                         println!("Ended render pass");
-                        NodeRuntime::EndRenderPass
+                        None
                     })).shared();
                 }
                 &NodeRuntime::Framebuffer(_) => (),
@@ -499,6 +563,7 @@ impl RenderDAG {
             pool.spawn(
                 self.graph[last_node]
                     .1
+                     .1
                     .read()
                     .unwrap()
                     .clone()
@@ -567,7 +632,7 @@ impl CommandBufferBuilder {
         RenderPassBuilder {
             begin: start,
             end: end,
-            command_buffer_builder: self
+            command_buffer_builder: self,
         }
     }
 }
@@ -575,7 +640,7 @@ impl CommandBufferBuilder {
 pub struct RenderPassBuilder<'a> {
     pub begin: BuilderNode,
     pub end: BuilderNode,
-    pub command_buffer_builder: &'a CommandBufferBuilder
+    pub command_buffer_builder: &'a CommandBufferBuilder,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -585,8 +650,6 @@ impl<'a> RenderPassBuilder<'a> {
     {
         let node = builder.add_node(name, value);
         builder.add_edge(&self.begin, &node);
-        self.command_buffer_builder.start_before(builder, &node);
-        self.command_buffer_builder.end_after(builder, &node);
         node
     }
 
@@ -615,15 +678,15 @@ impl<'a> RenderPassBuilder<'a> {
         let end_name = name.clone() + "-end";
         let (start, end) = (
             self.add_node(builder, start_name, NodeBuilder::BeginSubpass(index)),
-            self.add_node(builder, end_name, NodeBuilder::EndSubpass(index)),
+            // self.add_node(builder, end_name, NodeBuilder::EndSubpass(index)),
+            builder.add_node(end_name, NodeBuilder::EndSubpass(index)),
         );
-        self.start_before(builder, &start);
         builder.add_edge(&start, &end);
         self.end_after(builder, &end);
         SubPassBuilder {
             begin: start,
             end: end,
-            renderpass_builder: self
+            renderpass_builder: self,
         }
     }
 }
@@ -631,7 +694,7 @@ impl<'a> RenderPassBuilder<'a> {
 pub struct SubPassBuilder<'a> {
     pub begin: BuilderNode,
     pub end: BuilderNode,
-    pub renderpass_builder: &'a RenderPassBuilder<'a>
+    pub renderpass_builder: &'a RenderPassBuilder<'a>,
 }
 
 impl<'a> SubPassBuilder<'a> {
@@ -641,9 +704,6 @@ impl<'a> SubPassBuilder<'a> {
     {
         let node = builder.add_node(name, value);
         builder.add_edge(&self.begin, &node);
-        builder.add_edge(&node, &self.end);
-        self.renderpass_builder.start_before(builder, &node);
-        self.renderpass_builder.command_buffer_builder.start_before(builder, &node);
         node
     }
 
@@ -856,9 +916,10 @@ impl RenderDAGBuilder {
                         let renderpass = renderpass.clone();
                         output_graph.add_node((
                             Cow::from("begin_render_pass"),
-                            Arc::new(RwLock::new(pool.spawn_fn(move || {
-                                Ok(NodeRuntime::BeginRenderPass(renderpass))
-                            }).shared())),
+                            (
+                                NodeRuntime::BeginRenderPass(renderpass),
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
                     /*
@@ -913,9 +974,10 @@ impl RenderDAGBuilder {
                     let node = {
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn_fn(move || {
-                                Ok(NodeRuntime::EndRenderPass)
-                            }).shared())),
+                            (
+                                NodeRuntime::EndRenderPass,
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
                     name_mapping.insert(this_name.clone(), node);
@@ -933,9 +995,10 @@ impl RenderDAGBuilder {
                     let node = {
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn_fn(move || {
-                                Ok(NodeRuntime::PresentImage)
-                            }).shared())),
+                            (
+                                NodeRuntime::PresentImage,
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
 
@@ -960,26 +1023,14 @@ impl RenderDAGBuilder {
                         .collect::<Vec<_>>();
                         */
 
-                    let command_buffer = inputs
-                        .iter()
-                        .filter_map(|i| match i {
-                            &(ref name, NodeBuilder::BeginCommandBuffer) => name_mapping.get(name),
-                            _ => None,
-                        })
-                        .cloned()
-                        .next()
-                        .expect(&format!(
-                            "BeginCommandBuffer not attached to NodeBuilder::Subpass {}",
-                            this_name
-                        ));
-
                     let start = {
                         let ix = ix.clone();
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn_fn(move || {
-                                Ok(NodeRuntime::BeginSubPass(ix))
-                            }).shared())),
+                            (
+                                NodeRuntime::BeginSubPass(ix),
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
                     name_mapping.insert(this_name.clone(), start);
@@ -989,6 +1040,7 @@ impl RenderDAGBuilder {
                         output_graph.add_edge(end_subpass, start, ());
                     }
                     */
+                    // let dependencies = inputs.iter().filter(|node| node.1.0 != "main_command_buffer-start").map(|node| node.0.clone());
                     let dependencies = inputs.iter().map(|node| node.0.clone());
                     for dependency in dependencies {
                         let mapping = *name_mapping.get(&dependency).expect(&format!(
@@ -1015,12 +1067,13 @@ impl RenderDAGBuilder {
                         let ix = ix.clone();
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn_fn(move || {
-                                Ok(NodeRuntime::EndSubPass(ix))
-                            }).shared())),
+                            (
+                                NodeRuntime::EndSubPass(ix),
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
-                    output_graph.add_edge(start, end, ());
+                    output_graph.update_edge(start, end, ());
                     name_mapping.insert(this_name.clone(), end);
                     let dependencies = inputs.iter().map(|node| node.0.clone());
                     for dependency in dependencies {
@@ -1028,7 +1081,7 @@ impl RenderDAGBuilder {
                             "Dependency of EndSubpass {}, {} does not have a mapping to output graph",
                             this_name, dependency
                         ));
-                        output_graph.add_edge(mapping, end, ());
+                        output_graph.update_edge(mapping, end, ());
                     }
                 }
                 NodeBuilder::PipelineLayout => {
@@ -1132,14 +1185,24 @@ impl RenderDAGBuilder {
                         })
                         .next()
                         .expect("no pipeline layout specified for graphics pipeline");
-                    let renderpass = inputs
-                        .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::BeginRenderPass) => renderpasses.get(name),
+                    let reversed = petgraph::visit::Reversed(&self.graph);
+                    let bfs = petgraph::visit::Bfs::new(&reversed, node);
+                    use petgraph::visit::Walker;
+                    let renderpass_node = bfs.iter(&reversed)
+                        .filter_map(|parent| match self.graph[parent] {
+                            (ref name, NodeBuilder::BeginRenderPass) => name_mapping.get(name),
                             _ => None,
                         })
+                        .cloned()
                         .next()
-                        .expect("no renderpass specified for graphics pipeline");
+                        .expect(&format!(
+                            "BFS search couldn't find BeginRenderPass for {}",
+                            this_name.clone()
+                        ));
+                    let renderpass = match (output_graph[renderpass_node].1).0 {
+                        NodeRuntime::BeginRenderPass(rp) => rp,
+                        _ => panic!("renderpass does not exist"),
+                    };
                     let shader_entry_name = CString::new("main").unwrap();
                     let shader_stage_create_infos = shader_modules
                         .iter()
@@ -1297,7 +1360,7 @@ impl RenderDAGBuilder {
                         p_color_blend_state: &color_blend_state,
                         p_dynamic_state: &dynamic_state_info,
                         layout: pipeline_layout.clone(),
-                        render_pass: *renderpass,
+                        render_pass: renderpass,
                         subpass: subpass_ix as u32,
                         base_pipeline_handle: vk::Pipeline::null(),
                         base_pipeline_index: 0,
@@ -1316,13 +1379,10 @@ impl RenderDAGBuilder {
                         let viewports = viewports[0].clone();
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn_fn(move || {
-                                Ok(NodeRuntime::BindPipeline(
-                                    pipeline,
-                                    Some(scissors.clone()),
-                                    Some(viewports.clone()),
-                                ))
-                            }).shared())),
+                            (
+                                NodeRuntime::BindPipeline(pipeline, Some(scissors.clone()), Some(viewports.clone())),
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
                     name_mapping.insert(this_name.clone(), bind);
@@ -1341,20 +1401,6 @@ impl RenderDAGBuilder {
                     output_graph.add_edge(subpass, bind, ());
 
                     pipelines.insert(this_name.clone(), (bind, graphics_pipeline));
-
-                    let command_buffer = inputs
-                        .iter()
-                        .filter_map(|i| match i {
-                            &(ref name, NodeBuilder::BeginCommandBuffer) => name_mapping.get(name),
-                            _ => None,
-                        })
-                        .cloned()
-                        .next()
-                        .expect(&format!(
-                            "BeginCommandBuffer not attached to NodeBuilder::GraphicsPipeline {}",
-                            this_name
-                        ));
-                    output_graph.add_edge(command_buffer, bind, ());
                 }
                 NodeBuilder::DrawCommands(ref f) => {
                     let &(pipeline_bind, _) = inputs
@@ -1369,23 +1415,14 @@ impl RenderDAGBuilder {
                         let f = f.clone();
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn(Ok(NodeRuntime::DrawCommands(f)).into_future()).shared()))
+                            (
+                                NodeRuntime::DrawCommands(f),
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         ))
                     };
                     name_mapping.insert(this_name.clone(), draw);
                     output_graph.add_edge(pipeline_bind, draw, ());
-                    let command_buffer = inputs
-                        .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::BeginCommandBuffer) => name_mapping.get(name),
-                            _ => None,
-                        })
-                        .next()
-                        .expect(&format!(
-                            "No command buffer connected to DrawCommands {}",
-                            this_name
-                        ));
-                    output_graph.add_edge(*command_buffer, draw, ());
                 }
                 NodeBuilder::DescriptorSet(size) => {
                     let descriptor_sizes = inputs
@@ -1510,9 +1547,10 @@ impl RenderDAGBuilder {
                     framebuffers.insert(self.graph[node].0.clone(), v.clone());
                     let fb = output_graph.add_node((
                         Cow::from("framebuffer"),
-                        Arc::new(RwLock::new(pool.spawn_fn(|| {
-                            Ok(NodeRuntime::Framebuffer(v))
-                        }).shared())),
+                        (
+                            NodeRuntime::Framebuffer(v),
+                            Arc::new(RwLock::new(pool.spawn_fn(|| Ok(None)).shared())),
+                        ),
                     ));
                     output_graph.add_edge(fb, *renderpass_node, ());
                 }
@@ -1541,9 +1579,10 @@ impl RenderDAGBuilder {
                         this_name.clone(),
                         output_graph.add_node((
                             this_name.clone(),
-                            Arc::new(RwLock::new(pool.spawn(
-                                Ok(NodeRuntime::BeginCommandBuffer(command_buffer)).into_future(),
-                            ).shared())),
+                            (
+                                NodeRuntime::BeginCommandBuffer(command_buffer),
+                                Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                            ),
                         )),
                     );
                 },
@@ -1551,9 +1590,10 @@ impl RenderDAGBuilder {
                     let dependencies = inputs.iter().map(|node| node.0.clone());
                     let node = output_graph.add_node((
                         this_name.clone(),
-                        Arc::new(RwLock::new(pool.spawn(
-                            Ok(NodeRuntime::EndCommandBuffer).into_future(),
-                        ).shared())),
+                        (
+                            NodeRuntime::EndCommandBuffer,
+                            Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                        ),
                     ));
                     name_mapping.insert(this_name.clone(), node);
                     for dependency in dependencies {
@@ -1567,13 +1607,14 @@ impl RenderDAGBuilder {
                 NodeBuilder::AcquirePresentImage => {
                     let node = output_graph.add_node((
                         this_name.clone(),
-                        Arc::new(RwLock::new(pool.spawn(
-                            Ok(NodeRuntime::AcquirePresentImage(999)).into_future(),
-                        ).shared())),
+                        (
+                            NodeRuntime::AcquirePresentImage,
+                            Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
+                        ),
                     ));
                     name_mapping.insert(this_name.clone(), node);
                 }
-                _ => ()
+                _ => (),
             }
         }
         RenderDAG {

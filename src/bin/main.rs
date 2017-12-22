@@ -71,7 +71,9 @@ fn main() {
             "draw_commands",
             Node::DrawCommands(Arc::new(|device, world, render_dag, command_buffer| {
                 use specs::Join;
-                let world = world.read().expect("Failed to lock the world read in DrawCommands");
+                let world = world
+                    .read()
+                    .expect("Failed to lock the world read in DrawCommands");
                 for (ix, mesh) in world.read::<SimpleColorMesh>().join().enumerate() {
                     unsafe {
                         device.cmd_bind_descriptor_sets(
@@ -104,8 +106,7 @@ fn main() {
                             0,
                             mesh.0.index_type,
                         );
-                        device
-                            .cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
+                        device.cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
                     }
                 }
             })),
@@ -119,14 +120,13 @@ fn main() {
         builder.add_edge(&acquire_image, &present_image);
         builder.add_edge(&vertex_shader, &graphics_pipeline);
         builder.add_edge(&fragment_shader, &graphics_pipeline);
-        renderpass.start_before(&mut builder, &graphics_pipeline);
         builder.add_edge(&vertex_binding, &graphics_pipeline);
         builder.add_edge(&uv_binding, &graphics_pipeline);
         builder.add_edge(&vertex_attribute, &graphics_pipeline);
         builder.add_edge(&uv_attribute, &graphics_pipeline);
         builder.add_edge(&pipeline_layout, &graphics_pipeline);
         builder.add_edge(&graphics_pipeline, &draw_commands);
-        builder.add_edge(&draw_commands, &present_image);
+        subpass.end_after(&mut builder, &draw_commands);
 
         {
             let triangle_subpass = renderpass.with_subpass(&mut builder, "triangle_subpass", 0);
@@ -162,19 +162,19 @@ fn main() {
                 "triangle_draw_commands",
                 Node::DrawCommands(Arc::new(|device, world, _render_dag, command_buffer| {
                     use specs::Join;
-                    let world = world.read().expect("Failed to lock the world read in DrawCommands");
+                    let world = world
+                        .read()
+                        .expect("Failed to lock the world read in DrawCommands");
                     for mesh in world.read::<TriangleMesh>().join() {
                         unsafe {
-                            device
-                                .cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.vk()], &[0]);
+                            device.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.vk()], &[0]);
                             device.cmd_bind_index_buffer(
                                 command_buffer,
                                 mesh.0.index_buffer.vk(),
                                 0,
                                 mesh.0.index_type,
                             );
-                            device
-                                .cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
+                            device.cmd_draw_indexed(command_buffer, mesh.0.index_count, 1, 0, 0, 0);
                         }
                     }
                 })),
@@ -190,6 +190,7 @@ fn main() {
             );
             builder.add_edge(&triangle_pipeline_layout, &triangle_graphics_pipeline);
             builder.add_edge(&triangle_graphics_pipeline, &triangle_draw_commands);
+            triangle_subpass.end_after(&mut builder, &triangle_draw_commands);
             triangle_subpass.end_before(&mut builder, &subpass.begin);
         }
 
@@ -351,14 +352,18 @@ fn main() {
                         &["steady_rotation"],
                     )
                     .build();
-                
-                let mut world = world.write().expect("failed to lock write world in render loop");
+
+                let mut world = world
+                    .write()
+                    .expect("failed to lock write world in render loop");
                 dispatcher.dispatch(&mut world.res);
             }
             let mut buffers = vec![];
             {
                 use specs::Join;
-                let world = world.read().expect("failed to lock read world in render loop");
+                let world = world
+                    .read()
+                    .expect("failed to lock read world in render loop");
                 for (ix, mvp) in world.read::<MVP>().join().enumerate() {
                     let mvps = [mvp.clone()];
                     let ubo_buffer = buffer::Buffer::upload_from::<MVP, _>(
