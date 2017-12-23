@@ -184,6 +184,53 @@ impl Device {
     pub fn debug_marker_around<R, F: Fn() -> R>(&self, _command_buffer: vk::CommandBuffer, _name: &str, _color: [f32; 4], f: F) -> R {
         f()
     }
+
+    #[cfg(feature = "validation")]
+    pub fn debug_marker_start(&self, command_buffer: vk::CommandBuffer, name: &str, color: [f32; 4]) {
+        if self.debug_marker_loader.is_none() {
+            return;
+        }
+
+        unsafe {
+            use std::ffi::CString;
+            use std::ptr;
+
+            let name = CString::new(name).unwrap();
+            let marker_info = vk::DebugMarkerMarkerInfoEXT {
+                s_type: vk::StructureType::DebugMarkerMarkerInfoEXT,
+                p_next: ptr::null(),
+                p_marker_name: name.as_ptr(),
+                color: color,
+            };
+            self.debug_marker_loader
+                .as_ref()
+                .unwrap()
+                .cmd_debug_marker_begin_ext(command_buffer, &marker_info);
+        };
+    }
+
+    #[cfg(not(feature = "validation"))]
+    pub fn debug_marker_start(&self, _command_buffer: vk::CommandBuffer, _name: &str, _color: [f32; 4]) {}
+
+    #[cfg(feature = "validation")]
+    pub fn debug_marker_end(&self, command_buffer: vk::CommandBuffer) {
+        if self.debug_marker_loader.is_none() {
+            return;
+        }
+
+        unsafe {
+            use std::ffi::CString;
+            use std::ptr;
+
+            self.debug_marker_loader
+                .as_ref()
+                .unwrap()
+                .cmd_debug_marker_end_ext(command_buffer);
+        };
+    }
+
+    #[cfg(not(feature = "validation"))]
+    pub fn debug_marker_end(&self, _command_buffer: vk::CommandBuffer) {}
 }
 
 impl ops::Deref for Device {

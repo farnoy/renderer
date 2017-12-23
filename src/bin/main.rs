@@ -269,7 +269,6 @@ fn main() {
                     "glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
                 ).unwrap(),
             ))
-            .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)))
             .build();
 
         {

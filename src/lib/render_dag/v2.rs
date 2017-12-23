@@ -179,81 +179,93 @@ impl RenderDAG {
                     let swapchain_loader = base.swapchain_loader.clone();
                     let swapchain = base.swapchain;
                     let present_complete_semaphore = base.present_complete_semaphore;
-                    *this_dynamic = self.pool.spawn(wait_all.map(move |_inputs| {
-                        let present_index = unsafe {
-                            swapchain_loader
-                                .acquire_next_image_khr(
-                                    swapchain,
-                                    u64::MAX,
-                                    present_complete_semaphore,
-                                    vk::Fence::null(),
-                                )
-                                .unwrap()
-                        };
-                        println!("Acquired present index {}", present_index);
-                        Some(NodeDynamic::AcquirePresentImage(present_index))
-                    })).shared();
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |_inputs| {
+                            let present_index = unsafe {
+                                swapchain_loader
+                                    .acquire_next_image_khr(
+                                        swapchain,
+                                        u64::MAX,
+                                        present_complete_semaphore,
+                                        vk::Fence::null(),
+                                    )
+                                    .unwrap()
+                            };
+                            println!("Acquired present index {}", present_index);
+                            Some(NodeDynamic::AcquirePresentImage(present_index))
+                        }))
+                        .shared();
                 }
                 &NodeRuntime::PresentImage => unsafe {
                     let swapchain_loader = base.swapchain_loader.clone();
                     let present_queue = base.present_queue;
                     let rendering_complete_semaphore = base.rendering_complete_semaphore;
                     let swapchain = base.swapchain;
-                    *this_dynamic = self.pool.spawn(
-                        wait_all
-                            .map(move |inputs| {
-                                let present_index = inputs
-                                    .iter()
-                                    .cloned()
-                                    .filter_map(|i| match i {
-                                        (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
-                                        _ => None,
-                                    })
-                                    .next()
-                                    .unwrap();
-                                let present_info = vk::PresentInfoKHR {
-                                    s_type: vk::StructureType::PresentInfoKhr,
-                                    p_next: ptr::null(),
-                                    wait_semaphore_count: 1,
-                                    p_wait_semaphores: &rendering_complete_semaphore,
-                                    swapchain_count: 1,
-                                    p_swapchains: &swapchain,
-                                    p_image_indices: &present_index,
-                                    p_results: ptr::null_mut(),
-                                };
-                                println!("presenting index {}", present_index);
-                                swapchain_loader
-                                    .queue_present_khr(present_queue, &present_info)
-                                    .unwrap();
-                                None
-                            })
-                            .map_err(|_| ()),
-                    ).shared();
+                    *this_dynamic = self.pool
+                        .spawn(
+                            wait_all
+                                .map(move |inputs| {
+                                    let present_index = inputs
+                                        .iter()
+                                        .cloned()
+                                        .filter_map(|i| match i {
+                                            (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
+                                            _ => None,
+                                        })
+                                        .next()
+                                        .unwrap();
+                                    let present_info = vk::PresentInfoKHR {
+                                        s_type: vk::StructureType::PresentInfoKhr,
+                                        p_next: ptr::null(),
+                                        wait_semaphore_count: 1,
+                                        p_wait_semaphores: &rendering_complete_semaphore,
+                                        swapchain_count: 1,
+                                        p_swapchains: &swapchain,
+                                        p_image_indices: &present_index,
+                                        p_results: ptr::null_mut(),
+                                    };
+                                    println!("presenting index {}", present_index);
+                                    swapchain_loader
+                                        .queue_present_khr(present_queue, &present_info)
+                                        .unwrap();
+                                    None
+                                })
+                                .map_err(|_| ()),
+                        )
+                        .shared();
                 },
                 &NodeRuntime::BeginCommandBuffer(command_buffer) => {
                     let device = base.device.clone();
-                    *this_dynamic = self.pool.spawn(
-                        wait_all
-                            .map(move |inputs| unsafe {
-                                device
-                                    .reset_command_buffer(
+                    *this_dynamic = self.pool
+                        .spawn(
+                            wait_all
+                                .map(move |inputs| unsafe {
+                                    device
+                                        .reset_command_buffer(
+                                            command_buffer,
+                                            vk::COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT,
+                                        )
+                                        .expect("Reset command buffer failed.");
+                                    let command_buffer_begin_info = vk::CommandBufferBeginInfo {
+                                        s_type: vk::StructureType::CommandBufferBeginInfo,
+                                        p_next: ptr::null(),
+                                        p_inheritance_info: ptr::null(),
+                                        flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                    };
+                                    device
+                                        .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+                                        .expect("Begin commandbuffer");
+                                    device.debug_marker_start(
                                         command_buffer,
-                                        vk::COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT,
-                                    )
-                                    .expect("Reset command buffer failed.");
-                                let command_buffer_begin_info = vk::CommandBufferBeginInfo {
-                                    s_type: vk::StructureType::CommandBufferBeginInfo,
-                                    p_next: ptr::null(),
-                                    p_inheritance_info: ptr::null(),
-                                    flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                };
-                                device
-                                    .begin_command_buffer(command_buffer, &command_buffer_begin_info)
-                                    .expect("Begin commandbuffer");
-                                None
-                            })
-                            .map_err(|_| ()),
-                    ).shared();
+                                        &format!("{} -> BeginCommandBuffer", this_name),
+                                        [0.0; 4],
+                                    );
+
+                                    None
+                                })
+                                .map_err(|_| ()),
+                        )
+                        .shared();
                 }
                 &NodeRuntime::EndCommandBuffer => {
                     let device = base.device.clone();
@@ -262,140 +274,145 @@ impl RenderDAG {
                     let rendering_complete_semaphore = base.rendering_complete_semaphore.clone();
                     // TODO: represent queues in the DAG
                     let submit_queue = base.present_queue.clone();
-                    *this_dynamic = self.pool.spawn(
-                        wait_all
-                            .map(move |inputs| unsafe {
-                                let command_buffer = inputs
-                                    .iter()
-                                    .cloned()
-                                    .filter_map(|i| match i.0 {
-                                        NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
-                                        _ => None,
-                                    })
-                                    .next()
-                                    .expect(&format!(
-                                        "BeginCommandBuffer not attached to EndCommandBuffer {}",
-                                        this_name
-                                    ));
-                                use std::u64;
-                                device
-                                    .end_command_buffer(command_buffer)
-                                    .expect("End commandbuffer");
-                                let fence_create_info = vk::FenceCreateInfo {
-                                    s_type: vk::StructureType::FenceCreateInfo,
-                                    p_next: ptr::null(),
-                                    flags: vk::FenceCreateFlags::empty(),
-                                };
-                                let submit_fence = device
-                                    .create_fence(&fence_create_info, None)
-                                    .expect("Create fence failed.");
-                                let wait_semaphores = [present_complete_semaphore];
-                                let signal_semaphores = [rendering_complete_semaphore];
-                                // TODO: represent wait mask in the DAG/Builder node ??
-                                let wait_mask = [vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT];
-                                let submit_info = vk::SubmitInfo {
-                                    s_type: vk::StructureType::SubmitInfo,
-                                    p_next: ptr::null(),
-                                    wait_semaphore_count: wait_semaphores.len() as u32,
-                                    p_wait_semaphores: wait_semaphores.as_ptr(),
-                                    p_wait_dst_stage_mask: wait_mask.as_ptr(),
-                                    // TODO: extract submitting into another node to enable multiple CB submission
-                                    command_buffer_count: 1,
-                                    p_command_buffers: &command_buffer,
-                                    signal_semaphore_count: signal_semaphores.len() as u32,
-                                    p_signal_semaphores: signal_semaphores.as_ptr(),
-                                };
-                                println!("EndCommandBuffer, submitting to queue");
-                                device
-                                    .queue_submit(submit_queue, &[submit_info], submit_fence)
-                                    .expect("queue submit failed.");
-                                device
-                                    .wait_for_fences(&[submit_fence], true, u64::MAX)
-                                    .expect("Wait for fence failed.");
-                                device.destroy_fence(submit_fence, None);
-                                None
-                            })
-                            .map_err(|_| ()),
-                    ).shared();
+                    *this_dynamic = self.pool
+                        .spawn(
+                            wait_all
+                                .map(move |inputs| unsafe {
+                                    let command_buffer = inputs
+                                        .iter()
+                                        .cloned()
+                                        .filter_map(|i| match i.0 {
+                                            NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                                            _ => None,
+                                        })
+                                        .next()
+                                        .expect(&format!(
+                                            "BeginCommandBuffer not attached to EndCommandBuffer {}",
+                                            this_name
+                                        ));
+                                    device.debug_marker_end(command_buffer);
+                                    device
+                                        .end_command_buffer(command_buffer)
+                                        .expect("End commandbuffer");
+                                    let fence_create_info = vk::FenceCreateInfo {
+                                        s_type: vk::StructureType::FenceCreateInfo,
+                                        p_next: ptr::null(),
+                                        flags: vk::FenceCreateFlags::empty(),
+                                    };
+                                    let submit_fence = device
+                                        .create_fence(&fence_create_info, None)
+                                        .expect("Create fence failed.");
+                                    let wait_semaphores = [present_complete_semaphore];
+                                    let signal_semaphores = [rendering_complete_semaphore];
+                                    // TODO: represent wait mask in the DAG/Builder node ??
+                                    let wait_mask = [vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT];
+                                    let submit_info = vk::SubmitInfo {
+                                        s_type: vk::StructureType::SubmitInfo,
+                                        p_next: ptr::null(),
+                                        wait_semaphore_count: wait_semaphores.len() as u32,
+                                        p_wait_semaphores: wait_semaphores.as_ptr(),
+                                        p_wait_dst_stage_mask: wait_mask.as_ptr(),
+                                        // TODO: extract submitting into another node to enable multiple CB submission
+                                        command_buffer_count: 1,
+                                        p_command_buffers: &command_buffer,
+                                        signal_semaphore_count: signal_semaphores.len() as u32,
+                                        p_signal_semaphores: signal_semaphores.as_ptr(),
+                                    };
+                                    println!("EndCommandBuffer, submitting to queue");
+                                    device
+                                        .queue_submit(submit_queue, &[submit_info], submit_fence)
+                                        .expect("queue submit failed.");
+                                    use std::u64;
+                                    device
+                                        .wait_for_fences(&[submit_fence], true, u64::MAX)
+                                        .expect("Wait for fence failed.");
+                                    device.destroy_fence(submit_fence, None);
+                                    None
+                                })
+                                .map_err(|_| ()),
+                        )
+                        .shared();
                 }
                 &NodeRuntime::BeginRenderPass(renderpass) => {
                     let device = base.device.clone();
                     let surface_resolution = base.surface_resolution;
                     let renderpass = renderpass.clone();
                     let name = self.graph[node].0.clone();
-                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
-                        let command_buffer = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i.0 {
-                                NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "BeginCommandBuffer not attached to BeginRenderPass {}",
-                                name
-                            ));
-                        let framebuffer = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i.0 {
-                                NodeRuntime::Framebuffer(fb) => Some(fb),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "Framebuffer not attached to BeginRenderPass {}",
-                                name
-                            ));
-                        let present_index = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i {
-                                (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "AcquirePresentImage not attached to BeginRenderPass {}",
-                                name
-                            ));
-                        device.debug_marker_around(
-                            command_buffer,
-                            &format!("{} -> BeginRenderPass", name),
-                            [0.0; 4],
-                            || {
-                                let clear_values = [
-                                    vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
-                                    vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
-                                        depth: 1.0,
-                                        stencil: 0,
-                                    }),
-                                ];
-                                let render_pass_begin_info = vk::RenderPassBeginInfo {
-                                    s_type: vk::StructureType::RenderPassBeginInfo,
-                                    p_next: ptr::null(),
-                                    render_pass: renderpass,
-                                    framebuffer: framebuffer[present_index as usize],
-                                    render_area: vk::Rect2D {
-                                        offset: vk::Offset2D { x: 0, y: 0 },
-                                        extent: surface_resolution.clone(),
-                                    },
-                                    clear_value_count: clear_values.len() as u32,
-                                    p_clear_values: clear_values.as_ptr(),
-                                };
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |inputs| {
+                            let command_buffer = inputs
+                                .iter()
+                                .cloned()
+                                .filter_map(|i| match i.0 {
+                                    NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                                    _ => None,
+                                })
+                                .next()
+                                .expect(&format!(
+                                    "BeginCommandBuffer not attached to BeginRenderPass {}",
+                                    name
+                                ));
+                            let framebuffer = inputs
+                                .iter()
+                                .cloned()
+                                .filter_map(|i| match i.0 {
+                                    NodeRuntime::Framebuffer(fb) => Some(fb),
+                                    _ => None,
+                                })
+                                .next()
+                                .expect(&format!(
+                                    "Framebuffer not attached to BeginRenderPass {}",
+                                    name
+                                ));
+                            let present_index = inputs
+                                .iter()
+                                .cloned()
+                                .filter_map(|i| match i {
+                                    (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
+                                    _ => None,
+                                })
+                                .next()
+                                .expect(&format!(
+                                    "AcquirePresentImage not attached to BeginRenderPass {}",
+                                    name
+                                ));
+                            device.debug_marker_around(
+                                command_buffer,
+                                &format!("{} -> BeginRenderPass", name),
+                                [0.0; 4],
+                                || {
+                                    let clear_values = [
+                                        vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
+                                        vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
+                                            depth: 1.0,
+                                            stencil: 0,
+                                        }),
+                                    ];
+                                    let render_pass_begin_info = vk::RenderPassBeginInfo {
+                                        s_type: vk::StructureType::RenderPassBeginInfo,
+                                        p_next: ptr::null(),
+                                        render_pass: renderpass,
+                                        framebuffer: framebuffer[present_index as usize],
+                                        render_area: vk::Rect2D {
+                                            offset: vk::Offset2D { x: 0, y: 0 },
+                                            extent: surface_resolution.clone(),
+                                        },
+                                        clear_value_count: clear_values.len() as u32,
+                                        p_clear_values: clear_values.as_ptr(),
+                                    };
 
-                                unsafe {
-                                    device.cmd_begin_render_pass(
-                                        command_buffer,
-                                        &render_pass_begin_info,
-                                        vk::SubpassContents::Inline,
-                                    );
-                                }
-                            },
-                        );
-                        None
-                    })).shared();
+                                    unsafe {
+                                        device.cmd_begin_render_pass(
+                                            command_buffer,
+                                            &render_pass_begin_info,
+                                            vk::SubpassContents::Inline,
+                                        );
+                                    }
+                                },
+                            );
+                            None
+                        }))
+                        .shared();
                 }
                 &NodeRuntime::BeginSubPass(ix) => {
                     let name = self.graph[node].0.clone();
@@ -413,8 +430,9 @@ impl RenderDAG {
                             "BFS search couldn't find BeginCommandBuffer for {}",
                             this_name.clone()
                         ));
-                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
-                        /*
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |inputs| {
+                            /*
                         let command_buffer = inputs
                             .iter()
                             .cloned()
@@ -428,25 +446,26 @@ impl RenderDAG {
                                 name
                             ));
                             */
-                        device.debug_marker_around(
-                            command_buffer,
-                            &format!("{} -> BeginSubPass", name),
-                            [0.0; 4],
-                            || {
-                                let previous_subpass = inputs.iter().find(|i| match i.0 {
-                                    NodeRuntime::EndSubPass(_) => true,
-                                    _ => false,
-                                });
+                            device.debug_marker_around(
+                                command_buffer,
+                                &format!("{} -> BeginSubPass", name),
+                                [0.0; 4],
+                                || {
+                                    let previous_subpass = inputs.iter().find(|i| match i.0 {
+                                        NodeRuntime::EndSubPass(_) => true,
+                                        _ => false,
+                                    });
 
-                                if previous_subpass.is_some() {
-                                    unsafe {
-                                        device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                    if previous_subpass.is_some() {
+                                        unsafe {
+                                            device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                        }
                                     }
-                                }
-                            },
-                        );
-                        None
-                    })).shared();
+                                },
+                            );
+                            None
+                        }))
+                        .shared();
                 }
                 &NodeRuntime::BindPipeline(pipeline, scissors_opt, viewport_opt) => unsafe {
                     let device = base.device.clone();
@@ -467,24 +486,26 @@ impl RenderDAG {
                             "BFS search couldn't find BeginCommandBuffer for {}",
                             this_name.clone()
                         ));
-                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
-                        device.debug_marker_around(
-                            command_buffer,
-                            &format!("{} -> BindPipeline", name),
-                            [0.0; 4],
-                            || {
-                                device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |inputs| {
+                            device.debug_marker_around(
+                                command_buffer,
+                                &format!("{} -> BindPipeline", name),
+                                [0.0; 4],
+                                || {
+                                    device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
 
-                                if let Some(viewport) = viewport_opt {
-                                    device.cmd_set_viewport(command_buffer, &[viewport]);
-                                }
-                                if let Some(scissors) = scissors_opt {
-                                    device.cmd_set_scissor(command_buffer, &[scissors]);
-                                }
-                            },
-                        );
-                        None
-                    })).shared();
+                                    if let Some(viewport) = viewport_opt {
+                                        device.cmd_set_viewport(command_buffer, &[viewport]);
+                                    }
+                                    if let Some(scissors) = scissors_opt {
+                                        device.cmd_set_scissor(command_buffer, &[scissors]);
+                                    }
+                                },
+                            );
+                            None
+                        }))
+                        .shared();
                 },
                 &NodeRuntime::DrawCommands(ref f) => {
                     let device = base.device.clone();
@@ -504,72 +525,78 @@ impl RenderDAG {
                             "BFS search couldn't find BeginCommandBuffer for {}",
                             this_name.clone()
                         ));
-                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
-                        let new_device = device.clone();
-                        let new_f = f.clone();
-                        device.debug_marker_around(
-                            command_buffer,
-                            &format!("{} -> DrawCommands", this_name),
-                            [0.0; 4],
-                            move || new_f(&new_device, &world, &render_dag, command_buffer),
-                        );
-                        None
-                    })).shared();
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |inputs| {
+                            let new_device = device.clone();
+                            let new_f = f.clone();
+                            device.debug_marker_around(
+                                command_buffer,
+                                &format!("{} -> DrawCommands", this_name),
+                                [0.0; 4],
+                                move || new_f(&new_device, &world, &render_dag, command_buffer),
+                            );
+                            None
+                        }))
+                        .shared();
                 }
                 &NodeRuntime::EndSubPass(ix) => {
                     *this_dynamic = self.pool.spawn(wait_all.map(|_| None)).shared();
                 }
                 &NodeRuntime::EndRenderPass => {
                     let device = base.device.clone();
-                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
-                        let command_buffer = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i.0 {
-                                NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "BeginCommandBuffer not attached to EndRenderPass {}",
-                                this_name
-                            ));
-                        let _renderpass = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i.0 {
-                                NodeRuntime::BeginRenderPass(rp) => Some(rp),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "BeginRenderPass not attached to EndRenderPass {}",
-                                this_name
-                            ));
-                        device.debug_marker_around(
-                            command_buffer,
-                            &format!("{} -> EndRenderPass", this_name),
-                            [0.0; 4],
-                            || unsafe { device.cmd_end_render_pass(command_buffer) },
-                        );
-                        println!("Ended render pass");
-                        None
-                    })).shared();
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |inputs| {
+                            let command_buffer = inputs
+                                .iter()
+                                .cloned()
+                                .filter_map(|i| match i.0 {
+                                    NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                                    _ => None,
+                                })
+                                .next()
+                                .expect(&format!(
+                                    "BeginCommandBuffer not attached to EndRenderPass {}",
+                                    this_name
+                                ));
+                            let _renderpass = inputs
+                                .iter()
+                                .cloned()
+                                .filter_map(|i| match i.0 {
+                                    NodeRuntime::BeginRenderPass(rp) => Some(rp),
+                                    _ => None,
+                                })
+                                .next()
+                                .expect(&format!(
+                                    "BeginRenderPass not attached to EndRenderPass {}",
+                                    this_name
+                                ));
+                            device.debug_marker_around(
+                                command_buffer,
+                                &format!("{} -> EndRenderPass", this_name),
+                                [0.0; 4],
+                                || unsafe { device.cmd_end_render_pass(command_buffer) },
+                            );
+                            println!("Ended render pass");
+                            None
+                        }))
+                        .shared();
                 }
                 &NodeRuntime::Framebuffer(_) => (),
             }
         }
         last_node.and_then(|last_node| {
-            self.pool.spawn(
-                self.graph[last_node]
-                    .1
-                     .1
-                    .read()
-                    .unwrap()
-                    .clone()
-                    .map(|_| ())
-                    .map_err(|_| "Something went wrong".to_string()),
-            ).wait()
+            self.pool
+                .spawn(
+                    self.graph[last_node]
+                        .1
+                         .1
+                        .read()
+                        .unwrap()
+                        .clone()
+                        .map(|_| ())
+                        .map_err(|_| "Something went wrong".to_string()),
+                )
+                .wait()
         })
     }
 }
