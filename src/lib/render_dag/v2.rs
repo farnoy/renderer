@@ -257,7 +257,7 @@ impl RenderDAG {
                                         .expect("Begin commandbuffer");
                                     device.debug_marker_start(
                                         command_buffer,
-                                        &format!("{} -> BeginCommandBuffer", this_name),
+                                        &format!("{} -> CommandBuffer", this_name),
                                         [0.0; 4],
                                     );
 
@@ -376,40 +376,38 @@ impl RenderDAG {
                                     "AcquirePresentImage not attached to BeginRenderPass {}",
                                     name
                                 ));
-                            device.debug_marker_around(
+                            device.debug_marker_start(
                                 command_buffer,
-                                &format!("{} -> BeginRenderPass", name),
+                                &format!("{} -> RenderPass", this_name),
                                 [0.0; 4],
-                                || {
-                                    let clear_values = [
-                                        vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
-                                        vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
-                                            depth: 1.0,
-                                            stencil: 0,
-                                        }),
-                                    ];
-                                    let render_pass_begin_info = vk::RenderPassBeginInfo {
-                                        s_type: vk::StructureType::RenderPassBeginInfo,
-                                        p_next: ptr::null(),
-                                        render_pass: renderpass,
-                                        framebuffer: framebuffer[present_index as usize],
-                                        render_area: vk::Rect2D {
-                                            offset: vk::Offset2D { x: 0, y: 0 },
-                                            extent: surface_resolution.clone(),
-                                        },
-                                        clear_value_count: clear_values.len() as u32,
-                                        p_clear_values: clear_values.as_ptr(),
-                                    };
-
-                                    unsafe {
-                                        device.cmd_begin_render_pass(
-                                            command_buffer,
-                                            &render_pass_begin_info,
-                                            vk::SubpassContents::Inline,
-                                        );
-                                    }
-                                },
                             );
+                            let clear_values = [
+                                vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
+                                vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
+                                    depth: 1.0,
+                                    stencil: 0,
+                                }),
+                            ];
+                            let render_pass_begin_info = vk::RenderPassBeginInfo {
+                                s_type: vk::StructureType::RenderPassBeginInfo,
+                                p_next: ptr::null(),
+                                render_pass: renderpass,
+                                framebuffer: framebuffer[present_index as usize],
+                                render_area: vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: surface_resolution.clone(),
+                                },
+                                clear_value_count: clear_values.len() as u32,
+                                p_clear_values: clear_values.as_ptr(),
+                            };
+
+                            unsafe {
+                                device.cmd_begin_render_pass(
+                                    command_buffer,
+                                    &render_pass_begin_info,
+                                    vk::SubpassContents::Inline,
+                                );
+                            }
                             None
                         }))
                         .shared();
@@ -432,37 +430,21 @@ impl RenderDAG {
                         ));
                     *this_dynamic = self.pool
                         .spawn(wait_all.map(move |inputs| {
-                            /*
-                        let command_buffer = inputs
-                            .iter()
-                            .cloned()
-                            .filter_map(|i| match i.0 {
-                                NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
-                                _ => None,
-                            })
-                            .next()
-                            .expect(&format!(
-                                "BeginCommandBuffer not attached to BeginSubPass {}",
-                                name
-                            ));
-                            */
-                            device.debug_marker_around(
+                            device.debug_marker_start(
                                 command_buffer,
-                                &format!("{} -> BeginSubPass", name),
+                                &format!("{} -> SubPass", this_name),
                                 [0.0; 4],
-                                || {
-                                    let previous_subpass = inputs.iter().find(|i| match i.0 {
-                                        NodeRuntime::EndSubPass(_) => true,
-                                        _ => false,
-                                    });
-
-                                    if previous_subpass.is_some() {
-                                        unsafe {
-                                            device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
-                                        }
-                                    }
-                                },
                             );
+                            let previous_subpass = inputs.iter().find(|i| match i.0 {
+                                NodeRuntime::EndSubPass(_) => true,
+                                _ => false,
+                            });
+
+                            if previous_subpass.is_some() {
+                                unsafe {
+                                    device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                }
+                            }
                             None
                         }))
                         .shared();
@@ -540,7 +522,26 @@ impl RenderDAG {
                         .shared();
                 }
                 &NodeRuntime::EndSubPass(ix) => {
-                    *this_dynamic = self.pool.spawn(wait_all.map(|_| None)).shared();
+                    let device = base.device.clone();
+                    let reversed = petgraph::visit::Reversed(&self.graph);
+                    let bfs = petgraph::visit::Bfs::new(&reversed, node);
+                    use petgraph::visit::Walker;
+                    let command_buffer = bfs.iter(&reversed)
+                        .filter_map(|parent| match (self.graph[parent].1).0 {
+                            NodeRuntime::BeginCommandBuffer(cb) => Some(cb),
+                            _ => None,
+                        })
+                        .next()
+                        .expect(&format!(
+                            "BFS search couldn't find BeginCommandBuffer for {}",
+                            this_name.clone()
+                        ));
+                    *this_dynamic = self.pool
+                        .spawn(wait_all.map(move |inputs| {
+                            device.debug_marker_end(command_buffer);
+                            None
+                        }))
+                        .shared();
                 }
                 &NodeRuntime::EndRenderPass => {
                     let device = base.device.clone();
@@ -570,12 +571,8 @@ impl RenderDAG {
                                     "BeginRenderPass not attached to EndRenderPass {}",
                                     this_name
                                 ));
-                            device.debug_marker_around(
-                                command_buffer,
-                                &format!("{} -> EndRenderPass", this_name),
-                                [0.0; 4],
-                                || unsafe { device.cmd_end_render_pass(command_buffer) },
-                            );
+                            unsafe { device.cmd_end_render_pass(command_buffer) }
+                            device.debug_marker_end(command_buffer);
                             println!("Ended render pass");
                             None
                         }))
