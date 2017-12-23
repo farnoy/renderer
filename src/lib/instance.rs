@@ -22,7 +22,7 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(entry: &Arc<Entry>) -> Result<Arc<Instance>, ash::InstanceError> {
-        let layer_names = if cfg!(feature = "validation") {
+        let layer_names = if cfg!(all(feature = "validation", not(feature = "renderdoc"))) {
             vec![CString::new("VK_LAYER_LUNARG_standard_validation").unwrap()]
         } else {
             vec![]
