@@ -97,7 +97,6 @@ pub struct RenderDAG {
     pub graph: RuntimeGraph,
     pub pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout>,
     pub descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>>,
-    pub framebuffers: HashMap<Cow<'static, str>, Vec<vk::Framebuffer>>,
     pool: CpuPool,
 }
 
@@ -777,7 +776,6 @@ impl RenderDAGBuilder {
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
         let mut output_graph = RuntimeGraph::new();
-        let mut framebuffers = HashMap::new();
         let mut renderpasses: HashMap<Cow<'static, str>, vk::RenderPass> = HashMap::new();
         let mut pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout> = HashMap::new();
         let mut pipelines: HashMap<Cow<'static, str>, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
@@ -1551,7 +1549,6 @@ impl RenderDAGBuilder {
                             }
                         })
                         .collect();
-                    framebuffers.insert(self.graph[node].0.clone(), v.clone());
                     let fb = output_graph.add_node((
                         Cow::from("framebuffer"),
                         (
@@ -1627,9 +1624,8 @@ impl RenderDAGBuilder {
         RenderDAG {
             graph: output_graph,
             pipeline_layouts,
-            descriptor_sets: descriptor_sets,
-            framebuffers: framebuffers,
-            pool: pool,
+            descriptor_sets,
+            pool,
         }
     }
 }
