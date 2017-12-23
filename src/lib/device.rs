@@ -219,9 +219,6 @@ impl Device {
         }
 
         unsafe {
-            use std::ffi::CString;
-            use std::ptr;
-
             self.debug_marker_loader
                 .as_ref()
                 .unwrap()

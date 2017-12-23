@@ -11,7 +11,7 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io::Read;
 use std::marker::{Send, Sync};
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::RwLock;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
@@ -110,19 +110,6 @@ impl RenderDAG {
             .cloned()
         {
             last_node = Ok(node);
-            use std::ops::Deref;
-            let input_futures: Vec<Shared<CpuFuture<Option<NodeDynamic>, ()>>> = self.graph
-                .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
-                .map(|ix| {
-                    self.graph[ix]
-                        .1
-                         .1
-                        .read()
-                        .expect("Failed to acquire lock")
-                        .deref()
-                        .clone()
-                })
-                .collect();
             let inputs: Vec<NodeResult<NodeRuntime, NodeDynamic>> = self.graph
                 .neighbors_directed(node, petgraph::EdgeDirection::Incoming)
                 .map(|ix| self.graph[ix].1.clone())
@@ -170,7 +157,6 @@ impl RenderDAG {
                  .1
                 .write()
                 .expect("Failed to acquire ownership lock");
-            let this_node_fut = this_dynamic.clone().wait().unwrap();
             let this_node: &NodeRuntime = &(self.graph[node].1).0;
             let this_name = self.graph[node].0.clone();
             // println!("Executing {}", this_name.clone());
@@ -239,7 +225,7 @@ impl RenderDAG {
                     *this_dynamic = self.pool
                         .spawn(
                             wait_all
-                                .map(move |inputs| unsafe {
+                                .map(move |_inputs| unsafe {
                                     device
                                         .reset_command_buffer(
                                             command_buffer,
@@ -412,8 +398,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::BeginSubPass(ix) => {
-                    let name = self.graph[node].0.clone();
+                &NodeRuntime::BeginSubPass(_ix) => {
                     let device = base.device.clone();
                     let reversed = petgraph::visit::Reversed(&self.graph);
                     let bfs = petgraph::visit::Bfs::new(&reversed, node);
@@ -469,7 +454,7 @@ impl RenderDAG {
                             this_name.clone()
                         ));
                     *this_dynamic = self.pool
-                        .spawn(wait_all.map(move |inputs| {
+                        .spawn(wait_all.map(move |_inputs| {
                             device.debug_marker_around(
                                 command_buffer,
                                 &format!("{} -> BindPipeline", name),
@@ -508,7 +493,7 @@ impl RenderDAG {
                             this_name.clone()
                         ));
                     *this_dynamic = self.pool
-                        .spawn(wait_all.map(move |inputs| {
+                        .spawn(wait_all.map(move |_inputs| {
                             let new_device = device.clone();
                             let new_f = f.clone();
                             device.debug_marker_around(
@@ -521,7 +506,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::EndSubPass(ix) => {
+                &NodeRuntime::EndSubPass(_ix) => {
                     let device = base.device.clone();
                     let reversed = petgraph::visit::Reversed(&self.graph);
                     let bfs = petgraph::visit::Bfs::new(&reversed, node);
@@ -537,7 +522,7 @@ impl RenderDAG {
                             this_name.clone()
                         ));
                     *this_dynamic = self.pool
-                        .spawn(wait_all.map(move |inputs| {
+                        .spawn(wait_all.map(move |_inputs| {
                             device.debug_marker_end(command_buffer);
                             None
                         }))
@@ -791,11 +776,9 @@ impl RenderDAGBuilder {
     }
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
-        use petgraph::graph::NodeIndex;
         let mut output_graph = RuntimeGraph::new();
         let mut framebuffers = HashMap::new();
         let mut renderpasses: HashMap<Cow<'static, str>, vk::RenderPass> = HashMap::new();
-        let subpasses: HashMap<Cow<'static, str>, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, u8)> = HashMap::new();
         let mut pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout> = HashMap::new();
         let mut pipelines: HashMap<Cow<'static, str>, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
         let mut descriptor_set_layouts: HashMap<Cow<'static, str>, vk::DescriptorSetLayout> = HashMap::new();
