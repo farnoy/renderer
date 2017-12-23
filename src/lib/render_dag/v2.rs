@@ -98,11 +98,11 @@ pub struct RenderDAG {
     pub pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout>,
     pub descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>>,
     pub framebuffers: HashMap<Cow<'static, str>, Vec<vk::Framebuffer>>,
+    pool: CpuPool,
 }
 
 impl RenderDAG {
     pub fn run(&self, base: &ExampleBase, world: &Arc<RwLock<World>>) -> Result<(), String> {
-        let pool = CpuPool::new(8);
         let mut last_node = Err("No last node, is the graph valid?".to_string());
         for node in petgraph::algo::toposort(&self.graph, None)
             .expect("RenderDAG has cycles")
@@ -159,7 +159,7 @@ impl RenderDAG {
                 });
                 pool.spawn(fut)
             }
-            let wait_all = select_inputs(&pool, &inputs, |_| true);
+            let wait_all = select_inputs(&self.pool, &inputs, |_| true);
             /*
                 join_all(input_futures)
                     .map_err(|_| ())
@@ -179,7 +179,7 @@ impl RenderDAG {
                     let swapchain_loader = base.swapchain_loader.clone();
                     let swapchain = base.swapchain;
                     let present_complete_semaphore = base.present_complete_semaphore;
-                    *this_dynamic = pool.spawn(wait_all.map(move |_inputs| {
+                    *this_dynamic = self.pool.spawn(wait_all.map(move |_inputs| {
                         let present_index = unsafe {
                             swapchain_loader
                                 .acquire_next_image_khr(
@@ -199,7 +199,7 @@ impl RenderDAG {
                     let present_queue = base.present_queue;
                     let rendering_complete_semaphore = base.rendering_complete_semaphore;
                     let swapchain = base.swapchain;
-                    *this_dynamic = pool.spawn(
+                    *this_dynamic = self.pool.spawn(
                         wait_all
                             .map(move |inputs| {
                                 let present_index = inputs
@@ -232,7 +232,7 @@ impl RenderDAG {
                 },
                 &NodeRuntime::BeginCommandBuffer(command_buffer) => {
                     let device = base.device.clone();
-                    *this_dynamic = pool.spawn(
+                    *this_dynamic = self.pool.spawn(
                         wait_all
                             .map(move |inputs| unsafe {
                                 device
@@ -262,7 +262,7 @@ impl RenderDAG {
                     let rendering_complete_semaphore = base.rendering_complete_semaphore.clone();
                     // TODO: represent queues in the DAG
                     let submit_queue = base.present_queue.clone();
-                    *this_dynamic = pool.spawn(
+                    *this_dynamic = self.pool.spawn(
                         wait_all
                             .map(move |inputs| unsafe {
                                 let command_buffer = inputs
@@ -323,7 +323,7 @@ impl RenderDAG {
                     let surface_resolution = base.surface_resolution;
                     let renderpass = renderpass.clone();
                     let name = self.graph[node].0.clone();
-                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
+                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
                         let command_buffer = inputs
                             .iter()
                             .cloned()
@@ -413,7 +413,7 @@ impl RenderDAG {
                             "BFS search couldn't find BeginCommandBuffer for {}",
                             this_name.clone()
                         ));
-                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
+                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
                         /*
                         let command_buffer = inputs
                             .iter()
@@ -467,7 +467,7 @@ impl RenderDAG {
                             "BFS search couldn't find BeginCommandBuffer for {}",
                             this_name.clone()
                         ));
-                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
+                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
                         device.debug_marker_around(
                             command_buffer,
                             &format!("{} -> BindPipeline", name),
@@ -504,7 +504,7 @@ impl RenderDAG {
                             "BFS search couldn't find BeginCommandBuffer for {}",
                             this_name.clone()
                         ));
-                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
+                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
                         let new_device = device.clone();
                         let new_f = f.clone();
                         device.debug_marker_around(
@@ -517,11 +517,11 @@ impl RenderDAG {
                     })).shared();
                 }
                 &NodeRuntime::EndSubPass(ix) => {
-                    *this_dynamic = pool.spawn(wait_all.map(|_| None)).shared();
+                    *this_dynamic = self.pool.spawn(wait_all.map(|_| None)).shared();
                 }
                 &NodeRuntime::EndRenderPass => {
                     let device = base.device.clone();
-                    *this_dynamic = pool.spawn(wait_all.map(move |inputs| {
+                    *this_dynamic = self.pool.spawn(wait_all.map(move |inputs| {
                         let command_buffer = inputs
                             .iter()
                             .cloned()
@@ -560,7 +560,7 @@ impl RenderDAG {
             }
         }
         last_node.and_then(|last_node| {
-            pool.spawn(
+            self.pool.spawn(
                 self.graph[last_node]
                     .1
                      .1
@@ -777,7 +777,7 @@ impl RenderDAGBuilder {
         let mut descriptor_set_layouts: HashMap<Cow<'static, str>, vk::DescriptorSetLayout> = HashMap::new();
         let mut descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>> = HashMap::new();
         let mut name_mapping: HashMap<Cow<'static, str>, petgraph::graph::NodeIndex> = HashMap::new();
-        let pool = CpuPool::new(8);
+        let pool = CpuPool::new_num_cpus();
 
         for node in petgraph::algo::toposort(&self.graph, None)
             .expect("RenderDAGBuilder has cycles")
@@ -1622,6 +1622,7 @@ impl RenderDAGBuilder {
             pipeline_layouts,
             descriptor_sets: descriptor_sets,
             framebuffers: framebuffers,
+            pool: pool,
         }
     }
 }

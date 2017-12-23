@@ -331,28 +331,27 @@ fn main() {
 
         let world = Arc::new(RwLock::new(world));
 
+        let projection = cgmath::perspective(
+            cgmath::Deg(60.0),
+            base.surface_resolution.width as f32 / base.surface_resolution.height as f32,
+            0.1,
+            100.0,
+        );
+        let view = cgmath::Matrix4::look_at(
+            cgmath::Point3::new(4.0, 1.5, 3.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            cgmath::vec3(0.0, 1.0, 0.0),
+        );
+        let mut dispatcher = specs::DispatcherBuilder::new()
+            .add(SteadyRotation, "steady_rotation", &[])
+            .add(
+                MVPCalculation { projection, view },
+                "mvp",
+                &["steady_rotation"],
+            )
+            .build();
         base.render_loop(&mut || {
             {
-                let projection = cgmath::perspective(
-                    cgmath::Deg(60.0),
-                    base.surface_resolution.width as f32 / base.surface_resolution.height as f32,
-                    0.1,
-                    100.0,
-                );
-                let view = cgmath::Matrix4::look_at(
-                    cgmath::Point3::new(4.0, 1.5, 3.0),
-                    cgmath::Point3::new(0.0, 0.0, 0.0),
-                    cgmath::vec3(0.0, 1.0, 0.0),
-                );
-                let mut dispatcher = specs::DispatcherBuilder::new()
-                    .add(SteadyRotation, "steady_rotation", &[])
-                    .add(
-                        MVPCalculation { projection, view },
-                        "mvp",
-                        &["steady_rotation"],
-                    )
-                    .build();
-
                 let mut world = world
                     .write()
                     .expect("failed to lock write world in render loop");
