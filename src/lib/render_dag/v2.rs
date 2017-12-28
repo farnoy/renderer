@@ -415,11 +415,6 @@ impl RenderDAG {
                         ));
                     *this_dynamic = self.pool
                         .spawn(wait_all.map(move |inputs| {
-                            device.debug_marker_start(
-                                command_buffer,
-                                &format!("{} -> SubPass", this_name),
-                                [0.0; 4],
-                            );
                             let previous_subpass = inputs.iter().find(|i| match i.0 {
                                 NodeRuntime::EndSubPass(_) => true,
                                 _ => false,
@@ -430,6 +425,13 @@ impl RenderDAG {
                                     device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
                                 }
                             }
+
+                            device.debug_marker_start(
+                                command_buffer,
+                                &format!("{} -> SubPass", this_name),
+                                [0.0; 4],
+                            );
+
                             None
                         }))
                         .shared();
