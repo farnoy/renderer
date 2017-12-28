@@ -34,7 +34,6 @@ pub struct Light {
 pub struct Matrices {
     pub mvp: cgmath::Matrix4<f32>,
     pub mv: cgmath::Matrix4<f32>,
-    pub normal_matrix: cgmath::Matrix4<f32>,
 }
 
 impl Matrices {
@@ -43,7 +42,6 @@ impl Matrices {
         Matrices {
             mvp: cgmath::Matrix4::one(),
             mv: cgmath::Matrix4::one(),
-            normal_matrix: cgmath::Matrix4::one(),
         }
     }
 }

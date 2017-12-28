@@ -14,7 +14,7 @@ use mesh;
 
 use ash::vk;
 use ash::version::*;
-use cgmath::One;
+use cgmath::Rotation3;
 use std::default::Default;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -115,16 +115,8 @@ fn main() {
                             ],
                             &[],
                         );
-                        let mut bindings = vec![mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk()];
-                        let mut offsets = vec![0, 0];
-                        if let Some(ref normal_buffer) = mesh.0.normal_buffer {
-                            bindings.push(normal_buffer.vk());
-                            offsets.push(0);
-                        }
-                        if let Some(ref tangent_buffer) = mesh.0.tangent_buffer {
-                            bindings.push(tangent_buffer.vk());
-                            offsets.push(0);
-                        }
+                        let bindings = vec![mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk(), mesh.0.normal_buffer.vk(), mesh.0.tangent_buffer.vk()];
+                        let offsets = vec![0, 0, 0, 0];
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &bindings, &offsets);
                         device.cmd_bind_index_buffer(
                             command_buffer,
@@ -230,7 +222,7 @@ fn main() {
             Node::DescriptorBinding(
                 0,
                 vk::DescriptorType::UniformBuffer,
-                vk::SHADER_STAGE_VERTEX_BIT | vk::SHADER_STAGE_FRAGMENT_BIT,
+                vk::SHADER_STAGE_VERTEX_BIT,
                 1,
             ),
         );
@@ -283,14 +275,16 @@ fn main() {
     unsafe {
         let mut world = World::new(&base.device);
 
+        let gltf_rotation = cgmath::Quaternion::from_angle_x(cgmath::Deg(180.0));
+
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
-            .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
-            .with::<Scale>(Scale(1.0))
+            .with::<Position>(Position(cgmath::Vector3::new(2.0, -1.5, 0.0)))
+            .with::<Rotation>(Rotation(gltf_rotation))
+            .with::<Scale>(Scale(70.0))
             .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
-                mesh::Mesh::from_gltf(&base, "glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf").unwrap(),
+                mesh::Mesh::from_gltf(&base, "glTF-Sample-Models/2.0/BoomBox/glTF/BoomBox.gltf").unwrap(),
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)))
             .build();
@@ -298,22 +292,22 @@ fn main() {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(2.0, 1.0, 0.0)))
-            .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
-            .with::<Scale>(Scale(0.8))
+            .with::<Rotation>(Rotation(gltf_rotation))
+            .with::<Scale>(Scale(10.0))
             .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
                 mesh::Mesh::from_gltf(
                     &base,
-                    "glTF-Sample-Models/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf",
+                    "glTF-Sample-Models/2.0/Avocado/glTF/Avocado.gltf",
                 ).unwrap(),
             ))
             .build();
 
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(1.0, -2.0, -3.0)))
-            .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
-            .with::<Scale>(Scale(1.0))
+            .with::<Position>(Position(cgmath::Vector3::new(-3.0, 0.0, 0.0)))
+            .with::<Rotation>(Rotation(gltf_rotation))
+            .with::<Scale>(Scale(2.0))
             .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
                 mesh::Mesh::from_gltf(
@@ -352,12 +346,12 @@ fn main() {
                     mesh.0.texture_sampler,
                     base.device.create_image_view(&create_info, None).unwrap(),
                 ));
-                if let Some(ref texture) = mesh.0.normal_texture {
+                {
                     let create_info = vk::ImageViewCreateInfo {
                         s_type: vk::StructureType::ImageViewCreateInfo,
                         p_next: ptr::null(),
                         flags: Default::default(),
-                        image: texture.image,
+                        image: mesh.0.normal_texture.image,
                         view_type: vk::ImageViewType::Type2d,
                         format: vk::Format::R8g8b8a8Unorm,
                         components: vk::ComponentMapping {
@@ -422,7 +416,7 @@ fn main() {
             100.0,
         );
         let view = cgmath::Matrix4::look_at(
-            cgmath::Point3::new(0.0, 0.0, 5.0),
+            cgmath::Point3::new(0.0, 0.0, -5.0),
             cgmath::Point3::new(0.0, 0.0, 0.0),
             cgmath::vec3(0.0, 1.0, 0.0),
         );

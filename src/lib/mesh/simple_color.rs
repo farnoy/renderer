@@ -18,9 +18,9 @@ pub struct SimpleColor {
     pub base_color_image: Texture,
     pub tex_coords: Buffer,
     pub texture_sampler: vk::Sampler,
-    pub tangent_buffer: Option<Buffer>,
-    pub normal_buffer: Option<Buffer>,
-    pub normal_texture: Option<Texture>,
+    pub tangent_buffer: Buffer,
+    pub normal_buffer: Buffer,
+    pub normal_texture: Texture,
 }
 
 impl Mesh for SimpleColor {
@@ -107,13 +107,10 @@ impl Mesh for SimpleColor {
                             unsafe { base.device.create_sampler(&create_info, None).unwrap() }
                         };
 
-                        let tangent_buffer = primitive
-                            .tangents(buffers)
-                            .map(|tan| Buffer::upload_from::<[f32; 4], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &tan));
+                        let tangent_buffer = Buffer::upload_from::<[f32; 4], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &primitive.tangents(buffers).unwrap());
 
-                        let normal_texture = primitive.material().normal_texture();
-                        let normal_texture = normal_texture.map(
-                            |normal_texture| match normal_texture.texture().source().data() {
+                        let normal_texture = primitive.material().normal_texture().unwrap();
+                        let normal_texture = match normal_texture.texture().source().data() {
                                 gltf::image::Data::View { .. } => panic!("reading textures from embedded buffers is still unsupported"),
                                 gltf::image::Data::Uri { uri, .. } => {
                                     let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
@@ -125,12 +122,9 @@ impl Mesh for SimpleColor {
                                         vk::Format::R8g8b8a8Unorm,
                                     )
                                 }
-                            },
-                        );
+                            };
 
-                        let normal_buffer = primitive.normals(buffers).map(|n| 
-                        Buffer::upload_from::<[f32; 3], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &n)
-                        );
+                        let normal_buffer = Buffer::upload_from::<[f32; 3], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &primitive.normals(buffers).unwrap());
 
                         println!("success");
 

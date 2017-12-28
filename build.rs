@@ -17,8 +17,10 @@ fn main() {
         println!("cargo:rerun-if-changed=shaders/{}", shader);
         let output_path = &dest.join(format!("{}.spv", shader));
         let result = Command::new("glslangValidator")
+            .arg("-C")
             .arg("-V")
             .arg("-g")
+            .arg("-H")
             .arg("-o")
             .arg(output_path)
             .arg(format!("{}/shaders/{}", src, shader))
