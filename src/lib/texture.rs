@@ -19,6 +19,15 @@ pub struct Texture {
 impl Texture {
     pub fn load<P: AsRef<Path>>(base: &ExampleBase, path: P, usage: vk::ImageUsageFlags, format: vk::Format) -> Texture {
         let loaded = image::open(path).unwrap().to_rgba();
+        Texture::load_from_image(base, loaded, usage, format)
+    }
+
+    pub fn load_from_memory(base: &ExampleBase, slice: &[u8], usage: vk::ImageUsageFlags, format: vk::Format) -> Texture {
+        let loaded = image::load_from_memory(slice).unwrap().to_rgba();
+        Texture::load_from_image(base, loaded, usage, format)
+    }
+
+    pub fn load_from_image(base: &ExampleBase, loaded: image::RgbaImage, usage: vk::ImageUsageFlags, format: vk::Format) -> Texture {
         let (w, h) = loaded.dimensions();
         let size = (loaded.len() * size_of::<image::Rgba<u8>>()) as u64;
         let extent = vk::Extent3D {

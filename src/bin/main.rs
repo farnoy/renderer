@@ -284,7 +284,7 @@ fn main() {
             .with::<Scale>(Scale(70.0))
             .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
-                mesh::Mesh::from_gltf(&base, "glTF-Sample-Models/2.0/BoomBox/glTF/BoomBox.gltf").unwrap(),
+                mesh::Mesh::from_gltf(&base, "glTF-Sample-Models/2.0/BoomBox/glTF-Binary/BoomBox.glb").unwrap(),
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)))
             .build();
@@ -298,7 +298,7 @@ fn main() {
             .with::<SimpleColorMesh>(SimpleColorMesh(
                 mesh::Mesh::from_gltf(
                     &base,
-                    "glTF-Sample-Models/2.0/Avocado/glTF/Avocado.gltf",
+                    "glTF-Sample-Models/2.0/Avocado/glTF-Binary/Avocado.glb",
                 ).unwrap(),
             ))
             .build();

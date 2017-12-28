@@ -48,7 +48,10 @@ impl Mesh for SimpleColor {
                         let positions = primitive.positions(buffers).unwrap();
 
                         let base_color_image = match base_color_texture.source().data() {
-                            gltf::image::Data::View { .. } => panic!("reading textures from embedded buffers is still unsupported"),
+                            gltf::image::Data::View { view, .. } => {
+                                let slice = buffers.view(&view).unwrap();
+                                Texture::load_from_memory(base, slice, vk::IMAGE_USAGE_SAMPLED_BIT, vk::Format::R8g8b8a8Unorm)
+                            },
                             gltf::image::Data::Uri { uri, .. } => {
                                 let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
                                 println!("actual_path {:?}", actual_path);
@@ -111,7 +114,10 @@ impl Mesh for SimpleColor {
 
                         let normal_texture = primitive.material().normal_texture().unwrap();
                         let normal_texture = match normal_texture.texture().source().data() {
-                                gltf::image::Data::View { .. } => panic!("reading textures from embedded buffers is still unsupported"),
+                                gltf::image::Data::View { view, .. } => {
+                                    let slice = buffers.view(&view).unwrap();
+                                    Texture::load_from_memory(base, slice, vk::IMAGE_USAGE_SAMPLED_BIT, vk::Format::R8g8b8a8Unorm)
+                                },
                                 gltf::image::Data::Uri { uri, .. } => {
                                     let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
                                     println!("actual_path {:?}", actual_path);
