@@ -23,7 +23,7 @@ impl World {
         world.register::<SimpleColorMesh>();
         world.register::<TriangleMesh>();
         world.register::<Light>();
-        world.register::<MVP>();
+        world.register::<Matrices>();
 
         World {
             world: world,

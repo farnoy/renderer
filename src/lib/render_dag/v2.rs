@@ -33,6 +33,7 @@ pub enum NodeBuilder {
     EndRenderPass,
     EndSubpass(u8),
     VertexShader(PathBuf),
+    GeometryShader(PathBuf),
     FragmentShader(PathBuf),
     Framebuffer,
     /// Binding, type, stage, count
@@ -1140,6 +1141,7 @@ impl RenderDAGBuilder {
                             _ => None,
                         })
                         .collect::<Vec<_>>();
+                        println!("vertex bindings {:?}", vertex_bindings);
                     let shader_modules = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
@@ -1160,6 +1162,24 @@ impl RenderDAGBuilder {
                                 };
 
                                 Some((shader_module, vk::SHADER_STAGE_VERTEX_BIT))
+                            }
+                            NodeBuilder::GeometryShader(ref path) => {
+                                let file = File::open(path).expect("Could not find shader.");
+                                let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+                                let shader_info = vk::ShaderModuleCreateInfo {
+                                    s_type: vk::StructureType::ShaderModuleCreateInfo,
+                                    p_next: ptr::null(),
+                                    flags: Default::default(),
+                                    code_size: bytes.len(),
+                                    p_code: bytes.as_ptr() as *const u32,
+                                };
+                                let shader_module = unsafe {
+                                    base.device
+                                        .create_shader_module(&shader_info, None)
+                                        .expect("Geometry shader module error")
+                                };
+
+                                Some((shader_module, vk::SHADER_STAGE_GEOMETRY_BIT))
                             }
                             NodeBuilder::FragmentShader(ref path) => {
                                 let file = File::open(path).expect("Could not find shader.");

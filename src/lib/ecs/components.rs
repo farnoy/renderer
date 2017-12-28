@@ -31,4 +31,19 @@ pub struct Light {
 
 #[derive(Clone, Copy, Component, Debug)]
 #[component(VecStorage)]
-pub struct MVP(pub cgmath::Matrix4<f32>);
+pub struct Matrices {
+    pub mvp: cgmath::Matrix4<f32>,
+    pub mv: cgmath::Matrix4<f32>,
+    pub normal_matrix: cgmath::Matrix4<f32>,
+}
+
+impl Matrices {
+    pub fn one() -> Matrices {
+        use cgmath::One;
+        Matrices {
+            mvp: cgmath::Matrix4::one(),
+            mv: cgmath::Matrix4::one(),
+            normal_matrix: cgmath::Matrix4::one(),
+        }
+    }
+}

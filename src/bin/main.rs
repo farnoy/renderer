@@ -3,6 +3,7 @@ extern crate cgmath;
 extern crate forward_renderer;
 extern crate futures;
 extern crate futures_cpupool;
+extern crate gltf;
 extern crate petgraph;
 extern crate specs;
 
@@ -44,6 +45,10 @@ fn main() {
             "vertex_shader",
             Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv")),
         );
+        let geom_shader = builder.add_node(
+            "geometry_shader",
+            Node::GeometryShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.geom.spv")),
+        );
         let fragment_shader = builder.add_node(
             "fragment_shader",
             Node::FragmentShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.frag.spv")),
@@ -57,6 +62,14 @@ fn main() {
             "uv_binding",
             Node::VertexInputBinding(1, 2 * 4, vk::VertexInputRate::Vertex),
         );
+        let normal_binding = builder.add_node(
+            "normal_binding",
+            Node::VertexInputBinding(2, 3 * 4, vk::VertexInputRate::Vertex),
+        );
+        let tangent_binding = builder.add_node(
+            "tangent_binding",
+            Node::VertexInputBinding(3, 4 * 4, vk::VertexInputRate::Vertex),
+        );
         let vertex_attribute = builder.add_node(
             "vertex_attribute",
             Node::VertexInputAttribute(0, 0, vk::Format::R32g32b32Sfloat, 0),
@@ -64,6 +77,14 @@ fn main() {
         let uv_attribute = builder.add_node(
             "uv_attribute",
             Node::VertexInputAttribute(1, 1, vk::Format::R32g32Sfloat, 0),
+        );
+        let normal_attribute = builder.add_node(
+            "normal_attribute",
+            Node::VertexInputAttribute(2, 2, vk::Format::R32g32b32Sfloat, 0),
+        );
+        let tangent_attribute = builder.add_node(
+            "tangent_attribute",
+            Node::VertexInputAttribute(3, 3, vk::Format::R32g32b32a32Sfloat, 0),
         );
         let graphics_pipeline = subpass.add_node(&mut builder, "graphics_pipeline", Node::GraphicsPipeline);
         let draw_commands = subpass.add_node(
@@ -94,12 +115,17 @@ fn main() {
                             ],
                             &[],
                         );
-                        device.cmd_bind_vertex_buffers(
-                            command_buffer,
-                            0,
-                            &[mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk()],
-                            &[0, 0],
-                        );
+                        let mut bindings = vec![mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk()];
+                        let mut offsets = vec![0, 0];
+                        if let Some(ref normal_buffer) = mesh.0.normal_buffer {
+                            bindings.push(normal_buffer.vk());
+                            offsets.push(0);
+                        }
+                        if let Some(ref tangent_buffer) = mesh.0.tangent_buffer {
+                            bindings.push(tangent_buffer.vk());
+                            offsets.push(0);
+                        }
+                        device.cmd_bind_vertex_buffers(command_buffer, 0, &bindings, &offsets);
                         device.cmd_bind_index_buffer(
                             command_buffer,
                             mesh.0.index_buffer.vk(),
@@ -119,11 +145,16 @@ fn main() {
         renderpass.start_after(&mut builder, &depth_attachment);
         builder.add_edge(&acquire_image, &present_image);
         builder.add_edge(&vertex_shader, &graphics_pipeline);
+        // builder.add_edge(&geom_shader, &graphics_pipeline);
         builder.add_edge(&fragment_shader, &graphics_pipeline);
         builder.add_edge(&vertex_binding, &graphics_pipeline);
         builder.add_edge(&uv_binding, &graphics_pipeline);
+        builder.add_edge(&normal_binding, &graphics_pipeline);
+        builder.add_edge(&tangent_binding, &graphics_pipeline);
         builder.add_edge(&vertex_attribute, &graphics_pipeline);
         builder.add_edge(&uv_attribute, &graphics_pipeline);
+        builder.add_edge(&normal_attribute, &graphics_pipeline);
+        builder.add_edge(&tangent_attribute, &graphics_pipeline);
         builder.add_edge(&pipeline_layout, &graphics_pipeline);
         builder.add_edge(&graphics_pipeline, &draw_commands);
         subpass.end_after(&mut builder, &draw_commands);
@@ -199,7 +230,7 @@ fn main() {
             Node::DescriptorBinding(
                 0,
                 vk::DescriptorType::UniformBuffer,
-                vk::SHADER_STAGE_VERTEX_BIT,
+                vk::SHADER_STAGE_VERTEX_BIT | vk::SHADER_STAGE_FRAGMENT_BIT,
                 1,
             ),
         );
@@ -212,10 +243,20 @@ fn main() {
                 1,
             ),
         );
-        let main_descriptor_layout = builder.add_node("main_descriptor_layout", Node::DescriptorSet(2));
+        let normal_texture = builder.add_node(
+            "normal_texture",
+            Node::DescriptorBinding(
+                2,
+                vk::DescriptorType::CombinedImageSampler,
+                vk::SHADER_STAGE_FRAGMENT_BIT,
+                1,
+            ),
+        );
+        let main_descriptor_layout = builder.add_node("main_descriptor_layout", Node::DescriptorSet(16));
 
         builder.add_edge(&mvp_ubo, &main_descriptor_layout);
         builder.add_edge(&color_texture, &main_descriptor_layout);
+        builder.add_edge(&normal_texture, &main_descriptor_layout);
         builder.add_edge(&main_descriptor_layout, &pipeline_layout);
         {
             let dot = petgraph::dot::Dot::with_config(&builder.graph, &[petgraph::dot::Config::EdgeNoLabel]);
@@ -247,34 +288,45 @@ fn main() {
             .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
             .with::<Scale>(Scale(1.0))
-            .with::<MVP>(MVP(cgmath::Matrix4::one()))
+            .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
-                mesh::Mesh::from_gltf(
-                    &base,
-                    "glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
-                ).unwrap(),
+                mesh::Mesh::from_gltf(&base, "glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf").unwrap(),
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)))
             .build();
 
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(1.0, -2.0, 0.0)))
+            .with::<Position>(Position(cgmath::Vector3::new(2.0, 1.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
-            .with::<Scale>(Scale(1.0))
-            .with::<MVP>(MVP(cgmath::Matrix4::one()))
+            .with::<Scale>(Scale(0.8))
+            .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
                 mesh::Mesh::from_gltf(
                     &base,
-                    "glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+                    "glTF-Sample-Models/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf",
+                ).unwrap(),
+            ))
+            .build();
+
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(1.0, -2.0, -3.0)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::one()))
+            .with::<Scale>(Scale(1.0))
+            .with::<Matrices>(Matrices::one())
+            .with::<SimpleColorMesh>(SimpleColorMesh(
+                mesh::Mesh::from_gltf(
+                    &base,
+                    "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
                 ).unwrap(),
             ))
             .build();
 
         {
             use specs::Join;
-            let mut textures = vec![];
             for (ix, mesh) in world.read::<SimpleColorMesh>().join().enumerate() {
+                let mut textures = vec![];
                 let create_info = vk::ImageViewCreateInfo {
                     s_type: vk::StructureType::ImageViewCreateInfo,
                     p_next: ptr::null(),
@@ -300,31 +352,64 @@ fn main() {
                     mesh.0.texture_sampler,
                     base.device.create_image_view(&create_info, None).unwrap(),
                 ));
+                if let Some(ref texture) = mesh.0.normal_texture {
+                    let create_info = vk::ImageViewCreateInfo {
+                        s_type: vk::StructureType::ImageViewCreateInfo,
+                        p_next: ptr::null(),
+                        flags: Default::default(),
+                        image: texture.image,
+                        view_type: vk::ImageViewType::Type2d,
+                        format: vk::Format::R8g8b8a8Unorm,
+                        components: vk::ComponentMapping {
+                            r: vk::ComponentSwizzle::Identity,
+                            g: vk::ComponentSwizzle::Identity,
+                            b: vk::ComponentSwizzle::Identity,
+                            a: vk::ComponentSwizzle::Identity,
+                        },
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: vk::IMAGE_ASPECT_COLOR_BIT,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        },
+                    };
+                    textures.push((
+                        mesh.0.texture_sampler,
+                        base.device.create_image_view(&create_info, None).unwrap(),
+                    ));
+                }
                 let descriptor_set = render_dag
                     .descriptor_sets
                     .get("main_descriptor_layout")
                     .unwrap()[ix];
-                base.device.update_descriptor_sets(
-                    &[
+                let mut image_infos = vec![];
+                let write_sets = textures
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, &(sampler, texture))| {
+                        image_infos.push(vk::DescriptorImageInfo {
+                            sampler: sampler,
+                            image_view: texture,
+                            image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
+                        });
+                        let image_info = image_infos.last().unwrap();
                         vk::WriteDescriptorSet {
                             s_type: vk::StructureType::WriteDescriptorSet,
                             p_next: ptr::null(),
                             dst_set: descriptor_set.clone(),
-                            dst_binding: 1,
+                            dst_binding: 1 + ix as u32,
                             dst_array_element: 0,
                             descriptor_count: 1,
                             descriptor_type: vk::DescriptorType::CombinedImageSampler,
-                            p_image_info: &vk::DescriptorImageInfo {
-                                sampler: textures[0].0,
-                                image_view: textures[0].1,
-                                image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
-                            },
+                            p_image_info: image_info,
                             p_buffer_info: ptr::null(),
                             p_texel_buffer_view: ptr::null(),
-                        },
-                    ],
-                    &[],
-                );
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                println!("write_sets {:?}", write_sets);
+                base.device.update_descriptor_sets(&write_sets, &[]);
             }
         }
 
@@ -337,7 +422,7 @@ fn main() {
             100.0,
         );
         let view = cgmath::Matrix4::look_at(
-            cgmath::Point3::new(4.0, 1.5, 3.0),
+            cgmath::Point3::new(0.0, 0.0, 5.0),
             cgmath::Point3::new(0.0, 0.0, 0.0),
             cgmath::vec3(0.0, 1.0, 0.0),
         );
@@ -362,9 +447,9 @@ fn main() {
                 let world = world
                     .read()
                     .expect("failed to lock read world in render loop");
-                for (ix, mvp) in world.read::<MVP>().join().enumerate() {
+                for (ix, mvp) in world.read::<Matrices>().join().enumerate() {
                     let mvps = [mvp.clone()];
-                    let ubo_buffer = buffer::Buffer::upload_from::<MVP, _>(
+                    let ubo_buffer = buffer::Buffer::upload_from::<Matrices, _>(
                         &base,
                         vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                         &mvps.iter().cloned(),
@@ -387,7 +472,7 @@ fn main() {
                                 p_buffer_info: &vk::DescriptorBufferInfo {
                                     buffer: ubo_buffer.vk(),
                                     offset: 0,
-                                    range: (mem::size_of::<MVP>()) as u64,
+                                    range: (mem::size_of::<Matrices>()) as u64,
                                 },
                                 p_texel_buffer_view: ptr::null(),
                             },

@@ -54,6 +54,7 @@ impl Device {
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
+                geometry_shader: 1,
                 ..Default::default()
             };
             let priorities = [1.0];

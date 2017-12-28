@@ -10,8 +10,8 @@ impl<'a> System<'a> for SteadyRotation {
 
     fn run(&mut self, mut rotations: Self::SystemData) {
         use cgmath::Rotation3;
-        let rotation = cgmath::Quaternion::from_angle_y(-cgmath::Deg(time::precise_time_s() as f32 * 60.0));
-        let rotation2 = cgmath::Quaternion::from_angle_x(-cgmath::Deg(time::precise_time_s() as f32 * 20.0));
+        let rotation = cgmath::Quaternion::from_angle_y(-cgmath::Deg(time::precise_time_s() as f32 * 10.0));
+        let rotation2 = cgmath::Quaternion::from_angle_x(-cgmath::Deg(time::precise_time_s() as f32 * 4.0));
         for rot in (&mut rotations).join() {
             *rot = Rotation(rotation * rotation2);
         }
@@ -28,14 +28,17 @@ impl<'a> System<'a> for MVPCalculation {
         ReadStorage<'a, Position>,
         ReadStorage<'a, Rotation>,
         ReadStorage<'a, Scale>,
-        WriteStorage<'a, MVP>,
+        WriteStorage<'a, Matrices>,
     );
 
     fn run(&mut self, (positions, rotations, scales, mut mvps): Self::SystemData) {
         for (pos, rot, scale, mvp) in (&positions, &rotations, &scales, &mut mvps).join() {
+            use cgmath::{Matrix, SquareMatrix};
             let model = cgmath::Matrix4::from_translation(pos.0) * cgmath::Matrix4::from(rot.0) * cgmath::Matrix4::from_scale(scale.0);
 
-            mvp.0 = self.projection * self.view * model;
+            mvp.mvp = self.projection * self.view * model;
+            mvp.mv = self.view * model;
+            mvp.normal_matrix = mvp.mv.invert().unwrap().transpose();
         }
     }
 }

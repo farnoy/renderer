@@ -18,6 +18,9 @@ pub struct SimpleColor {
     pub base_color_image: Texture,
     pub tex_coords: Buffer,
     pub texture_sampler: vk::Sampler,
+    pub tangent_buffer: Option<Buffer>,
+    pub normal_buffer: Option<Buffer>,
+    pub normal_texture: Option<Texture>,
 }
 
 impl Mesh for SimpleColor {
@@ -48,7 +51,13 @@ impl Mesh for SimpleColor {
                             gltf::image::Data::View { .. } => panic!("reading textures from embedded buffers is still unsupported"),
                             gltf::image::Data::Uri { uri, .. } => {
                                 let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
-                                Texture::load(base, actual_path, vk::IMAGE_USAGE_SAMPLED_BIT)
+                                println!("actual_path {:?}", actual_path);
+                                Texture::load(
+                                    base,
+                                    actual_path,
+                                    vk::IMAGE_USAGE_SAMPLED_BIT,
+                                    vk::Format::R8g8b8a8Unorm,
+                                )
                             }
                         };
 
@@ -98,6 +107,31 @@ impl Mesh for SimpleColor {
                             unsafe { base.device.create_sampler(&create_info, None).unwrap() }
                         };
 
+                        let tangent_buffer = primitive
+                            .tangents(buffers)
+                            .map(|tan| Buffer::upload_from::<[f32; 4], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &tan));
+
+                        let normal_texture = primitive.material().normal_texture();
+                        let normal_texture = normal_texture.map(
+                            |normal_texture| match normal_texture.texture().source().data() {
+                                gltf::image::Data::View { .. } => panic!("reading textures from embedded buffers is still unsupported"),
+                                gltf::image::Data::Uri { uri, .. } => {
+                                    let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
+                                    println!("actual_path {:?}", actual_path);
+                                    Texture::load(
+                                        base,
+                                        actual_path,
+                                        vk::IMAGE_USAGE_SAMPLED_BIT,
+                                        vk::Format::R8g8b8a8Unorm,
+                                    )
+                                }
+                            },
+                        );
+
+                        let normal_buffer = primitive.normals(buffers).map(|n| 
+                        Buffer::upload_from::<[f32; 3], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &n)
+                        );
+
                         println!("success");
 
                         *ret = Some(SimpleColor {
@@ -108,6 +142,9 @@ impl Mesh for SimpleColor {
                             base_color_image: base_color_image,
                             tex_coords: tex_coords,
                             texture_sampler: sampler,
+                            tangent_buffer,
+                            normal_buffer,
+                            normal_texture,
                         });
                     }
                 }

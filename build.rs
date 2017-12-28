@@ -10,6 +10,7 @@ fn main() {
         "triangle.frag",
         "triangle.vert",
         "simple_color.frag",
+        "simple_color.geom",
         "simple_color.vert",
     ];
     for shader in shaders.iter() {

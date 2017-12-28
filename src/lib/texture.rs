@@ -17,7 +17,7 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub fn load<P: AsRef<Path>>(base: &ExampleBase, path: P, usage: vk::ImageUsageFlags) -> Texture {
+    pub fn load<P: AsRef<Path>>(base: &ExampleBase, path: P, usage: vk::ImageUsageFlags, format: vk::Format) -> Texture {
         let loaded = image::open(path).unwrap().to_rgba();
         let (w, h) = loaded.dimensions();
         let size = (loaded.len() * size_of::<image::Rgba<u8>>()) as u64;
@@ -46,7 +46,7 @@ impl Texture {
                 p_next: ptr::null(),
                 flags: Default::default(),
                 image_type: vk::ImageType::Type2d,
-                format: vk::Format::R8g8b8a8Unorm,
+                format,
                 extent: extent.clone(),
                 mip_levels: 1,
                 array_layers: 1,
