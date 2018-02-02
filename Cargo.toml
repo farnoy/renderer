@@ -4,7 +4,7 @@ version = "0.1.0"
 build = "build.rs"
 
 [dependencies]
-ash = { git = "https://github.com/farnoy/ash" }
+ash = "0.21.0"
 cgmath = "^0.16"
 futures = "^0.1.15"
 futures-cpupool = "^0.1.5"

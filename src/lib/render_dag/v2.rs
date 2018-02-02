@@ -465,7 +465,7 @@ impl RenderDAG {
                                     device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
 
                                     if let Some(viewport) = viewport_opt {
-                                        device.cmd_set_viewport(command_buffer, &[viewport]);
+                                        device.cmd_set_viewport(command_buffer, 0, &[viewport]);
                                     }
                                     if let Some(scissors) = scissors_opt {
                                         device.cmd_set_scissor(command_buffer, &[scissors]);

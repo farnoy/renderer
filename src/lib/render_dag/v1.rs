@@ -204,7 +204,7 @@ impl RenderDAG {
 
                             if let &Some(ref viewport) = viewport_opt {
                                 base.device
-                                    .cmd_set_viewport(command_buffer, &[viewport.clone()]);
+                                    .cmd_set_viewport(command_buffer, 0, &[viewport.clone()]);
                             }
                             if let &Some(ref scissors) = scissors_opt {
                                 base.device
