@@ -31,7 +31,7 @@ struct Vertex {
 
 fn main() {
     let base = ExampleBase::new(1920, 1080);
-    let render_dag = {
+    let mut render_dag = {
         let mut builder = RenderDAGBuilder::new();
         let acquire_image = builder.add_node("acquire_image", Node::AcquirePresentImage);
         let swapchain_attachment = builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
@@ -507,6 +507,8 @@ fn main() {
                 buffer.free(base.device.vk())
             }
         });
+
+        render_dag.destroy(&base);
 
         base.device.device_wait_idle().unwrap();
     }

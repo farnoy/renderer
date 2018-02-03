@@ -583,6 +583,29 @@ impl RenderDAG {
                 .wait()
         })
     }
+
+    pub fn destroy(&mut self, base: &ExampleBase) {
+        for node in petgraph::algo::toposort(&self.graph, None)
+            .expect("RenderDAGBuilder has cycles")
+            .iter()
+            .cloned()
+        {
+            match (self.graph[node].1).0 {
+                NodeRuntime::BeginRenderPass(rp) => unsafe { base.device.destroy_render_pass(rp, None) },
+                NodeRuntime::BindPipeline(pipeline, _, _) => unsafe { base.device.destroy_pipeline(pipeline, None) },
+                NodeRuntime::Framebuffer(ref fbs) => for fb in fbs.iter().cloned() {
+                    unsafe { base.device.destroy_framebuffer(fb, None) }
+                },
+                _ => ()
+            }
+        }
+
+        for pipeline_layout in self.pipeline_layouts.values() {
+            unsafe {
+                base.device.destroy_pipeline_layout(*pipeline_layout, None);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
