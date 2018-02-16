@@ -2,5 +2,9 @@
   "files.exclude": {
     "**/glTF-Sample-Models": true,
     "**/target": true
-  }
+  },
+  "rust.features": [
+    "validation"
+  ],
+  "rust.show_warnings": false
 }
