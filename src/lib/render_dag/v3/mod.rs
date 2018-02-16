@@ -82,8 +82,9 @@ decl_node_runtime! {
         AllocateCommandBuffer {
             make make_allocate_commands
             static [_dummy: ()]
-            dynamic [handle: Option<vk::CommandBuffer>]
+            dynamic [handles: Arc<Vec<vk::CommandBuffer>>]
             forward vk
+            forward Arc
         }
         SubmitCommandBuffer {
             make make_submit_command_buffer
@@ -212,7 +213,7 @@ impl RenderDAG {
         ).unwrap();
         let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
         let compute_queues = (0..compute_queue_len)
-            .map(|ix| unsafe {
+            .map(|ix| {
                 let queue = unsafe { device.vk().get_device_queue(compute_queue_family, ix) };
                 Mutex::new(queue)
             })
@@ -468,7 +469,7 @@ impl RenderDAG {
         })?;
 
         let node = self.graph
-            .add_node(RenderNode::make_allocate_commands(&self.cpu_pool, (), None));
+            .add_node(RenderNode::make_allocate_commands(&self.cpu_pool, (), Arc::new(vec![])));
         let submit = self.graph
             .add_node(RenderNode::make_submit_command_buffer(&self.cpu_pool, ()));
         self.graph.add_edge(command_pool_ix, node, Edge::Propagate);
@@ -677,10 +678,16 @@ impl RenderDAG {
                         &RenderNode::CommandPool { ref handle, .. } => Some(Arc::clone(handle)),
                         _ => None,
                     }).expect("Command pool not found in direct deps of AllocateCommandBuffer");
+                    let (fb_count, fb_lock) = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match node {
+                        &RenderNode::Framebuffer { ref images, ref dynamic, .. } => Some((images.len(), Arc::clone(dynamic))),
+                        _ => None,
+                    }).expect("Framebuffer not found in direct deps of AllocateCommandBuffer");
+                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     let previous = (*lock).clone();
                     *lock = self.cpu_pool
-                        .spawn(previous.map_err(|_| ()).map(move |previous| {
+                        .spawn(previous.join3(fb_fut, order_fut).map_err(|_| ()).map(move |(previous, fb, _)| {
                             let pool_lock = pool.lock()
                                 .expect("failed to lock command pool for allocation");
                             let begin_info = vk::CommandBufferBeginInfo {
@@ -689,34 +696,34 @@ impl RenderDAG {
                                 p_inheritance_info: ptr::null(),
                                 flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
                             };
-                            match *previous {
-                                fields::AllocateCommandBuffer::Dynamic { handle: Some(cb) } => {
-                                    unsafe {
-                                        device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty());
-                                        device.begin_command_buffer(cb, &begin_info);
-                                    }
-                                    fields::AllocateCommandBuffer::Dynamic { handle: Some(cb) }
+                            let present_ix = fb.current_present_index;
+                            let handles = Arc::clone(&previous.handles);
+                            if handles.is_empty() {
+                                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+                                    s_type: vk::StructureType::CommandBufferAllocateInfo,
+                                    p_next: ptr::null(),
+                                    command_buffer_count: fb_count as u32,
+                                    command_pool: *pool_lock,
+                                    level: vk::CommandBufferLevel::Primary,
+                                };
+                                let command_buffers = unsafe {
+                                    device
+                                        .allocate_command_buffers(&command_buffer_allocate_info)
+                                        .unwrap()
+                                };
+                                unsafe {
+                                    device.begin_command_buffer(command_buffers[present_ix as usize], &begin_info);
                                 }
-                                _ => {
-                                    let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-                                        s_type: vk::StructureType::CommandBufferAllocateInfo,
-                                        p_next: ptr::null(),
-                                        command_buffer_count: 1,
-                                        command_pool: *pool_lock,
-                                        level: vk::CommandBufferLevel::Primary,
-                                    };
-                                    let mut command_buffer = unsafe {
-                                        device
-                                            .allocate_command_buffers(&command_buffer_allocate_info)
-                                            .unwrap()
-                                    };
-                                    unsafe {
-                                        device.begin_command_buffer(command_buffer[0], &begin_info);
-                                    }
-                                    fields::AllocateCommandBuffer::Dynamic {
-                                        handle: Some(command_buffer.remove(0)),
-                                    }
+                                fields::AllocateCommandBuffer::Dynamic {
+                                    handles: Arc::new(command_buffers),
                                 }
+                            } else {
+                                let cb = handles[present_ix as usize];
+                                unsafe {
+                                    device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty());
+                                    device.begin_command_buffer(cb, &begin_info);
+                                }
+                                fields::AllocateCommandBuffer::Dynamic { handles: handles }
                             }
                         }))
                         .shared();
@@ -742,7 +749,12 @@ impl RenderDAG {
                         &RenderNode::PersistentSemaphore { handle, .. } => Some(handle),
                         _ => None,
                     });
+                    let fb_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                        _ => None,
+                    }).expect("Framebuffer not found in direct deps of SubmitCommandBuffer");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let allocated = allocated_lock
                         .write()
                         .expect("failed to read command buffer")
@@ -751,10 +763,12 @@ impl RenderDAG {
                     *lock = self.cpu_pool
                         .spawn(
                             order_fut
-                                .join(allocated)
+                                .join3(allocated, fb_fut)
                                 .map_err(|_| ())
-                                .map(move |(_, allocated)| unsafe {
-                                    let cb = (*allocated).handle.expect("no buffer to submit");
+                                .map(move |(_, allocated, fb)| unsafe {
+                                    let command_buffers = Arc::clone(&allocated.handles);
+                                    let fb_ix = (*fb).current_present_index;
+                                    let cb = command_buffers[fb_ix as usize];
                                     device.end_command_buffer(cb).unwrap();
                                     let dst_stage_masks = vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
                                     let submits = [
@@ -771,7 +785,25 @@ impl RenderDAG {
                                         },
                                     ];
                                     let queue_lock = graphics_queue.lock().expect("can't lock the queue");
-                                    device.queue_submit(*queue_lock, &submits, vk::Fence::null());
+
+                                    let submit_fence = {
+                                        let create_info = vk::FenceCreateInfo {
+                                            s_type: vk::StructureType::FenceCreateInfo,
+                                            p_next: ptr::null(),
+                                            flags: vk::FenceCreateFlags::empty(),
+                                        };
+                                        device
+                                        .create_fence(&create_info, None)
+                                        .expect("Create fence failed.")
+                                    };
+
+                                    device.queue_submit(*queue_lock, &submits, submit_fence);
+
+                                    device
+                                        .wait_for_fences(&[submit_fence], true, u64::MAX)
+                                        .expect("Wait for fence failed.");
+                                    device.destroy_fence(submit_fence, None);
+
                                     fields::SubmitCommandBuffer::Dynamic {}
                                 }),
                         )
@@ -817,10 +849,9 @@ impl RenderDAG {
                                 .join(fb_fut)
                                 .map_err(|_| ())
                                 .map(move |(cb_dyn, fb)| {
-                                    let cb = (*cb_dyn)
-                                        .handle
-                                        .expect("Expected to have a command buffer by now");
                                     let fb_ix = (*fb).current_present_index;
+                                    let command_buffers = Arc::clone(&cb_dyn.handles);
+                                    let cb = command_buffers[fb_ix as usize];
                                     let clear_values = vec![
                                         vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0; 4])),
                                     ];
@@ -861,16 +892,21 @@ impl RenderDAG {
                         .read()
                         .expect("Could not read command buffer")
                         .clone();
+                    let fb_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                        _ => None,
+                    }).expect("Framebuffer not found in direct deps of EndRenderPass");
+                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = self.cpu_pool
                         .spawn(
                             order_fut
-                                .join(command_buffer_fut)
+                                .join3(command_buffer_fut, fb_fut)
                                 .map_err(|_| ())
-                                .map(move |(_, cb_dyn)| {
-                                    let cb = (*cb_dyn)
-                                        .handle
-                                        .expect("Expected to have a command buffer by now");
+                                .map(move |(_, cb_dyn, fb)| {
+                                    let command_buffers = Arc::clone(&cb_dyn.handles);
+                                    let fb_ix = (*fb).current_present_index;
+                                    let cb = command_buffers[fb_ix as usize];
                                     unsafe {
                                         device.cmd_end_render_pass(cb);
                                     }
@@ -896,16 +932,21 @@ impl RenderDAG {
                         .expect("Could not read command buffer")
                         .clone();
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let fb_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                        _ => None,
+                    }).expect("Framebuffer not found in direct deps of EndRenderPass");
+                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = self.cpu_pool
                         .spawn(
                             order_fut
-                                .join(command_buffer_fut)
+                                .join3(command_buffer_fut, fb_fut)
                                 .map_err(|_| ())
-                                .map(move |(_, cb_dyn)| {
-                                    let cb = (*cb_dyn)
-                                        .handle
-                                        .expect("Expected to have a command buffer by now");
+                                .map(move |(_, cb_dyn, fb)| {
+                                    let command_buffers = Arc::clone(&cb_dyn.handles);
+                                    let fb_ix = (*fb).current_present_index;
+                                    let cb = command_buffers[fb_ix as usize];
                                     unsafe {
                                         device.cmd_next_subpass(cb, vk::SubpassContents::Inline);
                                     }
@@ -998,21 +1039,18 @@ impl Drop for RenderDAG {
                     }).expect("Command pool not found in direct deps of AllocateCommandBuffer");
                     let dynamic = Arc::clone(dynamic);
 
-                    Some(Box::new(move || unsafe {
+                    Some(Box::new(move || {
                         let lock = dynamic
                             .write()
                             .expect("Failed locking AllocateCommandBuffer for dtor");
                         let pool_lock = pool.lock()
                             .expect("Failed locking CommandPool for AllocateCommandBuffer dtor");
                         let cb_fut = (*lock).clone();
-                        let cb_opt = cb_fut
+                        let allocatecb = cb_fut
                             .wait()
                             .expect("Waiting on AllocateCommandBuffer dtor failed");
-                        match cb_opt.handle {
-                            Some(cb) => unsafe {
-                                parent_device.free_command_buffers(*pool_lock, &[cb]);
-                            },
-                            _ => (),
+                        unsafe {
+                            parent_device.free_command_buffers(*pool_lock, &allocatecb.handles);
                         }
                     }))
                 }

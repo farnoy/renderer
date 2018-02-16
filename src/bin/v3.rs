@@ -24,47 +24,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 fn main() {
-    let mut g = petgraph::prelude::StableDiGraph::<String, i8>::new();
-    let a = g.add_node("a".to_string());
-    let b = g.add_node("b".to_string());
-    let c = g.add_node("c".to_string());
-    let d = g.add_node("d".to_string());
-    g.add_edge(a, b, 1);
-    g.add_edge(b, c, 0);
-    g.add_edge(a, c, 1);
-    g.add_edge(c, d, 1);
-    {
-        let dot = petgraph::dot::Dot::new(&g);
-        println!("graph is \n{:?}", g);
-        println!("dot is \n{:?}", dot);
-    }
-    use petgraph::visit::{EdgeRef, IntoNeighbors, Walker};
-    g = g.filter_map(
-        |_, n| Some(n.clone()),
-        |_, edge| {
-            if *edge == 1 {
-                Some(*edge)
-            } else {
-                None
-            }
-        },
-    );
-    {
-        let dot = petgraph::dot::Dot::new(&g);
-        println!("graph is \n{:?}", g);
-        println!("dot is \n{:?}", dot);
-    }
-    let reversed = petgraph::visit::Reversed(&g);
-    let mut dfs = petgraph::visit::DfsPostOrder::new(&reversed, c);
-    loop {
-        match dfs.next(reversed) {
-            Some(ix) => {
-                println!("ix {:?}", ix);
-                println!("next {:?}", g[ix]);
-            }
-            None => break,
-        }
-    }
     let mut dag = RenderDAG::new();
     let window_ix = dag.new_window(800, 600);
     let (device_ix, graphics_family, compute_family) = dag.new_device(window_ix).unwrap();
@@ -170,20 +129,14 @@ fn main() {
         let dot = petgraph::dot::Dot::new(&dag.graph);
         println!("dot is \n{:?}", dot);
     }
-    dag.render_frame();
-    if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
-        use futures::Future;
-        let lock = dynamic.read().unwrap();
-        println!("{:?}", (*lock).clone().wait());
-    } else {
-        panic!("present framebuffer does not exist?")
-    }
-    dag.render_frame();
-    if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
-        use futures::Future;
-        let lock = dynamic.read().unwrap();
-        println!("{:?}", (*lock).clone().wait());
-    } else {
-        panic!("present framebuffer does not exist?")
+    for _i in 1..500 {
+        dag.render_frame();
+        if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
+            use futures::Future;
+            let lock = dynamic.read().unwrap();
+            println!("{:?}", (*lock).clone().wait());
+        } else {
+            panic!("present framebuffer does not exist?")
+        }
     }
 }
