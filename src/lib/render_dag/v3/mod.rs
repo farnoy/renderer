@@ -81,8 +81,8 @@ decl_node_runtime! {
         }
         AllocateCommandBuffer {
             make make_allocate_commands
-            static [_dummy: ()]
-            dynamic [handles: Arc<Vec<vk::CommandBuffer>>]
+            static [handles: Arc<RwLock<Vec<vk::CommandBuffer>>>]
+            dynamic [current_frame: vk::CommandBuffer]
             forward vk
             forward Arc
         }
@@ -469,7 +469,7 @@ impl RenderDAG {
         })?;
 
         let node = self.graph
-            .add_node(RenderNode::make_allocate_commands(&self.cpu_pool, (), Arc::new(vec![])));
+            .add_node(RenderNode::make_allocate_commands(&self.cpu_pool, Arc::new(RwLock::new(vec![])), unsafe { vk::CommandBuffer::null() }));
         let submit = self.graph
             .add_node(RenderNode::make_submit_command_buffer(&self.cpu_pool, ()));
         self.graph.add_edge(command_pool_ix, node, Edge::Propagate);
@@ -669,7 +669,7 @@ impl RenderDAG {
                         )
                         .shared();
                 }
-                RenderNode::AllocateCommandBuffer { ref dynamic, .. } => {
+                RenderNode::AllocateCommandBuffer { ref handles, ref dynamic, .. } => {
                     let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
                         &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
@@ -684,6 +684,7 @@ impl RenderDAG {
                     }).expect("Framebuffer not found in direct deps of AllocateCommandBuffer");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
                     let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
+                    let handles = Arc::clone(handles);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     let previous = (*lock).clone();
                     *lock = self.cpu_pool
@@ -696,8 +697,8 @@ impl RenderDAG {
                                 p_inheritance_info: ptr::null(),
                                 flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
                             };
+                            let mut handles = handles.write().expect("Failed to own AllocateCommandBuffer data");
                             let present_ix = fb.current_present_index;
-                            let handles = Arc::clone(&previous.handles);
                             if handles.is_empty() {
                                 let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
                                     s_type: vk::StructureType::CommandBufferAllocateInfo,
@@ -711,19 +712,21 @@ impl RenderDAG {
                                         .allocate_command_buffers(&command_buffer_allocate_info)
                                         .unwrap()
                                 };
+                                let current_frame = command_buffers[present_ix as usize];
+                                *handles = command_buffers;
                                 unsafe {
-                                    device.begin_command_buffer(command_buffers[present_ix as usize], &begin_info);
+                                    device.begin_command_buffer(current_frame, &begin_info);
                                 }
                                 fields::AllocateCommandBuffer::Dynamic {
-                                    handles: Arc::new(command_buffers),
+                                    current_frame
                                 }
                             } else {
-                                let cb = handles[present_ix as usize];
+                                let current_frame = handles[present_ix as usize];
                                 unsafe {
-                                    device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty());
-                                    device.begin_command_buffer(cb, &begin_info);
+                                    device.reset_command_buffer(current_frame, vk::CommandBufferResetFlags::empty());
+                                    device.begin_command_buffer(current_frame, &begin_info);
                                 }
-                                fields::AllocateCommandBuffer::Dynamic { handles: handles }
+                                fields::AllocateCommandBuffer::Dynamic { current_frame }
                             }
                         }))
                         .shared();
@@ -766,9 +769,8 @@ impl RenderDAG {
                                 .join3(allocated, fb_fut)
                                 .map_err(|_| ())
                                 .map(move |(_, allocated, fb)| unsafe {
-                                    let command_buffers = Arc::clone(&allocated.handles);
+                                    let cb = allocated.current_frame;
                                     let fb_ix = (*fb).current_present_index;
-                                    let cb = command_buffers[fb_ix as usize];
                                     device.end_command_buffer(cb).unwrap();
                                     let dst_stage_masks = vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
                                     let submits = [
@@ -850,8 +852,7 @@ impl RenderDAG {
                                 .map_err(|_| ())
                                 .map(move |(cb_dyn, fb)| {
                                     let fb_ix = (*fb).current_present_index;
-                                    let command_buffers = Arc::clone(&cb_dyn.handles);
-                                    let cb = command_buffers[fb_ix as usize];
+                                    let cb = cb_dyn.current_frame;
                                     let clear_values = vec![
                                         vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0; 4])),
                                     ];
@@ -904,9 +905,8 @@ impl RenderDAG {
                                 .join3(command_buffer_fut, fb_fut)
                                 .map_err(|_| ())
                                 .map(move |(_, cb_dyn, fb)| {
-                                    let command_buffers = Arc::clone(&cb_dyn.handles);
                                     let fb_ix = (*fb).current_present_index;
-                                    let cb = command_buffers[fb_ix as usize];
+                                    let cb = cb_dyn.current_frame;
                                     unsafe {
                                         device.cmd_end_render_pass(cb);
                                     }
@@ -944,9 +944,8 @@ impl RenderDAG {
                                 .join3(command_buffer_fut, fb_fut)
                                 .map_err(|_| ())
                                 .map(move |(_, cb_dyn, fb)| {
-                                    let command_buffers = Arc::clone(&cb_dyn.handles);
                                     let fb_ix = (*fb).current_present_index;
-                                    let cb = command_buffers[fb_ix as usize];
+                                    let cb = cb_dyn.current_frame;
                                     unsafe {
                                         device.cmd_next_subpass(cb, vk::SubpassContents::Inline);
                                     }
@@ -1028,7 +1027,7 @@ impl Drop for RenderDAG {
                         parent_device.destroy_semaphore(handle, None);
                     }))
                 }
-                &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => {
+                &RenderNode::AllocateCommandBuffer { ref handles, ref dynamic, .. } => {
                     let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
                         &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
@@ -1038,6 +1037,7 @@ impl Drop for RenderDAG {
                         _ => None,
                     }).expect("Command pool not found in direct deps of AllocateCommandBuffer");
                     let dynamic = Arc::clone(dynamic);
+                    let handles = Arc::clone(handles);
 
                     Some(Box::new(move || {
                         let lock = dynamic
@@ -1046,12 +1046,11 @@ impl Drop for RenderDAG {
                         let pool_lock = pool.lock()
                             .expect("Failed locking CommandPool for AllocateCommandBuffer dtor");
                         let cb_fut = (*lock).clone();
-                        let allocatecb = cb_fut
-                            .wait()
-                            .expect("Waiting on AllocateCommandBuffer dtor failed");
+                        let mut cb_lock = handles.write().expect("Failed locking AllocateCB for dtor");
                         unsafe {
-                            parent_device.free_command_buffers(*pool_lock, &allocatecb.handles);
+                            parent_device.free_command_buffers(*pool_lock, &cb_lock);
                         }
+                        (*cb_lock).clear();
                     }))
                 }
                 &RenderNode::SubmitCommandBuffer { .. } => None,
