@@ -1,6 +1,10 @@
 use ash::{vk, extensions::{Surface, Swapchain}, version::{EntryV1_0, InstanceV1_0}};
 #[cfg(windows)]
 use ash::extensions::Win32Surface;
+#[cfg(windows)]
+use winapi;
+#[cfg(windows)]
+use user32;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::XlibSurface;
 use ptr;
