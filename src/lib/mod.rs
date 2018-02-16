@@ -1,4 +1,7 @@
 #![feature(conservative_impl_trait)]
+#![feature(fnbox)]
+#![feature(trace_macros)]
+#![feature(log_syntax)]
 #[macro_use]
 extern crate ash;
 extern crate cgmath;
@@ -27,6 +30,7 @@ pub mod entry;
 pub mod instance;
 pub mod mesh;
 pub mod render_dag;
+pub mod swapchain;
 pub mod texture;
 
 use ash::vk;
@@ -283,7 +287,7 @@ impl ExampleBase {
                 .filter_map(|v| v)
                 .nth(0)
                 .expect("Couldn't find suitable device.");
-            let device = device::Device::new(&instance, pdevice, queue_family_index as u32).unwrap();
+            let device = device::Device::new(&instance, pdevice, &[(queue_family_index as u32, 1)]).unwrap();
             let queue_family_index = queue_family_index as u32;
             let present_queue = device.vk().get_device_queue(queue_family_index, 0);
             let surface_formats = surface_loader

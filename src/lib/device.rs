@@ -35,18 +35,11 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queue_family_index: u32) -> Result<Arc<Device>, ash::DeviceError> {
-        let debug_marker_available = cfg!(feature = "validation") && unsafe {
-            instance
-                .vk()
-                .enumerate_device_extension_properties(physical_device)
-                .unwrap()
-                .iter()
-                .any(|ext| CStr::from_ptr(ext.extension_name.as_ref().as_ptr()) == DebugMarker::name())
-        };
+    pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queues: &[(u32, u32)]) -> Result<Arc<Device>, ash::DeviceError> {
+        let debug_marker_available = cfg!(feature = "validation");
 
         let device = {
-            let device_extension_names_raw = if cfg!(feature = "validation") && debug_marker_available {
+            let device_extension_names_raw = if cfg!(feature = "validation") {
                 vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
             } else {
                 vec![Swapchain::name().as_ptr()]
@@ -57,21 +50,28 @@ impl Device {
                 geometry_shader: 1,
                 ..Default::default()
             };
-            let priorities = [1.0];
-            let queue_info = vk::DeviceQueueCreateInfo {
-                s_type: vk::StructureType::DeviceQueueCreateInfo,
-                p_next: ptr::null(),
-                flags: Default::default(),
-                queue_family_index: queue_family_index as u32,
-                p_queue_priorities: priorities.as_ptr(),
-                queue_count: priorities.len() as u32,
-            };
+            let mut priorities = vec![];
+            let queue_infos = queues
+                .iter()
+                .map(|&(ref family, ref len)| {
+                    priorities.push(vec![1.0; *len as usize]);
+                    let p = priorities.last().unwrap();
+                    vk::DeviceQueueCreateInfo {
+                        s_type: vk::StructureType::DeviceQueueCreateInfo,
+                        p_next: ptr::null(),
+                        flags: Default::default(),
+                        queue_family_index: *family,
+                        p_queue_priorities: p.as_ptr(),
+                        queue_count: p.len() as u32,
+                    }
+                })
+                .collect::<Vec<_>>();
             let device_create_info = vk::DeviceCreateInfo {
                 s_type: vk::StructureType::DeviceCreateInfo,
                 p_next: ptr::null(),
                 flags: Default::default(),
-                queue_create_info_count: 1,
-                p_queue_create_infos: &queue_info,
+                queue_create_info_count: queue_infos.len() as u32,
+                p_queue_create_infos: queue_infos.as_ptr(),
                 enabled_layer_count: 0,
                 pp_enabled_layer_names: ptr::null(),
                 enabled_extension_count: device_extension_names_raw.len() as u32,
@@ -104,13 +104,22 @@ impl Device {
                 None
             };
 
-            Ok(Arc::new(Device {
+            let device = Device {
                 device: device,
                 instance: instance.clone(),
                 debug_report_loader: debug_report_loader,
                 debug_marker_loader: debug_marker_loader,
                 debug_call_back: debug_call_back,
-            }))
+            };
+            unsafe {
+                use std::mem::transmute;
+                device.set_object_name(
+                    vk::DebugReportObjectTypeEXT::Device,
+                    transmute(device.vk().handle()),
+                    "Device",
+                );
+            }
+            Ok(Arc::new(device))
         }
         #[cfg(not(feature = "validation"))]
         {

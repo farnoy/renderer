@@ -596,7 +596,7 @@ impl RenderDAG {
                 NodeRuntime::Framebuffer(ref fbs) => for fb in fbs.iter().cloned() {
                     unsafe { base.device.destroy_framebuffer(fb, None) }
                 },
-                _ => ()
+                _ => (),
             }
         }
 
@@ -1166,7 +1166,7 @@ impl RenderDAGBuilder {
                             _ => None,
                         })
                         .collect::<Vec<_>>();
-                        println!("vertex bindings {:?}", vertex_bindings);
+                    println!("vertex bindings {:?}", vertex_bindings);
                     let shader_modules = inputs
                         .iter()
                         .filter_map(|node| match node.1 {

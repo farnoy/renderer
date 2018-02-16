@@ -115,7 +115,12 @@ fn main() {
                             ],
                             &[],
                         );
-                        let bindings = vec![mesh.0.vertex_buffer.vk(), mesh.0.tex_coords.vk(), mesh.0.normal_buffer.vk(), mesh.0.tangent_buffer.vk()];
+                        let bindings = vec![
+                            mesh.0.vertex_buffer.vk(),
+                            mesh.0.tex_coords.vk(),
+                            mesh.0.normal_buffer.vk(),
+                            mesh.0.tangent_buffer.vk(),
+                        ];
                         let offsets = vec![0, 0, 0, 0];
                         device.cmd_bind_vertex_buffers(command_buffer, 0, &bindings, &offsets);
                         device.cmd_bind_index_buffer(
@@ -284,7 +289,10 @@ fn main() {
             .with::<Scale>(Scale(70.0))
             .with::<Matrices>(Matrices::one())
             .with::<SimpleColorMesh>(SimpleColorMesh(
-                mesh::Mesh::from_gltf(&base, "glTF-Sample-Models/2.0/BoomBox/glTF-Binary/BoomBox.glb").unwrap(),
+                mesh::Mesh::from_gltf(
+                    &base,
+                    "glTF-Sample-Models/2.0/BoomBox/glTF-Binary/BoomBox.glb",
+                ).unwrap(),
             ))
             .with::<TriangleMesh>(TriangleMesh(mesh::TriangleMesh::dummy(&base)))
             .build();

@@ -27,6 +27,10 @@ winapi = "^0.2"
 name = "main"
 path = "src/bin/main.rs"
 
+[[bin]]
+name = "v3"
+path = "src/bin/v3.rs"
+
 [lib]
 name = "forward_renderer"
 path = "src/lib/mod.rs"
