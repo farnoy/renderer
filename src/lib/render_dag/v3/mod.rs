@@ -9,7 +9,7 @@ use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1
 use futures::{future::{join_all, ok, Shared}, prelude::*};
 use futures_cpupool::*;
 use petgraph::{prelude::*, visit::{self, Walker}};
-use std::{self, fmt, ptr, mem::transmute, path::PathBuf, sync::{Arc, Mutex, RwLock}, u64};
+use std::{self, fmt, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, sync::{Arc, Mutex, RwLock}, u64};
 use winit;
 
 use super::super::{device, entry, instance, swapchain};
@@ -104,6 +104,17 @@ decl_node_runtime! {
         EndRenderpass {
             make make_end_renderpass
             static [_dummy: ()]
+            dynamic []
+        }
+        PipelineLayout {
+            make make_pipeline_layout
+            static [push_constant_ranges: Arc<Vec<vk::PushConstantRange>>,
+                    handle: vk::PipelineLayout]
+            dynamic []
+        }
+        GraphicsPipeline {
+            make make_graphics_pipeline
+            static [handle: vk::Pipeline]
             dynamic []
         }
     }
@@ -468,8 +479,11 @@ impl RenderDAG {
             _ => None,
         })?;
 
-        let node = self.graph
-            .add_node(RenderNode::make_allocate_commands(&self.cpu_pool, Arc::new(RwLock::new(vec![])), unsafe { vk::CommandBuffer::null() }));
+        let node = self.graph.add_node(RenderNode::make_allocate_commands(
+            &self.cpu_pool,
+            Arc::new(RwLock::new(vec![])),
+            unsafe { vk::CommandBuffer::null() },
+        ));
         let submit = self.graph
             .add_node(RenderNode::make_submit_command_buffer(&self.cpu_pool, ()));
         self.graph.add_edge(command_pool_ix, node, Edge::Propagate);
@@ -553,26 +567,252 @@ impl RenderDAG {
         Some((start_ix, end_ix, subpass_ixes))
     }
 
+    pub fn new_pipeline_layout(&mut self, device_ix: NodeIndex, push_constant_ranges: Vec<vk::PushConstantRange>) -> Option<NodeIndex> {
+        let device = match self.graph[device_ix] {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+            _ => None,
+        }?;
+
+        let create_info = vk::PipelineLayoutCreateInfo {
+            s_type: vk::StructureType::PipelineLayoutCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            set_layout_count: 0,
+            p_set_layouts: ptr::null(),
+            push_constant_range_count: push_constant_ranges.len() as u32,
+            p_push_constant_ranges: push_constant_ranges.as_ptr(),
+        };
+
+        let pipeline_layout = unsafe { device.create_pipeline_layout(&create_info, None).unwrap() };
+        let node = self.graph.add_node(RenderNode::make_pipeline_layout(
+            &self.cpu_pool,
+            Arc::new(push_constant_ranges),
+            pipeline_layout,
+        ));
+        self.graph.add_edge(device_ix, node, Edge::Propagate);
+
+        Some(node)
+    }
+
     pub fn new_graphics_pipeline(
         &mut self,
         pipeline_layout_ix: NodeIndex,
+        renderpass_ix: NodeIndex,
         input_attributes: &[vk::VertexInputAttributeDescription],
         input_bindings: &[vk::VertexInputBindingDescription],
-        shaders: &[PathBuf],
+        shaders: &[(vk::ShaderStageFlags, PathBuf)],
     ) -> Option<NodeIndex> {
         let device = search_deps_exactly_one(&self.graph, pipeline_layout_ix, |node| match node {
             &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
             _ => None,
         })?;
-
+        let (window_width, window_height) = search_deps_exactly_one(&self.graph, pipeline_layout_ix, |node| match node {
+            &RenderNode::Instance {
+                window_width,
+                window_height,
+                ..
+            } => Some((window_width, window_height)),
+            _ => None,
+        })?;
+        let pipeline_layout = match self.graph[pipeline_layout_ix] {
+            RenderNode::PipelineLayout { handle, .. } => Some(handle),
+            _ => None,
+        }?;
+        let renderpass = match self.graph[renderpass_ix] {
+            RenderNode::Renderpass { handle, .. } => Some(handle),
+            _ => None,
+        }?;
+        let shader_modules = shaders
+            .iter()
+            .map(|&(stage, ref path)| {
+                let file = File::open(path).expect("Could not find shader.");
+                let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+                let shader_info = vk::ShaderModuleCreateInfo {
+                    s_type: vk::StructureType::ShaderModuleCreateInfo,
+                    p_next: ptr::null(),
+                    flags: Default::default(),
+                    code_size: bytes.len(),
+                    p_code: bytes.as_ptr() as *const u32,
+                };
+                let shader_module = unsafe {
+                    device
+                        .create_shader_module(&shader_info, None)
+                        .expect("Vertex shader module error")
+                };
+                (shader_module, stage)
+            })
+            .collect::<Vec<_>>();
+        let shader_entry_name = CString::new("main").unwrap();
+        let shader_stage_create_infos = shader_modules
+            .iter()
+            .map(|&(module, stage)| vk::PipelineShaderStageCreateInfo {
+                s_type: vk::StructureType::PipelineShaderStageCreateInfo,
+                p_next: ptr::null(),
+                flags: Default::default(),
+                module: module,
+                p_name: shader_entry_name.as_ptr(),
+                p_specialization_info: ptr::null(),
+                stage: stage,
+            })
+            .collect::<Vec<_>>();
+        let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
+            s_type: vk::StructureType::PipelineVertexInputStateCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            vertex_attribute_description_count: input_attributes.len() as u32,
+            p_vertex_attribute_descriptions: input_attributes.as_ptr(),
+            vertex_binding_description_count: input_bindings.len() as u32,
+            p_vertex_binding_descriptions: input_bindings.as_ptr(),
+        };
+        let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
+            s_type: vk::StructureType::PipelineInputAssemblyStateCreateInfo,
+            flags: Default::default(),
+            p_next: ptr::null(),
+            primitive_restart_enable: 0,
+            topology: vk::PrimitiveTopology::TriangleList,
+        };
+        let viewports = [
+            vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: window_width as f32,
+                height: window_height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            },
+        ];
+        let scissors = [
+            vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: window_width,
+                    height: window_height,
+                },
+            },
+        ];
+        let viewport_state_info = vk::PipelineViewportStateCreateInfo {
+            s_type: vk::StructureType::PipelineViewportStateCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            scissor_count: scissors.len() as u32,
+            p_scissors: scissors.as_ptr(),
+            viewport_count: viewports.len() as u32,
+            p_viewports: viewports.as_ptr(),
+        };
+        let rasterization_info = vk::PipelineRasterizationStateCreateInfo {
+            s_type: vk::StructureType::PipelineRasterizationStateCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            cull_mode: vk::CULL_MODE_BACK_BIT,
+            depth_bias_clamp: 0.0,
+            depth_bias_constant_factor: 0.0,
+            depth_bias_enable: 0,
+            depth_bias_slope_factor: 0.0,
+            depth_clamp_enable: 0,
+            front_face: vk::FrontFace::Clockwise,
+            line_width: 1.0,
+            polygon_mode: vk::PolygonMode::Fill,
+            rasterizer_discard_enable: 0,
+        };
+        let multisample_state_info = vk::PipelineMultisampleStateCreateInfo {
+            s_type: vk::StructureType::PipelineMultisampleStateCreateInfo,
+            flags: Default::default(),
+            p_next: ptr::null(),
+            rasterization_samples: vk::SAMPLE_COUNT_1_BIT,
+            sample_shading_enable: 0,
+            min_sample_shading: 0.0,
+            p_sample_mask: ptr::null(),
+            alpha_to_one_enable: 0,
+            alpha_to_coverage_enable: 0,
+        };
+        let noop_stencil_state = vk::StencilOpState {
+            fail_op: vk::StencilOp::Keep,
+            pass_op: vk::StencilOp::Keep,
+            depth_fail_op: vk::StencilOp::Keep,
+            compare_op: vk::CompareOp::Always,
+            compare_mask: 0,
+            write_mask: 0,
+            reference: 0,
+        };
+        let depth_state_info = vk::PipelineDepthStencilStateCreateInfo {
+            s_type: vk::StructureType::PipelineDepthStencilStateCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            depth_test_enable: 1,
+            depth_write_enable: 1,
+            depth_compare_op: vk::CompareOp::LessOrEqual,
+            depth_bounds_test_enable: 0,
+            stencil_test_enable: 0,
+            front: noop_stencil_state.clone(),
+            back: noop_stencil_state.clone(),
+            max_depth_bounds: 1.0,
+            min_depth_bounds: 0.0,
+        };
+        let color_blend_attachment_states = [
+            vk::PipelineColorBlendAttachmentState {
+                blend_enable: 0,
+                src_color_blend_factor: vk::BlendFactor::SrcColor,
+                dst_color_blend_factor: vk::BlendFactor::OneMinusDstColor,
+                color_blend_op: vk::BlendOp::Add,
+                src_alpha_blend_factor: vk::BlendFactor::Zero,
+                dst_alpha_blend_factor: vk::BlendFactor::Zero,
+                alpha_blend_op: vk::BlendOp::Add,
+                color_write_mask: vk::ColorComponentFlags::all(),
+            },
+        ];
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
+            s_type: vk::StructureType::PipelineColorBlendStateCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            logic_op_enable: 0,
+            logic_op: vk::LogicOp::Clear,
+            attachment_count: color_blend_attachment_states.len() as u32,
+            p_attachments: color_blend_attachment_states.as_ptr(),
+            blend_constants: [0.0, 0.0, 0.0, 0.0],
+        };
         /*
-        let node = RenderNode::make_persistent_semaphore(&self.cpu_pool, semaphore);
+        let dynamic_state = [vk::DynamicState::Viewport, vk::DynamicState::Scissor];
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
+            s_type: vk::StructureType::PipelineDynamicStateCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            dynamic_state_count: dynamic_state.len() as u32,
+            p_dynamic_states: dynamic_state.as_ptr(),
+        };
+        */
+        let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo {
+            s_type: vk::StructureType::GraphicsPipelineCreateInfo,
+            p_next: ptr::null(),
+            flags: vk::PipelineCreateFlags::empty(),
+            stage_count: shader_stage_create_infos.len() as u32,
+            p_stages: shader_stage_create_infos.as_ptr(),
+            p_vertex_input_state: &vertex_input_state_info,
+            p_input_assembly_state: &vertex_input_assembly_state_info,
+            p_tessellation_state: ptr::null(),
+            p_viewport_state: &viewport_state_info,
+            p_rasterization_state: &rasterization_info,
+            p_multisample_state: &multisample_state_info,
+            p_depth_stencil_state: &depth_state_info,
+            p_color_blend_state: &color_blend_state,
+            p_dynamic_state: ptr::null(), // &dynamic_state_info,
+            layout: pipeline_layout,
+            render_pass: renderpass,
+            subpass: 0,
+            base_pipeline_handle: vk::Pipeline::null(),
+            base_pipeline_index: 0,
+        };
+        let graphics_pipelines = unsafe {
+            device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[graphic_pipeline_info], None)
+                .expect("Unable to create graphics pipeline")
+        };
+
+        let node = RenderNode::make_graphics_pipeline(&self.cpu_pool, graphics_pipelines[0]);
         let ix = self.graph.add_node(node);
-        self.graph.add_edge(device_ix, ix, Edge::Propagate);
+        self.graph.add_edge(pipeline_layout_ix, ix, Edge::Direct);
+        self.graph.add_edge(renderpass_ix, ix, Edge::Propagate);
 
         Some(ix)
-        */
-        None
     }
 
     pub fn render_frame(&self) {
@@ -669,7 +909,11 @@ impl RenderDAG {
                         )
                         .shared();
                 }
-                RenderNode::AllocateCommandBuffer { ref handles, ref dynamic, .. } => {
+                RenderNode::AllocateCommandBuffer {
+                    ref handles,
+                    ref dynamic,
+                    ..
+                } => {
                     let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
                         &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
@@ -679,7 +923,11 @@ impl RenderDAG {
                         _ => None,
                     }).expect("Command pool not found in direct deps of AllocateCommandBuffer");
                     let (fb_count, fb_lock) = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match node {
-                        &RenderNode::Framebuffer { ref images, ref dynamic, .. } => Some((images.len(), Arc::clone(dynamic))),
+                        &RenderNode::Framebuffer {
+                            ref images,
+                            ref dynamic,
+                            ..
+                        } => Some((images.len(), Arc::clone(dynamic))),
                         _ => None,
                     }).expect("Framebuffer not found in direct deps of AllocateCommandBuffer");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
@@ -688,47 +936,52 @@ impl RenderDAG {
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     let previous = (*lock).clone();
                     *lock = self.cpu_pool
-                        .spawn(previous.join3(fb_fut, order_fut).map_err(|_| ()).map(move |(previous, fb, _)| {
-                            let pool_lock = pool.lock()
-                                .expect("failed to lock command pool for allocation");
-                            let begin_info = vk::CommandBufferBeginInfo {
-                                s_type: vk::StructureType::CommandBufferBeginInfo,
-                                p_next: ptr::null(),
-                                p_inheritance_info: ptr::null(),
-                                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                            };
-                            let mut handles = handles.write().expect("Failed to own AllocateCommandBuffer data");
-                            let present_ix = fb.current_present_index;
-                            if handles.is_empty() {
-                                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-                                    s_type: vk::StructureType::CommandBufferAllocateInfo,
-                                    p_next: ptr::null(),
-                                    command_buffer_count: fb_count as u32,
-                                    command_pool: *pool_lock,
-                                    level: vk::CommandBufferLevel::Primary,
-                                };
-                                let command_buffers = unsafe {
-                                    device
-                                        .allocate_command_buffers(&command_buffer_allocate_info)
-                                        .unwrap()
-                                };
-                                let current_frame = command_buffers[present_ix as usize];
-                                *handles = command_buffers;
-                                unsafe {
-                                    device.begin_command_buffer(current_frame, &begin_info);
-                                }
-                                fields::AllocateCommandBuffer::Dynamic {
-                                    current_frame
-                                }
-                            } else {
-                                let current_frame = handles[present_ix as usize];
-                                unsafe {
-                                    device.reset_command_buffer(current_frame, vk::CommandBufferResetFlags::empty());
-                                    device.begin_command_buffer(current_frame, &begin_info);
-                                }
-                                fields::AllocateCommandBuffer::Dynamic { current_frame }
-                            }
-                        }))
+                        .spawn(
+                            previous
+                                .join3(fb_fut, order_fut)
+                                .map_err(|_| ())
+                                .map(move |(previous, fb, _)| {
+                                    let pool_lock = pool.lock()
+                                        .expect("failed to lock command pool for allocation");
+                                    let begin_info = vk::CommandBufferBeginInfo {
+                                        s_type: vk::StructureType::CommandBufferBeginInfo,
+                                        p_next: ptr::null(),
+                                        p_inheritance_info: ptr::null(),
+                                        flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                    };
+                                    let mut handles = handles
+                                        .write()
+                                        .expect("Failed to own AllocateCommandBuffer data");
+                                    let present_ix = fb.current_present_index;
+                                    if handles.is_empty() {
+                                        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+                                            s_type: vk::StructureType::CommandBufferAllocateInfo,
+                                            p_next: ptr::null(),
+                                            command_buffer_count: fb_count as u32,
+                                            command_pool: *pool_lock,
+                                            level: vk::CommandBufferLevel::Primary,
+                                        };
+                                        let command_buffers = unsafe {
+                                            device
+                                                .allocate_command_buffers(&command_buffer_allocate_info)
+                                                .unwrap()
+                                        };
+                                        let current_frame = command_buffers[present_ix as usize];
+                                        *handles = command_buffers;
+                                        unsafe {
+                                            device.begin_command_buffer(current_frame, &begin_info);
+                                        }
+                                        fields::AllocateCommandBuffer::Dynamic { current_frame }
+                                    } else {
+                                        let current_frame = handles[present_ix as usize];
+                                        unsafe {
+                                            device.reset_command_buffer(current_frame, vk::CommandBufferResetFlags::empty());
+                                            device.begin_command_buffer(current_frame, &begin_info);
+                                        }
+                                        fields::AllocateCommandBuffer::Dynamic { current_frame }
+                                    }
+                                }),
+                        )
                         .shared();
                 }
                 RenderNode::SubmitCommandBuffer { ref dynamic, .. } => {
@@ -795,8 +1048,8 @@ impl RenderDAG {
                                             flags: vk::FenceCreateFlags::empty(),
                                         };
                                         device
-                                        .create_fence(&create_info, None)
-                                        .expect("Create fence failed.")
+                                            .create_fence(&create_info, None)
+                                            .expect("Create fence failed.")
                                     };
 
                                     device.queue_submit(*queue_lock, &submits, submit_fence);
@@ -954,6 +1207,69 @@ impl RenderDAG {
                         )
                         .shared();
                 }
+                RenderNode::PipelineLayout { .. } => (),
+                RenderNode::GraphicsPipeline {
+                    handle,
+                    ref dynamic,
+                } => {
+                    let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                        _ => None,
+                    }).expect("Device not found in deps of NextSubpass");
+                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                        _ => None,
+                    }).expect("Command Buffer not found in deps of NextSubpass");
+                    let command_buffer_fut = command_buffer_locked
+                        .read()
+                        .expect("Could not read command buffer")
+                        .clone();
+                    let pipeline_layout = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::PipelineLayout { handle, .. } => Some(handle),
+                        _ => None,
+                    }).expect("Command Buffer not found in deps of NextSubpass");
+                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let mut lock = dynamic.write().expect("failed to lock present for writing");
+                    *lock = self.cpu_pool
+                        .spawn(
+                            order_fut
+                                .join(command_buffer_fut)
+                                .map_err(|_| ())
+                                .map(move |(_, cb_dyn)| {
+                                    let cb = cb_dyn.current_frame;
+                                    unsafe {
+                                        device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::Graphics, handle);
+                                        let constants = [1.0f32, 1.0, -1.0, 1.0, 0.0, -1.0];
+                                        use std::mem::transmute;
+                                        use std::slice::from_raw_parts;
+
+                                        let casted: &[u8] = unsafe {
+                                            from_raw_parts(
+                                                transmute::<*const f32, *const u8>(constants.as_ptr()),
+                                                2 * 3 * 4,
+                                            )
+                                        };
+
+                                        device.cmd_push_constants(
+                                            cb,
+                                            pipeline_layout,
+                                            vk::SHADER_STAGE_VERTEX_BIT,
+                                            0,
+                                            casted,
+                                        );
+                                        device.cmd_draw(
+                                            cb,
+                                            3,
+                                            1,
+                                            0,
+                                            0
+                                        );
+                                    }
+                                    fields::GraphicsPipeline::Dynamic {}
+                                }),
+                        )
+                        .shared();
+                }
             }
         }
     }
@@ -1027,7 +1343,11 @@ impl Drop for RenderDAG {
                         parent_device.destroy_semaphore(handle, None);
                     }))
                 }
-                &RenderNode::AllocateCommandBuffer { ref handles, ref dynamic, .. } => {
+                &RenderNode::AllocateCommandBuffer {
+                    ref handles,
+                    ref dynamic,
+                    ..
+                } => {
                     let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
                         &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
@@ -1066,6 +1386,25 @@ impl Drop for RenderDAG {
                 }
                 &RenderNode::NextSubpass { .. } => None,
                 &RenderNode::EndRenderpass { .. } => None,
+                &RenderNode::PipelineLayout { ref handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                        _ => None,
+                    }).expect("Expected one parent Device for PipelineLayout");
+                    let handle = handle.clone();
+                    Some(Box::new(move || unsafe {
+                        parent_device.destroy_pipeline_layout(handle, None);
+                    }))
+                }
+                &RenderNode::GraphicsPipeline { handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
+                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                        _ => None,
+                    }).expect("Expected one parent Device for PipelineLayout");
+                    Some(Box::new(move || unsafe {
+                        parent_device.destroy_pipeline(handle, None);
+                    }))
+                }
             },
             |_, edge| Some(edge.clone()),
         );

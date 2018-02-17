@@ -19,7 +19,7 @@ use std::default::Default;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::ptr;
-use std::mem;
+use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -120,11 +120,36 @@ fn main() {
         rendering_complete_semaphore_ix,
         Edge::Direct,
     );
-    dag.graph.add_edge(
-        rendering_complete_semaphore_ix,
-        present_ix,
-        Edge::Direct,
-    );
+    dag.graph
+        .add_edge(rendering_complete_semaphore_ix, present_ix, Edge::Direct);
+    let pipeline_layout = dag.new_pipeline_layout(
+        device_ix,
+        vec![
+            vk::PushConstantRange {
+                stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
+                offset: 0,
+                size: (size_of::<f32>() * 2 * 3) as u32,
+            },
+        ],
+    ).unwrap();
+    let triangle_pipeline = dag.new_graphics_pipeline(
+        pipeline_layout,
+        renderpass_ix,
+        &[],
+        &[],
+        &[
+            (
+                vk::SHADER_STAGE_VERTEX_BIT,
+                PathBuf::from(env!("OUT_DIR")).join("triangle.vert.spv"),
+            ),
+            (
+                vk::SHADER_STAGE_FRAGMENT_BIT,
+                PathBuf::from(env!("OUT_DIR")).join("triangle.frag.spv"),
+            ),
+        ],
+    ).unwrap();
+    dag.graph
+        .add_edge(triangle_pipeline, end_renderpass_ix, Edge::Propagate);
     {
         let dot = petgraph::dot::Dot::new(&dag.graph);
         println!("dot is \n{:?}", dot);
