@@ -1,3 +1,4 @@
+mod dot_formatter;
 #[macro_use]
 mod macros;
 mod surface;
@@ -14,6 +15,8 @@ use winit;
 
 use super::super::{device, entry, instance, swapchain};
 use self::{surface::*, util::*};
+
+pub use self::dot_formatter::dot;
 
 decl_node_runtime! {
     RenderNode {
@@ -1272,7 +1275,9 @@ impl Drop for RenderDAG {
                     }))
                 }
                 RenderNode::Framebuffer {
-                    ref image_views, ref handles, ..
+                    ref image_views,
+                    ref handles,
+                    ..
                 } => {
                     let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
                         RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),

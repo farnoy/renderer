@@ -145,11 +145,8 @@ fn main() {
     ).unwrap();
     dag.graph
         .add_edge(triangle_pipeline, end_renderpass_ix, Edge::Propagate);
-    {
-        let dot = petgraph::dot::Dot::new(&dag.graph);
-        println!("dot is \n{:?}", dot);
-    }
-    for _i in 1..500 {
+    println!("{}", dot(&dag.graph).unwrap());
+    for _i in 1..5 {
         dag.render_frame();
         if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
             use futures::Future;
