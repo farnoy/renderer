@@ -797,6 +797,11 @@ impl RenderDAG {
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[graphic_pipeline_info], None)
                 .expect("Unable to create graphics pipeline")
         };
+        for (shader_module, _stage) in shader_modules {
+            unsafe {
+                device.destroy_shader_module(shader_module, None);
+            }
+        }
 
         let node = RenderNode::make_graphics_pipeline(&self.cpu_pool, graphics_pipelines[0]);
         let ix = self.graph.add_node(node);
@@ -1267,17 +1272,21 @@ impl Drop for RenderDAG {
                     }))
                 }
                 RenderNode::Framebuffer {
-                    ref image_views, ..
+                    ref image_views, ref handles, ..
                 } => {
                     let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
                         RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Instance for Framebuffer");
-                    let image_views = image_views.clone();
+                    let image_views = Arc::clone(image_views);
+                    let handles = Arc::clone(handles);
 
                     Some(Box::new(move || unsafe {
                         for view in image_views.iter() {
                             parent_device.destroy_image_view(*view, None);
+                        }
+                        for handle in handles.iter() {
+                            parent_device.destroy_framebuffer(*handle, None);
                         }
                     }) as Box<FnBox()>)
                 }
