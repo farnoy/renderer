@@ -21,6 +21,7 @@ use ecs::World;
 use super::super::device::Device;
 use super::super::ExampleBase;
 
+#[allow(unknown_lints, type_complexity)]
 #[derive(Clone)]
 pub enum NodeBuilder {
     AcquirePresentImage,
@@ -58,6 +59,7 @@ impl fmt::Debug for NodeBuilder {
 
 type NodeResult<R, Dyn> = (R, Arc<RwLock<Shared<CpuFuture<Option<Dyn>, ()>>>>);
 
+#[allow(unknown_lints, type_complexity)]
 #[derive(Clone)]
 pub enum NodeRuntime {
     AcquirePresentImage,
@@ -116,7 +118,7 @@ impl RenderDAG {
                 .collect();
             fn select_inputs<Selector>(
                 pool: &CpuPool,
-                inputs: &Vec<NodeResult<NodeRuntime, NodeDynamic>>,
+                inputs: &[NodeResult<NodeRuntime, NodeDynamic>],
                 selector: Selector,
             ) -> impl Future<Item = Vec<(NodeRuntime, Option<NodeDynamic>)>, Error = ()>
             where
@@ -124,8 +126,8 @@ impl RenderDAG {
             {
                 let futures = inputs
                     .iter()
-                    .filter_map(|&(ref runtime, ref dynamic)| match selector(&runtime) {
-                        true => {
+                    .filter_map(|&(ref runtime, ref dynamic)| {
+                        if selector(runtime) {
                             let runtime = runtime.clone();
                             Some(
                                 dynamic
@@ -134,8 +136,9 @@ impl RenderDAG {
                                     .clone()
                                     .map(move |dyn| (runtime, dyn)),
                             )
+                        } else {
+                            None
                         }
-                        false => None,
                     })
                     .collect::<Vec<_>>();
                 let fut = join_all(futures).map_err(|_| ()).map(|ref shared_fut| {
@@ -160,8 +163,8 @@ impl RenderDAG {
             let this_node: &NodeRuntime = &(self.graph[node].1).0;
             let this_name = self.graph[node].0.clone();
             // println!("Executing {}", this_name.clone());
-            match this_node {
-                &NodeRuntime::AcquirePresentImage => {
+            match *this_node {
+                NodeRuntime::AcquirePresentImage => {
                     let swapchain_loader = base.swapchain_loader.clone();
                     let swapchain = base.swapchain;
                     let present_complete_semaphore = base.present_complete_semaphore;
@@ -182,7 +185,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::PresentImage => unsafe {
+                NodeRuntime::PresentImage => unsafe {
                     let swapchain_loader = base.swapchain_loader.clone();
                     let present_queue = base.present_queue;
                     let rendering_complete_semaphore = base.rendering_complete_semaphore;
@@ -220,7 +223,7 @@ impl RenderDAG {
                         )
                         .shared();
                 },
-                &NodeRuntime::BeginCommandBuffer(command_buffer) => {
+                NodeRuntime::BeginCommandBuffer(command_buffer) => {
                     let device = base.device.clone();
                     *this_dynamic = self.pool
                         .spawn(
@@ -253,13 +256,13 @@ impl RenderDAG {
                         )
                         .shared();
                 }
-                &NodeRuntime::EndCommandBuffer => {
+                NodeRuntime::EndCommandBuffer => {
                     let device = base.device.clone();
                     // TODO: represent semaphores in the DAG
-                    let present_complete_semaphore = base.present_complete_semaphore.clone();
-                    let rendering_complete_semaphore = base.rendering_complete_semaphore.clone();
+                    let present_complete_semaphore = base.present_complete_semaphore;
+                    let rendering_complete_semaphore = base.rendering_complete_semaphore;
                     // TODO: represent queues in the DAG
-                    let submit_queue = base.present_queue.clone();
+                    let submit_queue = base.present_queue;
                     *this_dynamic = self.pool
                         .spawn(
                             wait_all
@@ -319,10 +322,10 @@ impl RenderDAG {
                         )
                         .shared();
                 }
-                &NodeRuntime::BeginRenderPass(renderpass) => {
+                NodeRuntime::BeginRenderPass(renderpass) => {
                     let device = base.device.clone();
                     let surface_resolution = base.surface_resolution;
-                    let renderpass = renderpass.clone();
+                    let renderpass = renderpass;
                     let name = self.graph[node].0.clone();
                     *this_dynamic = self.pool
                         .spawn(wait_all.map(move |inputs| {
@@ -381,7 +384,7 @@ impl RenderDAG {
                                 framebuffer: framebuffer[present_index as usize],
                                 render_area: vk::Rect2D {
                                     offset: vk::Offset2D { x: 0, y: 0 },
-                                    extent: surface_resolution.clone(),
+                                    extent: surface_resolution,
                                 },
                                 clear_value_count: clear_values.len() as u32,
                                 p_clear_values: clear_values.as_ptr(),
@@ -398,7 +401,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::BeginSubPass(_ix) => {
+                NodeRuntime::BeginSubPass(_ix) => {
                     let device = base.device.clone();
                     let reversed = petgraph::visit::Reversed(&self.graph);
                     let bfs = petgraph::visit::Bfs::new(&reversed, node);
@@ -436,12 +439,12 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::BindPipeline(pipeline, scissors_opt, viewport_opt) => unsafe {
+                NodeRuntime::BindPipeline(pipeline, scissors_opt, viewport_opt) => unsafe {
                     let device = base.device.clone();
                     let name = self.graph[node].0.clone();
-                    let pipeline = pipeline.clone();
-                    let scissors_opt = scissors_opt.clone();
-                    let viewport_opt = viewport_opt.clone();
+                    let pipeline = pipeline;
+                    let scissors_opt = scissors_opt;
+                    let viewport_opt = viewport_opt;
                     let reversed = petgraph::visit::Reversed(&self.graph);
                     let bfs = petgraph::visit::Bfs::new(&reversed, node);
                     use petgraph::visit::Walker;
@@ -476,7 +479,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 },
-                &NodeRuntime::DrawCommands(ref f) => {
+                NodeRuntime::DrawCommands(ref f) => {
                     let device = base.device.clone();
                     let f = f.clone();
                     let render_dag = self.clone();
@@ -508,7 +511,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::EndSubPass(_ix) => {
+                NodeRuntime::EndSubPass(_ix) => {
                     let device = base.device.clone();
                     let reversed = petgraph::visit::Reversed(&self.graph);
                     let bfs = petgraph::visit::Bfs::new(&reversed, node);
@@ -530,7 +533,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::EndRenderPass => {
+                NodeRuntime::EndRenderPass => {
                     let device = base.device.clone();
                     *this_dynamic = self.pool
                         .spawn(wait_all.map(move |inputs| {
@@ -565,7 +568,7 @@ impl RenderDAG {
                         }))
                         .shared();
                 }
-                &NodeRuntime::Framebuffer(_) => (),
+                NodeRuntime::Framebuffer(_) => (),
             }
         }
         last_node.and_then(|last_node| {
@@ -758,6 +761,12 @@ impl<'a> SubPassBuilder<'a> {
     }
 }
 
+impl Default for RenderDAGBuilder {
+    fn default() -> RenderDAGBuilder {
+        RenderDAGBuilder::new()
+    }
+}
+
 impl RenderDAGBuilder {
     pub fn new() -> RenderDAGBuilder {
         RenderDAGBuilder {
@@ -795,9 +804,9 @@ impl RenderDAGBuilder {
     }
 
     pub fn add_edge(&mut self, from: &BuilderNode, to: &BuilderNode) {
-        let from_ix = self.name_mapping.get(&from.name).unwrap();
-        let to_ix = self.name_mapping.get(&to.name).unwrap();
-        self.graph.update_edge(*from_ix, *to_ix, ());
+        let from_ix = self.name_mapping[&from.name];
+        let to_ix = self.name_mapping[&to.name];
+        self.graph.update_edge(from_ix, to_ix, ());
     }
 
     pub fn build(self, base: &ExampleBase) -> RenderDAG {
@@ -944,7 +953,7 @@ impl RenderDAGBuilder {
                     };
 
                     let start = {
-                        let renderpass = renderpass.clone();
+                        let renderpass = renderpass;
                         output_graph.add_node((
                             Cow::from("begin_render_pass"),
                             (
@@ -969,8 +978,8 @@ impl RenderDAGBuilder {
 
                     if let Some(acquire_image) = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::AcquirePresentImage) => name_mapping.get(name),
+                        .filter_map(|node| match *node {
+                            (ref name, NodeBuilder::AcquirePresentImage) => name_mapping.get(name),
                             _ => None,
                         })
                         .next()
@@ -989,8 +998,8 @@ impl RenderDAGBuilder {
 
                     let command_buffer = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::BeginCommandBuffer) => name_mapping.get(name),
+                        .filter_map(|node| match *node {
+                            (ref name, NodeBuilder::BeginCommandBuffer) => name_mapping.get(name),
                             _ => None,
                         })
                         .next()
@@ -1055,7 +1064,7 @@ impl RenderDAGBuilder {
                         */
 
                     let start = {
-                        let ix = ix.clone();
+                        let ix = ix;
                         output_graph.add_node((
                             this_name.clone(),
                             (
@@ -1084,8 +1093,8 @@ impl RenderDAGBuilder {
                 NodeBuilder::EndSubpass(ix) => {
                     let start = inputs
                         .iter()
-                        .filter_map(|i| match i {
-                            &(ref name, NodeBuilder::BeginSubpass(_)) => name_mapping.get(name),
+                        .filter_map(|i| match *i {
+                            (ref name, NodeBuilder::BeginSubpass(_)) => name_mapping.get(name),
                             _ => None,
                         })
                         .cloned()
@@ -1095,7 +1104,7 @@ impl RenderDAGBuilder {
                             this_name
                         ));
                     let end = {
-                        let ix = ix.clone();
+                        let ix = ix;
                         output_graph.add_node((
                             this_name.clone(),
                             (
@@ -1119,7 +1128,7 @@ impl RenderDAGBuilder {
                     let set_layouts = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            NodeBuilder::DescriptorSet(_) => Some(descriptor_set_layouts.get(&node.0).unwrap().clone()),
+                            NodeBuilder::DescriptorSet(_) => Some(descriptor_set_layouts[&node.0]),
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -1229,8 +1238,8 @@ impl RenderDAGBuilder {
                         .collect::<Vec<_>>();
                     let pipeline_layout = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::PipelineLayout) => pipeline_layouts.get(name),
+                        .filter_map(|node| match *node {
+                            (ref name, NodeBuilder::PipelineLayout) => pipeline_layouts.get(name),
                             _ => None,
                         })
                         .next()
@@ -1295,7 +1304,7 @@ impl RenderDAGBuilder {
                     let scissors = [
                         vk::Rect2D {
                             offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: base.surface_resolution.clone(),
+                            extent: base.surface_resolution,
                         },
                     ];
                     let viewport_state_info = vk::PipelineViewportStateCreateInfo {
@@ -1351,8 +1360,8 @@ impl RenderDAGBuilder {
                         depth_compare_op: vk::CompareOp::LessOrEqual,
                         depth_bounds_test_enable: 0,
                         stencil_test_enable: 0,
-                        front: noop_stencil_state.clone(),
-                        back: noop_stencil_state.clone(),
+                        front: noop_stencil_state,
+                        back: noop_stencil_state,
                         max_depth_bounds: 1.0,
                         min_depth_bounds: 0.0,
                     };
@@ -1388,8 +1397,8 @@ impl RenderDAGBuilder {
                     };
                     let subpass_ix = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::BeginSubpass(ix)) => Some(ix),
+                        .filter_map(|node| match *node {
+                            (ref _name, NodeBuilder::BeginSubpass(ix)) => Some(ix),
                             _ => None,
                         })
                         .next()
@@ -1409,9 +1418,9 @@ impl RenderDAGBuilder {
                         p_depth_stencil_state: &depth_state_info,
                         p_color_blend_state: &color_blend_state,
                         p_dynamic_state: &dynamic_state_info,
-                        layout: pipeline_layout.clone(),
+                        layout: *pipeline_layout,
                         render_pass: renderpass,
-                        subpass: subpass_ix as u32,
+                        subpass: u32::from(subpass_ix),
                         base_pipeline_handle: vk::Pipeline::null(),
                         base_pipeline_index: 0,
                     };
@@ -1424,13 +1433,13 @@ impl RenderDAGBuilder {
                     let graphics_pipeline = graphics_pipelines[0];
 
                     let bind = {
-                        let pipeline = graphics_pipeline.clone();
-                        let scissors = scissors[0].clone();
-                        let viewports = viewports[0].clone();
+                        let pipeline = graphics_pipeline;
+                        let scissors = scissors[0];
+                        let viewports = viewports[0];
                         output_graph.add_node((
                             this_name.clone(),
                             (
-                                NodeRuntime::BindPipeline(pipeline, Some(scissors.clone()), Some(viewports.clone())),
+                                NodeRuntime::BindPipeline(pipeline, Some(scissors), Some(viewports)),
                                 Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
                             ),
                         ))
@@ -1438,8 +1447,8 @@ impl RenderDAGBuilder {
                     name_mapping.insert(this_name.clone(), bind);
                     let subpass = inputs
                         .iter()
-                        .filter_map(|i| match i {
-                            &(ref name, NodeBuilder::BeginSubpass(_)) => name_mapping.get(name),
+                        .filter_map(|i| match *i {
+                            (ref name, NodeBuilder::BeginSubpass(_)) => name_mapping.get(name),
                             _ => None,
                         })
                         .cloned()
@@ -1455,8 +1464,8 @@ impl RenderDAGBuilder {
                 NodeBuilder::DrawCommands(ref f) => {
                     let &(pipeline_bind, _) = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::GraphicsPipeline) => pipelines.get(&node.0),
+                        .filter_map(|node| match *node {
+                            (ref _name, NodeBuilder::GraphicsPipeline) => pipelines.get(&node.0),
                             _ => None,
                         })
                         .next()
@@ -1477,8 +1486,8 @@ impl RenderDAGBuilder {
                 NodeBuilder::DescriptorSet(size) => {
                     let descriptor_sizes = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::DescriptorBinding(_binding, typ, _stage, count)) => Some(vk::DescriptorPoolSize {
+                        .filter_map(|node| match *node {
+                            (ref _name, NodeBuilder::DescriptorBinding(_binding, typ, _stage, count)) => Some(vk::DescriptorPoolSize {
                                 typ,
                                 descriptor_count: count * size,
                             }),
@@ -1502,8 +1511,8 @@ impl RenderDAGBuilder {
 
                     let bindings = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref _name, NodeBuilder::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorSetLayoutBinding {
+                        .filter_map(|node| match *node {
+                            (ref _name, NodeBuilder::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorSetLayoutBinding {
                                 binding: binding,
                                 descriptor_type: typ,
                                 descriptor_count: count,
@@ -1552,8 +1561,8 @@ impl RenderDAGBuilder {
                 NodeBuilder::Framebuffer => {
                     let renderpass = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::BeginRenderPass) => renderpasses.get(name),
+                        .filter_map(|node| match *node {
+                            (ref name, NodeBuilder::BeginRenderPass) => renderpasses.get(name),
                             _ => None,
                         })
                         .next()
@@ -1563,8 +1572,8 @@ impl RenderDAGBuilder {
                         ));
                     let renderpass_node = inputs
                         .iter()
-                        .filter_map(|node| match node {
-                            &(ref name, NodeBuilder::BeginRenderPass) => name_mapping.get(name),
+                        .filter_map(|node| match *node {
+                            (ref name, NodeBuilder::BeginRenderPass) => name_mapping.get(name),
                             _ => None,
                         })
                         .next()

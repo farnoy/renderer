@@ -53,7 +53,7 @@ impl Drop for World {
         let mut mesh_storage = self.world.write::<SimpleColorMesh>();
 
         for ix in self.world.entities().join() {
-            for detached in mesh_storage.remove(ix) {
+            if let Some(detached) = mesh_storage.remove(ix) {
                 use super::mesh::Mesh;
 
                 unsafe {

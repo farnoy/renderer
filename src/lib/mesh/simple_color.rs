@@ -32,7 +32,7 @@ impl Mesh for SimpleColor {
 
         for scene in loaded.scenes() {
             for node in scene.nodes() {
-                fn for_mesh<P: Into<PathBuf> + Clone>(base: &ExampleBase, buffers: &gltf_importer::Buffers, path: P, ret: &mut Option<SimpleColor>, mesh: &gltf::Mesh) {
+                fn for_mesh<P: Into<PathBuf> + Clone>(base: &ExampleBase, buffers: &gltf_importer::Buffers, path: &P, ret: &mut Option<SimpleColor>, mesh: &gltf::Mesh) {
                     if ret.is_some() {
                         return;
                     }
@@ -166,17 +166,17 @@ impl Mesh for SimpleColor {
                         });
                     }
                 }
-                fn browse<P: Into<PathBuf> + Clone>(base: &ExampleBase, buffers: &gltf_importer::Buffers, path: P, ret: &mut Option<SimpleColor>, node: &gltf::Node) {
-                    for mesh in node.mesh() {
-                        for_mesh(base, buffers, path.clone(), ret, &mesh)
+                fn browse<P: Into<PathBuf> + Clone>(base: &ExampleBase, buffers: &gltf_importer::Buffers, path: &P, ret: &mut Option<SimpleColor>, node: &gltf::Node) {
+                    if let Some(mesh) = node.mesh() {
+                        for_mesh(base, buffers, path, ret, &mesh)
                     }
 
                     for child in node.children() {
-                        browse(base, buffers, path.clone(), ret, &child);
+                        browse(base, buffers, path, ret, &child);
                     }
                 }
 
-                browse(base, &buffers, path.clone(), &mut ret, &node);
+                browse(base, &buffers, &path, &mut ret, &node);
             }
         }
 

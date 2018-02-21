@@ -1,7 +1,3 @@
-use petgraph::{visit, EdgeDirection};
-use futures_cpupool::{CpuFuture, CpuPool};
-use super::util::*;
-
 macro_rules! decl_node_runtime {
     ($name:ident {
         $($field:ident {
@@ -15,6 +11,7 @@ macro_rules! decl_node_runtime {
             $(
                 #[allow(non_snake_case)]
                 pub mod $field {
+                    #[allow(unused_imports)]
                     use super::super::{$($forward),*};
 
                     #[derive(Debug)]
@@ -24,6 +21,8 @@ macro_rules! decl_node_runtime {
                         ),*
                     }
 
+                    #[allow(unknown_lints)]
+                    #[allow(new_without_default_derive)]
                     impl Dynamic {
                         pub fn new($($dynamic_name: $dynamic_type),*) -> Dynamic {
                             Dynamic {
@@ -43,6 +42,8 @@ macro_rules! decl_node_runtime {
             }),+
         }
 
+        #[allow(unknown_lints)]
+        #[allow(too_many_arguments)]
         impl $name {
             $(
                 fn $make_field(pool: &CpuPool, $($static_name: $static_type),*, $($dynamic_name: $dynamic_type),*) -> $name {
@@ -74,21 +75,4 @@ macro_rules! decl_node_runtime {
             }
         }
     }
-}
-
-macro_rules! inputs {
-    ($pool:ident $graph:ident $ix:ident { $edge_filter:expr } { $($match_pat:pat => $match_expr:expr),+ } $process:expr) => {{
-        let ins = $graph.edges_directed($ix, EdgeDirection::Incoming)
-            .filter(|edge_ref| edge_filter($edge_filter, edge_ref.weight()))
-            .map(|edge_ref| edge_ref.source())
-            .filter_map(|ix| match &$graph[ix] {
-                $($match_pat => $match_expr),+
-            })
-            .collect::<Vec<_>>();
-        $pool.spawn(join_all(ins).map_err(|_| ()).map(|nums| {
-            // use std::ops::Deref;
-            // fields::Add::Dynamic { res: nums.iter().map(|r| *r.deref()).sum()}
-            $process(nums)
-        })).shared()
-    }}
 }

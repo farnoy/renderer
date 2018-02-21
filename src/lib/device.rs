@@ -8,7 +8,6 @@ use ash::extensions::Win32Surface;
 use ash::vk;
 use ash::version;
 use ash::version::InstanceV1_0;
-use std::ffi::CStr;
 use std::ops;
 use std::ptr;
 use std::sync::Arc;
@@ -36,8 +35,6 @@ pub struct Device {
 
 impl Device {
     pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queues: &[(u32, u32)]) -> Result<Arc<Device>, ash::DeviceError> {
-        let debug_marker_available = cfg!(feature = "validation");
-
         let device = {
             let device_extension_names_raw = if cfg!(feature = "validation") {
                 vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
@@ -78,9 +75,7 @@ impl Device {
                 pp_enabled_extension_names: device_extension_names_raw.as_ptr(),
                 p_enabled_features: &features,
             };
-            let device = unsafe { instance.create_device(physical_device, &device_create_info, None)? };
-
-            device
+            unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
         #[cfg(feature = "validation")]
@@ -98,11 +93,7 @@ impl Device {
                     .create_debug_report_callback_ext(&debug_info, None)
                     .unwrap()
             };
-            let debug_marker_loader = if debug_marker_available {
-                Some(DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"))
-            } else {
-                None
-            };
+            let debug_marker_loader = Some(DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"));
 
             let device = Device {
                 device: device,
@@ -160,6 +151,9 @@ impl Device {
         };
     }
 
+    #[cfg(not(feature = "validation"))]
+    pub fn set_object_name(&self, _object_type: vk::DebugReportObjectTypeEXT, _object: u64, _name: &str) {}
+
     #[cfg(feature = "validation")]
     pub fn debug_marker_around<F: Fn()>(&self, command_buffer: vk::CommandBuffer, name: &str, color: [f32; 4], f: F) {
         if self.debug_marker_loader.is_none() {
@@ -181,12 +175,11 @@ impl Device {
                 .as_ref()
                 .unwrap()
                 .cmd_debug_marker_begin_ext(command_buffer, &marker_info);
-            let res = f();
+            f();
             self.debug_marker_loader
                 .as_ref()
                 .unwrap()
                 .cmd_debug_marker_end_ext(command_buffer);
-            res
         };
     }
 

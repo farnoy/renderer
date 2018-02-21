@@ -14,7 +14,7 @@ where
     F: Fn(&N) -> Option<T>,
 {
     let reversed = visit::Reversed(graph);
-    let mut dfs = visit::DfsPostOrder::new(&reversed, start);
+    let dfs = visit::DfsPostOrder::new(&reversed, start);
     dfs.iter(&reversed)
         .filter_map(|ix| f(&graph[ix]))
         .collect::<Vec<_>>()

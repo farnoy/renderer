@@ -170,13 +170,11 @@ pub fn find_memorytype_index_f<F: Fn(vk::MemoryPropertyFlags, vk::MemoryProperty
     f: F,
 ) -> Option<u32> {
     let mut memory_type_bits = memory_req.memory_type_bits;
-    for (index, ref memory_type) in memory_prop.memory_types.iter().enumerate() {
-        if memory_type_bits & 1 == 1 {
-            if f(memory_type.property_flags, flags) {
-                return Some(index as u32);
-            }
+    for (index, memory_type) in memory_prop.memory_types.iter().enumerate() {
+        if memory_type_bits & 1 == 1 && f(memory_type.property_flags, flags) {
+            return Some(index as u32);
         }
-        memory_type_bits = memory_type_bits >> 1;
+        memory_type_bits >>= 1;
     }
     None
 }
@@ -274,12 +272,13 @@ impl ExampleBase {
                         .get_physical_device_queue_family_properties(*pdevice)
                         .iter()
                         .enumerate()
-                        .filter_map(|(index, ref info)| {
+                        .filter_map(|(index, info)| {
                             let supports_graphic_and_surface = info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
                                 && surface_loader.get_physical_device_surface_support_khr(*pdevice, index as u32, surface);
-                            match supports_graphic_and_surface {
-                                true => Some((*pdevice, index)),
-                                _ => None,
+                            if supports_graphic_and_surface {
+                                Some((*pdevice, index))
+                            } else {
+                                None
                             }
                         })
                         .nth(0)
@@ -336,7 +335,7 @@ impl ExampleBase {
                 min_image_count: desired_image_count,
                 image_color_space: surface_format.color_space,
                 image_format: surface_format.format,
-                image_extent: surface_resolution.clone(),
+                image_extent: surface_resolution,
                 image_usage: vk::IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 image_sharing_mode: vk::SharingMode::Exclusive,
                 pre_transform: pre_transform,
@@ -555,7 +554,7 @@ impl Drop for ExampleBase {
             self.device.free_memory(self.depth_image_memory, None);
             self.device.destroy_image_view(self.depth_image_view, None);
             self.device.destroy_image(self.depth_image, None);
-            for &image_view in self.present_image_views.iter() {
+            for &image_view in &self.present_image_views {
                 self.device.destroy_image_view(image_view, None);
             }
             self.device

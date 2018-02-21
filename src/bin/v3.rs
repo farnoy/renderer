@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 extern crate ash;
 extern crate cgmath;
 extern crate forward_renderer;
@@ -8,20 +10,13 @@ extern crate petgraph;
 extern crate specs;
 
 use forward_renderer::*;
-use ecs::*;
 use render_dag::v3::*;
-use mesh;
 
 use ash::vk;
-use ash::version::*;
-use cgmath::Rotation3;
 use std::default::Default;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::ptr;
 use std::mem::size_of;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 fn main() {
     let mut dag = RenderDAG::new();
@@ -108,7 +103,7 @@ fn main() {
     dag.graph
         .add_edge(end_renderpass_ix, submit_commands_ix, Edge::Direct);
 
-    /// Semaphores
+    // Semaphores
     let present_semaphore_ix = dag.new_persistent_semaphore(device_ix).unwrap();
     dag.graph
         .add_edge(framebuffer_ix, present_semaphore_ix, Edge::Direct);

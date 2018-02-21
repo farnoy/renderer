@@ -6,26 +6,14 @@ mod test;
 mod util;
 
 use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1_0}};
-use futures::{future::{join_all, ok, Shared}, prelude::*};
+use futures::prelude::*;
 use futures_cpupool::*;
-use petgraph::{prelude::*, visit::{self, Walker}};
+use petgraph::{visit, prelude::*};
 use std::{self, fmt, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, sync::{Arc, Mutex, RwLock}, u64};
 use winit;
 
 use super::super::{device, entry, instance, swapchain};
 use self::{surface::*, util::*};
-
-enum EdgeFilter {
-    All,
-    Propagating,
-}
-
-fn edge_filter(f: EdgeFilter, edge: &Edge) -> bool {
-    match f {
-        EdgeFilter::All => true,
-        EdgeFilter::Propagating => *edge == Edge::Propagate,
-    }
-}
 
 decl_node_runtime! {
     RenderNode {
@@ -133,6 +121,12 @@ pub struct RenderDAG {
     cpu_pool: CpuPool,
 }
 
+impl Default for RenderDAG {
+    fn default() -> RenderDAG {
+        RenderDAG::new()
+    }
+}
+
 impl RenderDAG {
     pub fn new() -> RenderDAG {
         RenderDAG {
@@ -149,7 +143,7 @@ impl RenderDAG {
             .with_dimensions(window_width, window_height)
             .build(&events_loop)
             .unwrap();
-        let (window_width, window_size) = window.get_inner_size().unwrap();
+        let (window_width, window_height) = window.get_inner_size().unwrap();
 
         let entry = entry::Entry::new().unwrap();
         let instance = instance::Instance::new(&entry).unwrap();
@@ -191,12 +185,13 @@ impl RenderDAG {
                 .get_physical_device_queue_family_properties(pdevice)
                 .iter()
                 .enumerate()
-                .filter_map(|(ix, ref info)| {
+                .filter_map(|(ix, info)| {
                     let supports_graphic_and_surface =
                         info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT) && surface_loader.get_physical_device_surface_support_khr(pdevice, ix as u32, surface);
-                    match supports_graphic_and_surface {
-                        true => Some(ix as u32),
-                        _ => None,
+                    if supports_graphic_and_surface {
+                        Some(ix as u32)
+                    } else {
+                        None
                     }
                 })
                 .next()
@@ -206,12 +201,13 @@ impl RenderDAG {
                 .get_physical_device_queue_family_properties(pdevice)
                 .iter()
                 .enumerate()
-                .filter_map(
-                    |(ix, ref info)| match info.queue_flags.subset(vk::QUEUE_COMPUTE_BIT) && !info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT) {
-                        true => Some((ix as u32, info.queue_count)),
-                        _ => None,
-                    },
-                )
+                .filter_map(|(ix, info)| {
+                    if info.queue_flags.subset(vk::QUEUE_COMPUTE_BIT) && !info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT) {
+                        Some((ix as u32, info.queue_count))
+                    } else {
+                        None
+                    }
+                })
                 .next()
         }?;
         let device = device::Device::new(
@@ -229,7 +225,6 @@ impl RenderDAG {
                 Mutex::new(queue)
             })
             .collect::<Vec<_>>();
-        let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
 
         let node = RenderNode::make_device(
             &self.cpu_pool,
@@ -246,8 +241,8 @@ impl RenderDAG {
     }
 
     pub fn new_swapchain(&mut self, device_ix: NodeIndex) -> Option<NodeIndex> {
-        let (entry, instance, surface, window_width, window_height) = search_deps_exactly_one(&self.graph, device_ix, |node| match node {
-            &RenderNode::Instance {
+        let (entry, instance, surface, window_width, window_height) = search_deps_exactly_one(&self.graph, device_ix, |node| match *node {
+            RenderNode::Instance {
                 ref entry,
                 ref instance,
                 surface,
@@ -320,7 +315,7 @@ impl RenderDAG {
             min_image_count: desired_image_count,
             image_color_space: surface_format.color_space,
             image_format: surface_format.format,
-            image_extent: surface_resolution.clone(),
+            image_extent: surface_resolution,
             image_usage: vk::IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             image_sharing_mode: vk::SharingMode::Exclusive,
             pre_transform: pre_transform,
@@ -361,15 +356,15 @@ impl RenderDAG {
             _ => None,
         }?;
         let renderpass = match self.graph[renderpass_ix] {
-            RenderNode::Renderpass { ref handle, .. } => Some(handle.clone()),
+            RenderNode::Renderpass { ref handle, .. } => Some(*handle),
             _ => None,
         }?;
-        let device = search_deps_exactly_one(&self.graph, swapchain_ix, |node| match node {
-            &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+        let device = search_deps_exactly_one(&self.graph, swapchain_ix, |node| match *node {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
             _ => None,
         })?;
-        let (window_width, window_height) = search_deps_exactly_one(&self.graph, swapchain_ix, |node| match node {
-            &RenderNode::Instance {
+        let (window_width, window_height) = search_deps_exactly_one(&self.graph, swapchain_ix, |node| match *node {
+            RenderNode::Instance {
                 window_width,
                 window_height,
                 ..
@@ -474,11 +469,6 @@ impl RenderDAG {
     }
 
     pub fn new_allocate_command_buffer(&mut self, command_pool_ix: NodeIndex) -> Option<(NodeIndex, NodeIndex)> {
-        let device = search_deps_exactly_one(&self.graph, command_pool_ix, |node| match node {
-            &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
-            _ => None,
-        })?;
-
         let node = self.graph.add_node(RenderNode::make_allocate_commands(
             &self.cpu_pool,
             Arc::new(RwLock::new(vec![])),
@@ -552,15 +542,16 @@ impl RenderDAG {
             .add_node(RenderNode::make_renderpass(&self.cpu_pool, renderpass));
         let end_ix = self.graph
             .add_node(RenderNode::make_end_renderpass(&self.cpu_pool, ()));
-        let mut subpass_ixes = Vec::new();
-        let mut previous_ix = start_ix;
-        for (ix, subpass) in subpass_descs.iter().skip(1).enumerate() {
-            let this_subpass = self.graph
-                .add_node(RenderNode::make_next_subpass(&self.cpu_pool, ix));
-            subpass_ixes.push(this_subpass);
-            self.graph
-                .add_edge(previous_ix, this_subpass, Edge::Propagate);
-        }
+        let previous_ix = start_ix;
+        let subpass_ixes = (1..subpass_descs.len())
+            .map(|ix| {
+                let this_subpass = self.graph
+                    .add_node(RenderNode::make_next_subpass(&self.cpu_pool, ix));
+                self.graph
+                    .add_edge(previous_ix, this_subpass, Edge::Propagate);
+                this_subpass
+            })
+            .collect::<Vec<_>>();
         self.graph.add_edge(previous_ix, end_ix, Edge::Propagate);
         self.graph.add_edge(device_ix, start_ix, Edge::Propagate);
 
@@ -602,12 +593,12 @@ impl RenderDAG {
         input_bindings: &[vk::VertexInputBindingDescription],
         shaders: &[(vk::ShaderStageFlags, PathBuf)],
     ) -> Option<NodeIndex> {
-        let device = search_deps_exactly_one(&self.graph, pipeline_layout_ix, |node| match node {
-            &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+        let device = search_deps_exactly_one(&self.graph, pipeline_layout_ix, |node| match *node {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
             _ => None,
         })?;
-        let (window_width, window_height) = search_deps_exactly_one(&self.graph, pipeline_layout_ix, |node| match node {
-            &RenderNode::Instance {
+        let (window_width, window_height) = search_deps_exactly_one(&self.graph, pipeline_layout_ix, |node| match *node {
+            RenderNode::Instance {
                 window_width,
                 window_height,
                 ..
@@ -743,8 +734,8 @@ impl RenderDAG {
             depth_compare_op: vk::CompareOp::LessOrEqual,
             depth_bounds_test_enable: 0,
             stencil_test_enable: 0,
-            front: noop_stencil_state.clone(),
-            back: noop_stencil_state.clone(),
+            front: noop_stencil_state,
+            back: noop_stencil_state,
             max_depth_bounds: 1.0,
             min_depth_bounds: 0.0,
         };
@@ -819,18 +810,19 @@ impl RenderDAG {
         use petgraph::visit::Walker;
         for ix in visit::Topo::new(&self.graph).iter(&self.graph) {
             match self.graph[ix] {
-                RenderNode::Instance { .. } => (),
-                RenderNode::Device { .. } => (),
-                RenderNode::Swapchain { .. } => (),
-                RenderNode::CommandPool { .. } => (),
-                RenderNode::PersistentSemaphore { .. } => (),
+                RenderNode::Instance { .. }
+                | RenderNode::Device { .. }
+                | RenderNode::Swapchain { .. }
+                | RenderNode::CommandPool { .. }
+                | RenderNode::PipelineLayout { .. }
+                | RenderNode::PersistentSemaphore { .. } => (),
                 RenderNode::Framebuffer { ref dynamic, .. } => {
-                    let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Swapchain { ref handle, .. } => Some(Arc::clone(handle)),
+                    let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Swapchain { ref handle, .. } => Some(Arc::clone(handle)),
                         _ => None,
                     }).expect("No swapchain connected to Framebuffer");
-                    let signal_semaphore = search_direct_deps_exactly_one(&self.graph, ix, Direction::Outgoing, |node| match node {
-                        &RenderNode::PersistentSemaphore { ref handle, .. } => Some(*handle),
+                    let signal_semaphore = search_direct_deps_exactly_one(&self.graph, ix, Direction::Outgoing, |node| match *node {
+                        RenderNode::PersistentSemaphore { ref handle, .. } => Some(*handle),
                         _ => None,
                     }).expect("No semaphore connected to Framebuffer - what should we signal?");
                     let image_index = unsafe {
@@ -855,24 +847,24 @@ impl RenderDAG {
                     ).shared();
                 }
                 RenderNode::PresentFramebuffer { ref dynamic, .. } => {
-                    let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Swapchain { ref handle, .. } => Some(Arc::clone(handle)),
+                    let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Swapchain { ref handle, .. } => Some(Arc::clone(handle)),
                         _ => None,
                     }).expect("No swapchain connected to Present");
-                    let wait_semaphores = search_direct_deps(&self.graph, ix, Direction::Incoming, |node| match node {
-                        &RenderNode::PersistentSemaphore { ref handle, .. } => Some(*handle),
+                    let wait_semaphores = search_direct_deps(&self.graph, ix, Direction::Incoming, |node| match *node {
+                        RenderNode::PersistentSemaphore { ref handle, .. } => Some(*handle),
                         _ => None,
                     });
-                    let present_index = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                    let present_index = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
                         _ => None,
                     }).expect("No framebuffer connected to Present - what image should we present?");
                     let present_index_fut = present_index
                         .read()
                         .expect("Failed to read present index")
                         .clone();
-                    let graphics_queue = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device {
+                    let graphics_queue = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device {
                             ref graphics_queue, ..
                         } => Some(Arc::clone(graphics_queue)),
                         _ => None,
@@ -914,16 +906,16 @@ impl RenderDAG {
                     ref dynamic,
                     ..
                 } => {
-                    let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                    let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Device not found in deps of AllocateCommandBuffer");
-                    let pool = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match node {
-                        &RenderNode::CommandPool { ref handle, .. } => Some(Arc::clone(handle)),
+                    let pool = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match *node {
+                        RenderNode::CommandPool { ref handle, .. } => Some(Arc::clone(handle)),
                         _ => None,
                     }).expect("Command pool not found in direct deps of AllocateCommandBuffer");
-                    let (fb_count, fb_lock) = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match node {
-                        &RenderNode::Framebuffer {
+                    let (fb_count, fb_lock) = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match *node {
+                        RenderNode::Framebuffer {
                             ref images,
                             ref dynamic,
                             ..
@@ -934,83 +926,78 @@ impl RenderDAG {
                     let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let handles = Arc::clone(handles);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    let previous = (*lock).clone();
                     *lock = self.cpu_pool
-                        .spawn(
-                            previous
-                                .join3(fb_fut, order_fut)
-                                .map_err(|_| ())
-                                .map(move |(previous, fb, _)| {
-                                    let pool_lock = pool.lock()
-                                        .expect("failed to lock command pool for allocation");
-                                    let begin_info = vk::CommandBufferBeginInfo {
-                                        s_type: vk::StructureType::CommandBufferBeginInfo,
-                                        p_next: ptr::null(),
-                                        p_inheritance_info: ptr::null(),
-                                        flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                    };
-                                    let mut handles = handles
-                                        .write()
-                                        .expect("Failed to own AllocateCommandBuffer data");
-                                    let present_ix = fb.current_present_index;
-                                    if handles.is_empty() {
-                                        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-                                            s_type: vk::StructureType::CommandBufferAllocateInfo,
-                                            p_next: ptr::null(),
-                                            command_buffer_count: fb_count as u32,
-                                            command_pool: *pool_lock,
-                                            level: vk::CommandBufferLevel::Primary,
-                                        };
-                                        let command_buffers = unsafe {
-                                            device
-                                                .allocate_command_buffers(&command_buffer_allocate_info)
-                                                .unwrap()
-                                        };
-                                        let current_frame = command_buffers[present_ix as usize];
-                                        *handles = command_buffers;
-                                        unsafe {
-                                            device.begin_command_buffer(current_frame, &begin_info);
-                                        }
-                                        fields::AllocateCommandBuffer::Dynamic { current_frame }
-                                    } else {
-                                        let current_frame = handles[present_ix as usize];
-                                        unsafe {
-                                            device.reset_command_buffer(current_frame, vk::CommandBufferResetFlags::empty());
-                                            device.begin_command_buffer(current_frame, &begin_info);
-                                        }
-                                        fields::AllocateCommandBuffer::Dynamic { current_frame }
-                                    }
-                                }),
-                        )
+                        .spawn(order_fut.join(fb_fut).map_err(|_| ()).map(move |(_, fb)| {
+                            let pool_lock = pool.lock()
+                                .expect("failed to lock command pool for allocation");
+                            let begin_info = vk::CommandBufferBeginInfo {
+                                s_type: vk::StructureType::CommandBufferBeginInfo,
+                                p_next: ptr::null(),
+                                p_inheritance_info: ptr::null(),
+                                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                            };
+                            let mut handles = handles
+                                .write()
+                                .expect("Failed to own AllocateCommandBuffer data");
+                            let present_ix = fb.current_present_index;
+                            if handles.is_empty() {
+                                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+                                    s_type: vk::StructureType::CommandBufferAllocateInfo,
+                                    p_next: ptr::null(),
+                                    command_buffer_count: fb_count as u32,
+                                    command_pool: *pool_lock,
+                                    level: vk::CommandBufferLevel::Primary,
+                                };
+                                let command_buffers = unsafe {
+                                    device
+                                        .allocate_command_buffers(&command_buffer_allocate_info)
+                                        .unwrap()
+                                };
+                                let current_frame = command_buffers[present_ix as usize];
+                                *handles = command_buffers;
+                                unsafe {
+                                    device
+                                        .begin_command_buffer(current_frame, &begin_info)
+                                        .unwrap();
+                                }
+                                fields::AllocateCommandBuffer::Dynamic { current_frame }
+                            } else {
+                                let current_frame = handles[present_ix as usize];
+                                unsafe {
+                                    device
+                                        .reset_command_buffer(current_frame, vk::CommandBufferResetFlags::empty())
+                                        .unwrap();
+                                    device
+                                        .begin_command_buffer(current_frame, &begin_info)
+                                        .unwrap();
+                                }
+                                fields::AllocateCommandBuffer::Dynamic { current_frame }
+                            }
+                        }))
                         .shared();
                 }
                 RenderNode::SubmitCommandBuffer { ref dynamic, .. } => {
-                    let (device, graphics_queue) = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device {
+                    let (device, graphics_queue) = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device {
                             ref device,
                             ref graphics_queue,
                             ..
                         } => Some((Arc::clone(device), Arc::clone(graphics_queue))),
                         _ => None,
                     }).expect("Device not found in deps of SubmitCommandBuffer");
-                    let allocated_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                    let allocated_lock = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
                         _ => None,
                     }).expect("Device not found in deps of SubmitCommandBuffer");
-                    let wait_semaphores = search_direct_deps(&self.graph, ix, Direction::Incoming, |node| match node {
-                        &RenderNode::PersistentSemaphore { handle, .. } => Some(handle),
+                    let wait_semaphores = search_direct_deps(&self.graph, ix, Direction::Incoming, |node| match *node {
+                        RenderNode::PersistentSemaphore { handle, .. } => Some(handle),
                         _ => None,
                     });
-                    let signal_semaphores = search_direct_deps(&self.graph, ix, Direction::Outgoing, |node| match node {
-                        &RenderNode::PersistentSemaphore { handle, .. } => Some(handle),
+                    let signal_semaphores = search_direct_deps(&self.graph, ix, Direction::Outgoing, |node| match *node {
+                        RenderNode::PersistentSemaphore { handle, .. } => Some(handle),
                         _ => None,
                     });
-                    let fb_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
-                        _ => None,
-                    }).expect("Framebuffer not found in direct deps of SubmitCommandBuffer");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
-                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let allocated = allocated_lock
                         .write()
                         .expect("failed to read command buffer")
@@ -1019,11 +1006,10 @@ impl RenderDAG {
                     *lock = self.cpu_pool
                         .spawn(
                             order_fut
-                                .join3(allocated, fb_fut)
+                                .join(allocated)
                                 .map_err(|_| ())
-                                .map(move |(_, allocated, fb)| unsafe {
+                                .map(move |(_, allocated)| unsafe {
                                     let cb = allocated.current_frame;
-                                    let fb_ix = (*fb).current_present_index;
                                     device.end_command_buffer(cb).unwrap();
                                     let dst_stage_masks = vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
                                     let submits = [
@@ -1052,7 +1038,9 @@ impl RenderDAG {
                                             .expect("Create fence failed.")
                                     };
 
-                                    device.queue_submit(*queue_lock, &submits, submit_fence);
+                                    device
+                                        .queue_submit(*queue_lock, &submits, submit_fence)
+                                        .unwrap();
 
                                     device
                                         .wait_for_fences(&[submit_fence], true, u64::MAX)
@@ -1068,24 +1056,24 @@ impl RenderDAG {
                     handle,
                     ref dynamic,
                 } => {
-                    let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                    let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Device not found in deps of Renderpass");
-                    let (fb_handles, fb_lock) = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Framebuffer {
+                    let (fb_handles, fb_lock) = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Framebuffer {
                             ref handles,
                             ref dynamic,
                             ..
                         } => Some((Arc::clone(handles), Arc::clone(dynamic))),
                         _ => None,
                     }).expect("Framebuffer not found in deps of Renderpass");
-                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
                         _ => None,
                     }).expect("Command Buffer not found in deps of Renderpass");
-                    let (window_width, window_height) = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Instance {
+                    let (window_width, window_height) = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Instance {
                             window_width,
                             window_height,
                             ..
@@ -1133,12 +1121,12 @@ impl RenderDAG {
                         .shared();
                 }
                 RenderNode::EndRenderpass { ref dynamic, .. } => {
-                    let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                    let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Device not found in deps of EndRenderpass");
-                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
                         _ => None,
                     }).expect("Command Buffer not found in deps of EndRenderpass");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
@@ -1146,19 +1134,13 @@ impl RenderDAG {
                         .read()
                         .expect("Could not read command buffer")
                         .clone();
-                    let fb_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
-                        _ => None,
-                    }).expect("Framebuffer not found in direct deps of EndRenderPass");
-                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = self.cpu_pool
                         .spawn(
                             order_fut
-                                .join3(command_buffer_fut, fb_fut)
+                                .join(command_buffer_fut)
                                 .map_err(|_| ())
-                                .map(move |(_, cb_dyn, fb)| {
-                                    let fb_ix = (*fb).current_present_index;
+                                .map(move |(_, cb_dyn)| {
                                     let cb = cb_dyn.current_frame;
                                     unsafe {
                                         device.cmd_end_render_pass(cb);
@@ -1168,16 +1150,13 @@ impl RenderDAG {
                         )
                         .shared();
                 }
-                RenderNode::NextSubpass {
-                    ix: subpass_ix,
-                    ref dynamic,
-                } => {
-                    let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::NextSubpass { ref dynamic, .. } => {
+                    let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Device not found in deps of NextSubpass");
-                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
                         _ => None,
                     }).expect("Command Buffer not found in deps of NextSubpass");
                     let command_buffer_fut = command_buffer_locked
@@ -1185,19 +1164,13 @@ impl RenderDAG {
                         .expect("Could not read command buffer")
                         .clone();
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
-                    let fb_lock = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Framebuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
-                        _ => None,
-                    }).expect("Framebuffer not found in direct deps of EndRenderPass");
-                    let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = self.cpu_pool
                         .spawn(
                             order_fut
-                                .join3(command_buffer_fut, fb_fut)
+                                .join(command_buffer_fut)
                                 .map_err(|_| ())
-                                .map(move |(_, cb_dyn, fb)| {
-                                    let fb_ix = (*fb).current_present_index;
+                                .map(move |(_, cb_dyn)| {
                                     let cb = cb_dyn.current_frame;
                                     unsafe {
                                         device.cmd_next_subpass(cb, vk::SubpassContents::Inline);
@@ -1207,25 +1180,24 @@ impl RenderDAG {
                         )
                         .shared();
                 }
-                RenderNode::PipelineLayout { .. } => (),
                 RenderNode::GraphicsPipeline {
                     handle,
                     ref dynamic,
                 } => {
-                    let device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                    let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Device not found in deps of NextSubpass");
-                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                    let command_buffer_locked = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
                         _ => None,
                     }).expect("Command Buffer not found in deps of NextSubpass");
                     let command_buffer_fut = command_buffer_locked
                         .read()
                         .expect("Could not read command buffer")
                         .clone();
-                    let pipeline_layout = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::PipelineLayout { handle, .. } => Some(handle),
+                    let pipeline_layout = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::PipelineLayout { handle, .. } => Some(handle),
                         _ => None,
                     }).expect("Command Buffer not found in deps of NextSubpass");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
@@ -1243,27 +1215,15 @@ impl RenderDAG {
                                         use std::mem::transmute;
                                         use std::slice::from_raw_parts;
 
-                                        let casted: &[u8] = unsafe {
+                                        let casted: &[u8] = {
                                             from_raw_parts(
                                                 transmute::<*const f32, *const u8>(constants.as_ptr()),
                                                 2 * 3 * 4,
                                             )
                                         };
 
-                                        device.cmd_push_constants(
-                                            cb,
-                                            pipeline_layout,
-                                            vk::SHADER_STAGE_VERTEX_BIT,
-                                            0,
-                                            casted,
-                                        );
-                                        device.cmd_draw(
-                                            cb,
-                                            3,
-                                            1,
-                                            0,
-                                            0
-                                        );
+                                        device.cmd_push_constants(cb, pipeline_layout, vk::SHADER_STAGE_VERTEX_BIT, 0, casted);
+                                        device.cmd_draw(cb, 3, 1, 0, 0);
                                     }
                                     fields::GraphicsPipeline::Dynamic {}
                                 }),
@@ -1279,22 +1239,25 @@ impl Drop for RenderDAG {
     fn drop(&mut self) {
         use std::boxed::FnBox;
         let mut finalizer_graph: StableDiGraph<Box<FnBox()>, Edge> = self.graph.filter_map(
-            |ix, node| match node {
-                &RenderNode::Instance { ref instance, .. } => {
+            |ix, node| match *node {
+                RenderNode::PresentFramebuffer { .. } | RenderNode::SubmitCommandBuffer { .. } | RenderNode::NextSubpass { .. } | RenderNode::EndRenderpass { .. } => {
+                    None
+                }
+                RenderNode::Instance { ref instance, .. } => {
                     let i = Arc::clone(instance);
                     Some(Box::new(move || {
                         drop(i);
                     }) as Box<FnBox()>)
                 }
-                &RenderNode::Device { ref device, .. } => {
+                RenderNode::Device { ref device, .. } => {
                     let d = Arc::clone(device);
                     Some(Box::new(move || {
                         drop(d);
                     }) as Box<FnBox()>)
                 }
-                &RenderNode::Swapchain { ref handle, .. } => {
-                    let parent_device = search_deps(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::Swapchain { ref handle, .. } => {
+                    let parent_device = search_deps(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     });
                     let swapchain = Arc::clone(handle);
@@ -1303,13 +1266,11 @@ impl Drop for RenderDAG {
                         drop(parent_device);
                     }))
                 }
-                &RenderNode::Framebuffer {
-                    ref images,
-                    ref image_views,
-                    ..
+                RenderNode::Framebuffer {
+                    ref image_views, ..
                 } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Instance for Framebuffer");
                     let image_views = image_views.clone();
@@ -1320,10 +1281,9 @@ impl Drop for RenderDAG {
                         }
                     }) as Box<FnBox()>)
                 }
-                &RenderNode::PresentFramebuffer { .. } => None,
-                &RenderNode::CommandPool { ref handle, .. } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::CommandPool { ref handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Instance for CommandPool");
                     let command_pool = Arc::clone(handle);
@@ -1332,40 +1292,31 @@ impl Drop for RenderDAG {
                         parent_device.destroy_command_pool(*lock, None);
                     }) as Box<FnBox()>)
                 }
-                &RenderNode::PersistentSemaphore { ref handle, .. } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::PersistentSemaphore { ref handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Device for PersistentSemaphore");
-                    let handle = handle.clone();
+                    let handle = *handle;
 
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_semaphore(handle, None);
                     }))
                 }
-                &RenderNode::AllocateCommandBuffer {
-                    ref handles,
-                    ref dynamic,
-                    ..
-                } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::AllocateCommandBuffer { ref handles, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Device for AllocateCommandBuffer");
-                    let pool = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match node {
-                        &RenderNode::CommandPool { ref handle, .. } => Some(Arc::clone(handle)),
+                    let pool = search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match *node {
+                        RenderNode::CommandPool { ref handle, .. } => Some(Arc::clone(handle)),
                         _ => None,
                     }).expect("Command pool not found in direct deps of AllocateCommandBuffer");
-                    let dynamic = Arc::clone(dynamic);
                     let handles = Arc::clone(handles);
 
                     Some(Box::new(move || {
-                        let lock = dynamic
-                            .write()
-                            .expect("Failed locking AllocateCommandBuffer for dtor");
                         let pool_lock = pool.lock()
                             .expect("Failed locking CommandPool for AllocateCommandBuffer dtor");
-                        let cb_fut = (*lock).clone();
                         let mut cb_lock = handles.write().expect("Failed locking AllocateCB for dtor");
                         unsafe {
                             parent_device.free_command_buffers(*pool_lock, &cb_lock);
@@ -1373,32 +1324,29 @@ impl Drop for RenderDAG {
                         (*cb_lock).clear();
                     }))
                 }
-                &RenderNode::SubmitCommandBuffer { .. } => None,
-                &RenderNode::Renderpass { ref handle, .. } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::Renderpass { ref handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Device for AllocateCommandBuffer");
-                    let handle = handle.clone();
+                    let handle = *handle;
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_render_pass(handle, None);
                     }))
                 }
-                &RenderNode::NextSubpass { .. } => None,
-                &RenderNode::EndRenderpass { .. } => None,
-                &RenderNode::PipelineLayout { ref handle, .. } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::PipelineLayout { ref handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Device for PipelineLayout");
-                    let handle = handle.clone();
+                    let handle = *handle;
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_pipeline_layout(handle, None);
                     }))
                 }
-                &RenderNode::GraphicsPipeline { handle, .. } => {
-                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match node {
-                        &RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                RenderNode::GraphicsPipeline { handle, .. } => {
+                    let parent_device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
                         _ => None,
                     }).expect("Expected one parent Device for PipelineLayout");
                     Some(Box::new(move || unsafe {
@@ -1409,11 +1357,8 @@ impl Drop for RenderDAG {
             |_, edge| Some(edge.clone()),
         );
         for ix in self.graph.node_indices() {
-            match self.graph[ix] {
-                RenderNode::Device { ref device, .. } => unsafe {
-                    device.device_wait_idle().unwrap();
-                },
-                _ => (),
+            if let RenderNode::Device { ref device, .. } = self.graph[ix] {
+                device.device_wait_idle().unwrap();
             }
         }
         self.graph.clear();

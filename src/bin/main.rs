@@ -45,10 +45,6 @@ fn main() {
             "vertex_shader",
             Node::VertexShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.vert.spv")),
         );
-        let geom_shader = builder.add_node(
-            "geometry_shader",
-            Node::GeometryShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.geom.spv")),
-        );
         let fragment_shader = builder.add_node(
             "fragment_shader",
             Node::FragmentShader(PathBuf::from(env!("OUT_DIR")).join("simple_color.frag.spv")),
@@ -100,19 +96,9 @@ fn main() {
                         device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::Graphics,
-                            render_dag
-                                .pipeline_layouts
-                                .get("pipeline_layout")
-                                .unwrap()
-                                .clone(),
+                            render_dag.pipeline_layouts["pipeline_layout"],
                             0,
-                            &[
-                                render_dag
-                                    .descriptor_sets
-                                    .get("main_descriptor_layout")
-                                    .unwrap()[ix]
-                                    .clone(),
-                            ],
+                            &[render_dag.descriptor_sets["main_descriptor_layout"][ix]],
                             &[],
                         );
                         let bindings = vec![
@@ -381,10 +367,7 @@ fn main() {
                         base.device.create_image_view(&create_info, None).unwrap(),
                     ));
                 }
-                let descriptor_set = render_dag
-                    .descriptor_sets
-                    .get("main_descriptor_layout")
-                    .unwrap()[ix];
+                let descriptor_set = render_dag.descriptor_sets["main_descriptor_layout"][ix];
                 let mut image_infos = vec![];
                 let write_sets = textures
                     .iter()
@@ -399,7 +382,7 @@ fn main() {
                         vk::WriteDescriptorSet {
                             s_type: vk::StructureType::WriteDescriptorSet,
                             p_next: ptr::null(),
-                            dst_set: descriptor_set.clone(),
+                            dst_set: descriptor_set,
                             dst_binding: 1 + ix as u32,
                             dst_array_element: 0,
                             descriptor_count: 1,
@@ -438,10 +421,10 @@ fn main() {
             .build();
         base.render_loop(&mut || {
             {
-                let mut world = world
+                let world = world
                     .write()
                     .expect("failed to lock write world in render loop");
-                dispatcher.dispatch(&mut world.res);
+                dispatcher.dispatch(&world.res);
             }
             let mut buffers = vec![];
             {
@@ -450,22 +433,19 @@ fn main() {
                     .read()
                     .expect("failed to lock read world in render loop");
                 for (ix, mvp) in world.read::<Matrices>().join().enumerate() {
-                    let mvps = [mvp.clone()];
+                    let mvps = [*mvp];
                     let ubo_buffer = buffer::Buffer::upload_from::<Matrices, _>(
                         &base,
                         vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                         &mvps.iter().cloned(),
                     );
-                    let ubo_mvp = render_dag
-                        .descriptor_sets
-                        .get("main_descriptor_layout")
-                        .unwrap()[ix];
+                    let ubo_mvp = render_dag.descriptor_sets["main_descriptor_layout"][ix];
                     base.device.update_descriptor_sets(
                         &[
                             vk::WriteDescriptorSet {
                                 s_type: vk::StructureType::WriteDescriptorSet,
                                 p_next: ptr::null(),
-                                dst_set: ubo_mvp.clone(),
+                                dst_set: ubo_mvp,
                                 dst_binding: 0,
                                 dst_array_element: 0,
                                 descriptor_count: 1,
@@ -511,7 +491,7 @@ fn main() {
             );
             */
 
-            for buffer in buffers.into_iter() {
+            for buffer in buffers {
                 buffer.free(base.device.vk())
             }
         });

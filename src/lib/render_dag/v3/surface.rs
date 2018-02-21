@@ -1,4 +1,4 @@
-use ash::{vk, extensions::{Surface, Swapchain}, version::{EntryV1_0, InstanceV1_0}};
+use ash::{vk, version::{EntryV1_0, InstanceV1_0}};
 #[cfg(windows)]
 use ash::extensions::Win32Surface;
 #[cfg(windows)]
