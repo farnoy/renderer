@@ -124,6 +124,7 @@ pub type RuntimeGraph = StableDiGraph<RenderNode, Edge>;
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
     cpu_pool: CpuPool,
+    frame_number: u32,
 }
 
 impl Default for RenderDAG {
@@ -137,6 +138,7 @@ impl RenderDAG {
         RenderDAG {
             graph: RuntimeGraph::new(),
             cpu_pool: CpuPool::new(1),
+            frame_number: 0,
         }
     }
 
@@ -818,16 +820,26 @@ impl RenderDAG {
         Some(ix)
     }
 
-    pub fn render_frame(&self) {
+    pub fn render_frame(&mut self) {
+        self.frame_number += 1;
         use petgraph::visit::Walker;
         for ix in visit::Topo::new(&self.graph).iter(&self.graph) {
             match self.graph[ix] {
                 RenderNode::Instance { .. }
-                | RenderNode::Device { .. }
                 | RenderNode::Swapchain { .. }
                 | RenderNode::CommandPool { .. }
                 | RenderNode::PipelineLayout { .. }
                 | RenderNode::PersistentSemaphore { .. } => (),
+                RenderNode::Device { allocator, ref dynamic, .. } => {
+                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let mut lock = dynamic.write().expect("failed to lock present for writing");
+                    let frame_index = self.frame_number;
+                    *lock = self.cpu_pool.spawn(order_fut.map_err(|_| ()).map(move |_| {
+                        alloc::set_current_frame_index(allocator, frame_index);
+
+                        fields::Device::Dynamic {}
+                    })).shared();
+                }
                 RenderNode::Framebuffer { ref dynamic, .. } => {
                     let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match *node {
                         RenderNode::Swapchain { ref handle, .. } => Some(Arc::clone(handle)),
@@ -1261,7 +1273,11 @@ impl Drop for RenderDAG {
                         drop(i);
                     }) as Box<FnBox()>)
                 }
-                RenderNode::Device { ref device, allocator, .. } => {
+                RenderNode::Device {
+                    ref device,
+                    allocator,
+                    ..
+                } => {
                     let d = Arc::clone(device);
                     Some(Box::new(move || {
                         alloc::destroy(allocator);

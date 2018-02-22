@@ -51,6 +51,8 @@ fn main() {
         .bitfield_enum("VmaAllocatorCreateFlagBits")
         .whitelist_function("vmaCreateAllocator")
         .whitelist_function("vmaDestroyAllocator")
+        .whitelist_function("vmaSetCurrentFrameIndex")
+        .blacklist_type("VmaAllocator")
         .blacklist_type("VkBuffer")
         .blacklist_type("VkFlags")
         .blacklist_type("VkResult")

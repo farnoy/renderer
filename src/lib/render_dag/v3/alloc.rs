@@ -14,6 +14,11 @@ type VkImage = vk::Image;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+#[derive(Copy, Clone)]
+pub struct VmaAllocator(*mut VmaAllocator_T);
+
+unsafe impl Send for VmaAllocator {}
+
 pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkResult<VmaAllocator> {
     let create_info = VmaAllocatorCreateInfo {
         flags: 0,
@@ -26,7 +31,7 @@ pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkRes
         pHeapSizeLimit: ptr::null(),
         pVulkanFunctions: ptr::null(),
     };
-    let mut allocator: VmaAllocator = ptr::null_mut();
+    let mut allocator: VmaAllocator = VmaAllocator(ptr::null_mut());
     let err_code = unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
     match err_code {
         vk::Result::Success => Ok(allocator),
@@ -36,4 +41,8 @@ pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkRes
 
 pub fn destroy(allocator: VmaAllocator) {
     unsafe { vmaDestroyAllocator(allocator) }
+}
+
+pub fn set_current_frame_index(allocator: VmaAllocator, index: u32) {
+    unsafe { vmaSetCurrentFrameIndex(allocator, index) }
 }
