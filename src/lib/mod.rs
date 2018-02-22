@@ -1,3 +1,4 @@
+#![feature(untagged_unions)]
 #![feature(conservative_impl_trait)]
 #![feature(fnbox)]
 #![feature(trace_macros)]

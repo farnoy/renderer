@@ -1,3 +1,4 @@
+pub mod alloc;
 mod dot_formatter;
 #[macro_use]
 mod macros;
@@ -35,6 +36,7 @@ decl_node_runtime! {
             make make_device
             static [device: Arc<device::Device>,
                     physical_device: vk::PhysicalDevice,
+                    allocator: alloc::VmaAllocator,
                     graphics_queue_family: u32,
                     compute_queue_family: u32,
                     // transfer_queue_family: u32, // TODO
@@ -221,6 +223,7 @@ impl RenderDAG {
                 (compute_queue_family, compute_queue_len),
             ],
         ).unwrap();
+        let allocator = alloc::create(device.vk().handle(), pdevice).unwrap();
         let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
         let compute_queues = (0..compute_queue_len)
             .map(|ix| {
@@ -233,6 +236,7 @@ impl RenderDAG {
             &self.cpu_pool,
             device,
             pdevice,
+            allocator,
             graphics_queue_family,
             compute_queue_family,
             Arc::new(Mutex::new(graphics_queue)),
@@ -1257,9 +1261,10 @@ impl Drop for RenderDAG {
                         drop(i);
                     }) as Box<FnBox()>)
                 }
-                RenderNode::Device { ref device, .. } => {
+                RenderNode::Device { ref device, allocator, .. } => {
                     let d = Arc::clone(device);
                     Some(Box::new(move || {
+                        alloc::destroy(allocator);
                         drop(d);
                     }) as Box<FnBox()>)
                 }

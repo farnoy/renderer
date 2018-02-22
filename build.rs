@@ -1,6 +1,8 @@
+extern crate bindgen;
+
 use std::process::Command;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let src = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -31,4 +33,37 @@ fn main() {
             .success();
         assert!(result, "failed to compile shader");
     }
+
+    println!("cargo:rustc-link-lib=vulkan");
+    println!("cargo:rustc-link-lib=stdc++");
+    println!("cargo:rustc-link-lib=static=amd_alloc");
+    println!("cargo:rustc-link-search=native={}", src);
+    println!("cargo:rerun-if-changed=wrapper.h");
+
+    let bindings = bindgen::Builder::default()
+        .header("wrapper.h")
+        .clang_arg("-x")
+        .clang_arg("c++")
+        .clang_arg("-std=c++14")
+        .whitelist_type("VmaAllocatorCreateInfo")
+        .whitelist_type("VmaAllocatorCreateFlags")
+        .whitelist_type("VmaAllocatorCreateFlagBits")
+        .bitfield_enum("VmaAllocatorCreateFlagBits")
+        .whitelist_function("vmaCreateAllocator")
+        .whitelist_function("vmaDestroyAllocator")
+        .blacklist_type("VkBuffer")
+        .blacklist_type("VkFlags")
+        .blacklist_type("VkResult")
+        .blacklist_type("VkStructureType")
+        .blacklist_type("VkDeviceMemory")
+        .blacklist_type("VkDevice")
+        .blacklist_type("VkPhysicalDevice")
+        .blacklist_type("VkImage")
+        .generate()
+        .expect("Unable to generate bindings");
+
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("bindings.rs"))
+        .expect("Couldn't write bindings!");
 }
