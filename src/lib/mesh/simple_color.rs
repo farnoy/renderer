@@ -32,7 +32,13 @@ impl Mesh for SimpleColor {
 
         for scene in loaded.scenes() {
             for node in scene.nodes() {
-                fn for_mesh<P: Into<PathBuf> + Clone>(base: &ExampleBase, buffers: &gltf_importer::Buffers, path: &P, ret: &mut Option<SimpleColor>, mesh: &gltf::Mesh) {
+                fn for_mesh<P: Into<PathBuf> + Clone>(
+                    base: &ExampleBase,
+                    buffers: &gltf_importer::Buffers,
+                    path: &P,
+                    ret: &mut Option<SimpleColor>,
+                    mesh: &gltf::Mesh,
+                ) {
                     if ret.is_some() {
                         return;
                     }
@@ -58,7 +64,8 @@ impl Mesh for SimpleColor {
                                 )
                             }
                             gltf::image::Data::Uri { uri, .. } => {
-                                let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
+                                let actual_path =
+                                    path.clone().into().as_path().parent().unwrap().join(uri);
                                 println!("actual_path {:?}", actual_path);
                                 Texture::load(
                                     base,
@@ -69,7 +76,11 @@ impl Mesh for SimpleColor {
                             }
                         };
 
-                        let vertex_buffer = Buffer::upload_from::<[f32; 3], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &positions);
+                        let vertex_buffer = Buffer::upload_from::<[f32; 3], _>(
+                            base,
+                            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            &positions,
+                        );
                         #[cfg(feature = "validation")]
                         unsafe {
                             use std::mem::transmute;
@@ -82,11 +93,19 @@ impl Mesh for SimpleColor {
 
                         let indices = primitive.indices_u32(buffers).unwrap();
                         let index_count = indices.len();
-                        let index_buffer = Buffer::upload_from::<u32, _>(base, vk::BUFFER_USAGE_INDEX_BUFFER_BIT, &indices);
+                        let index_buffer = Buffer::upload_from::<u32, _>(
+                            base,
+                            vk::BUFFER_USAGE_INDEX_BUFFER_BIT,
+                            &indices,
+                        );
                         let index_type = vk::IndexType::Uint32;
 
                         let tex_coords_iter = primitive.tex_coords_f32(0, buffers).unwrap();
-                        let tex_coords = Buffer::upload_from::<[f32; 2], _>(base, vk::BUFFER_USAGE_VERTEX_BUFFER_BIT, &tex_coords_iter);
+                        let tex_coords = Buffer::upload_from::<[f32; 2], _>(
+                            base,
+                            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            &tex_coords_iter,
+                        );
 
                         let sampler = {
                             use ash::version::DeviceV1_0;
@@ -133,7 +152,8 @@ impl Mesh for SimpleColor {
                                 )
                             }
                             gltf::image::Data::Uri { uri, .. } => {
-                                let actual_path = path.clone().into().as_path().parent().unwrap().join(uri);
+                                let actual_path =
+                                    path.clone().into().as_path().parent().unwrap().join(uri);
                                 println!("actual_path {:?}", actual_path);
                                 Texture::load(
                                     base,
@@ -166,7 +186,13 @@ impl Mesh for SimpleColor {
                         });
                     }
                 }
-                fn browse<P: Into<PathBuf> + Clone>(base: &ExampleBase, buffers: &gltf_importer::Buffers, path: &P, ret: &mut Option<SimpleColor>, node: &gltf::Node) {
+                fn browse<P: Into<PathBuf> + Clone>(
+                    base: &ExampleBase,
+                    buffers: &gltf_importer::Buffers,
+                    path: &P,
+                    ret: &mut Option<SimpleColor>,
+                    node: &gltf::Node,
+                ) {
                     if let Some(mesh) = node.mesh() {
                         for_mesh(base, buffers, path, ret, &mesh)
                     }

@@ -20,7 +20,11 @@ where
         .collect::<Vec<_>>()
 }
 
-pub fn search_deps_exactly_one<T, F, N, E>(graph: &StableDiGraph<N, E>, start: NodeIndex, f: F) -> Option<T>
+pub fn search_deps_exactly_one<T, F, N, E>(
+    graph: &StableDiGraph<N, E>,
+    start: NodeIndex,
+    f: F,
+) -> Option<T>
 where
     F: Fn(&N) -> Option<T>,
 {
@@ -32,7 +36,12 @@ where
     }
 }
 
-pub fn search_direct_deps<T, F, N, E>(graph: &StableDiGraph<N, E>, start: NodeIndex, direction: Direction, f: F) -> Vec<T>
+pub fn search_direct_deps<T, F, N, E>(
+    graph: &StableDiGraph<N, E>,
+    start: NodeIndex,
+    direction: Direction,
+    f: F,
+) -> Vec<T>
 where
     F: Fn(&N) -> Option<T>,
 {
@@ -42,7 +51,12 @@ where
         .collect::<Vec<_>>()
 }
 
-pub fn search_direct_deps_exactly_one<T, F, N, E>(graph: &StableDiGraph<N, E>, start: NodeIndex, direction: Direction, f: F) -> Option<T>
+pub fn search_direct_deps_exactly_one<T, F, N, E>(
+    graph: &StableDiGraph<N, E>,
+    start: NodeIndex,
+    direction: Direction,
+    f: F,
+) -> Option<T>
 where
     F: Fn(&N) -> Option<T>,
 {
@@ -54,7 +68,11 @@ where
     }
 }
 
-pub fn wait_on_direct_deps<N, E>(cpu_pool: &CpuPool, graph: &StableDiGraph<N, E>, start: NodeIndex) -> Shared<CpuFuture<(), ()>>
+pub fn wait_on_direct_deps<N, E>(
+    cpu_pool: &CpuPool,
+    graph: &StableDiGraph<N, E>,
+    start: NodeIndex,
+) -> Shared<CpuFuture<(), ()>>
 where
     N: WaitOn,
 {

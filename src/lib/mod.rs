@@ -24,8 +24,8 @@ extern crate winapi;
 extern crate winit;
 
 pub mod buffer;
-pub mod device;
 pub mod command_buffer;
+pub mod device;
 pub mod ecs;
 pub mod entry;
 pub mod instance;
@@ -120,7 +120,11 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance: &I, window: &winit::Window) -> Result<vk::SurfaceKHR, vk::Result> {
+unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+    entry: &E,
+    instance: &I,
+    window: &winit::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::unix::WindowExt;
     let x11_display = window.get_xlib_display().unwrap();
     let x11_window = window.get_xlib_window().unwrap();
@@ -131,11 +135,16 @@ unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance: &I,
         window: x11_window as vk::Window,
         dpy: x11_display as *mut vk::Display,
     };
-    let xlib_surface_loader = XlibSurface::new(entry, instance).expect("Unable to load xlib surface");
+    let xlib_surface_loader =
+        XlibSurface::new(entry, instance).expect("Unable to load xlib surface");
     xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
 }
 #[cfg(windows)]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance: &I, window: &winit::Window) -> Result<vk::SurfaceKHR, vk::Result> {
+unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+    entry: &E,
+    instance: &I,
+    window: &winit::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::windows::WindowExt;
     let hwnd = window.get_hwnd() as *mut winapi::windef::HWND__;
     let hinstance = user32::GetWindow(hwnd, 0) as *const vk::c_void;
@@ -146,15 +155,21 @@ unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance: &I,
         hinstance: hinstance,
         hwnd: hwnd as *const vk::c_void,
     };
-    let win32_surface_loader = Win32Surface::new(entry, instance).expect("Unable to load win32 surface");
+    let win32_surface_loader =
+        Win32Surface::new(entry, instance).expect("Unable to load win32 surface");
     win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)
 }
 
-pub fn find_memorytype_index(memory_req: &vk::MemoryRequirements, memory_prop: &vk::PhysicalDeviceMemoryProperties, flags: vk::MemoryPropertyFlags) -> Option<u32> {
+pub fn find_memorytype_index(
+    memory_req: &vk::MemoryRequirements,
+    memory_prop: &vk::PhysicalDeviceMemoryProperties,
+    flags: vk::MemoryPropertyFlags,
+) -> Option<u32> {
     // Try to find an exactly matching memory flag
-    let best_suitable_index = find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
-        property_flags == flags
-    });
+    let best_suitable_index =
+        find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
+            property_flags == flags
+        });
     if best_suitable_index.is_some() {
         return best_suitable_index;
     }
@@ -265,7 +280,8 @@ impl ExampleBase {
             let pdevices = instance
                 .enumerate_physical_devices()
                 .expect("Physical device error");
-            let surface_loader = Surface::new(entry.vk(), instance.vk()).expect("Unable to load the Surface extension");
+            let surface_loader = Surface::new(entry.vk(), instance.vk())
+                .expect("Unable to load the Surface extension");
             let (pdevice, queue_family_index) = pdevices
                 .iter()
                 .map(|pdevice| {
@@ -274,8 +290,13 @@ impl ExampleBase {
                         .iter()
                         .enumerate()
                         .filter_map(|(index, info)| {
-                            let supports_graphic_and_surface = info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
-                                && surface_loader.get_physical_device_surface_support_khr(*pdevice, index as u32, surface);
+                            let supports_graphic_and_surface = info.queue_flags
+                                .subset(vk::QUEUE_GRAPHICS_BIT)
+                                && surface_loader.get_physical_device_surface_support_khr(
+                                    *pdevice,
+                                    index as u32,
+                                    surface,
+                                );
                             if supports_graphic_and_surface {
                                 Some((*pdevice, index))
                             } else {
@@ -287,7 +308,8 @@ impl ExampleBase {
                 .filter_map(|v| v)
                 .nth(0)
                 .expect("Couldn't find suitable device.");
-            let device = device::Device::new(&instance, pdevice, &[(queue_family_index as u32, 1)]).unwrap();
+            let device =
+                device::Device::new(&instance, pdevice, &[(queue_family_index as u32, 1)]).unwrap();
             let queue_family_index = queue_family_index as u32;
             let present_queue = device.vk().get_device_queue(queue_family_index, 0);
             let surface_formats = surface_loader
@@ -308,7 +330,9 @@ impl ExampleBase {
                 .get_physical_device_surface_capabilities_khr(pdevice, surface)
                 .unwrap();
             let mut desired_image_count = surface_capabilities.min_image_count + 1;
-            if surface_capabilities.max_image_count > 0 && desired_image_count > surface_capabilities.max_image_count {
+            if surface_capabilities.max_image_count > 0
+                && desired_image_count > surface_capabilities.max_image_count
+            {
                 desired_image_count = surface_capabilities.max_image_count;
             }
             let surface_resolution = match surface_capabilities.current_extent.width {
@@ -327,7 +351,8 @@ impl ExampleBase {
                 surface_capabilities.current_transform
             };
             let present_mode = vk::PresentModeKHR::Fifo;
-            let swapchain_loader = Swapchain::new(instance.vk(), device.vk()).expect("Unable to load swapchain");
+            let swapchain_loader =
+                Swapchain::new(instance.vk(), device.vk()).expect("Unable to load swapchain");
             let swapchain_create_info = vk::SwapchainCreateInfoKHR {
                 s_type: vk::StructureType::SwapchainCreateInfoKhr,
                 p_next: ptr::null(),
@@ -424,11 +449,12 @@ impl ExampleBase {
             };
             let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
             let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
-            let depth_image_memory_index = find_memorytype_index(
-                &depth_image_memory_req,
-                &device_memory_properties,
-                vk::MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            ).expect("Unable to find suitable memory index for depth image.");
+            let depth_image_memory_index =
+                find_memorytype_index(
+                    &depth_image_memory_req,
+                    &device_memory_properties,
+                    vk::MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                ).expect("Unable to find suitable memory index for depth image.");
 
             let depth_image_allocate_info = vk::MemoryAllocateInfo {
                 s_type: vk::StructureType::MemoryAllocateInfo,
@@ -454,7 +480,8 @@ impl ExampleBase {
                         s_type: vk::StructureType::ImageMemoryBarrier,
                         p_next: ptr::null(),
                         src_access_mask: Default::default(),
-                        dst_access_mask: vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                        dst_access_mask: vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                            | vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                         old_layout: vk::ImageLayout::Undefined,
                         new_layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
                         src_queue_family_index: vk::VK_QUEUE_FAMILY_IGNORED,

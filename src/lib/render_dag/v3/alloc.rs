@@ -32,7 +32,8 @@ pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkRes
         pVulkanFunctions: ptr::null(),
     };
     let mut allocator: VmaAllocator = VmaAllocator(ptr::null_mut());
-    let err_code = unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
+    let err_code =
+        unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
     match err_code {
         vk::Result::Success => Ok(allocator),
         _ => Err(err_code),

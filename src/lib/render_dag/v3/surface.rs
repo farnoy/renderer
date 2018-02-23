@@ -11,7 +11,11 @@ use ptr;
 use winit;
 
 #[cfg(all(unix, not(target_os = "android")))]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance: &I, window: &winit::Window) -> Result<vk::SurfaceKHR, vk::Result> {
+pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+    entry: &E,
+    instance: &I,
+    window: &winit::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::unix::WindowExt;
     let x11_display = window.get_xlib_display().unwrap();
     let x11_window = window.get_xlib_window().unwrap();
@@ -22,11 +26,16 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance:
         window: x11_window as vk::Window,
         dpy: x11_display as *mut vk::Display,
     };
-    let xlib_surface_loader = XlibSurface::new(entry, instance).expect("Unable to load xlib surface");
+    let xlib_surface_loader =
+        XlibSurface::new(entry, instance).expect("Unable to load xlib surface");
     xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
 }
 #[cfg(windows)]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance: &I, window: &winit::Window) -> Result<vk::SurfaceKHR, vk::Result> {
+pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+    entry: &E,
+    instance: &I,
+    window: &winit::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::windows::WindowExt;
     let hwnd = window.get_hwnd() as *mut winapi::windef::HWND__;
     let hinstance = user32::GetWindow(hwnd, 0) as *const vk::c_void;
@@ -37,6 +46,7 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(entry: &E, instance:
         hinstance: hinstance,
         hwnd: hwnd as *const vk::c_void,
     };
-    let win32_surface_loader = Win32Surface::new(entry, instance).expect("Unable to load win32 surface");
+    let win32_surface_loader =
+        Win32Surface::new(entry, instance).expect("Unable to load win32 surface");
     win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)
 }

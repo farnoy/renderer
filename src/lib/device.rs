@@ -34,12 +34,31 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(instance: &Arc<Instance>, physical_device: vk::PhysicalDevice, queues: &[(u32, u32)]) -> Result<Arc<Device>, ash::DeviceError> {
+    pub fn new(
+        instance: &Arc<Instance>,
+        physical_device: vk::PhysicalDevice,
+        queues: &[(u32, u32)],
+    ) -> Result<Arc<Device>, ash::DeviceError> {
         let device = {
+            static MAINTENANCE: &str = "VK_KHR_maintenance1\0";
+            static MAINTENANCE2: &str = "VK_KHR_maintenance2\0";
+            static PUSH_DESCRIPTOR: &str = "VK_KHR_push_descriptor\0";
             let device_extension_names_raw = if cfg!(feature = "validation") {
                 vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
             } else {
-                vec![Swapchain::name().as_ptr()]
+                use std::ffi::CStr;
+                vec![
+                    Swapchain::name().as_ptr(),
+                    CStr::from_bytes_with_nul(MAINTENANCE.as_bytes())
+                        .unwrap()
+                        .as_ptr(),
+                    CStr::from_bytes_with_nul(MAINTENANCE2.as_bytes())
+                        .unwrap()
+                        .as_ptr(),
+                    CStr::from_bytes_with_nul(PUSH_DESCRIPTOR.as_bytes())
+                        .unwrap()
+                        .as_ptr(),
+                ]
             };
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
@@ -83,17 +102,21 @@ impl Device {
             let debug_info = vk::DebugReportCallbackCreateInfoEXT {
                 s_type: vk::StructureType::DebugReportCallbackCreateInfoExt,
                 p_next: ptr::null(),
-                flags: vk::DEBUG_REPORT_ERROR_BIT_EXT | vk::DEBUG_REPORT_WARNING_BIT_EXT | vk::DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
+                flags: vk::DEBUG_REPORT_ERROR_BIT_EXT | vk::DEBUG_REPORT_WARNING_BIT_EXT
+                    | vk::DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
                 pfn_callback: vulkan_debug_callback,
                 p_user_data: ptr::null_mut(),
             };
-            let debug_report_loader = DebugReport::new(instance.entry().vk(), instance.vk()).expect("Unable to load debug report");
+            let debug_report_loader = DebugReport::new(instance.entry().vk(), instance.vk())
+                .expect("Unable to load debug report");
             let debug_call_back = unsafe {
                 debug_report_loader
                     .create_debug_report_callback_ext(&debug_info, None)
                     .unwrap()
             };
-            let debug_marker_loader = Some(DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"));
+            let debug_marker_loader = Some(
+                DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"),
+            );
 
             let device = Device {
                 device: device,
@@ -126,7 +149,12 @@ impl Device {
     }
 
     #[cfg(feature = "validation")]
-    pub fn set_object_name(&self, object_type: vk::DebugReportObjectTypeEXT, object: u64, name: &str) {
+    pub fn set_object_name(
+        &self,
+        object_type: vk::DebugReportObjectTypeEXT,
+        object: u64,
+        name: &str,
+    ) {
         if self.debug_marker_loader.is_none() {
             return;
         }
@@ -152,10 +180,22 @@ impl Device {
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn set_object_name(&self, _object_type: vk::DebugReportObjectTypeEXT, _object: u64, _name: &str) {}
+    pub fn set_object_name(
+        &self,
+        _object_type: vk::DebugReportObjectTypeEXT,
+        _object: u64,
+        _name: &str,
+    ) {
+    }
 
     #[cfg(feature = "validation")]
-    pub fn debug_marker_around<F: Fn()>(&self, command_buffer: vk::CommandBuffer, name: &str, color: [f32; 4], f: F) {
+    pub fn debug_marker_around<F: Fn()>(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        name: &str,
+        color: [f32; 4],
+        f: F,
+    ) {
         if self.debug_marker_loader.is_none() {
             return f();
         }
@@ -184,12 +224,23 @@ impl Device {
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn debug_marker_around<R, F: Fn() -> R>(&self, _command_buffer: vk::CommandBuffer, _name: &str, _color: [f32; 4], f: F) -> R {
+    pub fn debug_marker_around<R, F: Fn() -> R>(
+        &self,
+        _command_buffer: vk::CommandBuffer,
+        _name: &str,
+        _color: [f32; 4],
+        f: F,
+    ) -> R {
         f()
     }
 
     #[cfg(feature = "validation")]
-    pub fn debug_marker_start(&self, command_buffer: vk::CommandBuffer, name: &str, color: [f32; 4]) {
+    pub fn debug_marker_start(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        name: &str,
+        color: [f32; 4],
+    ) {
         if self.debug_marker_loader.is_none() {
             return;
         }
@@ -213,7 +264,13 @@ impl Device {
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn debug_marker_start(&self, _command_buffer: vk::CommandBuffer, _name: &str, _color: [f32; 4]) {}
+    pub fn debug_marker_start(
+        &self,
+        _command_buffer: vk::CommandBuffer,
+        _name: &str,
+        _color: [f32; 4],
+    ) {
+    }
 
     #[cfg(feature = "validation")]
     pub fn debug_marker_end(&self, command_buffer: vk::CommandBuffer) {

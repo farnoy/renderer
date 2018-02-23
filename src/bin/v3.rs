@@ -9,6 +9,7 @@ extern crate gltf;
 extern crate petgraph;
 extern crate specs;
 
+use ecs::*;
 use forward_renderer::*;
 use render_dag::v3::*;
 
@@ -19,6 +20,21 @@ use std::mem::size_of;
 use std::path::PathBuf;
 
 fn main() {
+    let mut world = specs::World::new();
+    world.register::<Position>();
+    world.register::<Rotation>();
+    world.register::<Scale>();
+    world.register::<Matrices>();
+    /*
+    let mut dispatcher = specs::DispatcherBuilder::new()
+        .add(SteadyRotation, "steady_rotation", &[])
+        .add(
+            MVPCalculation { projection, view },
+            "mvp",
+            &["steady_rotation"],
+        )
+        .build();
+    */
     let mut dag = RenderDAG::new();
     let window_ix = dag.new_window(800, 600);
     let (device_ix, graphics_family, compute_family) = dag.new_device(window_ix).unwrap();
@@ -68,7 +84,8 @@ fn main() {
                 dst_subpass: 0,
                 src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 src_access_mask: Default::default(),
-                dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
+                    | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             },
         ];
@@ -92,8 +109,9 @@ fn main() {
         compute_family,
         vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     ).unwrap();
-    let (command_buffer_ix, submit_commands_ix) = dag.new_allocate_command_buffer(graphics_command_pool_ix)
-        .unwrap();
+    let (command_buffer_ix, submit_commands_ix) = dag.new_allocate_command_buffer(
+        graphics_command_pool_ix,
+    ).unwrap();
     dag.graph
         .add_edge(submit_commands_ix, present_ix, Edge::Propagate);
     dag.graph

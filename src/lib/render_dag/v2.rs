@@ -47,7 +47,9 @@ pub enum NodeBuilder {
     /// Binding, location, format, offset
     VertexInputAttribute(u32, u32, vk::Format, u32),
     GraphicsPipeline,
-    DrawCommands(Arc<Fn(&Device, &Arc<RwLock<World>>, &RenderDAG, vk::CommandBuffer) + Send + Sync>),
+    DrawCommands(
+        Arc<Fn(&Device, &Arc<RwLock<World>>, &RenderDAG, vk::CommandBuffer) + Send + Sync>,
+    ),
     PresentImage,
 }
 
@@ -67,7 +69,9 @@ pub enum NodeRuntime {
     BeginRenderPass(vk::RenderPass),
     BeginSubPass(u8),
     BindPipeline(vk::Pipeline, Option<vk::Rect2D>, Option<vk::Viewport>),
-    DrawCommands(Arc<Fn(&Device, &Arc<RwLock<World>>, &RenderDAG, vk::CommandBuffer) + Send + Sync>),
+    DrawCommands(
+        Arc<Fn(&Device, &Arc<RwLock<World>>, &RenderDAG, vk::CommandBuffer) + Send + Sync>,
+    ),
     EndCommandBuffer,
     EndSubPass(u8), // TODO: we should only have BeginSubPass if possible, to model vulkan
     EndRenderPass,
@@ -198,7 +202,12 @@ impl RenderDAG {
                                         .iter()
                                         .cloned()
                                         .filter_map(|i| match i {
-                                            (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
+                                            (
+                                                NodeRuntime::AcquirePresentImage,
+                                                Some(NodeDynamic::AcquirePresentImage(
+                                                    present_index,
+                                                )),
+                                            ) => Some(present_index),
                                             _ => None,
                                         })
                                         .next()
@@ -242,7 +251,10 @@ impl RenderDAG {
                                         flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
                                     };
                                     device
-                                        .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+                                        .begin_command_buffer(
+                                            command_buffer,
+                                            &command_buffer_begin_info,
+                                        )
                                         .expect("Begin commandbuffer");
                                     device.debug_marker_start(
                                         command_buffer,
@@ -294,7 +306,8 @@ impl RenderDAG {
                                     let wait_semaphores = [present_complete_semaphore];
                                     let signal_semaphores = [rendering_complete_semaphore];
                                     // TODO: represent wait mask in the DAG/Builder node ??
-                                    let wait_mask = [vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT];
+                                    let wait_mask =
+                                        [vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT];
                                     let submit_info = vk::SubmitInfo {
                                         s_type: vk::StructureType::SubmitInfo,
                                         p_next: ptr::null(),
@@ -357,7 +370,10 @@ impl RenderDAG {
                                 .iter()
                                 .cloned()
                                 .filter_map(|i| match i {
-                                    (NodeRuntime::AcquirePresentImage, Some(NodeDynamic::AcquirePresentImage(present_index))) => Some(present_index),
+                                    (
+                                        NodeRuntime::AcquirePresentImage,
+                                        Some(NodeDynamic::AcquirePresentImage(present_index)),
+                                    ) => Some(present_index),
                                     _ => None,
                                 })
                                 .next()
@@ -371,7 +387,9 @@ impl RenderDAG {
                                 [0.0; 4],
                             );
                             let clear_values = [
-                                vk::ClearValue::new_color(vk::ClearColorValue::new_float32([0.0, 0.0, 0.0, 0.0])),
+                                vk::ClearValue::new_color(vk::ClearColorValue::new_float32([
+                                    0.0, 0.0, 0.0, 0.0
+                                ])),
                                 vk::ClearValue::new_depth_stencil(vk::ClearDepthStencilValue {
                                     depth: 1.0,
                                     stencil: 0,
@@ -425,7 +443,10 @@ impl RenderDAG {
 
                             if previous_subpass.is_some() {
                                 unsafe {
-                                    device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                    device.cmd_next_subpass(
+                                        command_buffer,
+                                        vk::SubpassContents::Inline,
+                                    );
                                 }
                             }
 
@@ -465,7 +486,11 @@ impl RenderDAG {
                                 &format!("{} -> BindPipeline", name),
                                 [0.0; 4],
                                 || {
-                                    device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::Graphics, pipeline);
+                                    device.cmd_bind_pipeline(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::Graphics,
+                                        pipeline,
+                                    );
 
                                     if let Some(viewport) = viewport_opt {
                                         device.cmd_set_viewport(command_buffer, 0, &[viewport]);
@@ -594,8 +619,12 @@ impl RenderDAG {
             .cloned()
         {
             match (self.graph[node].1).0 {
-                NodeRuntime::BeginRenderPass(rp) => unsafe { base.device.destroy_render_pass(rp, None) },
-                NodeRuntime::BindPipeline(pipeline, _, _) => unsafe { base.device.destroy_pipeline(pipeline, None) },
+                NodeRuntime::BeginRenderPass(rp) => unsafe {
+                    base.device.destroy_render_pass(rp, None)
+                },
+                NodeRuntime::BindPipeline(pipeline, _, _) => unsafe {
+                    base.device.destroy_pipeline(pipeline, None)
+                },
                 NodeRuntime::Framebuffer(ref fbs) => for fb in fbs.iter().cloned() {
                     unsafe { base.device.destroy_framebuffer(fb, None) }
                 },
@@ -627,7 +656,12 @@ pub struct CommandBufferBuilder {
 }
 
 impl CommandBufferBuilder {
-    pub fn add_node<T>(&self, builder: &mut RenderDAGBuilder, name: T, value: NodeBuilder) -> BuilderNode
+    pub fn add_node<T>(
+        &self,
+        builder: &mut RenderDAGBuilder,
+        name: T,
+        value: NodeBuilder,
+    ) -> BuilderNode
     where
         T: Into<Cow<'static, str>>,
     {
@@ -681,7 +715,12 @@ pub struct RenderPassBuilder<'a> {
 }
 
 impl<'a> RenderPassBuilder<'a> {
-    pub fn add_node<T>(&self, builder: &mut RenderDAGBuilder, name: T, value: NodeBuilder) -> BuilderNode
+    pub fn add_node<T>(
+        &self,
+        builder: &mut RenderDAGBuilder,
+        name: T,
+        value: NodeBuilder,
+    ) -> BuilderNode
     where
         T: Into<Cow<'static, str>>,
     {
@@ -706,7 +745,12 @@ impl<'a> RenderPassBuilder<'a> {
         builder.add_edge(node, &self.end);
     }
 
-    pub fn with_subpass<T>(&self, builder: &mut RenderDAGBuilder, name: T, index: u8) -> SubPassBuilder
+    pub fn with_subpass<T>(
+        &self,
+        builder: &mut RenderDAGBuilder,
+        name: T,
+        index: u8,
+    ) -> SubPassBuilder
     where
         T: Into<Cow<'static, str>>,
     {
@@ -735,7 +779,12 @@ pub struct SubPassBuilder<'a> {
 }
 
 impl<'a> SubPassBuilder<'a> {
-    pub fn add_node<T>(&self, builder: &mut RenderDAGBuilder, name: T, value: NodeBuilder) -> BuilderNode
+    pub fn add_node<T>(
+        &self,
+        builder: &mut RenderDAGBuilder,
+        name: T,
+        value: NodeBuilder,
+    ) -> BuilderNode
     where
         T: Into<Cow<'static, str>>,
     {
@@ -813,10 +862,16 @@ impl RenderDAGBuilder {
         let mut output_graph = RuntimeGraph::new();
         let mut renderpasses: HashMap<Cow<'static, str>, vk::RenderPass> = HashMap::new();
         let mut pipeline_layouts: HashMap<Cow<'static, str>, vk::PipelineLayout> = HashMap::new();
-        let mut pipelines: HashMap<Cow<'static, str>, (petgraph::graph::NodeIndex, vk::Pipeline)> = HashMap::new();
-        let mut descriptor_set_layouts: HashMap<Cow<'static, str>, vk::DescriptorSetLayout> = HashMap::new();
-        let mut descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>> = HashMap::new();
-        let mut name_mapping: HashMap<Cow<'static, str>, petgraph::graph::NodeIndex> = HashMap::new();
+        let mut pipelines: HashMap<
+            Cow<'static, str>,
+            (petgraph::graph::NodeIndex, vk::Pipeline),
+        > = HashMap::new();
+        let mut descriptor_set_layouts: HashMap<Cow<'static, str>, vk::DescriptorSetLayout> =
+            HashMap::new();
+        let mut descriptor_sets: HashMap<Cow<'static, str>, Vec<vk::DescriptorSet>> =
+            HashMap::new();
+        let mut name_mapping: HashMap<Cow<'static, str>, petgraph::graph::NodeIndex> =
+            HashMap::new();
         let pool = CpuPool::new_num_cpus();
 
         for node in petgraph::algo::toposort(&self.graph, None)
@@ -918,7 +973,8 @@ impl RenderDAGBuilder {
                             dst_subpass: 0,
                             src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                             src_access_mask: Default::default(),
-                            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
+                                | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                             dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                         },
                     ];
@@ -930,7 +986,8 @@ impl RenderDAGBuilder {
                             dst_subpass: ix as u32,
                             src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                             src_access_mask: Default::default(),
-                            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
+                                | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                             dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                         });
                     }
@@ -1155,7 +1212,12 @@ impl RenderDAGBuilder {
                     let vertex_attributes = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            NodeBuilder::VertexInputAttribute(binding, location, format, offset) => Some(vk::VertexInputAttributeDescription {
+                            NodeBuilder::VertexInputAttribute(
+                                binding,
+                                location,
+                                format,
+                                offset,
+                            ) => Some(vk::VertexInputAttributeDescription {
                                 location: location,
                                 binding: binding,
                                 format: format,
@@ -1167,11 +1229,13 @@ impl RenderDAGBuilder {
                     let vertex_bindings = inputs
                         .iter()
                         .filter_map(|node| match node.1 {
-                            NodeBuilder::VertexInputBinding(binding, stride, rate) => Some(vk::VertexInputBindingDescription {
-                                binding: binding,
-                                stride: stride,
-                                input_rate: rate,
-                            }),
+                            NodeBuilder::VertexInputBinding(binding, stride, rate) => {
+                                Some(vk::VertexInputBindingDescription {
+                                    binding: binding,
+                                    stride: stride,
+                                    input_rate: rate,
+                                })
+                            }
                             _ => None,
                         })
                         .collect::<Vec<_>>();
@@ -1181,7 +1245,8 @@ impl RenderDAGBuilder {
                         .filter_map(|node| match node.1 {
                             NodeBuilder::VertexShader(ref path) => {
                                 let file = File::open(path).expect("Could not find shader.");
-                                let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+                                let bytes: Vec<u8> =
+                                    file.bytes().filter_map(|byte| byte.ok()).collect();
                                 let shader_info = vk::ShaderModuleCreateInfo {
                                     s_type: vk::StructureType::ShaderModuleCreateInfo,
                                     p_next: ptr::null(),
@@ -1199,7 +1264,8 @@ impl RenderDAGBuilder {
                             }
                             NodeBuilder::GeometryShader(ref path) => {
                                 let file = File::open(path).expect("Could not find shader.");
-                                let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+                                let bytes: Vec<u8> =
+                                    file.bytes().filter_map(|byte| byte.ok()).collect();
                                 let shader_info = vk::ShaderModuleCreateInfo {
                                     s_type: vk::StructureType::ShaderModuleCreateInfo,
                                     p_next: ptr::null(),
@@ -1217,7 +1283,8 @@ impl RenderDAGBuilder {
                             }
                             NodeBuilder::FragmentShader(ref path) => {
                                 let file = File::open(path).expect("Could not find shader.");
-                                let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+                                let bytes: Vec<u8> =
+                                    file.bytes().filter_map(|byte| byte.ok()).collect();
                                 let shader_info = vk::ShaderModuleCreateInfo {
                                     s_type: vk::StructureType::ShaderModuleCreateInfo,
                                     p_next: ptr::null(),
@@ -1284,13 +1351,14 @@ impl RenderDAGBuilder {
                         vertex_binding_description_count: vertex_bindings.len() as u32,
                         p_vertex_binding_descriptions: vertex_bindings.as_ptr(),
                     };
-                    let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
-                        s_type: vk::StructureType::PipelineInputAssemblyStateCreateInfo,
-                        flags: Default::default(),
-                        p_next: ptr::null(),
-                        primitive_restart_enable: 0,
-                        topology: vk::PrimitiveTopology::TriangleList,
-                    };
+                    let vertex_input_assembly_state_info =
+                        vk::PipelineInputAssemblyStateCreateInfo {
+                            s_type: vk::StructureType::PipelineInputAssemblyStateCreateInfo,
+                            flags: Default::default(),
+                            p_next: ptr::null(),
+                            primitive_restart_enable: 0,
+                            topology: vk::PrimitiveTopology::TriangleList,
+                        };
                     let viewports = [
                         vk::Viewport {
                             x: 0.0,
@@ -1426,7 +1494,11 @@ impl RenderDAGBuilder {
                     };
                     let graphics_pipelines = unsafe {
                         base.device
-                            .create_graphics_pipelines(vk::PipelineCache::null(), &[graphic_pipeline_info], None)
+                            .create_graphics_pipelines(
+                                vk::PipelineCache::null(),
+                                &[graphic_pipeline_info],
+                                None,
+                            )
                             .expect("Unable to create graphics pipeline")
                     };
 
@@ -1439,7 +1511,11 @@ impl RenderDAGBuilder {
                         output_graph.add_node((
                             this_name.clone(),
                             (
-                                NodeRuntime::BindPipeline(pipeline, Some(scissors), Some(viewports)),
+                                NodeRuntime::BindPipeline(
+                                    pipeline,
+                                    Some(scissors),
+                                    Some(viewports),
+                                ),
                                 Arc::new(RwLock::new(pool.spawn(Ok(None).into_future()).shared())),
                             ),
                         ))
@@ -1487,7 +1563,10 @@ impl RenderDAGBuilder {
                     let descriptor_sizes = inputs
                         .iter()
                         .filter_map(|node| match *node {
-                            (ref _name, NodeBuilder::DescriptorBinding(_binding, typ, _stage, count)) => Some(vk::DescriptorPoolSize {
+                            (
+                                ref _name,
+                                NodeBuilder::DescriptorBinding(_binding, typ, _stage, count),
+                            ) => Some(vk::DescriptorPoolSize {
                                 typ,
                                 descriptor_count: count * size,
                             }),
@@ -1512,7 +1591,10 @@ impl RenderDAGBuilder {
                     let bindings = inputs
                         .iter()
                         .filter_map(|node| match *node {
-                            (ref _name, NodeBuilder::DescriptorBinding(binding, typ, stage, count)) => Some(vk::DescriptorSetLayoutBinding {
+                            (
+                                ref _name,
+                                NodeBuilder::DescriptorBinding(binding, typ, stage, count),
+                            ) => Some(vk::DescriptorSetLayoutBinding {
                                 binding: binding,
                                 descriptor_type: typ,
                                 descriptor_count: count,
@@ -1584,7 +1666,8 @@ impl RenderDAGBuilder {
                     let v: Vec<vk::Framebuffer> = base.present_image_views
                         .iter()
                         .map(|&present_image_view| {
-                            let framebuffer_attachments = [present_image_view, base.depth_image_view];
+                            let framebuffer_attachments =
+                                [present_image_view, base.depth_image_view];
                             let frame_buffer_create_info = vk::FramebufferCreateInfo {
                                 s_type: vk::StructureType::FramebufferCreateInfo,
                                 p_next: ptr::null(),

@@ -34,7 +34,8 @@ fn main() {
     let mut render_dag = {
         let mut builder = RenderDAGBuilder::new();
         let acquire_image = builder.add_node("acquire_image", Node::AcquirePresentImage);
-        let swapchain_attachment = builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
+        let swapchain_attachment =
+            builder.add_node("swapchain_attachment", Node::SwapchainAttachment(0));
         let depth_attachment = builder.add_node("depth_attachment", Node::DepthAttachment(1));
         let command_buffer = builder.with_command_buffer("main_command_buffer");
         let renderpass = command_buffer.with_renderpass(&mut builder, "renderpass");
@@ -82,7 +83,8 @@ fn main() {
             "tangent_attribute",
             Node::VertexInputAttribute(3, 3, vk::Format::R32g32b32a32Sfloat, 0),
         );
-        let graphics_pipeline = subpass.add_node(&mut builder, "graphics_pipeline", Node::GraphicsPipeline);
+        let graphics_pipeline =
+            subpass.add_node(&mut builder, "graphics_pipeline", Node::GraphicsPipeline);
         let draw_commands = subpass.add_node(
             &mut builder,
             "draw_commands",
@@ -153,7 +155,8 @@ fn main() {
                 "triangle_fragment_shader",
                 Node::FragmentShader(PathBuf::from(env!("OUT_DIR")).join("triangle.frag.spv")),
             );
-            let triangle_pipeline_layout = builder.add_node("triangle_pipeline_layout", Node::PipelineLayout);
+            let triangle_pipeline_layout =
+                builder.add_node("triangle_pipeline_layout", Node::PipelineLayout);
             let triangle_vertex_binding = builder.add_node(
                 "triangle_vertex_binding",
                 Node::VertexInputBinding(0, 4 * 5, vk::VertexInputRate::Vertex),
@@ -181,7 +184,12 @@ fn main() {
                         .expect("Failed to lock the world read in DrawCommands");
                     for mesh in world.read::<TriangleMesh>().join() {
                         unsafe {
-                            device.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.0.vertex_buffer.vk()], &[0]);
+                            device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                0,
+                                &[mesh.0.vertex_buffer.vk()],
+                                &[0],
+                            );
                             device.cmd_bind_index_buffer(
                                 command_buffer,
                                 mesh.0.index_buffer.vk(),
@@ -235,14 +243,18 @@ fn main() {
                 1,
             ),
         );
-        let main_descriptor_layout = builder.add_node("main_descriptor_layout", Node::DescriptorSet(16));
+        let main_descriptor_layout =
+            builder.add_node("main_descriptor_layout", Node::DescriptorSet(16));
 
         builder.add_edge(&mvp_ubo, &main_descriptor_layout);
         builder.add_edge(&color_texture, &main_descriptor_layout);
         builder.add_edge(&normal_texture, &main_descriptor_layout);
         builder.add_edge(&main_descriptor_layout, &pipeline_layout);
         {
-            let dot = petgraph::dot::Dot::with_config(&builder.graph, &[petgraph::dot::Config::EdgeNoLabel]);
+            let dot = petgraph::dot::Dot::with_config(
+                &builder.graph,
+                &[petgraph::dot::Config::EdgeNoLabel],
+            );
             let mut f = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -254,7 +266,10 @@ fn main() {
         builder.build(&base)
     };
     {
-        let dot = petgraph::dot::Dot::with_config(&render_dag.graph, &[petgraph::dot::Config::EdgeNoLabel]);
+        let dot = petgraph::dot::Dot::with_config(
+            &render_dag.graph,
+            &[petgraph::dot::Config::EdgeNoLabel],
+        );
         let mut f = OpenOptions::new()
             .create(true)
             .write(true)
