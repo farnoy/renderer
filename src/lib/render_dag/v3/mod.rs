@@ -777,6 +777,62 @@ impl RenderDAG {
         Some(ix)
     }
 
+    pub fn new_buffer(
+        &mut self,
+        device_ix: NodeIndex,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_flags: alloc::VmaAllocationCreateFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+        size: vk::DeviceSize,
+    ) -> Option<NodeIndex> {
+        let (allocator, graphics_queue_family, compute_queue_family) =
+            search_deps_exactly_one(&self.graph, device_ix, |node| match *node {
+                RenderNode::Device {
+                    allocator,
+                    graphics_queue_family,
+                    compute_queue_family,
+                    ..
+                } => Some((allocator, graphics_queue_family, compute_queue_family)),
+                _ => None,
+            })?;
+
+        let queue_families = [graphics_queue_family, compute_queue_family];
+        let buffer_create_info = vk::BufferCreateInfo {
+            s_type: vk::StructureType::BufferCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            size,
+            usage: buffer_usage,
+            sharing_mode: vk::SharingMode::Exclusive,
+            queue_family_index_count: queue_families.len() as u32,
+            p_queue_family_indices: &queue_families as *const _,
+        };
+
+        let allocation_create_info = alloc::VmaAllocationCreateInfo {
+            flags: allocation_flags,
+            memoryTypeBits: 0,
+            pUserData: ptr::null_mut(),
+            pool: ptr::null_mut(),
+            preferredFlags: 0,
+            requiredFlags: 0,
+            usage: allocation_usage,
+        };
+
+        let (handle, allocation, allocation_info) =
+            alloc::create_buffer(allocator, &buffer_create_info, &allocation_create_info).unwrap();
+
+        let node = RenderNode::Buffer {
+            dynamic: dyn(&self.cpu_pool, ()),
+            handle,
+            allocation,
+            allocation_info,
+        };
+        let ix = self.graph.add_node(node);
+        self.graph.add_edge(device_ix, ix, Edge::Direct);
+
+        Some(ix)
+    }
+
     pub fn render_frame(&mut self) {
         self.frame_number += 1;
         use petgraph::visit::Walker;
@@ -786,6 +842,7 @@ impl RenderDAG {
                 | RenderNode::Swapchain { .. }
                 | RenderNode::CommandPool { .. }
                 | RenderNode::PipelineLayout { .. }
+                | RenderNode::Buffer { .. }
                 | RenderNode::PersistentSemaphore { .. } => (),
                 RenderNode::Device {
                     allocator,
@@ -1429,6 +1486,17 @@ impl Drop for RenderDAG {
                         }).expect("Expected one parent Device for PipelineLayout");
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_pipeline(handle, None);
+                    }))
+                }
+                RenderNode::Buffer {
+                    handle, allocation, ..
+                } => {
+                    let allocator = search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        RenderNode::Device { allocator, .. } => Some(allocator),
+                        _ => None,
+                    }).expect("Expected one parent Device for PipelineLayout");
+                    Some(Box::new(move || {
+                        alloc::destroy_buffer(allocator, handle, allocation)
                     }))
                 }
             },

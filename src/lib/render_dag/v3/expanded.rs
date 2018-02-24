@@ -109,6 +109,12 @@ pub enum RenderNode {
         handle: vk::Pipeline,
         dynamic: Dynamic<()>,
     },
+    Buffer {
+        handle: vk::Buffer,
+        allocation: alloc::VmaAllocation,
+        allocation_info: alloc::VmaAllocationInfo,
+        dynamic: Dynamic<()>,
+    },
 }
 #[allow(unknown_lints)]
 #[allow(too_many_arguments)]
@@ -245,6 +251,13 @@ impl WaitOn for RenderNode {
                     .clone();
                 pool.spawn(fut.map_err(|_| ()).map(|_| ()))
             }
+            RenderNode::Buffer { ref dynamic, .. } => {
+                let fut = dynamic
+                    .read()
+                    .expect("can't read the waitable dynamic")
+                    .clone();
+                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+            }
         }
     }
 }
@@ -265,6 +278,7 @@ impl fmt::Debug for RenderNode {
             RenderNode::EndRenderpass { .. } => stringify!(EndRenderpass),
             RenderNode::PipelineLayout { .. } => stringify!(PipelineLayout),
             RenderNode::GraphicsPipeline { .. } => stringify!(GraphicsPipeline),
+            RenderNode::Buffer { .. } => stringify!(Buffer),
         };
         write!(f, "{}", output)
     }

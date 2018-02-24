@@ -161,6 +161,13 @@ fn main() {
             ),
         ],
     ).unwrap();
+    let uniform_buffer = dag.new_buffer(
+        device_ix,
+        vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        4 * 4 * 4 * 1024,
+    ).unwrap();
     dag.graph
         .add_edge(triangle_pipeline, end_renderpass_ix, Edge::Propagate);
     println!("{}", dot(&dag.graph).unwrap());

@@ -1,10 +1,11 @@
 #![allow(warnings)]
 
 use ash::{prelude, vk};
-use std::ptr;
+use std::{mem, ptr};
 
 type VkFlags = vk::Flags;
 type VkBuffer = vk::Buffer;
+type VkBufferCreateInfo = vk::BufferCreateInfo;
 type VkResult = vk::Result;
 type VkStructureType = vk::StructureType;
 type VkDeviceMemory = vk::DeviceMemory;
@@ -18,6 +19,22 @@ include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 pub struct VmaAllocator(*mut VmaAllocator_T);
 
 unsafe impl Send for VmaAllocator {}
+
+#[derive(Copy, Clone)]
+pub struct VmaAllocation(*mut VmaAllocation_T);
+
+unsafe impl Send for VmaAllocation {}
+
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct VmaAllocationInfo {
+    pub memoryType: u32,
+    pub deviceMemory: VkDeviceMemory,
+    pub offset: VkDeviceSize,
+    pub size: VkDeviceSize,
+    pub pMappedData: *mut ::std::os::raw::c_void,
+    pub pUserData: *mut ::std::os::raw::c_void,
+}
 
 pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkResult<VmaAllocator> {
     let create_info = VmaAllocatorCreateInfo {
@@ -42,6 +59,34 @@ pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkRes
 
 pub fn destroy(allocator: VmaAllocator) {
     unsafe { vmaDestroyAllocator(allocator) }
+}
+
+pub fn create_buffer(
+    allocator: VmaAllocator,
+    buffer_create_info: &vk::BufferCreateInfo,
+    allocation_create_info: &VmaAllocationCreateInfo,
+) -> prelude::VkResult<(vk::Buffer, VmaAllocation, VmaAllocationInfo)> {
+    unsafe {
+    let mut buffer = vk::Buffer::null();
+    let mut allocation: VmaAllocation = VmaAllocation(ptr::null_mut());
+    let mut info: VmaAllocationInfo = mem::zeroed();
+        let err_code = vmaCreateBuffer(
+            allocator,
+            buffer_create_info as *const _,
+            allocation_create_info as *const _,
+            &mut buffer as *mut _,
+            &mut allocation as *mut _,
+            &mut info as *mut _,
+        );
+        match err_code {
+            vk::Result::Success => Ok((buffer, allocation, info)),
+            _ => Err(err_code),
+        }
+    }
+}
+
+pub fn destroy_buffer(allocator: VmaAllocator, buffer: vk::Buffer, allocation: VmaAllocation) {
+    unsafe { vmaDestroyBuffer(allocator, buffer, allocation) }
 }
 
 pub fn set_current_frame_index(allocator: VmaAllocator, index: u32) {
