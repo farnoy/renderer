@@ -67,9 +67,9 @@ pub fn create_buffer(
     allocation_create_info: &VmaAllocationCreateInfo,
 ) -> prelude::VkResult<(vk::Buffer, VmaAllocation, VmaAllocationInfo)> {
     unsafe {
-    let mut buffer = vk::Buffer::null();
-    let mut allocation: VmaAllocation = VmaAllocation(ptr::null_mut());
-    let mut info: VmaAllocationInfo = mem::zeroed();
+        let mut buffer = vk::Buffer::null();
+        let mut allocation: VmaAllocation = VmaAllocation(ptr::null_mut());
+        let mut info: VmaAllocationInfo = mem::zeroed();
         let err_code = vmaCreateBuffer(
             allocator,
             buffer_create_info as *const _,

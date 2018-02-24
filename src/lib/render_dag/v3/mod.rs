@@ -514,22 +514,61 @@ impl RenderDAG {
         Some((start_ix, end_ix, subpass_ixes))
     }
 
-    pub fn new_pipeline_layout(
+    pub fn new_descriptor_set_layout(
         &mut self,
         device_ix: NodeIndex,
-        push_constant_ranges: Vec<vk::PushConstantRange>,
+        bindings: &[vk::DescriptorSetLayoutBinding],
     ) -> Option<NodeIndex> {
         let device = match self.graph[device_ix] {
             RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
             _ => None,
         }?;
 
+        let create_info = vk::DescriptorSetLayoutCreateInfo {
+            s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            binding_count: bindings.len() as u32,
+            p_bindings: bindings.as_ptr(),
+        };
+        let handle = unsafe {
+            device
+                .create_descriptor_set_layout(&create_info, None)
+                .unwrap()
+        };
+        let node = self.graph.add_node(RenderNode::DescriptorSetLayout {
+            dynamic: dyn(&self.cpu_pool, ()),
+            handle
+        });
+        self.graph.add_edge(device_ix, node, Edge::Propagate);
+
+        Some(node)
+    }
+
+    pub fn new_pipeline_layout(
+        &mut self,
+        device_ix: NodeIndex,
+        descriptor_set_ixes: &[NodeIndex],
+        push_constant_ranges: Vec<vk::PushConstantRange>,
+    ) -> Option<NodeIndex> {
+        let device = match self.graph[device_ix] {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+            _ => None,
+        }?;
+        let descriptor_sets = descriptor_set_ixes.iter().map(|ix| {
+            if let RenderNode::DescriptorSetLayout { handle, .. } = self.graph[*ix] {
+                handle
+            } else {
+                panic!("descriptor set ix invalid")
+            }
+        }).collect::<Vec<_>>();
+
         let create_info = vk::PipelineLayoutCreateInfo {
             s_type: vk::StructureType::PipelineLayoutCreateInfo,
             p_next: ptr::null(),
             flags: Default::default(),
-            set_layout_count: 0,
-            p_set_layouts: ptr::null(),
+            set_layout_count: descriptor_sets.len() as u32,
+            p_set_layouts: descriptor_sets.as_ptr(),
             push_constant_range_count: push_constant_ranges.len() as u32,
             p_push_constant_ranges: push_constant_ranges.as_ptr(),
         };
@@ -841,6 +880,7 @@ impl RenderDAG {
                 RenderNode::Instance { .. }
                 | RenderNode::Swapchain { .. }
                 | RenderNode::CommandPool { .. }
+                | RenderNode::DescriptorSetLayout { .. }
                 | RenderNode::PipelineLayout { .. }
                 | RenderNode::Buffer { .. }
                 | RenderNode::PersistentSemaphore { .. } => (),
@@ -1465,6 +1505,16 @@ impl Drop for RenderDAG {
                     let handle = *handle;
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_render_pass(handle, None);
+                    }))
+                }
+                RenderNode::DescriptorSetLayout { handle, .. } => {
+                    let parent_device =
+                        search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                            _ => None,
+                        }).expect("Expected one parent Device for DescriptorSetLayout");
+                    Some(Box::new(move || unsafe {
+                        parent_device.destroy_descriptor_set_layout(handle, None);
                     }))
                 }
                 RenderNode::PipelineLayout { ref handle, .. } => {

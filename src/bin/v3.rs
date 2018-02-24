@@ -135,8 +135,23 @@ fn main() {
     );
     dag.graph
         .add_edge(rendering_complete_semaphore_ix, present_ix, Edge::Direct);
+
+    let descriptor_set_ix = dag.new_descriptor_set_layout(
+        device_ix,
+        &[
+            vk::DescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: vk::DescriptorType::UniformBuffer,
+                descriptor_count: 1,
+                stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
+                p_immutable_samplers: ptr::null(),
+            },
+        ],
+    ).unwrap();
+
     let pipeline_layout = dag.new_pipeline_layout(
         device_ix,
+        &[descriptor_set_ix],
         vec![
             vk::PushConstantRange {
                 stage_flags: vk::SHADER_STAGE_VERTEX_BIT,

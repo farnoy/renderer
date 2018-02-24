@@ -100,6 +100,10 @@ pub enum RenderNode {
     EndRenderpass {
         dynamic: Dynamic<()>,
     },
+    DescriptorSetLayout {
+        handle: vk::DescriptorSetLayout,
+        dynamic: Dynamic<()>,
+    },
     PipelineLayout {
         push_constant_ranges: Arc<Vec<vk::PushConstantRange>>,
         handle: vk::PipelineLayout,
@@ -237,6 +241,13 @@ impl WaitOn for RenderNode {
                     .clone();
                 pool.spawn(fut.map_err(|_| ()).map(|_| ()))
             }
+            RenderNode::DescriptorSetLayout { ref dynamic, .. } => {
+                let fut = dynamic
+                    .read()
+                    .expect("can't read the waitable dynamic")
+                    .clone();
+                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+            }
             RenderNode::PipelineLayout { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
@@ -276,6 +287,7 @@ impl fmt::Debug for RenderNode {
             RenderNode::Renderpass { .. } => stringify!(Renderpass),
             RenderNode::NextSubpass { .. } => stringify!(NextSubpass),
             RenderNode::EndRenderpass { .. } => stringify!(EndRenderpass),
+            RenderNode::DescriptorSetLayout { .. } => stringify!(DescriptorSetLayout),
             RenderNode::PipelineLayout { .. } => stringify!(PipelineLayout),
             RenderNode::GraphicsPipeline { .. } => stringify!(GraphicsPipeline),
             RenderNode::Buffer { .. } => stringify!(Buffer),
