@@ -538,10 +538,40 @@ impl RenderDAG {
         };
         let node = self.graph.add_node(RenderNode::DescriptorSetLayout {
             dynamic: dyn(&self.cpu_pool, ()),
-            handle
+            handle,
         });
         self.graph.add_edge(device_ix, node, Edge::Propagate);
 
+        Some(node)
+    }
+
+    pub fn new_descriptor_pool(
+        &mut self,
+        device_ix: NodeIndex,
+        max_sets: u32,
+        pool_sizes: &[vk::DescriptorPoolSize],
+    ) -> Option<NodeIndex> {
+        let device = match self.graph[device_ix] {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+            _ => None,
+        }?;
+
+        let create_info = vk::DescriptorPoolCreateInfo {
+            s_type: vk::StructureType::DescriptorPoolCreateInfo,
+            p_next: ptr::null(),
+            flags: vk::DescriptorPoolCreateFlags::empty(),
+            max_sets,
+            pool_size_count: pool_sizes.len() as u32,
+            p_pool_sizes: pool_sizes.as_ptr(),
+        };
+
+        let handle = unsafe { device.create_descriptor_pool(&create_info, None).unwrap() };
+
+        let node = self.graph.add_node(RenderNode::DescriptorPool {
+            dynamic: dyn(&self.cpu_pool, ()),
+            handle,
+        });
+        self.graph.add_edge(device_ix, node, Edge::Propagate);
         Some(node)
     }
 
@@ -555,13 +585,16 @@ impl RenderDAG {
             RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
             _ => None,
         }?;
-        let descriptor_sets = descriptor_set_ixes.iter().map(|ix| {
-            if let RenderNode::DescriptorSetLayout { handle, .. } = self.graph[*ix] {
-                handle
-            } else {
-                panic!("descriptor set ix invalid")
-            }
-        }).collect::<Vec<_>>();
+        let descriptor_sets = descriptor_set_ixes
+            .iter()
+            .map(|ix| {
+                if let RenderNode::DescriptorSetLayout { handle, .. } = self.graph[*ix] {
+                    handle
+                } else {
+                    panic!("descriptor set ix invalid")
+                }
+            })
+            .collect::<Vec<_>>();
 
         let create_info = vk::PipelineLayoutCreateInfo {
             s_type: vk::StructureType::PipelineLayoutCreateInfo,
@@ -881,6 +914,7 @@ impl RenderDAG {
                 | RenderNode::Swapchain { .. }
                 | RenderNode::CommandPool { .. }
                 | RenderNode::DescriptorSetLayout { .. }
+                | RenderNode::DescriptorPool { .. }
                 | RenderNode::PipelineLayout { .. }
                 | RenderNode::Buffer { .. }
                 | RenderNode::PersistentSemaphore { .. } => (),
@@ -1516,6 +1550,16 @@ impl Drop for RenderDAG {
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_descriptor_set_layout(handle, None);
                     }))
+                }
+                RenderNode::DescriptorPool { handle, .. } => {
+                    let parent_device =
+                        search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                            _ => None,
+                        }).expect("Expected one parent Instance for DescriptorPool");
+                    Some(Box::new(move || unsafe {
+                        parent_device.destroy_descriptor_pool(handle, None);
+                    }) as Box<FnBox()>)
                 }
                 RenderNode::PipelineLayout { ref handle, .. } => {
                     let parent_device =

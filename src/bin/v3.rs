@@ -176,10 +176,20 @@ fn main() {
             ),
         ],
     ).unwrap();
+    let descriptor_pool_ix = dag.new_descriptor_pool(
+        device_ix,
+        1,
+        &[
+            vk::DescriptorPoolSize {
+                typ: vk::DescriptorType::UniformBuffer,
+                descriptor_count: 1024,
+            },
+        ],
+    );
     let uniform_buffer = dag.new_buffer(
         device_ix,
         vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0,
+        alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         4 * 4 * 4 * 1024,
     ).unwrap();
