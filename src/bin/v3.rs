@@ -310,7 +310,7 @@ fn main() {
                                 &descriptor_sets,
                                 &[],
                             );
-                            let constants = [1.0f32, 1.0, 1.0, -1.0, -1.0, 1.0];
+                            let constants = [1.0f32, 1.0, -1.0, 1.0, 1.0, -1.0];
                             use std::mem::transmute;
                             use std::slice::from_raw_parts;
 
