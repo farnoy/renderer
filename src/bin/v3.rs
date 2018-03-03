@@ -13,11 +13,10 @@ use ecs::*;
 use forward_renderer::*;
 use render_dag::v3::*;
 
-use ash::vk;
-use std::default::Default;
-use std::ptr;
-use std::mem::size_of;
-use std::path::PathBuf;
+use ash::{vk, version::DeviceV1_0};
+use cgmath::Rotation3;
+use std::{ptr, default::Default, mem::{size_of, transmute}, os::raw::c_void, path::PathBuf,
+          sync::Arc};
 
 fn main() {
     let mut world = specs::World::new();
@@ -25,19 +24,13 @@ fn main() {
     world.register::<Rotation>();
     world.register::<Scale>();
     world.register::<Matrices>();
-    /*
-    let mut dispatcher = specs::DispatcherBuilder::new()
-        .add(SteadyRotation, "steady_rotation", &[])
-        .add(
-            MVPCalculation { projection, view },
-            "mvp",
-            &["steady_rotation"],
-        )
-        .build();
-    */
     let mut dag = RenderDAG::new();
     let window_ix = dag.new_window(800, 600);
     let (device_ix, graphics_family, compute_family) = dag.new_device(window_ix).unwrap();
+    let device = match dag.graph[device_ix] {
+        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+        _ => None,
+    }.unwrap();
     let swapchain_ix = dag.new_swapchain(device_ix).unwrap();
     let surface_format = match dag.graph[swapchain_ix] {
         RenderNode::Swapchain {
@@ -136,7 +129,7 @@ fn main() {
     dag.graph
         .add_edge(rendering_complete_semaphore_ix, present_ix, Edge::Direct);
 
-    let descriptor_set_ix = dag.new_descriptor_set_layout(
+    let descriptor_set_layout_ix = dag.new_descriptor_set_layout(
         device_ix,
         &[
             vk::DescriptorSetLayoutBinding {
@@ -151,7 +144,7 @@ fn main() {
 
     let pipeline_layout = dag.new_pipeline_layout(
         device_ix,
-        &[descriptor_set_ix],
+        &[descriptor_set_layout_ix],
         vec![
             vk::PushConstantRange {
                 stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
@@ -185,19 +178,172 @@ fn main() {
                 descriptor_count: 1024,
             },
         ],
-    );
-    let uniform_buffer = dag.new_buffer(
+    ).unwrap();
+    let descriptor_set_ix =
+        dag.new_descriptor_set(device_ix, descriptor_pool_ix, descriptor_set_layout_ix)
+            .unwrap();
+    let ubo_set = match dag.graph[descriptor_set_ix] {
+        RenderNode::DescriptorSet { handle, .. } => Some(handle),
+        _ => None,
+    }.unwrap();
+    let ubo_buffer_ix = dag.new_buffer(
         device_ix,
         vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         4 * 4 * 4 * 1024,
     ).unwrap();
+    let (ubo_buffer, ubo_allocation_ptr) = match dag.graph[ubo_buffer_ix] {
+        RenderNode::Buffer {
+            handle,
+            ref allocation_info,
+            ..
+        } => Some((handle, allocation_info.pMappedData)),
+        _ => None,
+    }.unwrap();
+    {
+        let buffer_updates = &[
+            vk::DescriptorBufferInfo {
+                buffer: ubo_buffer,
+                offset: 0,
+                range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+            },
+        ];
+        unsafe {
+            device.update_descriptor_sets(
+                &[
+                    vk::WriteDescriptorSet {
+                        s_type: vk::StructureType::WriteDescriptorSet,
+                        p_next: ptr::null(),
+                        dst_set: ubo_set,
+                        dst_binding: 0,
+                        dst_array_element: 0,
+                        descriptor_count: 1,
+                        descriptor_type: vk::DescriptorType::UniformBuffer,
+                        p_image_info: ptr::null(),
+                        p_buffer_info: buffer_updates.as_ptr(),
+                        p_texel_buffer_view: ptr::null(),
+                    },
+                ],
+                &[],
+            );
+        }
+    }
+    let (window_width, window_height) = match dag.graph[window_ix] {
+        RenderNode::Instance {
+            window_width,
+            window_height,
+            ..
+        } => Some((window_width, window_height)),
+        _ => None,
+    }.unwrap();
+    let projection = cgmath::perspective(
+        cgmath::Deg(60.0),
+        window_width as f32 / window_height as f32,
+        0.1,
+        100.0,
+    );
+    let view = cgmath::Matrix4::look_at(
+        cgmath::Point3::new(0.0, 0.0, -5.0),
+        cgmath::Point3::new(0.0, 0.0, 0.0),
+        cgmath::vec3(0.0, 1.0, 0.0),
+    );
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
+        .with::<Scale>(Scale(1.0))
+        .with::<Matrices>(Matrices::one())
+        .build();
+    let ubo_mapped =
+        unsafe { transmute::<*mut c_void, *mut cgmath::Matrix4<f32>>(ubo_allocation_ptr) };
+    let mut dispatcher = specs::DispatcherBuilder::new()
+        .add(SteadyRotation, "steady_rotation", &[])
+        .add(
+            MVPCalculation { projection, view },
+            "mvp",
+            &["steady_rotation"],
+        )
+        .add(MVPUpload { dst: ubo_mapped }, "mvp_upload", &["mvp"])
+        .build();
+    dag.graph
+        .add_edge(descriptor_set_ix, triangle_pipeline, Edge::Propagate);
     dag.graph
         .add_edge(triangle_pipeline, end_renderpass_ix, Edge::Propagate);
+    let draw_calls = dag.new_draw_calls(Arc::new(|ix, graph, cpu_pool, world, dynamic| {
+        use render_dag::v3::util::*;
+        use petgraph::prelude::*;
+        use futures::prelude::*;
+        let device = search_deps_exactly_one(graph, ix, |node| match *node {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+            _ => None,
+        }).expect("Device not found in deps of NextSubpass");
+        let command_buffer_locked = search_deps_exactly_one(graph, ix, |node| match *node {
+            RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+            _ => None,
+        }).expect("Command Buffer not found in deps of NextSubpass");
+        let command_buffer_fut = command_buffer_locked
+            .read()
+            .expect("Could not read command buffer")
+            .clone();
+        let pipeline_layout = search_deps_exactly_one(graph, ix, |node| match *node {
+            RenderNode::PipelineLayout { handle, .. } => Some(handle),
+            _ => None,
+        }).expect("Command Buffer not found in deps of NextSubpass");
+        let descriptor_sets =
+            search_direct_deps(graph, ix, Direction::Incoming, |node| match *node {
+                RenderNode::DescriptorSet { handle, .. } => Some(handle),
+                _ => None,
+            });
+        let order_fut = wait_on_direct_deps(cpu_pool, graph, ix);
+        let mut lock = dynamic.write().expect("failed to lock present for writing");
+        *lock =
+            cpu_pool
+                .spawn(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
+                    move |(_, cb_dyn)| {
+                        println!("My draw calls");
+                        let cb = cb_dyn.current_frame;
+                        unsafe {
+                            device.cmd_bind_descriptor_sets(
+                                cb,
+                                vk::PipelineBindPoint::Graphics,
+                                pipeline_layout,
+                                0,
+                                &descriptor_sets,
+                                &[],
+                            );
+                            let constants = [1.0f32, 1.0, 1.0, -1.0, -1.0, 1.0];
+                            use std::mem::transmute;
+                            use std::slice::from_raw_parts;
+
+                            let casted: &[u8] = {
+                                from_raw_parts(
+                                    transmute::<*const f32, *const u8>(constants.as_ptr()),
+                                    2 * 3 * 4,
+                                )
+                            };
+                            device.cmd_push_constants(
+                                cb,
+                                pipeline_layout,
+                                vk::SHADER_STAGE_VERTEX_BIT,
+                                0,
+                                casted,
+                            );
+                            device.cmd_draw(cb, 3, 1, 0, 0);
+                        }
+                        ()
+                    },
+                ))
+                .shared();
+    }));
+    dag.graph
+        .add_edge(triangle_pipeline, draw_calls, Edge::Propagate);
+    dag.graph
+        .add_edge(draw_calls, end_renderpass_ix, Edge::Propagate);
     println!("{}", dot(&dag.graph).unwrap());
-    for _i in 1..5 {
-        dag.render_frame();
+    for _i in 1..500 {
+        dispatcher.dispatch(&world.res);
+        dag.render_frame(&world);
         if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
             use futures::Future;
             let lock = dynamic.read().unwrap();

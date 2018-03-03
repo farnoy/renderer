@@ -4,7 +4,7 @@ mod expanded;
 // #[macro_use]
 // mod macros;
 mod surface;
-mod util;
+pub mod util;
 
 use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1_0}};
 use futures::prelude::*;
@@ -12,6 +12,7 @@ use futures_cpupool::*;
 use petgraph::{visit, prelude::*};
 use std::{self, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf,
           sync::{Arc, Mutex, RwLock}, u64};
+use specs;
 use winit;
 
 use super::super::{device, entry, instance, swapchain};
@@ -132,7 +133,7 @@ impl RenderDAG {
                     }
                 })
                 .next()
-        }?;
+        }.unwrap_or((graphics_queue_family, 1));
         let device = device::Device::new(
             &instance,
             pdevice,
@@ -559,7 +560,7 @@ impl RenderDAG {
         let create_info = vk::DescriptorPoolCreateInfo {
             s_type: vk::StructureType::DescriptorPoolCreateInfo,
             p_next: ptr::null(),
-            flags: vk::DescriptorPoolCreateFlags::empty(),
+            flags: vk::DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
             max_sets,
             pool_size_count: pool_sizes.len() as u32,
             p_pool_sizes: pool_sizes.as_ptr(),
@@ -572,6 +573,46 @@ impl RenderDAG {
             handle,
         });
         self.graph.add_edge(device_ix, node, Edge::Propagate);
+        Some(node)
+    }
+
+    pub fn new_descriptor_set(
+        &mut self,
+        device_ix: NodeIndex,
+        descriptor_pool_ix: NodeIndex,
+        layout_ix: NodeIndex,
+    ) -> Option<NodeIndex> {
+        let device = match self.graph[device_ix] {
+            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+            _ => None,
+        }?;
+        let pool = match self.graph[descriptor_pool_ix] {
+            RenderNode::DescriptorPool { handle, .. } => Some(handle),
+            _ => None,
+        }?;
+        let layout = match self.graph[layout_ix] {
+            RenderNode::DescriptorSetLayout { handle, .. } => Some(handle),
+            _ => None,
+        }?;
+        let layouts = &[layout];
+        let desc_alloc_info = vk::DescriptorSetAllocateInfo {
+            s_type: vk::StructureType::DescriptorSetAllocateInfo,
+            p_next: ptr::null(),
+            descriptor_pool: pool,
+            descriptor_set_count: layouts.len() as u32,
+            p_set_layouts: layouts.as_ptr(),
+        };
+        let mut new_descriptor_sets =
+            unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() };
+        let handle = new_descriptor_sets.remove(0);
+        let node = self.graph.add_node(RenderNode::DescriptorSet {
+            dynamic: dyn(&self.cpu_pool, ()),
+            handle,
+        });
+        self.graph.add_edge(device_ix, node, Edge::Propagate);
+        self.graph
+            .add_edge(descriptor_pool_ix, node, Edge::Propagate);
+        self.graph.add_edge(layout_ix, node, Edge::Propagate);
         Some(node)
     }
 
@@ -905,7 +946,18 @@ impl RenderDAG {
         Some(ix)
     }
 
-    pub fn render_frame(&mut self) {
+    pub fn new_draw_calls(
+        &mut self,
+        f: Arc<Fn(NodeIndex, &RuntimeGraph, &CpuPool, &specs::World, &Dynamic<()>)>,
+    ) -> NodeIndex {
+        let node = RenderNode::DrawCalls {
+            f,
+            dynamic: dyn(&self.cpu_pool, ()),
+        };
+        self.graph.add_node(node)
+    }
+
+    pub fn render_frame(&mut self, world: &specs::World) {
         self.frame_number += 1;
         use petgraph::visit::Walker;
         for ix in visit::Topo::new(&self.graph).iter(&self.graph) {
@@ -915,6 +967,7 @@ impl RenderDAG {
                 | RenderNode::CommandPool { .. }
                 | RenderNode::DescriptorSetLayout { .. }
                 | RenderNode::DescriptorPool { .. }
+                | RenderNode::DescriptorSet { .. }
                 | RenderNode::PipelineLayout { .. }
                 | RenderNode::Buffer { .. }
                 | RenderNode::PersistentSemaphore { .. } => (),
@@ -1370,11 +1423,6 @@ impl RenderDAG {
                         .read()
                         .expect("Could not read command buffer")
                         .clone();
-                    let pipeline_layout =
-                        search_deps_exactly_one(&self.graph, ix, |node| match *node {
-                            RenderNode::PipelineLayout { handle, .. } => Some(handle),
-                            _ => None,
-                        }).expect("Command Buffer not found in deps of NextSubpass");
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = self.cpu_pool
@@ -1387,30 +1435,14 @@ impl RenderDAG {
                                         vk::PipelineBindPoint::Graphics,
                                         handle,
                                     );
-                                    let constants = [1.0f32, 1.0, -1.0, 1.0, 0.0, -1.0];
-                                    use std::mem::transmute;
-                                    use std::slice::from_raw_parts;
-
-                                    let casted: &[u8] = {
-                                        from_raw_parts(
-                                            transmute::<*const f32, *const u8>(constants.as_ptr()),
-                                            2 * 3 * 4,
-                                        )
-                                    };
-
-                                    device.cmd_push_constants(
-                                        cb,
-                                        pipeline_layout,
-                                        vk::SHADER_STAGE_VERTEX_BIT,
-                                        0,
-                                        casted,
-                                    );
-                                    device.cmd_draw(cb, 3, 1, 0, 0);
                                 }
                                 ()
                             },
                         ))
                         .shared();
+                }
+                RenderNode::DrawCalls { ref f, ref dynamic } => {
+                    f(ix, &self.graph, &self.cpu_pool, world, dynamic);
                 }
             }
         }
@@ -1426,6 +1458,8 @@ impl Drop for RenderDAG {
                 | RenderNode::SubmitCommandBuffer { .. }
                 | RenderNode::NextSubpass { .. }
                 | RenderNode::EndRenderpass { .. } => None,
+                |
+                RenderNode::DrawCalls { .. } => None,
                 RenderNode::Instance { ref instance, .. } => {
                     let i = Arc::clone(instance);
                     Some(Box::new(move || {
@@ -1559,6 +1593,25 @@ impl Drop for RenderDAG {
                         }).expect("Expected one parent Instance for DescriptorPool");
                     Some(Box::new(move || unsafe {
                         parent_device.destroy_descriptor_pool(handle, None);
+                    }) as Box<FnBox()>)
+                }
+                RenderNode::DescriptorSet { handle, .. } => {
+                    let parent_device =
+                        search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                            RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                            _ => None,
+                        }).expect("Expected one parent Instance for DescriptorSet");
+                    let pool = search_direct_deps_exactly_one(
+                        &self.graph,
+                        ix,
+                        Direction::Incoming,
+                        |node| match *node {
+                            RenderNode::DescriptorPool { handle, .. } => Some(handle),
+                            _ => None,
+                        },
+                    ).expect("Expected one parent Instance for DescriptorSet");
+                    Some(Box::new(move || unsafe {
+                        parent_device.free_descriptor_sets(pool, &[handle]);
                     }) as Box<FnBox()>)
                 }
                 RenderNode::PipelineLayout { ref handle, .. } => {

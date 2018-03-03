@@ -5,6 +5,8 @@ use winit;
 use super::{alloc, util::*};
 use std::{fmt, sync::{Arc, Mutex, RwLock}};
 use ash::vk;
+use petgraph;
+use specs;
 
 #[allow(non_snake_case)]
 pub mod fields {
@@ -108,6 +110,10 @@ pub enum RenderNode {
         handle: vk::DescriptorPool,
         dynamic: Dynamic<()>,
     },
+    DescriptorSet {
+        handle: vk::DescriptorSet,
+        dynamic: Dynamic<()>,
+    },
     PipelineLayout {
         push_constant_ranges: Arc<Vec<vk::PushConstantRange>>,
         handle: vk::PipelineLayout,
@@ -121,6 +127,18 @@ pub enum RenderNode {
         handle: vk::Buffer,
         allocation: alloc::VmaAllocation,
         allocation_info: alloc::VmaAllocationInfo,
+        dynamic: Dynamic<()>,
+    },
+    DrawCalls {
+        f: Arc<
+            Fn(
+                petgraph::prelude::NodeIndex,
+                &super::RuntimeGraph,
+                &CpuPool,
+                &specs::World,
+                &Dynamic<()>,
+            ),
+        >,
         dynamic: Dynamic<()>,
     },
 }
@@ -259,6 +277,13 @@ impl WaitOn for RenderNode {
                     .clone();
                 pool.spawn(fut.map_err(|_| ()).map(|_| ()))
             }
+            RenderNode::DescriptorSet { ref dynamic, .. } => {
+                let fut = dynamic
+                    .read()
+                    .expect("can't read the waitable dynamic")
+                    .clone();
+                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+            }
             RenderNode::PipelineLayout { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
@@ -274,6 +299,13 @@ impl WaitOn for RenderNode {
                 pool.spawn(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::Buffer { ref dynamic, .. } => {
+                let fut = dynamic
+                    .read()
+                    .expect("can't read the waitable dynamic")
+                    .clone();
+                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+            }
+            RenderNode::DrawCalls { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
@@ -299,10 +331,12 @@ impl fmt::Debug for RenderNode {
             RenderNode::NextSubpass { .. } => stringify!(NextSubpass),
             RenderNode::EndRenderpass { .. } => stringify!(EndRenderpass),
             RenderNode::DescriptorSetLayout { .. } => stringify!(DescriptorSetLayout),
-            RenderNode::DescriptorPool { .. } => stringify!(DescriptorSetLayout),
+            RenderNode::DescriptorPool { .. } => stringify!(DescriptorPool),
+            RenderNode::DescriptorSet { .. } => stringify!(DescriptorSet),
             RenderNode::PipelineLayout { .. } => stringify!(PipelineLayout),
             RenderNode::GraphicsPipeline { .. } => stringify!(GraphicsPipeline),
             RenderNode::Buffer { .. } => stringify!(Buffer),
+            RenderNode::DrawCalls { .. } => stringify!(DrawCalls),
         };
         write!(f, "{}", output)
     }

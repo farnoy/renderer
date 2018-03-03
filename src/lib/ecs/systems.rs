@@ -9,7 +9,7 @@ impl<'a> System<'a> for SteadyRotation {
 
     fn run(&mut self, mut rotations: Self::SystemData) {
         use cgmath::Rotation3;
-        let incremental = cgmath::Quaternion::from_angle_y(cgmath::Deg(0.3));
+        let incremental = cgmath::Quaternion::from_angle_y(cgmath::Deg(1.0));
         for rot in (&mut rotations).join() {
             *rot = Rotation(incremental * rot.0);
         }
@@ -36,6 +36,25 @@ impl<'a> System<'a> for MVPCalculation {
 
             mvp.mvp = self.projection * self.view * model;
             mvp.mv = self.view * model;
+        }
+    }
+}
+
+pub struct MVPUpload {
+    pub dst: *mut cgmath::Matrix4<f32>,
+}
+
+unsafe impl Send for MVPUpload {}
+
+impl<'a> System<'a> for MVPUpload {
+    type SystemData = (Entities<'a>, ReadStorage<'a, Matrices>);
+
+    fn run(&mut self, (entities, matrices): Self::SystemData) {
+        use std::slice;
+        let out = unsafe { slice::from_raw_parts_mut(self.dst, 1024) };
+        for (entity, matrices) in (&*entities, &matrices).join() {
+            println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
+            out[entity.id() as usize] = matrices.mvp;
         }
     }
 }
