@@ -267,8 +267,6 @@ fn main() {
         .add(MVPUpload { dst: ubo_mapped }, "mvp_upload", &["mvp"])
         .build();
     dag.graph
-        .add_edge(descriptor_set_ix, triangle_pipeline, Edge::Propagate);
-    dag.graph
         .add_edge(triangle_pipeline, end_renderpass_ix, Edge::Propagate);
     let draw_calls = dag.new_draw_calls(Arc::new(|ix, graph, cpu_pool, world, dynamic| {
         use render_dag::v3::util::*;
@@ -338,6 +336,8 @@ fn main() {
     }));
     dag.graph
         .add_edge(triangle_pipeline, draw_calls, Edge::Propagate);
+    dag.graph
+        .add_edge(descriptor_set_ix, draw_calls, Edge::Propagate);
     dag.graph
         .add_edge(draw_calls, end_renderpass_ix, Edge::Propagate);
     println!("{}", dot(&dag.graph).unwrap());
