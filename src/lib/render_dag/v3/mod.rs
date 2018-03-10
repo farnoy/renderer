@@ -1313,9 +1313,9 @@ impl RenderDAG {
                                 let fb_ix = (*fb).current_present_index;
                                 let cb = cb_dyn.current_frame;
                                 let clear_values = vec![
-                                    vk::ClearValue::new_color(vk::ClearColorValue::new_float32(
-                                        [0.0; 4],
-                                    )),
+                                    vk::ClearValue {
+                                        color: vk::ClearColorValue { float32: [0.0; 4] },
+                                    },
                                 ];
                                 let begin_info = vk::RenderPassBeginInfo {
                                     s_type: vk::StructureType::RenderPassBeginInfo,

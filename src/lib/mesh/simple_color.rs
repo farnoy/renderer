@@ -2,7 +2,7 @@ use ash::vk;
 use std::path::PathBuf;
 use gltf;
 use gltf_importer;
-use gltf_utils::PrimitiveIterators;
+use gltf_utils::{Indices, PrimitiveIterators, TexCoords};
 
 use super::Mesh;
 use super::super::ExampleBase;
@@ -91,7 +91,12 @@ impl Mesh for SimpleColor {
                             );
                         }
 
-                        let indices = primitive.indices_u32(buffers).unwrap();
+                        // TODO: Fix after https://github.com/gltf-rs/gltf/issues/155
+                        let indices =
+                            match PrimitiveIterators::indices(&primitive, buffers).unwrap() {
+                                Indices::U32(iter) => Some(iter),
+                                _ => None,
+                            }.unwrap();
                         let index_count = indices.len();
                         let index_buffer = Buffer::upload_from::<u32, _>(
                             base,
@@ -100,7 +105,12 @@ impl Mesh for SimpleColor {
                         );
                         let index_type = vk::IndexType::Uint32;
 
-                        let tex_coords_iter = primitive.tex_coords_f32(0, buffers).unwrap();
+                        // TODO: Fix after https://github.com/gltf-rs/gltf/issues/155
+                        let tex_coords_iter =
+                            match PrimitiveIterators::tex_coords(&primitive, 0, buffers).unwrap() {
+                                TexCoords::F32(iter) => Some(iter),
+                                _ => None,
+                            }.unwrap();
                         let tex_coords = Buffer::upload_from::<[f32; 2], _>(
                             base,
                             vk::BUFFER_USAGE_VERTEX_BUFFER_BIT,
