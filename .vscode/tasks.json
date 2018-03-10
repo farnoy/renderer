@@ -15,7 +15,7 @@
     {
       "taskName": "cargo run",
       "args": [
-        "run"
+        "run", "--features", "validation"
       ]
     },
     {
