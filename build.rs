@@ -35,10 +35,9 @@ fn main() {
     }
 
     if cfg!(windows) {
-        println!("KUK");
         println!("cargo:rustc-link-lib=vulkan-1");
         println!("cargo:rustc-link-lib=msvcrt");
-        println!("cargo:rustc-link-search=native=C:\\VulkanSDK\\1.0.68.0\\Source\\Lib");
+        println!("cargo:rustc-link-search=native=C:\\VulkanSDK\\1.1.70.1\\Source\\Lib");
     } else {
         println!("cargo:rustc-link-lib=vulkan");
         println!("cargo:rustc-link-lib=stdc++");
@@ -56,7 +55,7 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.0.68.0\\Include"
+            "-IC:\\VulkanSDK\\1.1.70.1\\Include"
         } else {
             ""
         })
