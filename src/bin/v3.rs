@@ -4,7 +4,6 @@ extern crate ash;
 extern crate cgmath;
 extern crate forward_renderer;
 extern crate futures;
-extern crate futures_cpupool;
 extern crate gltf;
 extern crate petgraph;
 extern crate specs;
@@ -15,6 +14,7 @@ use render_dag::v3::*;
 
 use ash::{vk, version::DeviceV1_0};
 use cgmath::Rotation3;
+use futures::executor::block_on;
 use std::{ptr, default::Default, mem::{size_of, transmute}, os::raw::c_void, path::PathBuf,
           sync::Arc};
 
@@ -295,9 +295,7 @@ fn main() {
             });
         let order_fut = wait_on_direct_deps(cpu_pool, graph, ix);
         let mut lock = dynamic.write().expect("failed to lock present for writing");
-        *lock =
-            cpu_pool
-                .spawn(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
+        *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
                     move |(_, cb_dyn)| {
                         println!("My draw calls");
                         let cb = cb_dyn.current_frame;
@@ -314,25 +312,25 @@ fn main() {
                             use std::mem::transmute;
                             use std::slice::from_raw_parts;
 
-                            let casted: &[u8] = {
-                                from_raw_parts(
-                                    transmute::<*const f32, *const u8>(constants.as_ptr()),
-                                    2 * 3 * 4,
-                                )
-                            };
-                            device.cmd_push_constants(
-                                cb,
-                                pipeline_layout,
-                                vk::SHADER_STAGE_VERTEX_BIT,
-                                0,
-                                casted,
-                            );
-                            device.cmd_draw(cb, 3, 1, 0, 0);
-                        }
-                        ()
-                    },
-                ))
-                .shared();
+                    let casted: &[u8] = {
+                        from_raw_parts(
+                            transmute::<*const f32, *const u8>(constants.as_ptr()),
+                            2 * 3 * 4,
+                        )
+                    };
+                    device.cmd_push_constants(
+                        cb,
+                        pipeline_layout,
+                        vk::SHADER_STAGE_VERTEX_BIT,
+                        0,
+                        casted,
+                    );
+                    device.cmd_draw(cb, 3, 1, 0, 0);
+                }
+                ()
+            },
+        )) as Box<Future<Item = (), Error = ()>>)
+            .shared();
     }));
     dag.graph
         .add_edge(triangle_pipeline, draw_calls, Edge::Propagate);
@@ -347,7 +345,8 @@ fn main() {
         if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
             use futures::Future;
             let lock = dynamic.read().unwrap();
-            println!("{:?}", (*lock).clone().wait());
+            let res = block_on((*lock).clone());
+            println!("{:?}", res);
         } else {
             panic!("present framebuffer does not exist?")
         }

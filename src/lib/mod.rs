@@ -7,7 +7,7 @@
 extern crate ash;
 extern crate cgmath;
 extern crate futures;
-extern crate futures_cpupool;
+// extern crate futures_executor;
 extern crate gltf;
 extern crate gltf_importer;
 extern crate gltf_utils;

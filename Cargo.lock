@@ -5,8 +5,7 @@ dependencies = [
  "ash 0.22.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bindgen 0.33.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "cgmath 0.16.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures 0.1.18 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures-cpupool 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
  "gltf 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "gltf-importer 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "gltf-json 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -370,16 +369,72 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "futures"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "futures-cpupool"
-version = "0.1.8"
+version = "0.2.0-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "futures 0.1.18 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-channel 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-executor 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-io 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-sink 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-util 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "futures-channel"
+version = "0.2.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "futures-core"
+version = "0.2.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "either 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "futures-executor"
+version = "0.2.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "futures-channel 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-util 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
  "num_cpus 1.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "futures-io"
+version = "0.2.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "iovec 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "futures-sink"
+version = "0.2.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "futures-channel 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "futures-util"
+version = "0.2.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "either 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-channel 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-io 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-sink 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -492,6 +547,15 @@ dependencies = [
 name = "inflections"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "iovec"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "libc 0.2.39 (registry+https://github.com/rust-lang/crates.io-index)",
+ "winapi 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "itertools"
@@ -1300,8 +1364,13 @@ dependencies = [
 "checksum foreign-types-shared 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 "checksum fuchsia-zircon 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)" = "2e9763c69ebaae630ba35f74888db465e49e259ba1bc0eda7d06f4a067615d82"
 "checksum fuchsia-zircon-sys 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)" = "3dcaa9ae7725d12cdb85b3ad99a434db70b468c09ded17e012d86b5c1010f7a7"
-"checksum futures 0.1.18 (registry+https://github.com/rust-lang/crates.io-index)" = "0bab5b5e94f5c31fc764ba5dd9ad16568aae5d4825538c01d6bca680c9bf94a7"
-"checksum futures-cpupool 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)" = "ab90cde24b3319636588d0c35fe03b1333857621051837ed769faefb4c2162e4"
+"checksum futures 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "7799906214202625268bd8e970f88718681f0d8158816e792867e76e873a3dff"
+"checksum futures-channel 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "a628618079c0e226f76c122f7722e0cdb360405dc93bae726d3c5eb60cc08920"
+"checksum futures-core 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "8edc453d3cc036abd10fe909d7bc4734a6842334509fae36aca0345d51875aa8"
+"checksum futures-executor 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "2af511f2a382b0d639c8c4b2d334a102d4e0d5a7d25ce26ce7b518d45940c4ff"
+"checksum futures-io 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "0e93fb94ee92f872f8386797fd9ff40e14e9d12de4476a8c2369c44a04b0191f"
+"checksum futures-sink 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "a37519278f2ddf84ce9a6a3fcdbb11989e6a1a60f7a10925ba71bef666181e44"
+"checksum futures-util 0.2.0-alpha (registry+https://github.com/rust-lang/crates.io-index)" = "1deb48bc220d72a35dc22ad7383d13c500afef5a949c0c3ca72bc2e0b11a1768"
 "checksum gif 0.9.2 (registry+https://github.com/rust-lang/crates.io-index)" = "e2e41945ba23db3bf51b24756d73d81acb4f28d85c3dccc32c6fae904438c25f"
 "checksum glob 0.2.11 (registry+https://github.com/rust-lang/crates.io-index)" = "8be18de09a56b60ed0edf84bc9df007e30040691af7acd1c41874faac5895bfb"
 "checksum gltf 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)" = "7d0286126b9cc1546e1349744446276533166a344c9396ecbd3d3d924dd77d4c"
@@ -1314,6 +1383,7 @@ dependencies = [
 "checksum image 0.18.0 (registry+https://github.com/rust-lang/crates.io-index)" = "545f000e8aa4e569e93f49c446987133452e0091c2494ac3efd3606aa3d309f2"
 "checksum inflate 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)" = "f5f9f47468e9a76a6452271efadc88fe865a82be91fe75e6c0c57b87ccea59d4"
 "checksum inflections 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "a257582fdcde896fd96463bf2d40eefea0580021c0712a0e2b028b60b47a837a"
+"checksum iovec 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "dbe6e417e7d0975db6512b90796e8ce223145ac4e33c377e4a42882a0e88bb08"
 "checksum itertools 0.5.10 (registry+https://github.com/rust-lang/crates.io-index)" = "4833d6978da405305126af4ac88569b5d71ff758581ce5a987dbfa3755f694fc"
 "checksum itoa 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)" = "8324a32baf01e2ae060e9de58ed0bc2320c9a2833491ee36cd3b4c414de4db8c"
 "checksum jpeg-decoder 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)" = "0dfe27a6c0dabd772d0f9b9f8701c4ca12c4d1eebcadf2be1f6f70396f6a1434"

@@ -1,5 +1,4 @@
-use futures::prelude::*;
-use futures_cpupool::*;
+use futures::{executor::ThreadPool, prelude::*};
 use super::super::super::{device, entry, instance, swapchain};
 use winit;
 use super::{alloc, util::*};
@@ -134,7 +133,7 @@ pub enum RenderNode {
             Fn(
                 petgraph::prelude::NodeIndex,
                 &super::RuntimeGraph,
-                &CpuPool,
+                &ThreadPool,
                 &specs::World,
                 &Dynamic<()>,
             ),
@@ -146,7 +145,7 @@ pub enum RenderNode {
 #[allow(too_many_arguments)]
 impl RenderNode {
     pub fn make_allocate_commands(
-        pool: &CpuPool,
+        pool: &ThreadPool,
         handles: Arc<RwLock<Vec<vk::CommandBuffer>>>,
         current_frame: vk::CommandBuffer,
     ) -> RenderNode {
@@ -159,7 +158,7 @@ impl RenderNode {
         }
     }
     pub fn make_pipeline_layout(
-        pool: &CpuPool,
+        pool: &ThreadPool,
         push_constant_ranges: Arc<Vec<vk::PushConstantRange>>,
         handle: vk::PipelineLayout,
     ) -> RenderNode {
@@ -169,7 +168,7 @@ impl RenderNode {
             handle: handle,
         }
     }
-    pub fn make_graphics_pipeline(pool: &CpuPool, handle: vk::Pipeline) -> RenderNode {
+    pub fn make_graphics_pipeline(pool: &ThreadPool, handle: vk::Pipeline) -> RenderNode {
         RenderNode::GraphicsPipeline {
             dynamic: dyn(pool, ()),
             handle: handle,
@@ -177,140 +176,140 @@ impl RenderNode {
     }
 }
 impl WaitOn for RenderNode {
-    fn waitable(&self, pool: &CpuPool) -> CpuFuture<(), ()> {
+    fn waitable(&self, pool: &ThreadPool) -> Box<Future<Item = (), Error = ()>> {
         match *self {
             RenderNode::Instance { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::Device { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::Swapchain { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::Framebuffer { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::PresentFramebuffer { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::CommandPool { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::PersistentSemaphore { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::AllocateCommandBuffer { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::SubmitCommandBuffer { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::Renderpass { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::NextSubpass { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::EndRenderpass { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::DescriptorSetLayout { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::DescriptorPool { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::DescriptorSet { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::PipelineLayout { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::GraphicsPipeline { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::Buffer { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
             RenderNode::DrawCalls { ref dynamic, .. } => {
                 let fut = dynamic
                     .read()
                     .expect("can't read the waitable dynamic")
                     .clone();
-                pool.spawn(fut.map_err(|_| ()).map(|_| ()))
+                Box::new(fut.map_err(|_| ()).map(|_| ()))
             }
         }
     }

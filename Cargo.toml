@@ -6,8 +6,8 @@ build = "build.rs"
 [dependencies]
 ash = "~0.22"
 cgmath = "0.16"
-futures = "0.1.15"
-futures-cpupool = "0.1.5"
+futures = "0.2.0-alpha"
+# futures-executor = "0.2.0-alpha"
 gltf = "~0.10.0"
 gltf-json = "~0.10.0"
 gltf-importer = "~0.10.0"
@@ -26,9 +26,9 @@ bindgen = "0.33.1"
 user32-sys = "^0.2"
 winapi = "^0.2"
 
-[[bin]]
-name = "main"
-path = "src/bin/main.rs"
+# [[bin]]
+# name = "main"
+# path = "src/bin/main.rs"
 
 [[bin]]
 name = "v3"

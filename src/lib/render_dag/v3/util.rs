@@ -1,12 +1,13 @@
-use futures_cpupool::{CpuFuture, CpuPool};
-use futures::{future::{join_all, ok, Shared}, prelude::*};
+use futures::future::{join_all, ok, Shared};
+use futures::{executor::ThreadPool, future::lazy, prelude::*};
 use petgraph::{prelude::*, visit::{self, Walker}};
 use std::sync::{Arc, RwLock};
 
-pub type Dynamic<T> = Arc<RwLock<Shared<CpuFuture<T, ()>>>>;
+pub type Dynamic<T> = Arc<RwLock<DynamicInner<T>>>;
+pub type DynamicInner<T> = Shared<Box<Future<Item = T, Error = ()>>>;
 
 pub trait WaitOn {
-    fn waitable(&self, pool: &CpuPool) -> CpuFuture<(), ()>;
+    fn waitable(&self, pool: &ThreadPool) -> Box<Future<Item = (), Error = ()>>;
 }
 
 pub fn search_deps<T, F, N, E>(graph: &StableDiGraph<N, E>, start: NodeIndex, f: F) -> Vec<T>
@@ -69,25 +70,27 @@ where
 }
 
 pub fn wait_on_direct_deps<N, E>(
-    cpu_pool: &CpuPool,
+    cpu_pool: &ThreadPool,
     graph: &StableDiGraph<N, E>,
     start: NodeIndex,
-) -> Shared<CpuFuture<(), ()>>
+) -> Shared<Box<Future<Item = (), Error = ()>>>
 where
     N: WaitOn,
 {
     let futures = search_direct_deps(graph, start, Direction::Incoming, |node| {
         Some(node.waitable(cpu_pool))
     });
-    cpu_pool
-        .spawn(join_all(futures).map_err(|_| ()).map(|_| ()))
+    (Box::new(join_all(futures).map_err(|_| ()).map(|_| ())) as Box<Future<Item = (), Error = ()>>)
         .shared()
 }
 
-pub fn spawn_const<T: 'static + Send>(pool: &CpuPool, val: T) -> CpuFuture<T, ()> {
-    pool.spawn(ok(val))
+pub fn spawn_const<T: 'static + Send>(
+    pool: &ThreadPool,
+    val: T,
+) -> Box<Future<Item = T, Error = ()>> {
+    Box::new(ok(val))
 }
 
-pub fn dyn<T: 'static + Send>(pool: &CpuPool, a: T) -> Dynamic<T> {
+pub fn dyn<T: 'static + Send>(pool: &ThreadPool, a: T) -> Dynamic<T> {
     Arc::new(RwLock::new(spawn_const(pool, a).shared()))
 }

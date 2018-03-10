@@ -7,8 +7,7 @@ mod surface;
 pub mod util;
 
 use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1_0}};
-use futures::prelude::*;
-use futures_cpupool::*;
+use futures::{executor::ThreadPool, future::lazy, prelude::*};
 use petgraph::{visit, prelude::*};
 use std::{self, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf,
           sync::{Arc, Mutex, RwLock}, u64};
@@ -32,7 +31,7 @@ pub type RuntimeGraph = StableDiGraph<RenderNode, Edge>;
 
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
-    cpu_pool: CpuPool,
+    cpu_pool: ThreadPool,
     frame_number: u32,
 }
 
@@ -46,7 +45,7 @@ impl RenderDAG {
     pub fn new() -> RenderDAG {
         RenderDAG {
             graph: RuntimeGraph::new(),
-            cpu_pool: CpuPool::new(1),
+            cpu_pool: ThreadPool::new(),
             frame_number: 0,
         }
     }
@@ -948,7 +947,7 @@ impl RenderDAG {
 
     pub fn new_draw_calls(
         &mut self,
-        f: Arc<Fn(NodeIndex, &RuntimeGraph, &CpuPool, &specs::World, &Dynamic<()>)>,
+        f: Arc<Fn(NodeIndex, &RuntimeGraph, &ThreadPool, &specs::World, &Dynamic<()>)>,
     ) -> NodeIndex {
         let node = RenderNode::DrawCalls {
             f,
@@ -979,13 +978,12 @@ impl RenderDAG {
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     let frame_index = self.frame_number;
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.map_err(|_| ()).map(move |_| {
-                            alloc::set_current_frame_index(allocator, frame_index);
+                    *lock = (Box::new(order_fut.map_err(|_| ()).map(move |_| {
+                        alloc::set_current_frame_index(allocator, frame_index);
 
-                            ()
-                        }))
-                        .shared();
+                        ()
+                    })) as Box<Future<Item = (), Error = ()>>)
+                        .shared() as DynamicInner<()>;
                 }
                 RenderNode::Framebuffer { ref dynamic, .. } => {
                     let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match *node {
@@ -1061,32 +1059,31 @@ impl RenderDAG {
                         );
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.join(present_index_fut).map_err(|_| ()).map(
-                            move |(_, present_index)| {
-                                let present_info = vk::PresentInfoKHR {
-                                    s_type: vk::StructureType::PresentInfoKhr,
-                                    p_next: ptr::null(),
-                                    wait_semaphore_count: wait_semaphores.len() as u32,
-                                    p_wait_semaphores: wait_semaphores.as_ptr(),
-                                    swapchain_count: 1,
-                                    p_swapchains: &swapchain.swapchain,
-                                    p_image_indices: &present_index.current_present_index,
-                                    p_results: ptr::null_mut(),
-                                };
-                                let queue = graphics_queue
-                                    .lock()
-                                    .expect("Failed to acquire lock on graphics queue");
-                                unsafe {
-                                    swapchain
-                                        .ext
-                                        .queue_present_khr(*queue, &present_info)
-                                        .unwrap();
-                                };
-                                ()
-                            },
-                        ))
-                        .shared();
+                    *lock = (Box::new(order_fut.join(present_index_fut).map_err(|_| ()).map(
+                        move |(_, present_index)| {
+                            let present_info = vk::PresentInfoKHR {
+                                s_type: vk::StructureType::PresentInfoKhr,
+                                p_next: ptr::null(),
+                                wait_semaphore_count: wait_semaphores.len() as u32,
+                                p_wait_semaphores: wait_semaphores.as_ptr(),
+                                swapchain_count: 1,
+                                p_swapchains: &swapchain.swapchain,
+                                p_image_indices: &present_index.current_present_index,
+                                p_results: ptr::null_mut(),
+                            };
+                            let queue = graphics_queue
+                                .lock()
+                                .expect("Failed to acquire lock on graphics queue");
+                            unsafe {
+                                swapchain
+                                    .ext
+                                    .queue_present_khr(*queue, &present_info)
+                                    .unwrap();
+                            };
+                            ()
+                        },
+                    )) as Box<Future<Item = (), Error = ()>>)
+                        .shared() as DynamicInner<()>;
                 }
                 RenderNode::AllocateCommandBuffer {
                     ref handles,
@@ -1126,57 +1123,56 @@ impl RenderDAG {
                     let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let handles = Arc::clone(handles);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.join(fb_fut).map_err(|_| ()).map(move |(_, fb)| {
-                            let pool_lock = pool.lock()
-                                .expect("failed to lock command pool for allocation");
-                            let begin_info = vk::CommandBufferBeginInfo {
-                                s_type: vk::StructureType::CommandBufferBeginInfo,
+                    *lock = (Box::new(order_fut.join(fb_fut).map_err(|_| ()).map(move |(_, fb)| {
+                        let pool_lock = pool.lock()
+                            .expect("failed to lock command pool for allocation");
+                        let begin_info = vk::CommandBufferBeginInfo {
+                            s_type: vk::StructureType::CommandBufferBeginInfo,
+                            p_next: ptr::null(),
+                            p_inheritance_info: ptr::null(),
+                            flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                        };
+                        let mut handles = handles
+                            .write()
+                            .expect("Failed to own AllocateCommandBuffer data");
+                        let present_ix = fb.current_present_index;
+                        if handles.is_empty() {
+                            let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+                                s_type: vk::StructureType::CommandBufferAllocateInfo,
                                 p_next: ptr::null(),
-                                p_inheritance_info: ptr::null(),
-                                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                command_buffer_count: fb_count as u32,
+                                command_pool: *pool_lock,
+                                level: vk::CommandBufferLevel::Primary,
                             };
-                            let mut handles = handles
-                                .write()
-                                .expect("Failed to own AllocateCommandBuffer data");
-                            let present_ix = fb.current_present_index;
-                            if handles.is_empty() {
-                                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-                                    s_type: vk::StructureType::CommandBufferAllocateInfo,
-                                    p_next: ptr::null(),
-                                    command_buffer_count: fb_count as u32,
-                                    command_pool: *pool_lock,
-                                    level: vk::CommandBufferLevel::Primary,
-                                };
-                                let command_buffers = unsafe {
-                                    device
-                                        .allocate_command_buffers(&command_buffer_allocate_info)
-                                        .unwrap()
-                                };
-                                let current_frame = command_buffers[present_ix as usize];
-                                *handles = command_buffers;
-                                unsafe {
-                                    device
-                                        .begin_command_buffer(current_frame, &begin_info)
-                                        .unwrap();
-                                }
-                                fields::AllocateCommandBuffer::Dynamic { current_frame }
-                            } else {
-                                let current_frame = handles[present_ix as usize];
-                                unsafe {
-                                    device
-                                        .reset_command_buffer(
-                                            current_frame,
-                                            vk::CommandBufferResetFlags::empty(),
-                                        )
-                                        .unwrap();
-                                    device
-                                        .begin_command_buffer(current_frame, &begin_info)
-                                        .unwrap();
-                                }
-                                fields::AllocateCommandBuffer::Dynamic { current_frame }
+                            let command_buffers = unsafe {
+                                device
+                                    .allocate_command_buffers(&command_buffer_allocate_info)
+                                    .unwrap()
+                            };
+                            let current_frame = command_buffers[present_ix as usize];
+                            *handles = command_buffers;
+                            unsafe {
+                                device
+                                    .begin_command_buffer(current_frame, &begin_info)
+                                    .unwrap();
                             }
-                        }))
+                            fields::AllocateCommandBuffer::Dynamic { current_frame }
+                        } else {
+                            let current_frame = handles[present_ix as usize];
+                            unsafe {
+                                device
+                                    .reset_command_buffer(
+                                        current_frame,
+                                        vk::CommandBufferResetFlags::empty(),
+                                    )
+                                    .unwrap();
+                                device
+                                    .begin_command_buffer(current_frame, &begin_info)
+                                    .unwrap();
+                            }
+                            fields::AllocateCommandBuffer::Dynamic { current_frame }
+                        }
+                    })) as Box<Future<Item = _, Error = ()>>)
                         .shared();
                 }
                 RenderNode::SubmitCommandBuffer { ref dynamic, .. } => {
@@ -1220,53 +1216,51 @@ impl RenderDAG {
                         .expect("failed to read command buffer")
                         .clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.join(allocated).map_err(|_| ()).map(
-                            move |(_, allocated)| unsafe {
-                                let cb = allocated.current_frame;
-                                device.end_command_buffer(cb).unwrap();
-                                let dst_stage_masks =
-                                    vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
-                                let submits = [
-                                    vk::SubmitInfo {
-                                        s_type: vk::StructureType::SubmitInfo,
-                                        p_next: ptr::null(),
-                                        wait_semaphore_count: wait_semaphores.len() as u32,
-                                        p_wait_semaphores: wait_semaphores.as_ptr(),
-                                        p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                                        command_buffer_count: 1,
-                                        p_command_buffers: &cb,
-                                        signal_semaphore_count: signal_semaphores.len() as u32,
-                                        p_signal_semaphores: signal_semaphores.as_ptr(),
-                                    },
-                                ];
-                                let queue_lock =
-                                    graphics_queue.lock().expect("can't lock the queue");
+                    *lock = (Box::new(order_fut.join(allocated).map_err(|_| ()).map(
+                        move |(_, allocated)| unsafe {
+                            let cb = allocated.current_frame;
+                            device.end_command_buffer(cb).unwrap();
+                            let dst_stage_masks =
+                                vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
+                            let submits = [
+                                vk::SubmitInfo {
+                                    s_type: vk::StructureType::SubmitInfo,
+                                    p_next: ptr::null(),
+                                    wait_semaphore_count: wait_semaphores.len() as u32,
+                                    p_wait_semaphores: wait_semaphores.as_ptr(),
+                                    p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                                    command_buffer_count: 1,
+                                    p_command_buffers: &cb,
+                                    signal_semaphore_count: signal_semaphores.len() as u32,
+                                    p_signal_semaphores: signal_semaphores.as_ptr(),
+                                },
+                            ];
+                            let queue_lock = graphics_queue.lock().expect("can't lock the queue");
 
-                                let submit_fence = {
-                                    let create_info = vk::FenceCreateInfo {
-                                        s_type: vk::StructureType::FenceCreateInfo,
-                                        p_next: ptr::null(),
-                                        flags: vk::FenceCreateFlags::empty(),
-                                    };
-                                    device
-                                        .create_fence(&create_info, None)
-                                        .expect("Create fence failed.")
+                            let submit_fence = {
+                                let create_info = vk::FenceCreateInfo {
+                                    s_type: vk::StructureType::FenceCreateInfo,
+                                    p_next: ptr::null(),
+                                    flags: vk::FenceCreateFlags::empty(),
                                 };
-
                                 device
-                                    .queue_submit(*queue_lock, &submits, submit_fence)
-                                    .unwrap();
+                                    .create_fence(&create_info, None)
+                                    .expect("Create fence failed.")
+                            };
 
-                                device
-                                    .wait_for_fences(&[submit_fence], true, u64::MAX)
-                                    .expect("Wait for fence failed.");
-                                device.destroy_fence(submit_fence, None);
+                            device
+                                .queue_submit(*queue_lock, &submits, submit_fence)
+                                .unwrap();
 
-                                ()
-                            },
-                        ))
-                        .shared();
+                            device
+                                .wait_for_fences(&[submit_fence], true, u64::MAX)
+                                .expect("Wait for fence failed.");
+                            device.destroy_fence(submit_fence, None);
+
+                            ()
+                        },
+                    )) as Box<Future<Item = (), Error = ()>>)
+                        .shared() as DynamicInner<()>;
                 }
                 RenderNode::Renderpass {
                     handle,
@@ -1307,42 +1301,41 @@ impl RenderDAG {
                         .clone();
                     let fb_fut = fb_lock.read().expect("Could not read framebuffer").clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(command_buffer_fut.join(fb_fut).map_err(|_| ()).map(
-                            move |(cb_dyn, fb)| {
-                                let fb_ix = (*fb).current_present_index;
-                                let cb = cb_dyn.current_frame;
-                                let clear_values = vec![
-                                    vk::ClearValue {
-                                        color: vk::ClearColorValue { float32: [0.0; 4] },
+                    *lock = (Box::new(command_buffer_fut.join(fb_fut).map_err(|_| ()).map(
+                        move |(cb_dyn, fb)| {
+                            let fb_ix = (*fb).current_present_index;
+                            let cb = cb_dyn.current_frame;
+                            let clear_values = vec![
+                                vk::ClearValue {
+                                    color: vk::ClearColorValue { float32: [0.0; 4] },
+                                },
+                            ];
+                            let begin_info = vk::RenderPassBeginInfo {
+                                s_type: vk::StructureType::RenderPassBeginInfo,
+                                p_next: ptr::null(),
+                                render_pass: handle,
+                                framebuffer: fb_handles[fb_ix as usize],
+                                render_area: vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: window_width,
+                                        height: window_height,
                                     },
-                                ];
-                                let begin_info = vk::RenderPassBeginInfo {
-                                    s_type: vk::StructureType::RenderPassBeginInfo,
-                                    p_next: ptr::null(),
-                                    render_pass: handle,
-                                    framebuffer: fb_handles[fb_ix as usize],
-                                    render_area: vk::Rect2D {
-                                        offset: vk::Offset2D { x: 0, y: 0 },
-                                        extent: vk::Extent2D {
-                                            width: window_width,
-                                            height: window_height,
-                                        },
-                                    },
-                                    clear_value_count: clear_values.len() as u32,
-                                    p_clear_values: clear_values.as_ptr(),
-                                };
-                                unsafe {
-                                    device.cmd_begin_render_pass(
-                                        cb,
-                                        &begin_info,
-                                        vk::SubpassContents::Inline,
-                                    );
-                                }
-                                ()
-                            },
-                        ))
-                        .shared();
+                                },
+                                clear_value_count: clear_values.len() as u32,
+                                p_clear_values: clear_values.as_ptr(),
+                            };
+                            unsafe {
+                                device.cmd_begin_render_pass(
+                                    cb,
+                                    &begin_info,
+                                    vk::SubpassContents::Inline,
+                                );
+                            }
+                            ()
+                        },
+                    )) as Box<Future<Item = (), Error = ()>>)
+                        .shared() as DynamicInner<()>;
                 }
                 RenderNode::EndRenderpass { ref dynamic, .. } => {
                     let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
@@ -1362,17 +1355,16 @@ impl RenderDAG {
                         .expect("Could not read command buffer")
                         .clone();
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
-                            move |(_, cb_dyn)| {
-                                let cb = cb_dyn.current_frame;
-                                unsafe {
-                                    device.cmd_end_render_pass(cb);
-                                }
-                                ()
-                            },
-                        ))
-                        .shared();
+                    *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
+                        move |(_, cb_dyn)| {
+                            let cb = cb_dyn.current_frame;
+                            unsafe {
+                                device.cmd_end_render_pass(cb);
+                            }
+                            ()
+                        },
+                    )) as Box<Future<Item = (), Error = ()>>)
+                        .shared() as DynamicInner<()>;
                 }
                 RenderNode::NextSubpass { ref dynamic, .. } => {
                     let device = search_deps_exactly_one(&self.graph, ix, |node| match *node {
@@ -1392,17 +1384,16 @@ impl RenderDAG {
                         .clone();
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
-                            move |(_, cb_dyn)| {
-                                let cb = cb_dyn.current_frame;
-                                unsafe {
-                                    device.cmd_next_subpass(cb, vk::SubpassContents::Inline);
-                                }
-                                ()
-                            },
-                        ))
-                        .shared();
+                    *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
+                        move |(_, cb_dyn)| {
+                            let cb = cb_dyn.current_frame;
+                            unsafe {
+                                device.cmd_next_subpass(cb, vk::SubpassContents::Inline);
+                            }
+                            ()
+                        },
+                    )) as Box<Future<Item = (), Error = ()>>)
+                        .shared() as DynamicInner<()>;
                 }
                 RenderNode::GraphicsPipeline {
                     handle,
@@ -1425,20 +1416,19 @@ impl RenderDAG {
                         .clone();
                     let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
-                    *lock = self.cpu_pool
-                        .spawn(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
-                            move |(_, cb_dyn)| {
-                                let cb = cb_dyn.current_frame;
-                                unsafe {
-                                    device.cmd_bind_pipeline(
-                                        cb,
-                                        vk::PipelineBindPoint::Graphics,
-                                        handle,
-                                    );
-                                }
-                                ()
-                            },
-                        ))
+                    *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
+                        move |(_, cb_dyn)| {
+                            let cb = cb_dyn.current_frame;
+                            unsafe {
+                                device.cmd_bind_pipeline(
+                                    cb,
+                                    vk::PipelineBindPoint::Graphics,
+                                    handle,
+                                );
+                            }
+                            ()
+                        },
+                    )) as Box<Future<Item = (), Error = ()>>)
                         .shared();
                 }
                 RenderNode::DrawCalls { ref f, ref dynamic } => {
