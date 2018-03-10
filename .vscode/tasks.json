@@ -19,6 +19,12 @@
       ]
     },
     {
+      "taskName": "cargo format",
+      "args": [
+        "fmt"
+      ]
+    },
+    {
       "taskName": "cargo test",
       "args": [
         "test"
