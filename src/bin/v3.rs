@@ -10,13 +10,13 @@ extern crate specs;
 
 use ecs::*;
 use forward_renderer::*;
-use render_dag::v3::*;
+use render_dag::v3::{*, util::UseQueue};
 
 use ash::{vk, version::DeviceV1_0};
 use cgmath::Rotation3;
 use futures::{executor::ThreadPool, future::lazy};
-use std::{ptr, default::Default, mem::{size_of, transmute}, os::raw::c_void, path::PathBuf,
-          sync::Arc};
+use std::{ptr, borrow::Cow, default::Default, mem::{size_of, transmute}, os::raw::c_void,
+          path::PathBuf, sync::Arc};
 
 fn main() {
     let mut world = specs::World::new();
@@ -26,7 +26,8 @@ fn main() {
     world.register::<Matrices>();
     let mut dag = RenderDAG::new();
     let window_ix = dag.new_window(800, 600);
-    let (device_ix, graphics_family, compute_family) = dag.new_device(window_ix).unwrap();
+    let (device_ix, graphics_family, compute_family, transfer_family) =
+        dag.new_device(window_ix).unwrap();
     let device = match dag.graph[device_ix] {
         RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
         _ => None,
@@ -89,6 +90,10 @@ fn main() {
             &subpass_dependencies,
         ).unwrap()
     };
+    dag.node_names
+        .insert(renderpass_ix, Cow::Borrowed("Triangle renderpass start"));
+    dag.node_names
+        .insert(end_renderpass_ix, Cow::Borrowed("Triangle renderpass end"));
     let (framebuffer_ix, present_ix) = dag.new_framebuffer(swapchain_ix, renderpass_ix).unwrap();
     dag.graph
         .add_edge(renderpass_ix, present_ix, Edge::Propagate);
@@ -97,14 +102,38 @@ fn main() {
         graphics_family,
         vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     ).unwrap();
+    dag.node_names.insert(
+        graphics_command_pool_ix,
+        Cow::Borrowed("Graphics command pool"),
+    );
     let compute_command_pool_ix = dag.new_command_pool(
         device_ix,
         compute_family,
         vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     ).unwrap();
+    dag.node_names.insert(
+        compute_command_pool_ix,
+        Cow::Borrowed("Compute command pool"),
+    );
+    let transfer_command_pool_ix = dag.new_command_pool(
+        device_ix,
+        transfer_family,
+        vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+    ).unwrap();
+    dag.node_names.insert(
+        transfer_command_pool_ix,
+        Cow::Borrowed("Transfer command pool"),
+    );
     let (command_buffer_ix, submit_commands_ix) = dag.new_allocate_command_buffer(
         graphics_command_pool_ix,
+        UseQueue::Graphics
     ).unwrap();
+    dag.node_names
+        .insert(command_buffer_ix, Cow::Borrowed("Graphics Command buffer"));
+    dag.node_names.insert(
+        submit_commands_ix,
+        Cow::Borrowed("Submit graphics Command buffer"),
+    );
     dag.graph
         .add_edge(submit_commands_ix, present_ix, Edge::Propagate);
     dag.graph
@@ -116,11 +145,15 @@ fn main() {
 
     // Semaphores
     let present_semaphore_ix = dag.new_persistent_semaphore(device_ix).unwrap();
+    dag.node_names
+        .insert(present_semaphore_ix, Cow::Borrowed("Present semaphore"));
     dag.graph
         .add_edge(framebuffer_ix, present_semaphore_ix, Edge::Direct);
-    dag.graph
-        .add_edge(present_semaphore_ix, submit_commands_ix, Edge::Direct);
     let rendering_complete_semaphore_ix = dag.new_persistent_semaphore(device_ix).unwrap();
+    dag.node_names.insert(
+        rendering_complete_semaphore_ix,
+        Cow::Borrowed("Rendering semaphore"),
+    );
     dag.graph.add_edge(
         submit_commands_ix,
         rendering_complete_semaphore_ix,
@@ -169,6 +202,10 @@ fn main() {
             ),
         ],
     ).unwrap();
+    dag.node_names.insert(
+        triangle_pipeline,
+        Cow::Borrowed("Triangle graphics pipeline"),
+    );
     let descriptor_pool_ix = dag.new_descriptor_pool(
         device_ix,
         1,
@@ -179,9 +216,13 @@ fn main() {
             },
         ],
     ).unwrap();
+    dag.node_names
+        .insert(descriptor_pool_ix, Cow::Borrowed("Main descriptor pool"));
     let descriptor_set_ix =
         dag.new_descriptor_set(device_ix, descriptor_pool_ix, descriptor_set_layout_ix)
             .unwrap();
+    dag.node_names
+        .insert(descriptor_set_ix, Cow::Borrowed("Main descriptor set"));
     let ubo_set = match dag.graph[descriptor_set_ix] {
         RenderNode::DescriptorSet { handle, .. } => Some(handle),
         _ => None,
@@ -193,6 +234,8 @@ fn main() {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         4 * 4 * 4 * 1024,
     ).unwrap();
+    dag.node_names
+        .insert(ubo_buffer_ix, Cow::Borrowed("MVP Uniform buffer"));
     let (ubo_buffer, ubo_allocation_ptr) = match dag.graph[ubo_buffer_ix] {
         RenderNode::Buffer {
             handle,
@@ -332,15 +375,50 @@ fn main() {
         )) as Box<Future<Item = (), Error = ()>>)
             .shared();
     }));
+    dag.node_names
+        .insert(draw_calls, Cow::Borrowed("Triangle draw calls"));
     dag.graph
         .add_edge(triangle_pipeline, draw_calls, Edge::Propagate);
     dag.graph
         .add_edge(descriptor_set_ix, draw_calls, Edge::Propagate);
     dag.graph
         .add_edge(draw_calls, end_renderpass_ix, Edge::Propagate);
-    println!("{}", dot(&dag.graph).unwrap());
+    {
+        // Upload facilities
+        let (upload_cb_ix, submit_upload_ix) = dag.new_allocate_command_buffer(
+            transfer_command_pool_ix,
+            UseQueue::Transfer
+        ).unwrap();
+        dag.node_names
+            .insert(upload_cb_ix, Cow::Borrowed("Upload Command buffer"));
+        dag.node_names.insert(
+            submit_upload_ix,
+            Cow::Borrowed("Submit Upload Command buffer"),
+        );
+        dag.graph
+            .add_edge(framebuffer_ix, upload_cb_ix, Edge::Propagate);
+        dag.graph
+            .add_edge(present_semaphore_ix, submit_upload_ix, Edge::Propagate);
+        let sync_upload_semaphore_ix = dag.new_persistent_semaphore(device_ix).unwrap();
+        dag.node_names.insert(
+            sync_upload_semaphore_ix,
+            Cow::Borrowed("Sync Upload Semaphore"),
+        );
+        dag.graph
+            .add_edge(submit_upload_ix, sync_upload_semaphore_ix, Edge::Propagate);
+        dag.graph
+            .add_edge(submit_upload_ix, submit_commands_ix, Edge::Direct);
+        dag.graph
+            .add_edge(device_ix, submit_upload_ix, Edge::Propagate);
+        dag.graph.add_edge(
+            sync_upload_semaphore_ix,
+            submit_commands_ix,
+            Edge::Propagate,
+        );
+    }
+    println!("{}", dot(&dag.graph, &dag.node_names).unwrap());
     let mut threadpool = ThreadPool::new();
-    for _i in 1..500 {
+    for _i in 1..200 {
         dispatcher.dispatch(&world.res);
         let _: Result<(), ()> = threadpool.run(lazy(|| {
             dag.render_frame(&world);

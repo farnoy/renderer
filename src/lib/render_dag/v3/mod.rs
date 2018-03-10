@@ -9,8 +9,8 @@ pub mod util;
 use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1_0}};
 use futures::prelude::*;
 use petgraph::{visit, prelude::*};
-use std::{self, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf,
-          sync::{Arc, Mutex, RwLock}, u64};
+use std::{self, ptr, borrow::Cow, collections::HashMap, ffi::CString, fs::File, io::Read,
+          mem::transmute, path::PathBuf, sync::{Arc, Mutex, RwLock}, u64};
 use specs;
 use winit;
 
@@ -29,21 +29,23 @@ pub enum Edge {
 
 pub type RuntimeGraph = StableDiGraph<RenderNode, Edge>;
 
-pub struct RenderDAG {
+pub struct RenderDAG<'a> {
     pub graph: RuntimeGraph,
+    pub node_names: HashMap<NodeIndex, Cow<'a, str>>,
     frame_number: u32,
 }
 
-impl Default for RenderDAG {
-    fn default() -> RenderDAG {
+impl<'a> Default for RenderDAG<'a> {
+    fn default() -> RenderDAG<'a> {
         RenderDAG::new()
     }
 }
 
-impl RenderDAG {
-    pub fn new() -> RenderDAG {
+impl<'a> RenderDAG<'a> {
+    pub fn new() -> RenderDAG<'a> {
         RenderDAG {
             graph: RuntimeGraph::new(),
+            node_names: HashMap::new(),
             frame_number: 0,
         }
     }
@@ -76,7 +78,7 @@ impl RenderDAG {
     }
 
     // first device present
-    pub fn new_device(&mut self, instance_ix: NodeIndex) -> Option<(NodeIndex, u32, u32)> {
+    pub fn new_device(&mut self, instance_ix: NodeIndex) -> Option<(NodeIndex, u32, u32, u32)> {
         let (entry, instance, surface) = match self.graph[instance_ix] {
             RenderNode::Instance {
                 ref entry,
@@ -131,12 +133,30 @@ impl RenderDAG {
                 })
                 .next()
         }.unwrap_or((graphics_queue_family, 1));
+        let transfer_queue_family = {
+            instance
+                .get_physical_device_queue_family_properties(pdevice)
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, info)| {
+                    if info.queue_flags.subset(vk::QUEUE_TRANSFER_BIT)
+                        && !info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
+                        && !info.queue_flags.subset(vk::QUEUE_COMPUTE_BIT)
+                    {
+                        Some(ix as u32)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+        }.unwrap_or(graphics_queue_family);
         let device = device::Device::new(
             &instance,
             pdevice,
             &[
                 (graphics_queue_family, 1),
                 (compute_queue_family, compute_queue_len),
+                (transfer_queue_family, 1),
             ],
         ).unwrap();
         let allocator = alloc::create(device.vk().handle(), pdevice).unwrap();
@@ -148,6 +168,8 @@ impl RenderDAG {
             })
             .collect::<Vec<_>>();
 
+        let transfer_queue = unsafe { device.vk().get_device_queue(transfer_queue_family, 0) };
+
         let node = RenderNode::Device {
             dynamic: dyn(()),
             device,
@@ -157,10 +179,16 @@ impl RenderDAG {
             compute_queue_family,
             graphics_queue: Arc::new(Mutex::new(graphics_queue)),
             compute_queues: Arc::new(compute_queues),
+            transfer_queue: Arc::new(Mutex::new(transfer_queue)),
         };
         let ix = self.graph.add_node(node);
         self.graph.add_edge(instance_ix, ix, Edge::Propagate);
-        Some((ix, graphics_queue_family, compute_queue_family))
+        Some((
+            ix,
+            graphics_queue_family,
+            compute_queue_family,
+            transfer_queue_family,
+        ))
     }
 
     pub fn new_swapchain(&mut self, device_ix: NodeIndex) -> Option<NodeIndex> {
@@ -412,13 +440,14 @@ impl RenderDAG {
     pub fn new_allocate_command_buffer(
         &mut self,
         command_pool_ix: NodeIndex,
+        use_queue: UseQueue,
     ) -> Option<(NodeIndex, NodeIndex)> {
         let node = self.graph.add_node(RenderNode::make_allocate_commands(
             Arc::new(RwLock::new(vec![])),
             unsafe { vk::CommandBuffer::null() },
         ));
         let submit = self.graph
-            .add_node(RenderNode::SubmitCommandBuffer { dynamic: dyn(()) });
+            .add_node(RenderNode::SubmitCommandBuffer { use_queue, dynamic: dyn(()) });
         self.graph.add_edge(command_pool_ix, node, Edge::Propagate);
         self.graph.add_edge(node, submit, Edge::Propagate);
 
@@ -448,7 +477,7 @@ impl RenderDAG {
             device.set_object_name(
                 vk::DebugReportObjectTypeEXT::Semaphore,
                 transmute(semaphore),
-                &format!("{:?}", ix),
+                &self.node_names.get(&ix).map(|name| format!("{}", name)).unwrap_or(format!("{:?}", ix)),
             );
         }
 
@@ -1159,29 +1188,47 @@ impl RenderDAG {
                                 device
                                     .begin_command_buffer(current_frame, &begin_info)
                                     .unwrap();
+                                device.debug_marker_start(current_frame, "Test", [1.0, 0.0, 0.0, 1.0]);
                             }
                             fields::AllocateCommandBuffer::Dynamic { current_frame }
                         }
                     })) as Box<Future<Item = _, Error = ()>>)
                         .shared();
                 }
-                RenderNode::SubmitCommandBuffer { ref dynamic, .. } => {
-                    let (device, graphics_queue) =
+                RenderNode::SubmitCommandBuffer { ref dynamic, ref use_queue, .. } => {
+                    let (device, graphics_queue, transfer_queue) =
                         search_deps_exactly_one(&self.graph, ix, |node| match *node {
                             RenderNode::Device {
                                 ref device,
                                 ref graphics_queue,
+                                ref transfer_queue,
                                 ..
-                            } => Some((Arc::clone(device), Arc::clone(graphics_queue))),
+                            } => Some((Arc::clone(device), Arc::clone(graphics_queue), Arc::clone(transfer_queue))),
                             _ => None,
                         }).expect("Device not found in deps of SubmitCommandBuffer");
                     let allocated_lock =
-                        search_deps_exactly_one(&self.graph, ix, |node| match *node {
+                        search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match *node {
                             RenderNode::AllocateCommandBuffer { ref dynamic, .. } => {
                                 Some(Arc::clone(dynamic))
                             }
                             _ => None,
-                        }).expect("Device not found in deps of SubmitCommandBuffer");
+                        }).expect(&format!("AllocateCommandBuffer not found in deps of SubmitCommandBuffer {:?}", ix));
+                    let submit_queue = match use_queue {
+                        &UseQueue::Graphics => graphics_queue,
+                        &UseQueue::Transfer => transfer_queue
+                    };
+                    let use_queue = use_queue.clone();
+                    /*
+                    TODO: use graph for queues
+                    let submit_queue = search_proxy_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match *node {
+                        RenderNode::AllocateCommandBuffer { ref dynamic, .. } => {
+                            Some(Arc::clone(dynamic))
+                        },
+                        _ => None
+                    }, |node| match *node {
+                        RenderNode::Queue
+                    })
+                    */
                     let wait_semaphores = search_direct_deps(
                         &self.graph,
                         ix,
@@ -1209,6 +1256,7 @@ impl RenderDAG {
                     *lock = (Box::new(order_fut.join(allocated).map_err(|_| ()).map(
                         move |(_, allocated)| unsafe {
                             let cb = allocated.current_frame;
+                            device.debug_marker_end(cb);
                             device.end_command_buffer(cb).unwrap();
                             let dst_stage_masks =
                                 vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
@@ -1225,7 +1273,7 @@ impl RenderDAG {
                                     p_signal_semaphores: signal_semaphores.as_ptr(),
                                 },
                             ];
-                            let queue_lock = graphics_queue.lock().expect("can't lock the queue");
+                            let queue_lock = submit_queue.lock().expect("can't lock the submit queue");
 
                             let submit_fence = {
                                 let create_info = vk::FenceCreateInfo {
@@ -1237,6 +1285,8 @@ impl RenderDAG {
                                     .create_fence(&create_info, None)
                                     .expect("Create fence failed.")
                             };
+
+                            println!("*** Submit info for {:?}\nUsing queue {:?}\nWait semaphores are {:?}\nSignal semaphores are {:?}", ix, use_queue, wait_semaphores, signal_semaphores);
 
                             device
                                 .queue_submit(*queue_lock, &submits, submit_fence)
@@ -1316,6 +1366,7 @@ impl RenderDAG {
                                 p_clear_values: clear_values.as_ptr(),
                             };
                             unsafe {
+                                device.debug_marker_start(cb, "Kuba Pass", [0.0, 1.0, 0.0, 1.0]);
                                 device.cmd_begin_render_pass(
                                     cb,
                                     &begin_info,
@@ -1429,7 +1480,7 @@ impl RenderDAG {
     }
 }
 
-impl Drop for RenderDAG {
+impl<'a> Drop for RenderDAG<'a> {
     fn drop(&mut self) {
         use std::boxed::FnBox;
         let mut finalizer_graph: StableDiGraph<Box<FnBox()>, Edge> = self.graph.filter_map(

@@ -59,6 +59,7 @@ pub enum RenderNode {
         compute_queue_family: u32,
         graphics_queue: Arc<Mutex<vk::Queue>>,
         compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
+        transfer_queue: Arc<Mutex<vk::Queue>>,
         dynamic: Dynamic<()>,
     },
     Swapchain {
@@ -88,6 +89,7 @@ pub enum RenderNode {
         dynamic: Dynamic<fields::AllocateCommandBuffer::Dynamic>,
     },
     SubmitCommandBuffer {
+        use_queue: UseQueue,
         dynamic: Dynamic<()>,
     },
     Renderpass {

@@ -6,6 +6,12 @@ use std::sync::{Arc, RwLock};
 pub type Dynamic<T> = Arc<RwLock<DynamicInner<T>>>;
 pub type DynamicInner<T> = Shared<Box<Future<Item = T, Error = ()>>>;
 
+#[derive(Clone, Debug)]
+pub enum UseQueue {
+    Graphics,
+    Transfer
+}
+
 pub trait WaitOn {
     fn waitable(&self) -> Box<Future<Item = (), Error = ()>>;
 }
