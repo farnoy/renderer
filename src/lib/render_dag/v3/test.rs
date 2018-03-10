@@ -40,7 +40,7 @@ impl RenderDAG {
                                 pool graph ix
                                 { EdgeFilter::Propagating }
                                 {
-                                    &Adder::Lit { num, .. } => Some(spawn_const(pool, num)),
+                                    &Adder::Lit { num, .. } => Some(spawn_const(num)),
                                     &Adder::Add { ref dynamic } => Some(pool.spawn(dynamic.read().expect("failed to lock input").clone().map(|field| field.res).map_err(|_| ()))),
                                     _ => None
                                 }

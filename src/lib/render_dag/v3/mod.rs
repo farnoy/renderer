@@ -7,7 +7,7 @@ mod surface;
 pub mod util;
 
 use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1_0}};
-use futures::{executor::ThreadPool, future::lazy, prelude::*};
+use futures::{future::lazy, prelude::*};
 use petgraph::{visit, prelude::*};
 use std::{self, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf,
           sync::{Arc, Mutex, RwLock}, u64};
@@ -31,7 +31,6 @@ pub type RuntimeGraph = StableDiGraph<RenderNode, Edge>;
 
 pub struct RenderDAG {
     pub graph: RuntimeGraph,
-    cpu_pool: ThreadPool,
     frame_number: u32,
 }
 
@@ -45,7 +44,6 @@ impl RenderDAG {
     pub fn new() -> RenderDAG {
         RenderDAG {
             graph: RuntimeGraph::new(),
-            cpu_pool: ThreadPool::new(),
             frame_number: 0,
         }
     }
@@ -65,7 +63,7 @@ impl RenderDAG {
         let surface = unsafe { create_surface(entry.vk(), instance.vk(), &window).unwrap() };
 
         let node = RenderNode::Instance {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             window: Arc::new(window),
             events_loop: Arc::new(events_loop),
             instance: instance,
@@ -151,7 +149,7 @@ impl RenderDAG {
             .collect::<Vec<_>>();
 
         let node = RenderNode::Device {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             device,
             physical_device: pdevice,
             allocator,
@@ -271,7 +269,7 @@ impl RenderDAG {
 
         let swapchain = Arc::new(swapchain::Swapchain::new(swapchain_loader, swapchain));
         let node = RenderNode::Swapchain {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle: swapchain,
             surface_format,
         };
@@ -366,14 +364,13 @@ impl RenderDAG {
             .collect::<Vec<_>>();
 
         let framebuffer = self.graph.add_node(RenderNode::Framebuffer {
-            dynamic: dyn(&self.cpu_pool, fields::Framebuffer::Dynamic::new(0)),
+            dynamic: dyn(fields::Framebuffer::Dynamic::new(0)),
             images: Arc::new(images),
             image_views: Arc::new(image_views),
             handles: Arc::new(handles),
         });
-        let present = self.graph.add_node(RenderNode::PresentFramebuffer {
-            dynamic: dyn(&self.cpu_pool, ()),
-        });
+        let present = self.graph
+            .add_node(RenderNode::PresentFramebuffer { dynamic: dyn(()) });
         self.graph
             .add_edge(swapchain_ix, framebuffer, Edge::Propagate);
         self.graph.add_edge(framebuffer, present, Edge::Propagate);
@@ -400,7 +397,7 @@ impl RenderDAG {
         let pool = unsafe { device.create_command_pool(&pool_create_info, None).unwrap() };
 
         let node = self.graph.add_node(RenderNode::CommandPool {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle: Arc::new(Mutex::new(pool)),
         });
         device.set_object_name(
@@ -417,13 +414,11 @@ impl RenderDAG {
         command_pool_ix: NodeIndex,
     ) -> Option<(NodeIndex, NodeIndex)> {
         let node = self.graph.add_node(RenderNode::make_allocate_commands(
-            &self.cpu_pool,
             Arc::new(RwLock::new(vec![])),
             unsafe { vk::CommandBuffer::null() },
         ));
-        let submit = self.graph.add_node(RenderNode::SubmitCommandBuffer {
-            dynamic: dyn(&self.cpu_pool, ()),
-        });
+        let submit = self.graph
+            .add_node(RenderNode::SubmitCommandBuffer { dynamic: dyn(()) });
         self.graph.add_edge(command_pool_ix, node, Edge::Propagate);
         self.graph.add_edge(node, submit, Edge::Propagate);
 
@@ -444,7 +439,7 @@ impl RenderDAG {
         let semaphore = unsafe { device.create_semaphore(&create_info, None).unwrap() };
 
         let node = RenderNode::PersistentSemaphore {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle: semaphore,
         };
         let ix = self.graph.add_node(node);
@@ -490,17 +485,16 @@ impl RenderDAG {
         };
 
         let start_ix = self.graph.add_node(RenderNode::Renderpass {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle: renderpass,
         });
-        let end_ix = self.graph.add_node(RenderNode::EndRenderpass {
-            dynamic: dyn(&self.cpu_pool, ()),
-        });
+        let end_ix = self.graph
+            .add_node(RenderNode::EndRenderpass { dynamic: dyn(()) });
         let previous_ix = start_ix;
         let subpass_ixes = (1..subpass_descs.len())
             .map(|ix| {
                 let this_subpass = self.graph.add_node(RenderNode::NextSubpass {
-                    dynamic: dyn(&self.cpu_pool, ()),
+                    dynamic: dyn(()),
                     ix,
                 });
                 self.graph
@@ -537,7 +531,7 @@ impl RenderDAG {
                 .unwrap()
         };
         let node = self.graph.add_node(RenderNode::DescriptorSetLayout {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle,
         });
         self.graph.add_edge(device_ix, node, Edge::Propagate);
@@ -568,7 +562,7 @@ impl RenderDAG {
         let handle = unsafe { device.create_descriptor_pool(&create_info, None).unwrap() };
 
         let node = self.graph.add_node(RenderNode::DescriptorPool {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle,
         });
         self.graph.add_edge(device_ix, node, Edge::Propagate);
@@ -605,7 +599,7 @@ impl RenderDAG {
             unsafe { device.allocate_descriptor_sets(&desc_alloc_info).unwrap() };
         let handle = new_descriptor_sets.remove(0);
         let node = self.graph.add_node(RenderNode::DescriptorSet {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle,
         });
         self.graph.add_edge(device_ix, node, Edge::Propagate);
@@ -648,7 +642,6 @@ impl RenderDAG {
 
         let pipeline_layout = unsafe { device.create_pipeline_layout(&create_info, None).unwrap() };
         let node = self.graph.add_node(RenderNode::make_pipeline_layout(
-            &self.cpu_pool,
             Arc::new(push_constant_ranges),
             pipeline_layout,
         ));
@@ -881,7 +874,7 @@ impl RenderDAG {
             }
         }
 
-        let node = RenderNode::make_graphics_pipeline(&self.cpu_pool, graphics_pipelines[0]);
+        let node = RenderNode::make_graphics_pipeline(graphics_pipelines[0]);
         let ix = self.graph.add_node(node);
         self.graph.add_edge(pipeline_layout_ix, ix, Edge::Direct);
         self.graph.add_edge(renderpass_ix, ix, Edge::Propagate);
@@ -934,7 +927,7 @@ impl RenderDAG {
             alloc::create_buffer(allocator, &buffer_create_info, &allocation_create_info).unwrap();
 
         let node = RenderNode::Buffer {
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
             handle,
             allocation,
             allocation_info,
@@ -947,11 +940,11 @@ impl RenderDAG {
 
     pub fn new_draw_calls(
         &mut self,
-        f: Arc<Fn(NodeIndex, &RuntimeGraph, &ThreadPool, &specs::World, &Dynamic<()>)>,
+        f: Arc<Fn(NodeIndex, &RuntimeGraph, &specs::World, &Dynamic<()>)>,
     ) -> NodeIndex {
         let node = RenderNode::DrawCalls {
             f,
-            dynamic: dyn(&self.cpu_pool, ()),
+            dynamic: dyn(()),
         };
         self.graph.add_node(node)
     }
@@ -975,7 +968,7 @@ impl RenderDAG {
                     ref dynamic,
                     ..
                 } => {
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     let frame_index = self.frame_number;
                     *lock = (Box::new(order_fut.map_err(|_| ()).map(move |_| {
@@ -1014,12 +1007,9 @@ impl RenderDAG {
                     let mut lock = dynamic
                         .write()
                         .expect("failed to lock framebuffer for writing");
-                    *lock = spawn_const(
-                        &self.cpu_pool,
-                        fields::Framebuffer::Dynamic {
-                            current_present_index: image_index,
-                        },
-                    ).shared();
+                    *lock = spawn_const(fields::Framebuffer::Dynamic {
+                        current_present_index: image_index,
+                    }).shared();
                 }
                 RenderNode::PresentFramebuffer { ref dynamic, .. } => {
                     let swapchain = search_deps_exactly_one(&self.graph, ix, |node| match *node {
@@ -1057,7 +1047,7 @@ impl RenderDAG {
                         }).expect(
                             "No device connected to Present - where should we submit the request?",
                         );
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = (Box::new(order_fut.join(present_index_fut).map_err(|_| ()).map(
                         move |(_, present_index)| {
@@ -1119,7 +1109,7 @@ impl RenderDAG {
                                 _ => None,
                             },
                         ).expect("Framebuffer not found in direct deps of AllocateCommandBuffer");
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let fb_fut = fb_lock.read().expect("Failed to read framebuffer").clone();
                     let handles = Arc::clone(handles);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
@@ -1210,7 +1200,7 @@ impl RenderDAG {
                             _ => None,
                         },
                     );
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let allocated = allocated_lock
                         .write()
                         .expect("failed to read command buffer")
@@ -1349,7 +1339,7 @@ impl RenderDAG {
                             }
                             _ => None,
                         }).expect("Command Buffer not found in deps of EndRenderpass");
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let command_buffer_fut = command_buffer_locked
                         .read()
                         .expect("Could not read command buffer")
@@ -1382,7 +1372,7 @@ impl RenderDAG {
                         .read()
                         .expect("Could not read command buffer")
                         .clone();
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
                         move |(_, cb_dyn)| {
@@ -1414,7 +1404,7 @@ impl RenderDAG {
                         .read()
                         .expect("Could not read command buffer")
                         .clone();
-                    let order_fut = wait_on_direct_deps(&self.cpu_pool, &self.graph, ix);
+                    let order_fut = wait_on_direct_deps(&self.graph, ix);
                     let mut lock = dynamic.write().expect("failed to lock present for writing");
                     *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
                         move |(_, cb_dyn)| {
@@ -1432,7 +1422,7 @@ impl RenderDAG {
                         .shared();
                 }
                 RenderNode::DrawCalls { ref f, ref dynamic } => {
-                    f(ix, &self.graph, &self.cpu_pool, world, dynamic);
+                    f(ix, &self.graph, world, dynamic);
                 }
             }
         }

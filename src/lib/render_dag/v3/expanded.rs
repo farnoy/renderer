@@ -1,4 +1,4 @@
-use futures::{executor::ThreadPool, prelude::*};
+use futures::prelude::*;
 use super::super::super::{device, entry, instance, swapchain};
 use winit;
 use super::{alloc, util::*};
@@ -129,15 +129,7 @@ pub enum RenderNode {
         dynamic: Dynamic<()>,
     },
     DrawCalls {
-        f: Arc<
-            Fn(
-                petgraph::prelude::NodeIndex,
-                &super::RuntimeGraph,
-                &ThreadPool,
-                &specs::World,
-                &Dynamic<()>,
-            ),
-        >,
+        f: Arc<Fn(petgraph::prelude::NodeIndex, &super::RuntimeGraph, &specs::World, &Dynamic<()>)>,
         dynamic: Dynamic<()>,
     },
 }
@@ -145,38 +137,33 @@ pub enum RenderNode {
 #[allow(too_many_arguments)]
 impl RenderNode {
     pub fn make_allocate_commands(
-        pool: &ThreadPool,
         handles: Arc<RwLock<Vec<vk::CommandBuffer>>>,
         current_frame: vk::CommandBuffer,
     ) -> RenderNode {
         RenderNode::AllocateCommandBuffer {
-            dynamic: dyn(
-                pool,
-                fields::AllocateCommandBuffer::Dynamic::new(current_frame),
-            ),
+            dynamic: dyn(fields::AllocateCommandBuffer::Dynamic::new(current_frame)),
             handles: handles,
         }
     }
     pub fn make_pipeline_layout(
-        pool: &ThreadPool,
         push_constant_ranges: Arc<Vec<vk::PushConstantRange>>,
         handle: vk::PipelineLayout,
     ) -> RenderNode {
         RenderNode::PipelineLayout {
-            dynamic: dyn(pool, ()),
+            dynamic: dyn(()),
             push_constant_ranges: push_constant_ranges,
             handle: handle,
         }
     }
-    pub fn make_graphics_pipeline(pool: &ThreadPool, handle: vk::Pipeline) -> RenderNode {
+    pub fn make_graphics_pipeline(handle: vk::Pipeline) -> RenderNode {
         RenderNode::GraphicsPipeline {
-            dynamic: dyn(pool, ()),
+            dynamic: dyn(()),
             handle: handle,
         }
     }
 }
 impl WaitOn for RenderNode {
-    fn waitable(&self, pool: &ThreadPool) -> Box<Future<Item = (), Error = ()>> {
+    fn waitable(&self) -> Box<Future<Item = (), Error = ()>> {
         match *self {
             RenderNode::Instance { ref dynamic, .. } => {
                 let fut = dynamic

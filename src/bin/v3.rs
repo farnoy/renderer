@@ -14,7 +14,7 @@ use render_dag::v3::*;
 
 use ash::{vk, version::DeviceV1_0};
 use cgmath::Rotation3;
-use futures::executor::block_on;
+use futures::{executor::ThreadPool, future::lazy};
 use std::{ptr, default::Default, mem::{size_of, transmute}, os::raw::c_void, path::PathBuf,
           sync::Arc};
 
@@ -268,7 +268,7 @@ fn main() {
         .build();
     dag.graph
         .add_edge(triangle_pipeline, end_renderpass_ix, Edge::Propagate);
-    let draw_calls = dag.new_draw_calls(Arc::new(|ix, graph, cpu_pool, world, dynamic| {
+    let draw_calls = dag.new_draw_calls(Arc::new(|ix, graph, world, dynamic| {
         use render_dag::v3::util::*;
         use petgraph::prelude::*;
         use futures::prelude::*;
@@ -293,24 +293,24 @@ fn main() {
                 RenderNode::DescriptorSet { handle, .. } => Some(handle),
                 _ => None,
             });
-        let order_fut = wait_on_direct_deps(cpu_pool, graph, ix);
+        let order_fut = wait_on_direct_deps(graph, ix);
         let mut lock = dynamic.write().expect("failed to lock present for writing");
         *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
-                    move |(_, cb_dyn)| {
-                        println!("My draw calls");
-                        let cb = cb_dyn.current_frame;
-                        unsafe {
-                            device.cmd_bind_descriptor_sets(
-                                cb,
-                                vk::PipelineBindPoint::Graphics,
-                                pipeline_layout,
-                                0,
-                                &descriptor_sets,
-                                &[],
-                            );
-                            let constants = [1.0f32, 1.0, -1.0, 1.0, 1.0, -1.0];
-                            use std::mem::transmute;
-                            use std::slice::from_raw_parts;
+            move |(_, cb_dyn)| {
+                println!("My draw calls");
+                let cb = cb_dyn.current_frame;
+                unsafe {
+                    device.cmd_bind_descriptor_sets(
+                        cb,
+                        vk::PipelineBindPoint::Graphics,
+                        pipeline_layout,
+                        0,
+                        &descriptor_sets,
+                        &[],
+                    );
+                    let constants = [1.0f32, 1.0, -1.0, 1.0, 1.0, -1.0];
+                    use std::mem::transmute;
+                    use std::slice::from_raw_parts;
 
                     let casted: &[u8] = {
                         from_raw_parts(
@@ -339,13 +339,16 @@ fn main() {
     dag.graph
         .add_edge(draw_calls, end_renderpass_ix, Edge::Propagate);
     println!("{}", dot(&dag.graph).unwrap());
+    let mut threadpool = ThreadPool::new();
     for _i in 1..500 {
         dispatcher.dispatch(&world.res);
-        dag.render_frame(&world);
+        let _: Result<(), ()> = threadpool.run(lazy(|| {
+            dag.render_frame(&world);
+            Ok(())
+        }));
         if let RenderNode::PresentFramebuffer { ref dynamic, .. } = dag.graph[present_ix] {
-            use futures::Future;
             let lock = dynamic.read().unwrap();
-            let res = block_on((*lock).clone());
+            let res = threadpool.run((*lock).clone());
             println!("{:?}", res);
         } else {
             panic!("present framebuffer does not exist?")
