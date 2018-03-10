@@ -1,5 +1,5 @@
 use futures::future::{join_all, ok, Shared};
-use futures::{executor::ThreadPool, future::lazy, prelude::*};
+use futures::prelude::*;
 use petgraph::{prelude::*, visit::{self, Walker}};
 use std::sync::{Arc, RwLock};
 

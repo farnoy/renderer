@@ -7,7 +7,7 @@ mod surface;
 pub mod util;
 
 use ash::{vk, extensions::{Surface, Swapchain}, version::{DeviceV1_0, InstanceV1_0}};
-use futures::{future::lazy, prelude::*};
+use futures::prelude::*;
 use petgraph::{visit, prelude::*};
 use std::{self, ptr, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf,
           sync::{Arc, Mutex, RwLock}, u64};
