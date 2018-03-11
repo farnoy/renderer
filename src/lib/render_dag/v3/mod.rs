@@ -150,15 +150,19 @@ impl<'a> RenderDAG<'a> {
                 })
                 .next()
         }.unwrap_or(graphics_queue_family);
-        let device = device::Device::new(
-            &instance,
-            pdevice,
-            &[
+        let queue_decl = if graphics_queue_family == transfer_queue_family {
+            vec![
+                (graphics_queue_family, 1),
+                (compute_queue_family, compute_queue_len),
+            ]
+        } else {
+            vec![
                 (graphics_queue_family, 1),
                 (compute_queue_family, compute_queue_len),
                 (transfer_queue_family, 1),
-            ],
-        ).unwrap();
+            ]
+        };
+        let device = device::Device::new(&instance, pdevice, &queue_decl).unwrap();
         let allocator = alloc::create(device.vk().handle(), pdevice).unwrap();
         let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
         let compute_queues = (0..compute_queue_len)
@@ -168,7 +172,13 @@ impl<'a> RenderDAG<'a> {
             })
             .collect::<Vec<_>>();
 
-        let transfer_queue = unsafe { device.vk().get_device_queue(transfer_queue_family, 0) };
+        let transfer_queue = unsafe {
+            if graphics_queue_family == transfer_queue_family {
+                device.vk().get_device_queue(graphics_queue_family, 0)
+            } else {
+                device.vk().get_device_queue(transfer_queue_family, 0)
+            }
+        };
 
         let node = RenderNode::Device {
             dynamic: dyn(()),
@@ -446,8 +456,10 @@ impl<'a> RenderDAG<'a> {
             Arc::new(RwLock::new(vec![])),
             unsafe { vk::CommandBuffer::null() },
         ));
-        let submit = self.graph
-            .add_node(RenderNode::SubmitCommandBuffer { use_queue, dynamic: dyn(()) });
+        let submit = self.graph.add_node(RenderNode::SubmitCommandBuffer {
+            use_queue,
+            dynamic: dyn(()),
+        });
         self.graph.add_edge(command_pool_ix, node, Edge::Propagate);
         self.graph.add_edge(node, submit, Edge::Propagate);
 
@@ -477,7 +489,10 @@ impl<'a> RenderDAG<'a> {
             device.set_object_name(
                 vk::DebugReportObjectTypeEXT::Semaphore,
                 transmute(semaphore),
-                &self.node_names.get(&ix).map(|name| format!("{}", name)).unwrap_or(format!("{:?}", ix)),
+                &self.node_names
+                    .get(&ix)
+                    .map(|name| format!("{}", name))
+                    .unwrap_or(format!("{:?}", ix)),
             );
         }
 
@@ -1174,6 +1189,11 @@ impl<'a> RenderDAG<'a> {
                                 device
                                     .begin_command_buffer(current_frame, &begin_info)
                                     .unwrap();
+                                device.debug_marker_start(
+                                    current_frame,
+                                    "Test",
+                                    [1.0, 0.0, 0.0, 1.0],
+                                );
                             }
                             fields::AllocateCommandBuffer::Dynamic { current_frame }
                         } else {
@@ -1188,14 +1208,22 @@ impl<'a> RenderDAG<'a> {
                                 device
                                     .begin_command_buffer(current_frame, &begin_info)
                                     .unwrap();
-                                device.debug_marker_start(current_frame, "Test", [1.0, 0.0, 0.0, 1.0]);
+                                device.debug_marker_start(
+                                    current_frame,
+                                    "Test",
+                                    [1.0, 0.0, 0.0, 1.0],
+                                );
                             }
                             fields::AllocateCommandBuffer::Dynamic { current_frame }
                         }
                     })) as Box<Future<Item = _, Error = ()>>)
                         .shared();
                 }
-                RenderNode::SubmitCommandBuffer { ref dynamic, ref use_queue, .. } => {
+                RenderNode::SubmitCommandBuffer {
+                    ref dynamic,
+                    ref use_queue,
+                    ..
+                } => {
                     let (device, graphics_queue, transfer_queue) =
                         search_deps_exactly_one(&self.graph, ix, |node| match *node {
                             RenderNode::Device {
@@ -1203,19 +1231,30 @@ impl<'a> RenderDAG<'a> {
                                 ref graphics_queue,
                                 ref transfer_queue,
                                 ..
-                            } => Some((Arc::clone(device), Arc::clone(graphics_queue), Arc::clone(transfer_queue))),
+                            } => Some((
+                                Arc::clone(device),
+                                Arc::clone(graphics_queue),
+                                Arc::clone(transfer_queue),
+                            )),
                             _ => None,
                         }).expect("Device not found in deps of SubmitCommandBuffer");
-                    let allocated_lock =
-                        search_direct_deps_exactly_one(&self.graph, ix, Direction::Incoming, |node| match *node {
+                    let allocated_lock = search_direct_deps_exactly_one(
+                        &self.graph,
+                        ix,
+                        Direction::Incoming,
+                        |node| match *node {
                             RenderNode::AllocateCommandBuffer { ref dynamic, .. } => {
                                 Some(Arc::clone(dynamic))
                             }
                             _ => None,
-                        }).expect(&format!("AllocateCommandBuffer not found in deps of SubmitCommandBuffer {:?}", ix));
+                        },
+                    ).expect(&format!(
+                        "AllocateCommandBuffer not found in deps of SubmitCommandBuffer {:?}",
+                        ix
+                    ));
                     let submit_queue = match use_queue {
                         &UseQueue::Graphics => graphics_queue,
-                        &UseQueue::Transfer => transfer_queue
+                        &UseQueue::Transfer => transfer_queue,
                     };
                     let use_queue = use_queue.clone();
                     /*
@@ -1273,7 +1312,8 @@ impl<'a> RenderDAG<'a> {
                                     p_signal_semaphores: signal_semaphores.as_ptr(),
                                 },
                             ];
-                            let queue_lock = submit_queue.lock().expect("can't lock the submit queue");
+                            let queue_lock =
+                                submit_queue.lock().expect("can't lock the submit queue");
 
                             let submit_fence = {
                                 let create_info = vk::FenceCreateInfo {
@@ -1402,6 +1442,7 @@ impl<'a> RenderDAG<'a> {
                             unsafe {
                                 device.cmd_end_render_pass(cb);
                             }
+                            device.debug_marker_end(cb);
                             ()
                         },
                     )) as Box<Future<Item = (), Error = ()>>)

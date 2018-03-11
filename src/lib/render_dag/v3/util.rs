@@ -9,7 +9,7 @@ pub type DynamicInner<T> = Shared<Box<Future<Item = T, Error = ()>>>;
 #[derive(Clone, Debug)]
 pub enum UseQueue {
     Graphics,
-    Transfer
+    Transfer,
 }
 
 pub trait WaitOn {

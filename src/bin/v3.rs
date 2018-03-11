@@ -124,10 +124,9 @@ fn main() {
         transfer_command_pool_ix,
         Cow::Borrowed("Transfer command pool"),
     );
-    let (command_buffer_ix, submit_commands_ix) = dag.new_allocate_command_buffer(
-        graphics_command_pool_ix,
-        UseQueue::Graphics
-    ).unwrap();
+    let (command_buffer_ix, submit_commands_ix) =
+        dag.new_allocate_command_buffer(graphics_command_pool_ix, UseQueue::Graphics)
+            .unwrap();
     dag.node_names
         .insert(command_buffer_ix, Cow::Borrowed("Graphics Command buffer"));
     dag.node_names.insert(
@@ -385,10 +384,9 @@ fn main() {
         .add_edge(draw_calls, end_renderpass_ix, Edge::Propagate);
     {
         // Upload facilities
-        let (upload_cb_ix, submit_upload_ix) = dag.new_allocate_command_buffer(
-            transfer_command_pool_ix,
-            UseQueue::Transfer
-        ).unwrap();
+        let (upload_cb_ix, submit_upload_ix) =
+            dag.new_allocate_command_buffer(transfer_command_pool_ix, UseQueue::Transfer)
+                .unwrap();
         dag.node_names
             .insert(upload_cb_ix, Cow::Borrowed("Upload Command buffer"));
         dag.node_names.insert(
