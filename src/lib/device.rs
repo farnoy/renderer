@@ -8,6 +8,7 @@ use ash::extensions::Win32Surface;
 use ash::vk;
 use ash::version;
 use ash::version::InstanceV1_0;
+use std::ffi::CStr;
 use std::ops;
 use std::ptr;
 use std::sync::Arc;
@@ -39,12 +40,29 @@ impl Device {
         physical_device: vk::PhysicalDevice,
         queues: &[(u32, u32)],
     ) -> Result<Arc<Device>, ash::DeviceError> {
+        let available_extensions = instance
+            .vk()
+            .enumerate_device_extension_properties(physical_device)
+            .unwrap();
+        let enable_debug_marker = cfg!(feature = "validation")
+            && available_extensions
+                .iter()
+                .find(|name| unsafe {
+                    CStr::from_ptr(&name.extension_name[0])
+                        == CStr::from_bytes_with_nul(b"VK_EXT_debug_marker\0").unwrap()
+                })
+                .is_some();
+        println!("enable debug marker? {:?}", enable_debug_marker);
         let device = {
             static MAINTENANCE: &str = "VK_KHR_maintenance1\0";
             static MAINTENANCE2: &str = "VK_KHR_maintenance2\0";
             static PUSH_DESCRIPTOR: &str = "VK_KHR_push_descriptor\0";
             let device_extension_names_raw = if cfg!(feature = "validation") {
-                vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
+                let mut extensions = vec![Swapchain::name().as_ptr()];
+                if enable_debug_marker {
+                    extensions.push(DebugMarker::name().as_ptr());
+                }
+                extensions
             } else {
                 use std::ffi::CStr;
                 vec![
@@ -114,9 +132,11 @@ impl Device {
                     .create_debug_report_callback_ext(&debug_info, None)
                     .unwrap()
             };
-            let debug_marker_loader = Some(
-                DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"),
-            );
+            let debug_marker_loader = if enable_debug_marker {
+                Some(DebugMarker::new(instance.vk(), &device).expect("Unable to load debug marker"))
+            } else {
+                None
+            };
 
             let device = Device {
                 device: device,

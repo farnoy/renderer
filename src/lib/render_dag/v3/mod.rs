@@ -133,7 +133,9 @@ impl<'a> RenderDAG<'a> {
                 })
                 .next()
         }.unwrap_or((graphics_queue_family, 1));
-        let transfer_queue_family = {
+        let transfer_queue_family = if cfg!(feature = "validation") {
+            compute_queue_family
+        } else {
             instance
                 .get_physical_device_queue_family_properties(pdevice)
                 .iter()
@@ -149,8 +151,16 @@ impl<'a> RenderDAG<'a> {
                     }
                 })
                 .next()
-        }.unwrap_or(graphics_queue_family);
-        let queue_decl = if graphics_queue_family == transfer_queue_family {
+                .unwrap_or(compute_queue_family)
+        };
+        // TODO: this needs to be reworked in a DAG way, right now vk::Queue handles
+        // are copied so there is no thread safety
+        let queue_decl = if graphics_queue_family == compute_queue_family
+            && graphics_queue_family == transfer_queue_family
+        {
+            // Renderdoc
+            vec![(graphics_queue_family, 1)]
+        } else if cfg!(feature = "validation") || compute_queue_family == transfer_queue_family {
             vec![
                 (graphics_queue_family, 1),
                 (compute_queue_family, compute_queue_len),
@@ -166,19 +176,10 @@ impl<'a> RenderDAG<'a> {
         let allocator = alloc::create(device.vk().handle(), pdevice).unwrap();
         let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
         let compute_queues = (0..compute_queue_len)
-            .map(|ix| {
-                let queue = unsafe { device.vk().get_device_queue(compute_queue_family, ix) };
-                Mutex::new(queue)
-            })
+            .map(|ix| unsafe { device.vk().get_device_queue(compute_queue_family, ix) })
             .collect::<Vec<_>>();
 
-        let transfer_queue = unsafe {
-            if graphics_queue_family == transfer_queue_family {
-                device.vk().get_device_queue(graphics_queue_family, 0)
-            } else {
-                device.vk().get_device_queue(transfer_queue_family, 0)
-            }
-        };
+        let transfer_queue = unsafe { device.vk().get_device_queue(transfer_queue_family, 0) };
 
         let node = RenderNode::Device {
             dynamic: dyn(()),
@@ -188,7 +189,13 @@ impl<'a> RenderDAG<'a> {
             graphics_queue_family,
             compute_queue_family,
             graphics_queue: Arc::new(Mutex::new(graphics_queue)),
-            compute_queues: Arc::new(compute_queues),
+            compute_queues: Arc::new(
+                compute_queues
+                    .iter()
+                    .cloned()
+                    .map(|a| Mutex::new(a))
+                    .collect(),
+            ),
             transfer_queue: Arc::new(Mutex::new(transfer_queue)),
         };
         let ix = self.graph.add_node(node);

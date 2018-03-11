@@ -102,6 +102,10 @@ fn main() {
         graphics_family,
         vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     ).unwrap();
+    println!(
+        "graphics {} compute {} transfer {}",
+        graphics_family, compute_family, transfer_family
+    );
     dag.node_names.insert(
         graphics_command_pool_ix,
         Cow::Borrowed("Graphics command pool"),
