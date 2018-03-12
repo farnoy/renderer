@@ -417,6 +417,60 @@ fn main() {
             submit_commands_ix,
             Edge::Propagate,
         );
+        // dummy transfer
+        let dummy_buffer_ix = dag.new_buffer(
+            device_ix,
+            vk::BUFFER_USAGE_TRANSFER_DST_BIT,
+            0,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            1024 * 1024*1024,
+        ).unwrap();
+        let draw_calls = dag.new_draw_calls(Arc::new(|ix, graph, world, dynamic| {
+            use render_dag::v3::util::*;
+            use petgraph::prelude::*;
+            use futures::prelude::*;
+            let device = search_deps_exactly_one(graph, ix, |node| match *node {
+                RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+                _ => None,
+            }).expect("Device not found");
+            let command_buffer_locked = search_deps_exactly_one(graph, ix, |node| match *node {
+                RenderNode::AllocateCommandBuffer { ref dynamic, .. } => Some(Arc::clone(dynamic)),
+                _ => None,
+            }).expect("Command Buffer not found");
+            let command_buffer_fut = command_buffer_locked
+                .read()
+                .expect("Could not read command buffer")
+                .clone();
+            let buffer = search_direct_deps_exactly_one(graph, ix, Direction::Incoming, |node| {
+                match *node {
+                    RenderNode::Buffer { handle, .. } => Some(handle),
+                    _ => None,
+                }
+            }).expect("no buffer to fill");
+            let order_fut = wait_on_direct_deps(graph, ix);
+            let mut lock = dynamic.write().expect("failed to lock present for writing");
+            *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
+                move |(_, cb_dyn)| {
+                    println!("Dummy upload");
+                    let cb = cb_dyn.current_frame;
+                    unsafe {
+                        device.cmd_fill_buffer(
+                            cb,
+                            buffer,
+                            0,
+                            1024*256*1024,
+                            1234,
+                        );
+                        device.cmd_draw(cb, 3, 1, 0, 0);
+                    }
+                    ()
+                },
+            )) as Box<Future<Item = (), Error = ()>>)
+                .shared();
+        }));
+        dag.graph.add_edge(dummy_buffer_ix, draw_calls, Edge::Direct);
+        dag.graph.add_edge(upload_cb_ix, draw_calls, Edge::Direct);
+        dag.graph.add_edge(draw_calls, submit_upload_ix, Edge::Direct);
     }
     println!("{}", dot(&dag.graph, &dag.node_names).unwrap());
     let mut threadpool = ThreadPool::new();
