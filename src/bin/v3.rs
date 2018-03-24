@@ -24,12 +24,18 @@ fn main() {
     world.register::<Rotation>();
     world.register::<Scale>();
     world.register::<Matrices>();
+    world.register::<VertexBuffer>();
+    world.register::<UploadJob>();
     let mut dag = RenderDAG::new();
     let window_ix = dag.new_window(800, 600);
     let (device_ix, graphics_family, compute_family, transfer_family) =
         dag.new_device(window_ix).unwrap();
-    let device = match dag.graph[device_ix] {
-        RenderNode::Device { ref device, .. } => Some(Arc::clone(device)),
+    let (device, allocator) = match dag.graph[device_ix] {
+        RenderNode::Device {
+            ref device,
+            allocator,
+            ..
+        } => Some((Arc::clone(device), allocator)),
         _ => None,
     }.unwrap();
     let swapchain_ix = dag.new_swapchain(device_ix).unwrap();
@@ -423,7 +429,7 @@ fn main() {
             vk::BUFFER_USAGE_TRANSFER_DST_BIT,
             0,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            1024 * 1024*1024,
+            1024 * 1024 * 1024,
         ).unwrap();
         let draw_calls = dag.new_draw_calls(Arc::new(|ix, graph, world, dynamic| {
             use render_dag::v3::util::*;
@@ -449,33 +455,54 @@ fn main() {
             }).expect("no buffer to fill");
             let order_fut = wait_on_direct_deps(graph, ix);
             let mut lock = dynamic.write().expect("failed to lock present for writing");
+            let copies = {
+                let entities = world.entities();
+                let upload_jobs = world.read::<UploadJob>();
+                use specs::*;
+                (&*entities, &upload_jobs)
+                    .join()
+                    .map(|(entity, job)| {
+                        entities.delete(entity).unwrap();
+                        job.clone()
+                    })
+                    .collect::<Vec<_>>()
+            };
             *lock = (Box::new(order_fut.join(command_buffer_fut).map_err(|_| ()).map(
                 move |(_, cb_dyn)| {
-                    println!("Dummy upload");
                     let cb = cb_dyn.current_frame;
                     unsafe {
-                        device.cmd_fill_buffer(
-                            cb,
-                            buffer,
-                            0,
-                            1024*256*1024,
-                            1234,
-                        );
-                        device.cmd_draw(cb, 3, 1, 0, 0);
+                        device.cmd_fill_buffer(cb, buffer, 0, 1024 * 256 * 1024, 1234);
+                        for job in copies {
+                            device.cmd_copy_buffer(
+                                cb,
+                                job.src,
+                                job.dst,
+                                &[
+                                    vk::BufferCopy {
+                                        src_offset: 0,
+                                        dst_offset: 0,
+                                        size: job.size,
+                                    },
+                                ],
+                            );
+                        }
                     }
                     ()
                 },
             )) as Box<Future<Item = (), Error = ()>>)
                 .shared();
         }));
-        dag.graph.add_edge(dummy_buffer_ix, draw_calls, Edge::Direct);
+        dag.graph
+            .add_edge(dummy_buffer_ix, draw_calls, Edge::Direct);
         dag.graph.add_edge(upload_cb_ix, draw_calls, Edge::Direct);
-        dag.graph.add_edge(draw_calls, submit_upload_ix, Edge::Direct);
+        dag.graph
+            .add_edge(draw_calls, submit_upload_ix, Edge::Direct);
     }
     println!("{}", dot(&dag.graph, &dag.node_names).unwrap());
     let mut threadpool = ThreadPool::new();
     for _i in 1..200 {
         dispatcher.dispatch(&world.res);
+        world.maintain();
         let _: Result<(), ()> = threadpool.run(lazy(|| {
             dag.render_frame(&world);
             Ok(())
@@ -487,5 +514,16 @@ fn main() {
         } else {
             panic!("present framebuffer does not exist?")
         }
+        // cleanup
+        // TODO: do as part of the graph, wait for fence from upload job submit
+        {
+            let entities = world.entities();
+            let upload_jobs = world.read::<UploadJob>();
+            use specs::*;
+            for (entity, job) in (&*entities, &upload_jobs).join() {
+                alloc::destroy_buffer(allocator, job.src, job.src_allocation);
+                entities.delete(entity).unwrap();
+            }
+        };
     }
 }

@@ -20,10 +20,11 @@ pub struct VmaAllocator(*mut VmaAllocator_T);
 
 unsafe impl Send for VmaAllocator {}
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct VmaAllocation(*mut VmaAllocation_T);
 
 unsafe impl Send for VmaAllocation {}
+unsafe impl Sync for VmaAllocation {}
 
 #[repr(C)]
 #[derive(Clone, Debug)]

@@ -1,7 +1,9 @@
+use ash::vk;
 use cgmath;
 use specs::*;
 
 use super::super::mesh;
+use super::super::render_dag::v3::alloc;
 
 #[derive(Clone, Copy, Component)]
 #[component(VecStorage)]
@@ -44,4 +46,23 @@ impl Matrices {
             mv: cgmath::Matrix4::one(),
         }
     }
+}
+
+#[derive(Clone, Copy, Component, Debug)]
+#[component(VecStorage)]
+pub struct VertexBuffer {
+    pub buffer: vk::Buffer,
+    pub allocation: alloc::VmaAllocation,
+    pub offset: vk::DeviceSize,
+    pub size: vk::DeviceSize,
+    pub index_type: vk::IndexType,
+}
+
+#[derive(Clone, Copy, Component, Debug)]
+#[component(BTreeStorage)]
+pub struct UploadJob {
+    pub src: vk::Buffer,
+    pub src_allocation: alloc::VmaAllocation,
+    pub dst: vk::Buffer,
+    pub size: vk::DeviceSize,
 }
