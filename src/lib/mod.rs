@@ -23,6 +23,7 @@ extern crate user32;
 extern crate winapi;
 extern crate winit;
 
+pub mod alloc;
 pub mod buffer;
 pub mod command_buffer;
 pub mod device;
@@ -120,7 +121,7 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     entry: &E,
     instance: &I,
     window: &winit::Window,
@@ -140,7 +141,7 @@ unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
 }
 #[cfg(windows)]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     entry: &E,
     instance: &I,
     window: &winit::Window,

@@ -3,7 +3,6 @@ use cgmath;
 use specs::*;
 
 use super::super::mesh;
-use super::super::render_dag::v3::alloc;
 
 #[derive(Clone, Copy, Component)]
 #[component(VecStorage)]
@@ -48,6 +47,7 @@ impl Matrices {
     }
 }
 
+/*
 #[derive(Clone, Copy, Component, Debug)]
 #[component(VecStorage)]
 pub struct VertexBuffer {
@@ -66,3 +66,4 @@ pub struct UploadJob {
     pub dst: vk::Buffer,
     pub size: vk::DeviceSize,
 }
+*/

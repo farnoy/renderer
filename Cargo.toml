@@ -6,7 +6,7 @@ build = "build.rs"
 [dependencies]
 ash = "~0.22"
 cgmath = "0.16"
-futures = "0.2.0-alpha"
+futures = "0.2.0-beta"
 # futures-executor = "0.2.0-alpha"
 gltf = "~0.10.0"
 gltf-json = "~0.10.0"
@@ -30,9 +30,13 @@ winapi = "^0.2"
 # name = "main"
 # path = "src/bin/main.rs"
 
+# [[bin]]
+# name = "v3"
+# path = "src/bin/v3.rs"
+
 [[bin]]
-name = "v3"
-path = "src/bin/v3.rs"
+name = "v4"
+path = "src/bin/v4.rs"
 
 [lib]
 name = "forward_renderer"
