@@ -57,8 +57,16 @@ impl Device {
             static MAINTENANCE: &str = "VK_KHR_maintenance1\0";
             static MAINTENANCE2: &str = "VK_KHR_maintenance2\0";
             static PUSH_DESCRIPTOR: &str = "VK_KHR_push_descriptor\0";
+            static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
+            static SHADER_DRAW_PARAMETERS: &str = "VK_KHR_shader_draw_parameters\0";
             let device_extension_names_raw = if cfg!(feature = "validation") {
-                let mut extensions = vec![Swapchain::name().as_ptr()];
+                let mut extensions = vec![
+                    Swapchain::name().as_ptr(),
+                    // CStr::from_bytes_with_nul(RASTER_ORDER.as_bytes()).unwrap().as_ptr(),
+                    CStr::from_bytes_with_nul(SHADER_DRAW_PARAMETERS.as_bytes())
+                        .unwrap()
+                        .as_ptr(),
+                ];
                 if enable_debug_marker {
                     extensions.push(DebugMarker::name().as_ptr());
                 }
@@ -67,13 +75,8 @@ impl Device {
                 use std::ffi::CStr;
                 vec![
                     Swapchain::name().as_ptr(),
-                    CStr::from_bytes_with_nul(MAINTENANCE.as_bytes())
-                        .unwrap()
-                        .as_ptr(),
-                    CStr::from_bytes_with_nul(MAINTENANCE2.as_bytes())
-                        .unwrap()
-                        .as_ptr(),
-                    CStr::from_bytes_with_nul(PUSH_DESCRIPTOR.as_bytes())
+                    // CStr::from_bytes_with_nul(RASTER_ORDER.as_bytes()).unwrap().as_ptr(),
+                    CStr::from_bytes_with_nul(SHADER_DRAW_PARAMETERS.as_bytes())
                         .unwrap()
                         .as_ptr(),
                 ]
@@ -82,6 +85,8 @@ impl Device {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
                 geometry_shader: 1,
+                depth_bounds: 1,
+                multi_draw_indirect: 1,
                 ..Default::default()
             };
             let mut priorities = vec![];

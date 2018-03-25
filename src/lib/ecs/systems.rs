@@ -53,7 +53,7 @@ impl<'a> System<'a> for MVPUpload {
         use std::slice;
         let out = unsafe { slice::from_raw_parts_mut(self.dst, 1024) };
         for (entity, matrices) in (&*entities, &matrices).join() {
-            println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
+            // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
             out[entity.id() as usize] = matrices.mvp;
         }
     }

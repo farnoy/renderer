@@ -9,6 +9,9 @@ fn main() {
     let dest = env::var("OUT_DIR").unwrap();
     let dest = Path::new(&dest);
     let shaders = [
+        "generate_work.comp",
+        "gltf_mesh.frag",
+        "gltf_mesh.vert",
         "triangle.frag",
         "triangle.vert",
         "simple_color.frag",
@@ -74,11 +77,15 @@ fn main() {
         .whitelist_function("vmaSetCurrentFrameIndex")
         .whitelist_function("vmaCreateBuffer")
         .whitelist_function("vmaDestroyBuffer")
+        .whitelist_function("vmaCreateImage")
+        .whitelist_function("vmaDestroyImage")
         .blacklist_type("VmaAllocator")
         .blacklist_type("VmaAllocation")
         .blacklist_type("VmaAllocationInfo")
         .blacklist_type("VkBuffer")
         .blacklist_type("VkBufferCreateInfo")
+        .blacklist_type("VkImage")
+        .blacklist_type("VkImageCreateInfo")
         .blacklist_type("VkFlags")
         .blacklist_type("VkResult")
         .blacklist_type("VkStructureType")

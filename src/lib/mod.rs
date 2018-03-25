@@ -31,7 +31,7 @@ pub mod ecs;
 pub mod entry;
 pub mod instance;
 pub mod mesh;
-pub mod render_dag;
+// pub mod render_dag;
 pub mod swapchain;
 pub mod texture;
 

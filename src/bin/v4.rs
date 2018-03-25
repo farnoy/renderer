@@ -4,14 +4,18 @@ extern crate ash;
 extern crate cgmath;
 extern crate forward_renderer;
 extern crate futures;
+extern crate gltf;
+extern crate gltf_importer;
+extern crate gltf_utils;
 extern crate specs;
 extern crate winit;
 
 use ash::{extensions, vk, version::{DeviceV1_0, InstanceV1_0}};
 use cgmath::Rotation3;
-use forward_renderer::{alloc, create_surface, device, ecs::*, entry, instance, swapchain};
+use forward_renderer::{alloc, create_surface, device, entry, instance, swapchain, ecs::*};
 use futures::{channel::oneshot, executor::{block_on, spawn, ThreadPool},
               future::{join_all, lazy, ok, FutureResult, Lazy}, prelude::*};
+use gltf_utils::PrimitiveIterators;
 use std::{ptr, borrow::Cow, default::Default, ffi::CString, fs::File, io::Read,
           mem::{size_of, transmute}, os::raw::c_void, path::PathBuf, sync::{Arc, Mutex}, u64};
 
@@ -54,6 +58,8 @@ struct CommandPool {
 struct Framebuffer {
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
+    depth_images: Vec<(vk::Image, alloc::VmaAllocation, alloc::VmaAllocationInfo)>,
+    depth_image_views: Vec<vk::ImageView>,
     handles: Vec<vk::Framebuffer>,
     device: Arc<Device>,
 }
@@ -103,7 +109,7 @@ struct PipelineLayout {
     push_constant_ranges: Vec<vk::PushConstantRange>,
 }
 
-struct GraphicsPipeline {
+struct Pipeline {
     handle: vk::Pipeline,
     device: Arc<Device>,
 }
@@ -134,7 +140,7 @@ impl Drop for Framebuffer {
     fn drop(&mut self) {
         unsafe {
             self.device.device.device_wait_idle().unwrap();
-            for view in self.image_views.iter() {
+            for view in self.image_views.iter().chain(self.depth_image_views.iter()) {
                 self.device.device.destroy_image_view(*view, None);
             }
             for handle in self.handles.iter() {
@@ -217,13 +223,9 @@ impl Drop for PipelineLayout {
     }
 }
 
-impl Drop for GraphicsPipeline {
+impl Drop for Pipeline {
     fn drop(&mut self) {
-        unsafe {
-            self.device
-                .device
-                .destroy_pipeline(self.handle, None)
-        }
+        unsafe { self.device.device.destroy_pipeline(self.handle, None) }
     }
 }
 
@@ -243,7 +245,7 @@ fn main() {
         });
         Ok(()) as Result<(), ()>
     }));
-    let instance = new_window(800, 600);
+    let instance = new_window(1920, 1080);
     let device = new_device(Arc::clone(&instance));
     let swapchain = new_swapchain(Arc::clone(&instance), Arc::clone(&device));
     let present_semaphore = new_semaphore(Arc::clone(&device));
@@ -254,13 +256,61 @@ fn main() {
         vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     );
     let main_renderpass = setup_renderpass(Arc::clone(&device), Arc::clone(&swapchain));
-    let framebuffer = new_framebuffer(
+    let framebuffer = setup_framebuffer(
         Arc::clone(&instance),
         Arc::clone(&device),
         Arc::clone(&swapchain),
         Arc::clone(&main_renderpass),
     );
 
+    let descriptor_pool = new_descriptor_pool(
+        Arc::clone(&device),
+        2,
+        &[
+            vk::DescriptorPoolSize {
+                typ: vk::DescriptorType::UniformBuffer,
+                descriptor_count: 1024,
+            },
+            vk::DescriptorPoolSize {
+                typ: vk::DescriptorType::StorageBuffer,
+                descriptor_count: 1024,
+            },
+        ],
+    );
+
+    let command_generation_descriptor_set_layout = new_descriptor_set_layout(
+        Arc::clone(&device),
+        &[
+            vk::DescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: vk::DescriptorType::StorageBuffer,
+                descriptor_count: 1,
+                stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 1,
+                descriptor_type: vk::DescriptorType::StorageBuffer,
+                descriptor_count: 1,
+                stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 2,
+                descriptor_type: vk::DescriptorType::StorageBuffer,
+                descriptor_count: 1,
+                stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 3,
+                descriptor_type: vk::DescriptorType::StorageBuffer,
+                descriptor_count: 1,
+                stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: ptr::null(),
+            },
+        ],
+    );
     let descriptor_set_layout = new_descriptor_set_layout(
         Arc::clone(&device),
         &[
@@ -268,13 +318,45 @@ fn main() {
                 binding: 0,
                 descriptor_type: vk::DescriptorType::UniformBuffer,
                 descriptor_count: 1,
-                stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
+                stage_flags: vk::SHADER_STAGE_VERTEX_BIT | vk::SHADER_STAGE_COMPUTE_BIT,
                 p_immutable_samplers: ptr::null(),
             },
         ],
     );
 
-    let pipeline_layout = new_pipeline_layout(
+    let command_generation_pipeline_layout = new_pipeline_layout(
+        Arc::clone(&device),
+        &[descriptor_set_layout.handle, command_generation_descriptor_set_layout.handle],
+        vec![],
+    );
+    let command_generation_pipeline = new_compute_pipeline(
+        Arc::clone(&instance),
+        Arc::clone(&device),
+        Arc::clone(&command_generation_pipeline_layout),
+        &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
+    );
+
+    let command_generation_descriptor_set = new_descriptor_set(
+        Arc::clone(&device),
+        Arc::clone(&descriptor_pool),
+        Arc::clone(&command_generation_descriptor_set_layout),
+    );
+    let command_generation_buffer = new_buffer(
+        Arc::clone(&device),
+        vk::BUFFER_USAGE_INDIRECT_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        0,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        size_of::<u32>() as vk::DeviceSize * 5 * 64,
+    );
+    let culled_index_buffer = new_buffer(
+        Arc::clone(&device),
+        vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        0,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        size_of::<u32>() as vk::DeviceSize * 70074,
+    );
+
+    let triangle_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
         &[descriptor_set_layout.handle],
         vec![
@@ -288,7 +370,7 @@ fn main() {
     let triangle_pipeline = new_graphics_pipeline(
         Arc::clone(&instance),
         Arc::clone(&device),
-        Arc::clone(&pipeline_layout),
+        Arc::clone(&triangle_pipeline_layout),
         Arc::clone(&main_renderpass),
         &[],
         &[],
@@ -303,14 +385,46 @@ fn main() {
             ),
         ],
     );
-    let descriptor_pool = new_descriptor_pool(
+    let gltf_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
-        1,
-        &[
-            vk::DescriptorPoolSize {
-                typ: vk::DescriptorType::UniformBuffer,
-                descriptor_count: 1024,
+        &[descriptor_set_layout.handle],
+        vec![
+            vk::PushConstantRange {
+                stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
+                offset: 0,
+                size: size_of::<u32>() as u32,
             },
+        ],
+    );
+    let gltf_pipeline = new_graphics_pipeline(
+        Arc::clone(&instance),
+        Arc::clone(&device),
+        Arc::clone(&gltf_pipeline_layout),
+        Arc::clone(&main_renderpass),
+        &[
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32g32b32Sfloat,
+                offset: 0,
+            },
+        ],
+        &[
+            vk::VertexInputBindingDescription {
+                binding: 0,
+                stride: size_of::<f32>() as u32 * 3,
+                input_rate: vk::VertexInputRate::Vertex,
+            },
+        ],
+        &[
+            (
+                vk::SHADER_STAGE_VERTEX_BIT,
+                PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv"),
+            ),
+            (
+                vk::SHADER_STAGE_FRAGMENT_BIT,
+                PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv"),
+            ),
         ],
     );
     let ubo_set = new_descriptor_set(
@@ -354,6 +468,188 @@ fn main() {
         }
     }
 
+    let (vertex_buffer, index_buffer, index_len) = {
+        // Mesh load
+        let path = "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf";
+        let importer = gltf_importer::import(path);
+        let (loaded, buffers) = importer.unwrap();
+        // let scene = loaded.scenes().next().unwrap();
+        // let node = scene.nodes().next().unwrap();
+        let mesh = loaded.meshes().next().unwrap();
+        let primitive = mesh.primitives().next().unwrap();
+        let positions = primitive.positions(&buffers).unwrap();
+        let vertex_size = size_of::<f32>() as u64 * 3 * positions.len() as u64;
+        let vertex_buffer = new_buffer(
+            Arc::clone(&device),
+            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::BUFFER_USAGE_TRANSFER_DST_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            0,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            vertex_size,
+        );
+        let vertex_upload_buffer = new_buffer(
+            Arc::clone(&device),
+            vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
+            alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+            vertex_size,
+        );
+        unsafe {
+            let p = transmute::<_, *mut [f32; 3]>(vertex_upload_buffer.allocation_info.pMappedData);
+            for (ix, data) in positions.enumerate() {
+                *p.offset(ix as isize) = data;
+            }
+        }
+        let indices = PrimitiveIterators::indices(&primitive, &buffers)
+            .unwrap()
+            .into_u32();
+        let index_len = indices.len() as u64;
+        let index_size = size_of::<u32>() as u64 * index_len;
+        let index_buffer = new_buffer(
+            Arc::clone(&device),
+            vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_TRANSFER_DST_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            0,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            index_size,
+        );
+        let index_upload_buffer = new_buffer(
+            Arc::clone(&device),
+            vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
+            alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+            index_size,
+        );
+        unsafe {
+            let p = transmute::<_, *mut u32>(index_upload_buffer.allocation_info.pMappedData);
+            for (ix, data) in indices.enumerate() {
+                *p.offset(ix as isize) = data;
+            }
+        }
+        let command_buffer =
+            allocate_command_buffer(Arc::clone(&device), Arc::clone(&graphics_command_pool));
+        unsafe {
+            let begin_info = vk::CommandBufferBeginInfo {
+                s_type: vk::StructureType::CommandBufferBeginInfo,
+                p_next: ptr::null(),
+                p_inheritance_info: ptr::null(),
+                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            };
+            device
+                .device
+                .begin_command_buffer(command_buffer.handle, &begin_info)
+                .unwrap();
+            device.device.cmd_copy_buffer(
+                command_buffer.handle,
+                vertex_upload_buffer.handle,
+                vertex_buffer.handle,
+                &[
+                    vk::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: vertex_buffer.allocation_info.size,
+                    },
+                ],
+            );
+            device.device.cmd_copy_buffer(
+                command_buffer.handle,
+                index_upload_buffer.handle,
+                index_buffer.handle,
+                &[
+                    vk::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: index_buffer.allocation_info.size,
+                    },
+                ],
+            );
+            device
+                .device
+                .end_command_buffer(command_buffer.handle)
+                .unwrap();
+
+            {
+                // submit
+                let wait_semaphores = &[];
+                let signal_semaphores = &[];
+                let dst_stage_masks = &[];
+                let submits = [
+                    vk::SubmitInfo {
+                        s_type: vk::StructureType::SubmitInfo,
+                        p_next: ptr::null(),
+                        wait_semaphore_count: wait_semaphores.len() as u32,
+                        p_wait_semaphores: wait_semaphores.as_ptr(),
+                        p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                        command_buffer_count: 1,
+                        p_command_buffers: &command_buffer.handle,
+                        signal_semaphore_count: signal_semaphores.len() as u32,
+                        p_signal_semaphores: signal_semaphores.as_ptr(),
+                    },
+                ];
+                let queue_lock = device
+                    .graphics_queue
+                    .lock()
+                    .expect("can't lock the submit queue");
+
+                let submit_fence = new_fence(Arc::clone(&device));
+
+                device
+                    .device
+                    .queue_submit(*queue_lock, &submits, submit_fence.handle)
+                    .unwrap();
+
+                device
+                    .device
+                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                    .expect("Wait for fence failed.");
+            }
+
+            (vertex_buffer, index_buffer, index_len)
+        }
+    };
+
+    {
+        let buffer_updates = &[
+            vk::DescriptorBufferInfo {
+                buffer: command_generation_buffer.handle,
+                offset: 0,
+                range: size_of::<u32>() as vk::DeviceSize * 5 * 64,
+            },
+            vk::DescriptorBufferInfo {
+                buffer: index_buffer.handle,
+                offset: 0,
+                range: size_of::<u32>() as vk::DeviceSize * 3 * 23358,
+            },
+            vk::DescriptorBufferInfo {
+                buffer: vertex_buffer.handle,
+                offset: 0,
+                range: size_of::<f32>() as vk::DeviceSize * 3 * 3 * 23358,
+            },
+            vk::DescriptorBufferInfo {
+                buffer: culled_index_buffer.handle,
+                offset: 0,
+                range: size_of::<u32>() as vk::DeviceSize * 3 * 23358,
+            },
+        ];
+        unsafe {
+            device.device.update_descriptor_sets(
+                &[
+                    vk::WriteDescriptorSet {
+                        s_type: vk::StructureType::WriteDescriptorSet,
+                        p_next: ptr::null(),
+                        dst_set: command_generation_descriptor_set.handle,
+                        dst_binding: 0,
+                        dst_array_element: 0,
+                        descriptor_count: buffer_updates.len() as u32,
+                        descriptor_type: vk::DescriptorType::StorageBuffer,
+                        p_image_info: ptr::null(),
+                        p_buffer_info: buffer_updates.as_ptr(),
+                        p_texel_buffer_view: ptr::null(),
+                    },
+                ],
+                &[],
+            );
+        }
+    }
+
     let projection = cgmath::perspective(
         cgmath::Deg(60.0),
         instance.window_width as f32 / instance.window_height as f32,
@@ -361,19 +657,36 @@ fn main() {
         100.0,
     );
     let view = cgmath::Matrix4::look_at(
-        cgmath::Point3::new(0.0, 0.0, -5.0),
+        cgmath::Point3::new(0.0, 1.0, -2.0),
         cgmath::Point3::new(0.0, 0.0, 0.0),
-        cgmath::vec3(0.0, 1.0, 0.0),
+        cgmath::vec3(0.0, -1.0, 0.0),
     );
-    world
-        .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
-        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
-        .with::<Scale>(Scale(1.0))
-        .with::<Matrices>(Matrices::one())
-        .build();
-    let ubo_mapped =
-        unsafe { transmute::<*mut c_void, *mut cgmath::Matrix4<f32>>(ubo_buffer.allocation_info.pMappedData) };
+    for depth in 0..300 {
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(0.0, -1.0, depth as f32)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
+            .with::<Scale>(Scale(1.0))
+            .with::<Matrices>(Matrices::one())
+            .build();
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(2.0, -1.0, depth as f32)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
+            .with::<Scale>(Scale(1.3))
+            .with::<Matrices>(Matrices::one())
+            .build();
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(-2.0, -0.0, depth as f32)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
+            .with::<Scale>(Scale(0.7))
+            .with::<Matrices>(Matrices::one())
+            .build();
+    }
+    let ubo_mapped = unsafe {
+        transmute::<*mut c_void, *mut cgmath::Matrix4<f32>>(ubo_buffer.allocation_info.pMappedData)
+    };
     let mut dispatcher = specs::DispatcherBuilder::new()
         .add(SteadyRotation, "steady_rotation", &[])
         .add(
@@ -427,6 +740,12 @@ fn main() {
                         vk::ClearValue {
                             color: vk::ClearColorValue { float32: [0.0; 4] },
                         },
+                        vk::ClearValue {
+                            depth: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
+                        },
                     ];
                     let begin_info = vk::RenderPassBeginInfo {
                         s_type: vk::StructureType::RenderPassBeginInfo,
@@ -444,46 +763,140 @@ fn main() {
                         p_clear_values: clear_values.as_ptr(),
                     };
 
-println!("marker start");
-                    device.device.debug_marker_start(command_buffer.handle, "main renderpass", [0.0, 0.0, 1.0, 1.0]);
-println!("marker end");
-                    device.device.cmd_begin_render_pass(
+                    device.device.debug_marker_around(
                         command_buffer.handle,
-                        &begin_info,
-                        vk::SubpassContents::Inline,
+                        "generate commands",
+                        [0.0, 1.0, 0.0, 1.0],
+                        || {
+                            device.device.cmd_bind_pipeline(
+                                command_buffer.handle,
+                                vk::PipelineBindPoint::Compute,
+                                command_generation_pipeline.handle,
+                            );
+                            device.device.cmd_bind_descriptor_sets(
+                                command_buffer.handle,
+                                vk::PipelineBindPoint::Compute,
+                                command_generation_pipeline_layout.handle,
+                                0,
+                                &[ubo_set.handle, command_generation_descriptor_set.handle],
+                                &[],
+                            );
+                            device
+                                .device
+                                .cmd_dispatch(command_buffer.handle, 23358, 1, 1)
+                        },
                     );
-                    device.device.cmd_bind_pipeline(
-                        command_buffer.handle,
-                        vk::PipelineBindPoint::Graphics,
-                        triangle_pipeline.handle
-                    );
-                    device.device.cmd_bind_descriptor_sets(
-                        command_buffer.handle,
-                        vk::PipelineBindPoint::Graphics,
-                        pipeline_layout.handle,
-                        0,
-                        &[ubo_set.handle],
-                        &[]
-                    );
-                    let constants = [1.0f32, 1.0, -1.0, 1.0, 1.0, -1.0];
-                    use std::mem::transmute;
-                    use std::slice::from_raw_parts;
 
-                    let casted: &[u8] = {
-                        from_raw_parts(
-                            transmute::<*const f32, *const u8>(constants.as_ptr()),
-                            2 * 3 * 4,
-                        )
-                    };
-                    device.device.cmd_push_constants(
+                    device.device.debug_marker_around(
                         command_buffer.handle,
-                        pipeline_layout.handle,
-                        vk::SHADER_STAGE_VERTEX_BIT,
-                        0,
-                        casted,
+                        "main renderpass",
+                        [0.0, 0.0, 1.0, 1.0],
+                        || {
+                            device.device.cmd_begin_render_pass(
+                                command_buffer.handle,
+                                &begin_info,
+                                vk::SubpassContents::Inline,
+                            );
+                            device.device.cmd_bind_pipeline(
+                                command_buffer.handle,
+                                vk::PipelineBindPoint::Graphics,
+                                triangle_pipeline.handle,
+                            );
+                            device.device.cmd_bind_descriptor_sets(
+                                command_buffer.handle,
+                                vk::PipelineBindPoint::Graphics,
+                                triangle_pipeline_layout.handle,
+                                0,
+                                &[ubo_set.handle],
+                                &[],
+                            );
+                            let constants = [1.0f32, 1.0, -1.0, 1.0, 1.0, -1.0];
+                            use std::mem::transmute;
+                            use std::slice::from_raw_parts;
+
+                            let casted: &[u8] = {
+                                from_raw_parts(
+                                    transmute::<*const f32, *const u8>(constants.as_ptr()),
+                                    2 * 3 * 4,
+                                )
+                            };
+                            device.device.cmd_push_constants(
+                                command_buffer.handle,
+                                triangle_pipeline_layout.handle,
+                                vk::SHADER_STAGE_VERTEX_BIT,
+                                0,
+                                casted,
+                            );
+                            device.device.cmd_draw(command_buffer.handle, 3, 1, 0, 0);
+
+                            {
+                                // gltf mesh
+                                device.device.cmd_bind_pipeline(
+                                    command_buffer.handle,
+                                    vk::PipelineBindPoint::Graphics,
+                                    gltf_pipeline.handle,
+                                );
+                                device.device.cmd_bind_descriptor_sets(
+                                    command_buffer.handle,
+                                    vk::PipelineBindPoint::Graphics,
+                                    gltf_pipeline_layout.handle,
+                                    0,
+                                    &[ubo_set.handle],
+                                    &[],
+                                );
+                                device.device.cmd_bind_vertex_buffers(
+                                    command_buffer.handle,
+                                    0,
+                                    &[vertex_buffer.handle],
+                                    &[0],
+                                );
+                                device.device.cmd_bind_index_buffer(
+                                    command_buffer.handle,
+                                    // index_buffer.handle,
+                                    culled_index_buffer.handle,
+                                    0,
+                                    vk::IndexType::Uint32,
+                                );
+                                for ix in 0..1 {
+                                    let constants = [ix as u32];
+                                    use std::mem::transmute;
+                                    use std::slice::from_raw_parts;
+
+                                    let casted: &[u8] = {
+                                        from_raw_parts(
+                                            transmute::<*const u32, *const u8>(constants.as_ptr()),
+                                            4,
+                                        )
+                                    };
+                                    device.device.cmd_push_constants(
+                                        command_buffer.handle,
+                                        gltf_pipeline_layout.handle,
+                                        vk::SHADER_STAGE_VERTEX_BIT,
+                                        0,
+                                        casted,
+                                    );
+                                    device.device.cmd_draw_indexed(
+                                        command_buffer.handle,
+                                        index_len as u32,
+                                        1,
+                                        0,
+                                        0,
+                                        0,
+                                    );
+                                    /*
+                                    device.device.cmd_draw_indexed_indirect(
+                                        command_buffer.handle,
+                                        command_generation_buffer.handle,
+                                        0,
+                                        64,
+                                        size_of::<u32>() as u32 * 5,
+                                    );
+                                    */
+                                }
+                            }
+                            device.device.cmd_end_render_pass(command_buffer.handle);
+                        },
                     );
-                    device.device.cmd_draw(command_buffer.handle, 3, 1, 0, 0);
-                    device.device.cmd_end_render_pass(command_buffer.handle);
                     device.device.debug_marker_end(command_buffer.handle);
                 }
                 device.device.cmd_fill_buffer(
@@ -600,16 +1013,31 @@ fn setup_renderpass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Arc<Rende
             initial_layout: vk::ImageLayout::Undefined,
             final_layout: vk::ImageLayout::PresentSrcKhr,
         },
+        vk::AttachmentDescription {
+            format: vk::Format::D16Unorm,
+            flags: vk::AttachmentDescriptionFlags::empty(),
+            samples: vk::SAMPLE_COUNT_1_BIT,
+            load_op: vk::AttachmentLoadOp::Clear,
+            store_op: vk::AttachmentStoreOp::Store,
+            stencil_load_op: vk::AttachmentLoadOp::DontCare,
+            stencil_store_op: vk::AttachmentStoreOp::DontCare,
+            initial_layout: vk::ImageLayout::Undefined,
+            final_layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
+        },
     ];
-    let color_attachment_ref = vk::AttachmentReference {
+    let color_attachment = vk::AttachmentReference {
         attachment: 0,
         layout: vk::ImageLayout::ColorAttachmentOptimal,
+    };
+    let depth_attachment = vk::AttachmentReference {
+        attachment: 1,
+        layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
     };
     let subpass_descs = [
         vk::SubpassDescription {
             color_attachment_count: 1,
-            p_color_attachments: &color_attachment_ref,
-            p_depth_stencil_attachment: ptr::null(),
+            p_color_attachments: &color_attachment,
+            p_depth_stencil_attachment: &depth_attachment,
             flags: Default::default(),
             pipeline_bind_point: vk::PipelineBindPoint::Graphics,
             input_attachment_count: 0,
@@ -624,7 +1052,7 @@ fn setup_renderpass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Arc<Rende
             dependency_flags: Default::default(),
             src_subpass: vk::VK_SUBPASS_EXTERNAL,
             dst_subpass: 0,
-            src_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             src_access_mask: Default::default(),
             dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
                 | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -934,7 +1362,7 @@ fn new_command_pool(
     Arc::new(cp)
 }
 
-fn new_framebuffer(
+fn setup_framebuffer(
     instance: Arc<Instance>,
     device: Arc<Device>,
     swapchain: Arc<Swapchain>,
@@ -956,6 +1384,43 @@ fn new_framebuffer(
         .ext
         .get_swapchain_images_khr(swapchain.swapchain)
         .unwrap();
+    let depth_images = (0..2)
+        .map(|_| {
+            alloc::create_image(
+                device.allocator,
+                &vk::ImageCreateInfo {
+                    s_type: vk::StructureType::ImageCreateInfo,
+                    p_next: ptr::null(),
+                    flags: Default::default(),
+                    image_type: vk::ImageType::Type2d,
+                    format: vk::Format::D16Unorm,
+                    extent: vk::Extent3D {
+                        width: instance.window_width,
+                        height: instance.window_height,
+                        depth: 1,
+                    },
+                    sharing_mode: vk::SharingMode::Exclusive,
+                    queue_family_index_count: 1,
+                    p_queue_family_indices: &device.graphics_queue_family,
+                    mip_levels: 1,
+                    array_layers: 1,
+                    samples: vk::SAMPLE_COUNT_1_BIT,
+                    tiling: vk::ImageTiling::Optimal,
+                    usage: vk::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                    initial_layout: vk::ImageLayout::Undefined,
+                },
+                &alloc::VmaAllocationCreateInfo {
+                    flags: 0,
+                    memoryTypeBits: 0,
+                    pUserData: ptr::null_mut(),
+                    pool: ptr::null_mut(),
+                    preferredFlags: 0,
+                    requiredFlags: 0,
+                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                },
+            ).unwrap()
+        })
+        .collect::<Vec<_>>();
     let image_views = images
         .iter()
         .map(|&image| {
@@ -988,10 +1453,43 @@ fn new_framebuffer(
             }
         })
         .collect::<Vec<_>>();
+    let depth_image_views = depth_images
+        .iter()
+        .map(|ref image| {
+            let create_view_info = vk::ImageViewCreateInfo {
+                s_type: vk::StructureType::ImageViewCreateInfo,
+                p_next: ptr::null(),
+                flags: Default::default(),
+                view_type: vk::ImageViewType::Type2d,
+                format: vk::Format::D16Unorm,
+                components: vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::Identity,
+                    g: vk::ComponentSwizzle::Identity,
+                    b: vk::ComponentSwizzle::Identity,
+                    a: vk::ComponentSwizzle::Identity,
+                },
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::IMAGE_ASPECT_DEPTH_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image: image.0,
+            };
+            unsafe {
+                device
+                    .device
+                    .create_image_view(&create_view_info, None)
+                    .unwrap()
+            }
+        })
+        .collect::<Vec<_>>();
     let handles = image_views
         .iter()
-        .map(|&present_image_view| {
-            let framebuffer_attachments = [present_image_view];
+        .zip(depth_image_views.iter())
+        .map(|(&present_image_view, &depth_image_view)| {
+            let framebuffer_attachments = [present_image_view, depth_image_view];
             let frame_buffer_create_info = vk::FramebufferCreateInfo {
                 s_type: vk::StructureType::FramebufferCreateInfo,
                 p_next: ptr::null(),
@@ -1015,6 +1513,8 @@ fn new_framebuffer(
     let framebuffer = Framebuffer {
         images: images,
         image_views: image_views,
+        depth_images,
+        depth_image_views,
         handles: handles,
         device,
     };
@@ -1233,7 +1733,7 @@ fn new_graphics_pipeline(
     input_attributes: &[vk::VertexInputAttributeDescription],
     input_bindings: &[vk::VertexInputBindingDescription],
     shaders: &[(vk::ShaderStageFlags, PathBuf)],
-) -> Arc<GraphicsPipeline> {
+) -> Arc<Pipeline> {
     let shader_modules = shaders
         .iter()
         .map(|&(stage, ref path)| {
@@ -1312,9 +1812,14 @@ fn new_graphics_pipeline(
         viewport_count: viewports.len() as u32,
         p_viewports: viewports.as_ptr(),
     };
+    let raster_order_amd = vk::PipelineRasterizationStateRasterizationOrderAMD {
+        s_type: vk::StructureType::PipelineRasterizationStateRasterizationOrderAMD,
+        p_next: ptr::null(),
+        rasterization_order: vk::RasterizationOrderAMD::Relaxed,
+    };
     let rasterization_info = vk::PipelineRasterizationStateCreateInfo {
         s_type: vk::StructureType::PipelineRasterizationStateCreateInfo,
-        p_next: ptr::null(),
+        p_next: ptr::null(), // unsafe { transmute(&raster_order_amd) },
         flags: Default::default(),
         cull_mode: vk::CULL_MODE_BACK_BIT,
         depth_bias_clamp: 0.0,
@@ -1354,7 +1859,7 @@ fn new_graphics_pipeline(
         depth_test_enable: 1,
         depth_write_enable: 1,
         depth_compare_op: vk::CompareOp::LessOrEqual,
-        depth_bounds_test_enable: 0,
+        depth_bounds_test_enable: 1,
         stencil_test_enable: 0,
         front: noop_stencil_state,
         back: noop_stencil_state,
@@ -1426,8 +1931,65 @@ fn new_graphics_pipeline(
         }
     }
 
-    Arc::new(GraphicsPipeline {
+    Arc::new(Pipeline {
         handle: graphics_pipelines[0],
+        device,
+    })
+}
+
+fn new_compute_pipeline(
+    instance: Arc<Instance>,
+    device: Arc<Device>,
+    pipeline_layout: Arc<PipelineLayout>,
+    shader: &PathBuf,
+) -> Arc<Pipeline> {
+    let shader_module = {
+        let file = File::open(shader).expect("Could not find shader.");
+        let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+        let shader_info = vk::ShaderModuleCreateInfo {
+            s_type: vk::StructureType::ShaderModuleCreateInfo,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            code_size: bytes.len(),
+            p_code: bytes.as_ptr() as *const u32,
+        };
+        let shader_module = unsafe {
+            device
+                .device
+                .create_shader_module(&shader_info, None)
+                .expect("Vertex shader module error")
+        };
+        shader_module
+    };
+    let shader_entry_name = CString::new("main").unwrap();
+    let shader_stage = vk::PipelineShaderStageCreateInfo {
+        s_type: vk::StructureType::PipelineShaderStageCreateInfo,
+        p_next: ptr::null(),
+        flags: Default::default(),
+        module: shader_module,
+        p_name: shader_entry_name.as_ptr(),
+        p_specialization_info: ptr::null(),
+        stage: vk::SHADER_STAGE_COMPUTE_BIT,
+    };
+    let create_info = vk::ComputePipelineCreateInfo {
+        s_type: vk::StructureType::ComputePipelineCreateInfo,
+        p_next: ptr::null(),
+        flags: vk::PipelineCreateFlags::empty(),
+        stage: shader_stage,
+        layout: pipeline_layout.handle,
+        base_pipeline_handle: vk::Pipeline::null(),
+        base_pipeline_index: 0,
+    };
+
+    let pipelines = unsafe {
+        device
+            .device
+            .create_compute_pipelines(vk::PipelineCache::null(), &[create_info], None)
+            .unwrap()
+    };
+
+    Arc::new(Pipeline {
+        handle: pipelines[0],
         device,
     })
 }

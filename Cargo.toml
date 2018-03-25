@@ -4,14 +4,18 @@ version = "0.1.0"
 build = "build.rs"
 
 [dependencies]
-ash = "~0.22"
+ash = { git = "https://github.com/farnoy/ash", rev = "a36f6bfd11619ac126e4406deb509e062824656e" }
 cgmath = "0.16"
 futures = "0.2.0-beta"
 # futures-executor = "0.2.0-alpha"
-gltf = "~0.10.0"
-gltf-json = "~0.10.0"
-gltf-importer = "~0.10.0"
-gltf-utils = "~0.10.0"
+gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
+gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
+gltf-importer = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
+gltf-utils = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
+# gltf = "~0.10.0"
+# gltf-json = "~0.10.0"
+# gltf-importer = "~0.10.0"
+# gltf-utils = "~0.10.0"
 image = "0.18"
 winit = "0.11"
 petgraph = "0.4.5"
