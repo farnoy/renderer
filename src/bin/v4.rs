@@ -1451,7 +1451,8 @@ fn setup_framebuffer(
         .ext
         .get_swapchain_images_khr(swapchain.swapchain)
         .unwrap();
-    let depth_images = (0..2)
+    println!("swapchain images len {}", images.len());
+    let depth_images = (0..images.len())
         .map(|_| {
             alloc::create_image(
                 device.allocator,
