@@ -40,7 +40,7 @@ impl Instance {
             application_version: 0,
             p_engine_name: name.as_ptr(),
             engine_version: 0,
-            api_version: vk_make_version!(1, 0, 70),
+            api_version: vk_make_version!(1, 1, 0),
         };
         let create_info = vk::InstanceCreateInfo {
             s_type: vk::StructureType::InstanceCreateInfo,

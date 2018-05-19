@@ -1,0 +1,106 @@
+#version 450
+
+#extension GL_KHR_shader_subgroup_basic: require
+#extension GL_KHR_shader_subgroup_ballot: require
+
+struct VkDrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    uint vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0) uniform UBO {
+    mat4 mvp[1024];
+};
+
+layout(set = 1, binding = 0) uniform ModelView {
+    mat4 mv[1024];
+};
+
+layout(set = 2, binding = 0) buffer IndirectCommands {
+    VkDrawIndexedIndirectCommand indirect_commands[64];
+};
+
+layout(set = 2, binding = 1) buffer readonly IndexBuffer {
+    uint index_buffer[][3];
+};
+
+layout(set = 2, binding = 2) buffer readonly VertexBuffer {
+    float vertex_buffer[][3];
+};
+
+layout(set = 2, binding = 3) buffer OutIndexBuffer {
+    uint out_index_buffer[][3];
+};
+
+struct DebugInfo {
+    uint invocation_id;
+    uint ix0;
+    uint ix1;
+    uint ix2;
+    vec4 vx0, vx1, vx2;
+    vec3 normal;
+    uint _padding;
+};
+
+layout(set = 2, binding = 4) buffer OutDebugBuffer {
+    DebugInfo out_debug_buffer[1000];
+};
+
+layout (local_size_x = 256) in;
+
+void main() {
+    if (subgroupElect()) {
+        VkDrawIndexedIndirectCommand command = { 0, 1, 0, 0, 0};
+        indirect_commands[0] = command;
+    }
+
+    uint ix0 = index_buffer[gl_GlobalInvocationID.x][0];
+    uint ix1 = index_buffer[gl_GlobalInvocationID.x][1];
+    uint ix2 = index_buffer[gl_GlobalInvocationID.x][2];
+    vec4 input0 = vec4(
+        vertex_buffer[ix0][0],
+        vertex_buffer[ix0][1],
+        vertex_buffer[ix0][2],
+        1.0
+    );
+    vec4 input1 = vec4(
+        vertex_buffer[ix1][0],
+        vertex_buffer[ix1][1],
+        vertex_buffer[ix1][2],
+        1.0
+    );
+    vec4 input2 = vec4(
+        vertex_buffer[ix2][0],
+        vertex_buffer[ix2][1],
+        vertex_buffer[ix2][2],
+        1.0
+    );
+    vec4 vertex0 = mvp[0] * input0;
+    vec4 vertex1 = mvp[0] * input1;
+    vec4 vertex2 = mvp[0] * input2;
+
+    float det = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw));
+
+    bool cond = det > 0;
+    subgroupBarrier();
+    uvec4 ballot = subgroupBallot(cond);
+    uint count = subgroupBallotBitCount(ballot);
+
+    uint offset = 0;
+    if (subgroupElect()) {
+        offset = atomicAdd(indirect_commands[0].indexCount, count * 3);
+        offset /= 3;
+    }
+    
+    offset = subgroupBroadcastFirst(offset);
+
+    if (cond) {
+        uint local_offset = offset + subgroupBallotExclusiveBitCount(ballot);
+        out_index_buffer[local_offset][0] = ix0;
+        out_index_buffer[local_offset][1] = ix1;
+        out_index_buffer[local_offset][2] = ix2;
+    }
+}

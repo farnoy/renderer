@@ -41,7 +41,8 @@ impl<'a> System<'a> for MVPCalculation {
 }
 
 pub struct MVPUpload {
-    pub dst: *mut cgmath::Matrix4<f32>,
+    pub dst_mvp: *mut cgmath::Matrix4<f32>,
+    pub dst_mv: *mut cgmath::Matrix4<f32>,
 }
 
 unsafe impl Send for MVPUpload {}
@@ -51,10 +52,12 @@ impl<'a> System<'a> for MVPUpload {
 
     fn run(&mut self, (entities, matrices): Self::SystemData) {
         use std::slice;
-        let out = unsafe { slice::from_raw_parts_mut(self.dst, 1024) };
+        let out_mvp = unsafe { slice::from_raw_parts_mut(self.dst_mvp, 1024) };
+        let out_mv = unsafe { slice::from_raw_parts_mut(self.dst_mv, 1024) };
         for (entity, matrices) in (&*entities, &matrices).join() {
             // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
-            out[entity.id() as usize] = matrices.mvp;
+            out_mvp[entity.id() as usize] = matrices.mvp;
+            out_mv[entity.id() as usize] = matrices.mv;
         }
     }
 }

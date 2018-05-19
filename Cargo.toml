@@ -12,13 +12,16 @@ gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a
 gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-importer = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-utils = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
+
+# broken for now
+# nalgebra = "0.14.4"
+
 # gltf = "~0.10.0"
 # gltf-json = "~0.10.0"
 # gltf-importer = "~0.10.0"
 # gltf-utils = "~0.10.0"
 image = "0.18"
 winit = "0.11"
-petgraph = "0.4.5"
 specs = "0.10"
 specs-derive = "0.1"
 time = "0.1"
@@ -30,18 +33,6 @@ bindgen = "0.33.1"
 user32-sys = "^0.2"
 winapi = "^0.2"
 
-# [[bin]]
-# name = "main"
-# path = "src/bin/main.rs"
-
-# [[bin]]
-# name = "v3"
-# path = "src/bin/v3.rs"
-
-[[bin]]
-name = "v4"
-path = "src/bin/v4.rs"
-
 [lib]
 name = "forward_renderer"
 path = "src/lib/mod.rs"
@@ -50,6 +41,7 @@ path = "src/lib/mod.rs"
 default = []
 validation = []
 renderdoc = ["validation"]
+gapid = ["renderdoc"]
 
 [profile.dev]
 lto = false

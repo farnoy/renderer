@@ -119,6 +119,16 @@ pub fn create_image(
     }
 }
 
+pub fn destroy_image(
+    allocator: VmaAllocator,
+    image: vk::Image,
+    allocation: VmaAllocation,
+) {
+    unsafe {
+        vmaDestroyImage(allocator, image, allocation);
+    }
+}
+
 pub fn set_current_frame_index(allocator: VmaAllocator, index: u32) {
     unsafe { vmaSetCurrentFrameIndex(allocator, index) }
 }

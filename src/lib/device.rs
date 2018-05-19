@@ -45,40 +45,26 @@ impl Device {
             .enumerate_device_extension_properties(physical_device)
             .unwrap();
         let enable_debug_marker = cfg!(feature = "validation")
-            && available_extensions
-                .iter()
-                .find(|name| unsafe {
-                    CStr::from_ptr(&name.extension_name[0])
-                        == CStr::from_bytes_with_nul(b"VK_EXT_debug_marker\0").unwrap()
-                })
-                .is_some();
+            && available_extensions.iter().any(|name| unsafe {
+                CStr::from_ptr(&name.extension_name[0])
+                    == CStr::from_bytes_with_nul(b"VK_EXT_debug_marker\0").unwrap()
+            }) && !cfg!(feature = "gapid");
         println!("enable debug marker? {:?}", enable_debug_marker);
         let device = {
-            static MAINTENANCE: &str = "VK_KHR_maintenance1\0";
-            static MAINTENANCE2: &str = "VK_KHR_maintenance2\0";
-            static PUSH_DESCRIPTOR: &str = "VK_KHR_push_descriptor\0";
-            static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
-            static SHADER_DRAW_PARAMETERS: &str = "VK_KHR_shader_draw_parameters\0";
+            // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
             let device_extension_names_raw = if cfg!(feature = "validation") {
                 let mut extensions = vec![
                     Swapchain::name().as_ptr(),
                     // CStr::from_bytes_with_nul(RASTER_ORDER.as_bytes()).unwrap().as_ptr(),
-                    CStr::from_bytes_with_nul(SHADER_DRAW_PARAMETERS.as_bytes())
-                        .unwrap()
-                        .as_ptr(),
                 ];
                 if enable_debug_marker {
                     extensions.push(DebugMarker::name().as_ptr());
                 }
                 extensions
             } else {
-                use std::ffi::CStr;
                 vec![
                     Swapchain::name().as_ptr(),
                     // CStr::from_bytes_with_nul(RASTER_ORDER.as_bytes()).unwrap().as_ptr(),
-                    CStr::from_bytes_with_nul(SHADER_DRAW_PARAMETERS.as_bytes())
-                        .unwrap()
-                        .as_ptr(),
                 ]
             };
             let features = vk::PhysicalDeviceFeatures {
@@ -87,6 +73,7 @@ impl Device {
                 geometry_shader: 1,
                 depth_bounds: 1,
                 multi_draw_indirect: 1,
+                vertex_pipeline_stores_and_atomics: 1,
                 ..Default::default()
             };
             let mut priorities = vec![];
@@ -125,7 +112,8 @@ impl Device {
             let debug_info = vk::DebugReportCallbackCreateInfoEXT {
                 s_type: vk::StructureType::DebugReportCallbackCreateInfoExt,
                 p_next: ptr::null(),
-                flags: vk::DEBUG_REPORT_ERROR_BIT_EXT | vk::DEBUG_REPORT_WARNING_BIT_EXT
+                flags: vk::DEBUG_REPORT_ERROR_BIT_EXT
+                    | vk::DEBUG_REPORT_WARNING_BIT_EXT
                     | vk::DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
                 pfn_callback: vulkan_debug_callback,
                 p_user_data: ptr::null_mut(),
@@ -163,7 +151,7 @@ impl Device {
         #[cfg(not(feature = "validation"))]
         {
             Ok(Arc::new(Device {
-                device: device,
+                device,
                 instance: instance.clone(),
             }))
         }

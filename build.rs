@@ -14,9 +14,6 @@ fn main() {
         "gltf_mesh.vert",
         "triangle.frag",
         "triangle.vert",
-        "simple_color.frag",
-        "simple_color.geom",
-        "simple_color.vert",
     ];
     for shader in shaders.iter() {
         println!("cargo:rerun-if-changed=shaders/{}", shader);
@@ -25,10 +22,11 @@ fn main() {
             .arg("-C")
             .arg("-V")
             .arg("-g")
-            .arg("-H")
+            .arg("--target-env")
+            .arg("vulkan1.1")
             .arg("-o")
             .arg(output_path)
-            .arg(format!("{}/shaders/{}", src, shader))
+            .arg(format!("{}/src/shaders/{}", src, shader))
             .spawn()
             .unwrap()
             .wait()
@@ -40,7 +38,7 @@ fn main() {
     if cfg!(windows) {
         println!("cargo:rustc-link-lib=vulkan-1");
         println!("cargo:rustc-link-lib=msvcrt");
-        println!("cargo:rustc-link-search=native=C:\\VulkanSDK\\1.1.70.1\\Source\\Lib");
+        println!("cargo:rustc-link-search=native=C:\\VulkanSDK\\1.1.73.0\\Source\\Lib");
     } else {
         println!("cargo:rustc-link-lib=vulkan");
         println!("cargo:rustc-link-lib=stdc++");
@@ -58,7 +56,7 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.1.70.1\\Include"
+            "-IC:\\VulkanSDK\\1.1.73.0\\Include"
         } else {
             ""
         })

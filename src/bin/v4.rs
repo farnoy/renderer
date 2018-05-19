@@ -1,5 +1,3 @@
-#![feature(conservative_impl_trait)]
-
 extern crate ash;
 extern crate cgmath;
 extern crate forward_renderer;
@@ -13,14 +11,14 @@ extern crate winit;
 use ash::{extensions, vk, version::{DeviceV1_0, InstanceV1_0}};
 use cgmath::Rotation3;
 use forward_renderer::{alloc, create_surface, device, entry, instance, swapchain, ecs::*};
-use futures::{channel::oneshot, executor::{block_on, spawn, ThreadPool},
-              future::{join_all, lazy, ok, FutureResult, Lazy}, prelude::*};
+use futures::{executor::{spawn, ThreadPool},
+future::{lazy}};
 use gltf_utils::PrimitiveIterators;
-use std::{ptr, borrow::Cow, default::Default, ffi::CString, fs::File, io::Read,
-          mem::{size_of, transmute}, os::raw::c_void, path::PathBuf, sync::{Arc, Mutex}, u64};
+use std::{ptr, default::Default, ffi::CString, fs::File, io::Read,
+mem::{size_of, transmute}, path::PathBuf, sync::{Arc, Mutex}, u64};
 
 struct Instance {
-    window: Arc<winit::Window>,
+    _window: Arc<winit::Window>,
     events_loop: Arc<winit::EventsLoop>,
     instance: Arc<instance::Instance>,
     entry: Arc<entry::Entry>,
@@ -36,8 +34,8 @@ struct Device {
     graphics_queue_family: u32,
     compute_queue_family: u32,
     graphics_queue: Arc<Mutex<vk::Queue>>,
-    compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
-    transfer_queue: Arc<Mutex<vk::Queue>>,
+    _compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
+    _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
 struct Swapchain {
@@ -56,7 +54,7 @@ struct CommandPool {
 }
 
 struct Framebuffer {
-    images: Vec<vk::Image>,
+    _images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
     depth_images: Vec<(vk::Image, alloc::VmaAllocation, alloc::VmaAllocationInfo)>,
     depth_image_views: Vec<vk::ImageView>,
@@ -106,7 +104,6 @@ struct DescriptorSet {
 struct PipelineLayout {
     handle: vk::PipelineLayout,
     device: Arc<Device>,
-    push_constant_ranges: Vec<vk::PushConstantRange>,
 }
 
 struct Pipeline {
@@ -143,7 +140,10 @@ impl Drop for Framebuffer {
             for view in self.image_views.iter().chain(self.depth_image_views.iter()) {
                 self.device.device.destroy_image_view(*view, None);
             }
-            for handle in self.handles.iter() {
+            for image in &self.depth_images {
+                self.device.device.destroy_image(image.0, None);
+            }
+            for handle in &self.handles {
                 self.device.device.destroy_framebuffer(*handle, None);
             }
         }
@@ -179,7 +179,7 @@ impl Drop for CommandBuffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        unsafe { alloc::destroy_buffer(self.device.allocator, self.handle, self.allocation) }
+        alloc::destroy_buffer(self.device.allocator, self.handle, self.allocation)
     }
 }
 
@@ -236,18 +236,9 @@ fn main() {
     world.register::<Scale>();
     world.register::<Matrices>();
     let mut threadpool = ThreadPool::builder().pool_size(4).create();
-    let kuk: Lazy<Result<u8, ()>, _> = lazy(|_| Ok(5u8));
-    threadpool.run(lazy(|_| {
-        println!("kuk");
-        fork(kuk).then(|res| {
-            println!("res {:?}", res);
-            Ok(()) as Result<(), ()>
-        });
-        Ok(()) as Result<(), ()>
-    }));
     let instance = new_window(1920, 1080);
-    let device = new_device(Arc::clone(&instance));
-    let swapchain = new_swapchain(Arc::clone(&instance), Arc::clone(&device));
+    let device = new_device(&instance);
+    let swapchain = new_swapchain(&instance, &device);
     let present_semaphore = new_semaphore(Arc::clone(&device));
     let rendering_complete_semaphore = new_semaphore(Arc::clone(&device));
     let graphics_command_pool = new_command_pool(
@@ -255,17 +246,17 @@ fn main() {
         device.graphics_queue_family,
         vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     );
-    let main_renderpass = setup_renderpass(Arc::clone(&device), Arc::clone(&swapchain));
+    let main_renderpass = setup_renderpass(Arc::clone(&device), &swapchain);
     let framebuffer = setup_framebuffer(
-        Arc::clone(&instance),
+        &instance,
         Arc::clone(&device),
-        Arc::clone(&swapchain),
-        Arc::clone(&main_renderpass),
+        &swapchain,
+        &main_renderpass,
     );
 
     let descriptor_pool = new_descriptor_pool(
         Arc::clone(&device),
-        2,
+        30,
         &[
             vk::DescriptorPoolSize {
                 typ: vk::DescriptorType::UniformBuffer,
@@ -309,37 +300,55 @@ fn main() {
                 stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
                 p_immutable_samplers: ptr::null(),
             },
-        ],
-    );
-    let descriptor_set_layout = new_descriptor_set_layout(
-        Arc::clone(&device),
-        &[
             vk::DescriptorSetLayoutBinding {
-                binding: 0,
-                descriptor_type: vk::DescriptorType::UniformBuffer,
+                binding: 4,
+                descriptor_type: vk::DescriptorType::StorageBuffer,
                 descriptor_count: 1,
-                stage_flags: vk::SHADER_STAGE_VERTEX_BIT | vk::SHADER_STAGE_COMPUTE_BIT,
+                stage_flags: vk::SHADER_STAGE_COMPUTE_BIT | vk::SHADER_STAGE_VERTEX_BIT,
                 p_immutable_samplers: ptr::null(),
             },
         ],
     );
+    let descriptor_set_layout = new_descriptor_set_layout(
+        Arc::clone(&device),
+        &[vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UniformBuffer,
+            descriptor_count: 1,
+            stage_flags: vk::SHADER_STAGE_VERTEX_BIT | vk::SHADER_STAGE_COMPUTE_BIT,
+            p_immutable_samplers: ptr::null(),
+        }],
+    );
+    let model_view_set_layout = new_descriptor_set_layout(
+        Arc::clone(&device),
+        &[vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UniformBuffer,
+            descriptor_count: 1,
+            stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
+            p_immutable_samplers: ptr::null(),
+        }],
+    );
 
     let command_generation_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
-        &[descriptor_set_layout.handle, command_generation_descriptor_set_layout.handle],
-        vec![],
+        &[
+            descriptor_set_layout.handle,
+            model_view_set_layout.handle,
+            command_generation_descriptor_set_layout.handle,
+        ],
+        &[],
     );
     let command_generation_pipeline = new_compute_pipeline(
-        Arc::clone(&instance),
         Arc::clone(&device),
-        Arc::clone(&command_generation_pipeline_layout),
+        &command_generation_pipeline_layout,
         &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
     );
 
     let command_generation_descriptor_set = new_descriptor_set(
         Arc::clone(&device),
         Arc::clone(&descriptor_pool),
-        Arc::clone(&command_generation_descriptor_set_layout),
+        &command_generation_descriptor_set_layout,
     );
     let command_generation_buffer = new_buffer(
         Arc::clone(&device),
@@ -348,30 +357,21 @@ fn main() {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<u32>() as vk::DeviceSize * 5 * 64,
     );
-    let culled_index_buffer = new_buffer(
-        Arc::clone(&device),
-        vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        0,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * 70074,
-    );
 
     let triangle_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
         &[descriptor_set_layout.handle],
-        vec![
-            vk::PushConstantRange {
-                stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
-                offset: 0,
-                size: (size_of::<f32>() * 2 * 3) as u32,
-            },
-        ],
+        &[vk::PushConstantRange {
+            stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
+            offset: 0,
+            size: (size_of::<f32>() * 2 * 3) as u32,
+        }],
     );
     let triangle_pipeline = new_graphics_pipeline(
-        Arc::clone(&instance),
+        &instance,
         Arc::clone(&device),
-        Arc::clone(&triangle_pipeline_layout),
-        Arc::clone(&main_renderpass),
+        &triangle_pipeline_layout,
+        &main_renderpass,
         &[],
         &[],
         &[
@@ -387,35 +387,32 @@ fn main() {
     );
     let gltf_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
-        &[descriptor_set_layout.handle],
-        vec![
-            vk::PushConstantRange {
-                stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
-                offset: 0,
-                size: size_of::<u32>() as u32,
-            },
+        &[
+            descriptor_set_layout.handle,
+            command_generation_descriptor_set_layout.handle,
         ],
+        &[vk::PushConstantRange {
+            stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
+            offset: 0,
+            size: size_of::<u32>() as u32,
+        }],
     );
     let gltf_pipeline = new_graphics_pipeline(
-        Arc::clone(&instance),
+        &instance,
         Arc::clone(&device),
-        Arc::clone(&gltf_pipeline_layout),
-        Arc::clone(&main_renderpass),
-        &[
-            vk::VertexInputAttributeDescription {
-                location: 0,
-                binding: 0,
-                format: vk::Format::R32g32b32Sfloat,
-                offset: 0,
-            },
-        ],
-        &[
-            vk::VertexInputBindingDescription {
-                binding: 0,
-                stride: size_of::<f32>() as u32 * 3,
-                input_rate: vk::VertexInputRate::Vertex,
-            },
-        ],
+        &gltf_pipeline_layout,
+        &main_renderpass,
+        &[vk::VertexInputAttributeDescription {
+            location: 0,
+            binding: 0,
+            format: vk::Format::R32g32b32Sfloat,
+            offset: 0,
+        }],
+        &[vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: size_of::<f32>() as u32 * 3,
+            input_rate: vk::VertexInputRate::Vertex,
+        }],
         &[
             (
                 vk::SHADER_STAGE_VERTEX_BIT,
@@ -430,7 +427,7 @@ fn main() {
     let ubo_set = new_descriptor_set(
         Arc::clone(&device),
         Arc::clone(&descriptor_pool),
-        Arc::clone(&descriptor_set_layout),
+        &descriptor_set_layout,
     );
     let ubo_buffer = new_buffer(
         Arc::clone(&device),
@@ -440,37 +437,70 @@ fn main() {
         4 * 4 * 4 * 1024,
     );
     {
-        let buffer_updates = &[
-            vk::DescriptorBufferInfo {
-                buffer: ubo_buffer.handle,
-                offset: 0,
-                range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
-            },
-        ];
+        let buffer_updates = &[vk::DescriptorBufferInfo {
+            buffer: ubo_buffer.handle,
+            offset: 0,
+            range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+        }];
         unsafe {
             device.device.update_descriptor_sets(
-                &[
-                    vk::WriteDescriptorSet {
-                        s_type: vk::StructureType::WriteDescriptorSet,
-                        p_next: ptr::null(),
-                        dst_set: ubo_set.handle,
-                        dst_binding: 0,
-                        dst_array_element: 0,
-                        descriptor_count: 1,
-                        descriptor_type: vk::DescriptorType::UniformBuffer,
-                        p_image_info: ptr::null(),
-                        p_buffer_info: buffer_updates.as_ptr(),
-                        p_texel_buffer_view: ptr::null(),
-                    },
-                ],
+                &[vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WriteDescriptorSet,
+                    p_next: ptr::null(),
+                    dst_set: ubo_set.handle,
+                    dst_binding: 0,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::UniformBuffer,
+                    p_image_info: ptr::null(),
+                    p_buffer_info: buffer_updates.as_ptr(),
+                    p_texel_buffer_view: ptr::null(),
+                }],
+                &[],
+            );
+        }
+    }
+    let model_view_set = new_descriptor_set(
+        Arc::clone(&device),
+        Arc::clone(&descriptor_pool),
+        &model_view_set_layout,
+    );
+    let model_view_buffer = new_buffer(
+        Arc::clone(&device),
+        vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        4 * 4 * 4 * 1024,
+    );
+    {
+        let buffer_updates = &[vk::DescriptorBufferInfo {
+            buffer: model_view_buffer.handle,
+            offset: 0,
+            range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+        }];
+        unsafe {
+            device.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WriteDescriptorSet,
+                    p_next: ptr::null(),
+                    dst_set: model_view_set.handle,
+                    dst_binding: 0,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::UniformBuffer,
+                    p_image_info: ptr::null(),
+                    p_buffer_info: buffer_updates.as_ptr(),
+                    p_texel_buffer_view: ptr::null(),
+                }],
                 &[],
             );
         }
     }
 
-    let (vertex_buffer, index_buffer, index_len) = {
+    let (vertex_buffer, vertex_len, index_buffer, index_len) = {
         // Mesh load
-        let path = "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf";
+        // let path = "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf";
+        let path = "glTF-Sample-Models/2.0/Box/glTF/Box.gltf";
         let importer = gltf_importer::import(path);
         let (loaded, buffers) = importer.unwrap();
         // let scene = loaded.scenes().next().unwrap();
@@ -478,10 +508,13 @@ fn main() {
         let mesh = loaded.meshes().next().unwrap();
         let primitive = mesh.primitives().next().unwrap();
         let positions = primitive.positions(&buffers).unwrap();
+        let vertex_len = positions.len() as u64;
         let vertex_size = size_of::<f32>() as u64 * 3 * positions.len() as u64;
         let vertex_buffer = new_buffer(
             Arc::clone(&device),
-            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::BUFFER_USAGE_TRANSFER_DST_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT
+                | vk::BUFFER_USAGE_TRANSFER_DST_BIT
+                | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
             0,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             vertex_size,
@@ -494,7 +527,7 @@ fn main() {
             vertex_size,
         );
         unsafe {
-            let p = transmute::<_, *mut [f32; 3]>(vertex_upload_buffer.allocation_info.pMappedData);
+            let p = vertex_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
             for (ix, data) in positions.enumerate() {
                 *p.offset(ix as isize) = data;
             }
@@ -506,7 +539,9 @@ fn main() {
         let index_size = size_of::<u32>() as u64 * index_len;
         let index_buffer = new_buffer(
             Arc::clone(&device),
-            vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_TRANSFER_DST_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            vk::BUFFER_USAGE_INDEX_BUFFER_BIT
+                | vk::BUFFER_USAGE_TRANSFER_DST_BIT
+                | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
             0,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             index_size,
@@ -519,7 +554,7 @@ fn main() {
             index_size,
         );
         unsafe {
-            let p = transmute::<_, *mut u32>(index_upload_buffer.allocation_info.pMappedData);
+            let p = index_upload_buffer.allocation_info.pMappedData as *mut u32;
             for (ix, data) in indices.enumerate() {
                 *p.offset(ix as isize) = data;
             }
@@ -541,25 +576,21 @@ fn main() {
                 command_buffer.handle,
                 vertex_upload_buffer.handle,
                 vertex_buffer.handle,
-                &[
-                    vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: vertex_buffer.allocation_info.size,
-                    },
-                ],
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: vertex_buffer.allocation_info.size,
+                }],
             );
             device.device.cmd_copy_buffer(
                 command_buffer.handle,
                 index_upload_buffer.handle,
                 index_buffer.handle,
-                &[
-                    vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: index_buffer.allocation_info.size,
-                    },
-                ],
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: index_buffer.allocation_info.size,
+                }],
             );
             device
                 .device
@@ -571,19 +602,17 @@ fn main() {
                 let wait_semaphores = &[];
                 let signal_semaphores = &[];
                 let dst_stage_masks = &[];
-                let submits = [
-                    vk::SubmitInfo {
-                        s_type: vk::StructureType::SubmitInfo,
-                        p_next: ptr::null(),
-                        wait_semaphore_count: wait_semaphores.len() as u32,
-                        p_wait_semaphores: wait_semaphores.as_ptr(),
-                        p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                        command_buffer_count: 1,
-                        p_command_buffers: &command_buffer.handle,
-                        signal_semaphore_count: signal_semaphores.len() as u32,
-                        p_signal_semaphores: signal_semaphores.as_ptr(),
-                    },
-                ];
+                let submits = [vk::SubmitInfo {
+                    s_type: vk::StructureType::SubmitInfo,
+                    p_next: ptr::null(),
+                    wait_semaphore_count: wait_semaphores.len() as u32,
+                    p_wait_semaphores: wait_semaphores.as_ptr(),
+                    p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                    command_buffer_count: 1,
+                    p_command_buffers: &command_buffer.handle,
+                    signal_semaphore_count: signal_semaphores.len() as u32,
+                    p_signal_semaphores: signal_semaphores.as_ptr(),
+                }];
                 let queue_lock = device
                     .graphics_queue
                     .lock()
@@ -602,9 +631,26 @@ fn main() {
                     .expect("Wait for fence failed.");
             }
 
-            (vertex_buffer, index_buffer, index_len)
+            (vertex_buffer, vertex_len, index_buffer, index_len)
         }
     };
+
+    let culled_index_buffer = new_buffer(
+        Arc::clone(&device),
+        vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        0,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        size_of::<u32>() as vk::DeviceSize * index_len,
+    );
+    let normal_debug_buffer = new_buffer(
+        Arc::clone(&device),
+        vk::BUFFER_USAGE_INDEX_BUFFER_BIT
+            | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT
+            | vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        0,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        size_of::<f32>() as vk::DeviceSize * 4 * 5 * 1000,
+    );
 
     {
         let buffer_updates = &[
@@ -616,19 +662,24 @@ fn main() {
             vk::DescriptorBufferInfo {
                 buffer: index_buffer.handle,
                 offset: 0,
-                range: size_of::<u32>() as vk::DeviceSize * 3 * 23358,
+                range: size_of::<u32>() as vk::DeviceSize * index_len,
             },
             vk::DescriptorBufferInfo {
                 buffer: vertex_buffer.handle,
                 offset: 0,
-                range: size_of::<f32>() as vk::DeviceSize * 3 * 3 * 23358,
+                range: size_of::<f32>() as vk::DeviceSize * 3 * vertex_len,
             },
             vk::DescriptorBufferInfo {
                 buffer: culled_index_buffer.handle,
                 offset: 0,
-                range: size_of::<u32>() as vk::DeviceSize * 3 * 23358,
+                range: size_of::<u32>() as vk::DeviceSize * index_len,
             },
         ];
+        let buffer_updates2 = &[vk::DescriptorBufferInfo {
+            buffer: normal_debug_buffer.handle,
+            offset: 0,
+            range: size_of::<f32>() as vk::DeviceSize * 4 * 5 * 1000,
+        }];
         unsafe {
             device.device.update_descriptor_sets(
                 &[
@@ -642,6 +693,18 @@ fn main() {
                         descriptor_type: vk::DescriptorType::StorageBuffer,
                         p_image_info: ptr::null(),
                         p_buffer_info: buffer_updates.as_ptr(),
+                        p_texel_buffer_view: ptr::null(),
+                    },
+                    vk::WriteDescriptorSet {
+                        s_type: vk::StructureType::WriteDescriptorSet,
+                        p_next: ptr::null(),
+                        dst_set: command_generation_descriptor_set.handle,
+                        dst_binding: 4,
+                        dst_array_element: 0,
+                        descriptor_count: buffer_updates2.len() as u32,
+                        descriptor_type: vk::DescriptorType::StorageBuffer,
+                        p_image_info: ptr::null(),
+                        p_buffer_info: buffer_updates2.as_ptr(),
                         p_texel_buffer_view: ptr::null(),
                     },
                 ],
@@ -684,9 +747,8 @@ fn main() {
             .with::<Matrices>(Matrices::one())
             .build();
     }
-    let ubo_mapped = unsafe {
-        transmute::<*mut c_void, *mut cgmath::Matrix4<f32>>(ubo_buffer.allocation_info.pMappedData)
-    };
+    let ubo_mapped = ubo_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
+    let model_view_mapped = model_view_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
     let mut dispatcher = specs::DispatcherBuilder::new()
         .add(SteadyRotation, "steady_rotation", &[])
         .add(
@@ -694,7 +756,14 @@ fn main() {
             "mvp",
             &["steady_rotation"],
         )
-        .add(MVPUpload { dst: ubo_mapped }, "mvp_upload", &["mvp"])
+        .add(
+            MVPUpload {
+                dst_mvp: ubo_mapped,
+                dst_mv: model_view_mapped,
+            },
+            "mvp_upload",
+            &["mvp"],
+        )
         .build();
 
     for _i in 1..400 {
@@ -712,18 +781,10 @@ fn main() {
                 )
                 .unwrap()
         };
-        println!("image_index {}", image_index);
         let command_buffer =
             allocate_command_buffer(Arc::clone(&device), Arc::clone(&graphics_command_pool));
         unsafe {
             {
-                let dummy_buffer = new_buffer(
-                    Arc::clone(&device),
-                    vk::BUFFER_USAGE_TRANSFER_DST_BIT,
-                    0,
-                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                    1024 * 256,
-                );
                 {
                     let begin_info = vk::CommandBufferBeginInfo {
                         s_type: vk::StructureType::CommandBufferBeginInfo,
@@ -733,7 +794,8 @@ fn main() {
                     };
                     device
                         .device
-                        .begin_command_buffer(command_buffer.handle, &begin_info);
+                        .begin_command_buffer(command_buffer.handle, &begin_info)
+                        .unwrap();
                 }
                 {
                     let clear_values = &[
@@ -778,12 +840,44 @@ fn main() {
                                 vk::PipelineBindPoint::Compute,
                                 command_generation_pipeline_layout.handle,
                                 0,
-                                &[ubo_set.handle, command_generation_descriptor_set.handle],
+                                &[
+                                    ubo_set.handle,
+                                    model_view_set.handle,
+                                    command_generation_descriptor_set.handle,
+                                ],
                                 &[],
                             );
-                            device
-                                .device
-                                .cmd_dispatch(command_buffer.handle, 23358, 1, 1)
+                            device.device.cmd_fill_buffer(
+                                command_buffer.handle,
+                                command_generation_buffer.handle,
+                                0,
+                                size_of::<u32>() as vk::DeviceSize * 5 * 64,
+                                0,
+                            );
+                            device.device.cmd_pipeline_barrier(
+                                command_buffer.handle,
+                                vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[],
+                            );
+                            device.device.cmd_dispatch(
+                                command_buffer.handle,
+                                index_len as u32 / 3,
+                                1,
+                                1,
+                            );
+                            device.device.cmd_pipeline_barrier(
+                                command_buffer.handle,
+                                vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[],
+                            );
                         },
                     );
 
@@ -811,12 +905,11 @@ fn main() {
                                 &[],
                             );
                             let constants = [1.0f32, 1.0, -1.0, 1.0, 1.0, -1.0];
-                            use std::mem::transmute;
                             use std::slice::from_raw_parts;
 
                             let casted: &[u8] = {
                                 from_raw_parts(
-                                    transmute::<*const f32, *const u8>(constants.as_ptr()),
+                                    constants.as_ptr() as *const u8,
                                     2 * 3 * 4,
                                 )
                             };
@@ -841,7 +934,7 @@ fn main() {
                                     vk::PipelineBindPoint::Graphics,
                                     gltf_pipeline_layout.handle,
                                     0,
-                                    &[ubo_set.handle],
+                                    &[ubo_set.handle, command_generation_descriptor_set.handle],
                                     &[],
                                 );
                                 device.device.cmd_bind_vertex_buffers(
@@ -857,14 +950,13 @@ fn main() {
                                     0,
                                     vk::IndexType::Uint32,
                                 );
-                                for ix in 0..1 {
+                                for ix in 0..2 {
                                     let constants = [ix as u32];
-                                    use std::mem::transmute;
                                     use std::slice::from_raw_parts;
 
                                     let casted: &[u8] = {
                                         from_raw_parts(
-                                            transmute::<*const u32, *const u8>(constants.as_ptr()),
+                                            constants.as_ptr() as *const u8,
                                             4,
                                         )
                                     };
@@ -875,23 +967,30 @@ fn main() {
                                         0,
                                         casted,
                                     );
-                                    device.device.cmd_draw_indexed(
-                                        command_buffer.handle,
-                                        index_len as u32,
-                                        1,
-                                        0,
-                                        0,
-                                        0,
-                                    );
-                                    /*
-                                    device.device.cmd_draw_indexed_indirect(
-                                        command_buffer.handle,
-                                        command_generation_buffer.handle,
-                                        0,
-                                        64,
-                                        size_of::<u32>() as u32 * 5,
-                                    );
-                                    */
+                                    if ix == 0 {
+                                        device.device.cmd_draw_indexed_indirect(
+                                            command_buffer.handle,
+                                            command_generation_buffer.handle,
+                                            0,
+                                            1,
+                                            size_of::<u32>() as u32 * 5,
+                                        );
+                                    } else {
+                                        device.device.cmd_bind_index_buffer(
+                                            command_buffer.handle,
+                                            index_buffer.handle,
+                                            0,
+                                            vk::IndexType::Uint32,
+                                        );
+                                        device.device.cmd_draw_indexed(
+                                            command_buffer.handle,
+                                            index_len as u32,
+                                            1,
+                                            0,
+                                            0,
+                                            20,
+                                        );
+                                    }
                                 }
                             }
                             device.device.cmd_end_render_pass(command_buffer.handle);
@@ -899,13 +998,6 @@ fn main() {
                     );
                     device.device.debug_marker_end(command_buffer.handle);
                 }
-                device.device.cmd_fill_buffer(
-                    command_buffer.handle,
-                    dummy_buffer.handle,
-                    0,
-                    1024 * 256,
-                    1234,
-                );
                 device
                     .device
                     .end_command_buffer(command_buffer.handle)
@@ -915,19 +1007,17 @@ fn main() {
                     let signal_semaphores = &[rendering_complete_semaphore.handle];
                     let dst_stage_masks =
                         vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
-                    let submits = [
-                        vk::SubmitInfo {
-                            s_type: vk::StructureType::SubmitInfo,
-                            p_next: ptr::null(),
-                            wait_semaphore_count: wait_semaphores.len() as u32,
-                            p_wait_semaphores: wait_semaphores.as_ptr(),
-                            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                            command_buffer_count: 1,
-                            p_command_buffers: &command_buffer.handle,
-                            signal_semaphore_count: signal_semaphores.len() as u32,
-                            p_signal_semaphores: signal_semaphores.as_ptr(),
-                        },
-                    ];
+                    let submits = [vk::SubmitInfo {
+                        s_type: vk::StructureType::SubmitInfo,
+                        p_next: ptr::null(),
+                        wait_semaphore_count: wait_semaphores.len() as u32,
+                        p_wait_semaphores: wait_semaphores.as_ptr(),
+                        p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                        command_buffer_count: 1,
+                        p_command_buffers: &command_buffer.handle,
+                        signal_semaphore_count: signal_semaphores.len() as u32,
+                        p_signal_semaphores: signal_semaphores.as_ptr(),
+                    }];
                     let queue_lock = device
                         .graphics_queue
                         .lock()
@@ -944,17 +1034,16 @@ fn main() {
                         let device = Arc::clone(&device);
                         threadpool.run(lazy(move |_| {
                             spawn(lazy(move |_| {
-                                println!("dtor previous frame");
+                                // println!("dtor previous frame");
                                 device
                                     .device
                                     .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
                                     .expect("Wait for fence failed.");
                                 drop(command_buffer);
-                                drop(dummy_buffer);
                                 drop(submit_fence);
                                 Ok(())
                             }))
-                        }));
+                        })).unwrap();
                     }
                 }
             }
@@ -986,21 +1075,7 @@ fn main() {
     }
 }
 
-fn fork<T: 'static + Send, E: Send, F: 'static + Send + Sync>(
-    f: F,
-) -> impl Future<Item = T, Error = oneshot::Canceled>
-where
-    F: Future<Item = T, Error = E>,
-{
-    let (sender, receiver) = oneshot::channel::<T>();
-    spawn(f.map(|res| {
-        sender.send(res);
-        ()
-    }).then(|_| Ok(())))
-        .then(|_| receiver)
-}
-
-fn setup_renderpass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Arc<RenderPass> {
+fn setup_renderpass(device: Arc<Device>, swapchain: &Swapchain) -> Arc<RenderPass> {
     let attachment_descriptions = [
         vk::AttachmentDescription {
             format: swapchain.surface_format.format,
@@ -1033,32 +1108,28 @@ fn setup_renderpass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Arc<Rende
         attachment: 1,
         layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
     };
-    let subpass_descs = [
-        vk::SubpassDescription {
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment,
-            p_depth_stencil_attachment: &depth_attachment,
-            flags: Default::default(),
-            pipeline_bind_point: vk::PipelineBindPoint::Graphics,
-            input_attachment_count: 0,
-            p_input_attachments: ptr::null(),
-            p_resolve_attachments: ptr::null(),
-            preserve_attachment_count: 0,
-            p_preserve_attachments: ptr::null(),
-        },
-    ];
-    let subpass_dependencies = [
-        vk::SubpassDependency {
-            dependency_flags: Default::default(),
-            src_subpass: vk::VK_SUBPASS_EXTERNAL,
-            dst_subpass: 0,
-            src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            src_access_mask: Default::default(),
-            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
-                | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        },
-    ];
+    let subpass_descs = [vk::SubpassDescription {
+        color_attachment_count: 1,
+        p_color_attachments: &color_attachment,
+        p_depth_stencil_attachment: &depth_attachment,
+        flags: Default::default(),
+        pipeline_bind_point: vk::PipelineBindPoint::Graphics,
+        input_attachment_count: 0,
+        p_input_attachments: ptr::null(),
+        p_resolve_attachments: ptr::null(),
+        preserve_attachment_count: 0,
+        p_preserve_attachments: ptr::null(),
+    }];
+    let subpass_dependencies = [vk::SubpassDependency {
+        dependency_flags: Default::default(),
+        src_subpass: vk::VK_SUBPASS_EXTERNAL,
+        dst_subpass: 0,
+        src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        src_access_mask: Default::default(),
+        dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
+            | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+    }];
     new_renderpass(
         device,
         &attachment_descriptions,
@@ -1081,17 +1152,17 @@ fn new_window(window_width: u32, window_height: u32) -> Arc<Instance> {
     let surface = unsafe { create_surface(entry.vk(), instance.vk(), &window).unwrap() };
 
     Arc::new(Instance {
-        window: Arc::new(window),
+        _window: Arc::new(window),
         events_loop: Arc::new(events_loop),
-        instance: instance,
-        entry: entry,
-        surface: surface,
-        window_width: window_width,
-        window_height: window_height,
+        instance,
+        entry,
+        surface,
+        window_width,
+        window_height,
     })
 }
 
-fn new_device(instance: Arc<Instance>) -> Arc<Device> {
+fn new_device(instance: &Instance) -> Arc<Device> {
     let Instance {
         ref entry,
         ref instance,
@@ -1113,11 +1184,8 @@ fn new_device(instance: Arc<Instance>) -> Arc<Device> {
             .enumerate()
             .filter_map(|(ix, info)| {
                 let supports_graphic_and_surface = info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
-                    && surface_loader.get_physical_device_surface_support_khr(
-                        pdevice,
-                        ix as u32,
-                        surface,
-                    );
+                    && surface_loader
+                        .get_physical_device_surface_support_khr(pdevice, ix as u32, surface);
                 if supports_graphic_and_surface {
                     Some(ix as u32)
                 } else {
@@ -1198,18 +1266,18 @@ fn new_device(instance: Arc<Instance>) -> Arc<Device> {
         graphics_queue_family,
         compute_queue_family,
         graphics_queue: Arc::new(Mutex::new(graphics_queue)),
-        compute_queues: Arc::new(
+        _compute_queues: Arc::new(
             compute_queues
                 .iter()
                 .cloned()
-                .map(|a| Mutex::new(a))
+                .map(Mutex::new)
                 .collect(),
         ),
-        transfer_queue: Arc::new(Mutex::new(transfer_queue)),
+        _transfer_queue: Arc::new(Mutex::new(transfer_queue)),
     })
 }
 
-fn new_swapchain(instance: Arc<Instance>, device: Arc<Device>) -> Arc<Swapchain> {
+fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     let Instance {
         ref entry,
         ref instance,
@@ -1272,16 +1340,16 @@ fn new_swapchain(instance: Arc<Instance>, device: Arc<Device>) -> Arc<Swapchain>
         s_type: vk::StructureType::SwapchainCreateInfoKhr,
         p_next: ptr::null(),
         flags: Default::default(),
-        surface: surface,
+        surface,
         min_image_count: desired_image_count,
         image_color_space: surface_format.color_space,
         image_format: surface_format.format,
         image_extent: surface_resolution,
         image_usage: vk::IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         image_sharing_mode: vk::SharingMode::Exclusive,
-        pre_transform: pre_transform,
+        pre_transform,
         composite_alpha: vk::COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        present_mode: present_mode,
+        present_mode,
         clipped: 1,
         old_swapchain: vk::SwapchainKHR::null(),
         image_array_layers: 1,
@@ -1345,7 +1413,7 @@ fn new_command_pool(
     let pool_create_info = vk::CommandPoolCreateInfo {
         s_type: vk::StructureType::CommandPoolCreateInfo,
         p_next: ptr::null(),
-        flags: flags,
+        flags,
         queue_family_index: queue_family,
     };
     let pool = unsafe {
@@ -1363,17 +1431,16 @@ fn new_command_pool(
 }
 
 fn setup_framebuffer(
-    instance: Arc<Instance>,
+    instance: &Instance,
     device: Arc<Device>,
-    swapchain: Arc<Swapchain>,
-    renderpass: Arc<RenderPass>,
+    swapchain: &Swapchain,
+    renderpass: &RenderPass,
 ) -> Arc<Framebuffer> {
     let Swapchain {
         handle: ref swapchain,
         ref surface_format,
         ..
     } = *swapchain;
-    let RenderPass { ref handle, .. } = *renderpass;
     let Instance {
         window_width,
         window_height,
@@ -1443,7 +1510,7 @@ fn setup_framebuffer(
                     base_array_layer: 0,
                     layer_count: 1,
                 },
-                image: image,
+                image,
             };
             unsafe {
                 device
@@ -1511,11 +1578,11 @@ fn setup_framebuffer(
         .collect::<Vec<_>>();
 
     let framebuffer = Framebuffer {
-        images: images,
-        image_views: image_views,
+        _images: images,
+        image_views,
         depth_images,
         depth_image_views,
-        handles: handles,
+        handles,
         device,
     };
 
@@ -1639,7 +1706,7 @@ fn new_descriptor_set_layout(
     };
 
     Arc::new(DescriptorSetLayout {
-        handle: handle,
+        handle,
         device,
     })
 }
@@ -1671,7 +1738,7 @@ fn new_descriptor_pool(
 fn new_descriptor_set(
     device: Arc<Device>,
     pool: Arc<DescriptorPool>,
-    layout: Arc<DescriptorSetLayout>,
+    layout: &DescriptorSetLayout,
 ) -> Arc<DescriptorSet> {
     let layouts = &[layout.handle];
     let desc_alloc_info = vk::DescriptorSetAllocateInfo {
@@ -1699,7 +1766,7 @@ fn new_descriptor_set(
 fn new_pipeline_layout(
     device: Arc<Device>,
     descriptor_set_layouts: &[vk::DescriptorSetLayout],
-    push_constant_ranges: Vec<vk::PushConstantRange>,
+    push_constant_ranges: &[vk::PushConstantRange],
 ) -> Arc<PipelineLayout> {
     let create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PipelineLayoutCreateInfo,
@@ -1721,15 +1788,14 @@ fn new_pipeline_layout(
     Arc::new(PipelineLayout {
         handle: pipeline_layout,
         device,
-        push_constant_ranges,
     })
 }
 
 fn new_graphics_pipeline(
-    instance: Arc<Instance>,
+    instance: &Instance,
     device: Arc<Device>,
-    pipeline_layout: Arc<PipelineLayout>,
-    renderpass: Arc<RenderPass>,
+    pipeline_layout: &PipelineLayout,
+    renderpass: &RenderPass,
     input_attributes: &[vk::VertexInputAttributeDescription],
     input_bindings: &[vk::VertexInputBindingDescription],
     shaders: &[(vk::ShaderStageFlags, PathBuf)],
@@ -1762,10 +1828,10 @@ fn new_graphics_pipeline(
             s_type: vk::StructureType::PipelineShaderStageCreateInfo,
             p_next: ptr::null(),
             flags: Default::default(),
-            module: module,
+            module,
             p_name: shader_entry_name.as_ptr(),
             p_specialization_info: ptr::null(),
-            stage: stage,
+            stage,
         })
         .collect::<Vec<_>>();
     let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
@@ -1784,25 +1850,21 @@ fn new_graphics_pipeline(
         primitive_restart_enable: 0,
         topology: vk::PrimitiveTopology::TriangleList,
     };
-    let viewports = [
-        vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: instance.window_width as f32,
-            height: instance.window_height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
+    let viewports = [vk::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: instance.window_width as f32,
+        height: instance.window_height as f32,
+        min_depth: 0.0,
+        max_depth: 1.0,
+    }];
+    let scissors = [vk::Rect2D {
+        offset: vk::Offset2D { x: 0, y: 0 },
+        extent: vk::Extent2D {
+            width: instance.window_width,
+            height: instance.window_height,
         },
-    ];
-    let scissors = [
-        vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D {
-                width: instance.window_width,
-                height: instance.window_height,
-            },
-        },
-    ];
+    }];
     let viewport_state_info = vk::PipelineViewportStateCreateInfo {
         s_type: vk::StructureType::PipelineViewportStateCreateInfo,
         p_next: ptr::null(),
@@ -1812,11 +1874,13 @@ fn new_graphics_pipeline(
         viewport_count: viewports.len() as u32,
         p_viewports: viewports.as_ptr(),
     };
+    /*
     let raster_order_amd = vk::PipelineRasterizationStateRasterizationOrderAMD {
         s_type: vk::StructureType::PipelineRasterizationStateRasterizationOrderAMD,
         p_next: ptr::null(),
         rasterization_order: vk::RasterizationOrderAMD::Relaxed,
     };
+    */
     let rasterization_info = vk::PipelineRasterizationStateCreateInfo {
         s_type: vk::StructureType::PipelineRasterizationStateCreateInfo,
         p_next: ptr::null(), // unsafe { transmute(&raster_order_amd) },
@@ -1866,18 +1930,16 @@ fn new_graphics_pipeline(
         max_depth_bounds: 1.0,
         min_depth_bounds: 0.0,
     };
-    let color_blend_attachment_states = [
-        vk::PipelineColorBlendAttachmentState {
-            blend_enable: 0,
-            src_color_blend_factor: vk::BlendFactor::SrcColor,
-            dst_color_blend_factor: vk::BlendFactor::OneMinusDstColor,
-            color_blend_op: vk::BlendOp::Add,
-            src_alpha_blend_factor: vk::BlendFactor::Zero,
-            dst_alpha_blend_factor: vk::BlendFactor::Zero,
-            alpha_blend_op: vk::BlendOp::Add,
-            color_write_mask: vk::ColorComponentFlags::all(),
-        },
-    ];
+    let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
+        blend_enable: 0,
+        src_color_blend_factor: vk::BlendFactor::SrcColor,
+        dst_color_blend_factor: vk::BlendFactor::OneMinusDstColor,
+        color_blend_op: vk::BlendOp::Add,
+        src_alpha_blend_factor: vk::BlendFactor::Zero,
+        dst_alpha_blend_factor: vk::BlendFactor::Zero,
+        alpha_blend_op: vk::BlendOp::Add,
+        color_write_mask: vk::ColorComponentFlags::all(),
+    }];
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
         s_type: vk::StructureType::PipelineColorBlendStateCreateInfo,
         p_next: ptr::null(),
@@ -1938,9 +2000,8 @@ fn new_graphics_pipeline(
 }
 
 fn new_compute_pipeline(
-    instance: Arc<Instance>,
     device: Arc<Device>,
-    pipeline_layout: Arc<PipelineLayout>,
+    pipeline_layout: &PipelineLayout,
     shader: &PathBuf,
 ) -> Arc<Pipeline> {
     let shader_module = {
@@ -1953,13 +2014,12 @@ fn new_compute_pipeline(
             code_size: bytes.len(),
             p_code: bytes.as_ptr() as *const u32,
         };
-        let shader_module = unsafe {
+        unsafe {
             device
                 .device
                 .create_shader_module(&shader_info, None)
                 .expect("Vertex shader module error")
-        };
-        shader_module
+        }
     };
     let shader_entry_name = CString::new("main").unwrap();
     let shader_stage = vk::PipelineShaderStageCreateInfo {
