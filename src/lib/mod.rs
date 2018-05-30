@@ -21,16 +21,17 @@ pub mod alloc;
 pub mod device;
 pub mod ecs;
 pub mod entry;
+pub mod helpers;
 pub mod instance;
 pub mod swapchain;
 
-use ash::vk;
-use std::default::Default;
-use ash::version::{EntryV1_0, InstanceV1_0};
 #[cfg(windows)]
 use ash::extensions::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::XlibSurface;
+use ash::version::{EntryV1_0, InstanceV1_0};
+use ash::vk;
+use std::default::Default;
 use std::ptr;
 
 #[cfg(all(unix, not(target_os = "android")))]

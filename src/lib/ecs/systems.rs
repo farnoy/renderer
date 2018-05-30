@@ -1,6 +1,6 @@
+use super::components::*;
 use cgmath;
 use specs::*;
-use super::components::*;
 
 pub struct SteadyRotation;
 
@@ -31,7 +31,8 @@ impl<'a> System<'a> for MVPCalculation {
 
     fn run(&mut self, (positions, rotations, scales, mut mvps): Self::SystemData) {
         for (pos, rot, scale, mvp) in (&positions, &rotations, &scales, &mut mvps).join() {
-            let model = cgmath::Matrix4::from_translation(pos.0) * cgmath::Matrix4::from(rot.0)
+            let model = cgmath::Matrix4::from_translation(pos.0)
+                * cgmath::Matrix4::from(rot.0)
                 * cgmath::Matrix4::from_scale(scale.0);
 
             mvp.mvp = self.projection * self.view * model;

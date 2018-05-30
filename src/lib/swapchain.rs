@@ -10,10 +10,7 @@ pub struct Swapchain {
 
 impl Swapchain {
     pub fn new(ext: ash::extensions::Swapchain, swapchain: vk::SwapchainKHR) -> Swapchain {
-        Swapchain {
-            ext,
-            swapchain,
-        }
+        Swapchain { ext, swapchain }
     }
 }
 

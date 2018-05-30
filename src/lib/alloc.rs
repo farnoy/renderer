@@ -130,11 +130,7 @@ pub fn create_image(
     }
 }
 
-pub fn destroy_image(
-    allocator: VmaAllocator,
-    image: vk::Image,
-    allocation: VmaAllocation,
-) {
+pub fn destroy_image(allocator: VmaAllocator, image: vk::Image, allocation: VmaAllocation) {
     unsafe {
         vmaDestroyImage(allocator, image, allocation);
     }

@@ -1,17 +1,17 @@
+use super::entry::Entry;
 use ash;
-use ash::extensions::{DebugReport, Surface};
 #[cfg(windows)]
 use ash::extensions::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::XlibSurface;
-use ash::vk;
+use ash::extensions::{DebugReport, Surface};
 use ash::version;
 use ash::version::EntryV1_0;
+use ash::vk;
 use std::ffi::CString;
 use std::ops;
 use std::ptr;
 use std::sync::Arc;
-use super::entry::Entry;
 
 pub type AshInstance = ash::Instance<version::V1_0>;
 

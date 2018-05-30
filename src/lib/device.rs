@@ -1,13 +1,13 @@
 use ash;
+use ash::extensions::DebugMarker;
 #[cfg(feature = "validation")]
 use ash::extensions::DebugReport;
-use ash::extensions::DebugMarker;
 use ash::extensions::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
-use ash::vk;
 use ash::version;
 use ash::version::InstanceV1_0;
+use ash::vk;
 use std::ffi::CStr;
 use std::ops;
 use std::ptr;
