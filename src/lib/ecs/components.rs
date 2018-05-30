@@ -2,25 +2,25 @@ use cgmath;
 use specs::*;
 
 #[derive(Clone, Copy, Component)]
-#[component(VecStorage)]
+#[storage(VecStorage)]
 pub struct Position(pub cgmath::Vector3<f32>);
 
 #[derive(Clone, Copy, Component)]
-#[component(VecStorage)]
+#[storage(VecStorage)]
 pub struct Rotation(pub cgmath::Quaternion<f32>);
 
 #[derive(Clone, Copy, Component)]
-#[component(VecStorage)]
+#[storage(VecStorage)]
 pub struct Scale(pub f32);
 
 #[derive(Clone, Copy, Component)]
-#[component(VecStorage)]
+#[storage(VecStorage)]
 pub struct Light {
     pub strength: f32,
 }
 
 #[derive(Clone, Copy, Component, Debug)]
-#[component(VecStorage)]
+#[storage(VecStorage)]
 pub struct Matrices {
     pub mvp: cgmath::Matrix4<f32>,
     pub mv: cgmath::Matrix4<f32>,

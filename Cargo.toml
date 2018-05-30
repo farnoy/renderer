@@ -4,7 +4,9 @@ version = "0.1.0"
 build = "build.rs"
 
 [dependencies]
-ash = { git = "https://github.com/farnoy/ash", rev = "a36f6bfd11619ac126e4406deb509e062824656e" }
+# for relaxed raster order
+# ash = { git = "https://github.com/farnoy/ash", rev = "a36f6bfd11619ac126e4406deb509e062824656e" }
+ash = "0.24.3"
 cgmath = "0.16"
 futures = "0.2.0-beta"
 # futures-executor = "0.2.0-alpha"
@@ -20,14 +22,14 @@ gltf-utils = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbe
 # gltf-json = "~0.10.0"
 # gltf-importer = "~0.10.0"
 # gltf-utils = "~0.10.0"
-image = "0.18"
-winit = "0.11"
-specs = "0.10"
-specs-derive = "0.1"
+image = "0.19"
+winit = "0.15"
+specs = "0.11"
+specs-derive = "0.2"
 time = "0.1"
 
 [build-dependencies]
-bindgen = "0.33.1"
+bindgen = "0.37"
 
 [target.'cfg(windows)'.dependencies]
 user32-sys = "^0.2"

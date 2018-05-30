@@ -235,7 +235,7 @@ fn main() {
     world.register::<Rotation>();
     world.register::<Scale>();
     world.register::<Matrices>();
-    let mut threadpool = ThreadPool::builder().pool_size(4).create();
+    let mut threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
     let instance = new_window(1920, 1080);
     let device = new_device(&instance);
     let swapchain = new_swapchain(&instance, &device);
@@ -353,7 +353,7 @@ fn main() {
     let command_generation_buffer = new_buffer(
         Arc::clone(&device),
         vk::BUFFER_USAGE_INDIRECT_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        0,
+        alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<u32>() as vk::DeviceSize * 5 * 64,
     );
@@ -432,7 +432,7 @@ fn main() {
     let ubo_buffer = new_buffer(
         Arc::clone(&device),
         vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+        alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         4 * 4 * 4 * 1024,
     );
@@ -468,7 +468,7 @@ fn main() {
     let model_view_buffer = new_buffer(
         Arc::clone(&device),
         vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+        alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         4 * 4 * 4 * 1024,
     );
@@ -515,14 +515,14 @@ fn main() {
             vk::BUFFER_USAGE_VERTEX_BUFFER_BIT
                 | vk::BUFFER_USAGE_TRANSFER_DST_BIT
                 | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            0,
+            alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             vertex_size,
         );
         let vertex_upload_buffer = new_buffer(
             Arc::clone(&device),
             vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
-            alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             vertex_size,
         );
@@ -542,14 +542,14 @@ fn main() {
             vk::BUFFER_USAGE_INDEX_BUFFER_BIT
                 | vk::BUFFER_USAGE_TRANSFER_DST_BIT
                 | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            0,
+            alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             index_size,
         );
         let index_upload_buffer = new_buffer(
             Arc::clone(&device),
             vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
-            alloc::VmaAllocationCreateFlagBits_VMA_ALLOCATION_CREATE_MAPPED_BIT.0 as u32,
+            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             index_size,
         );
@@ -638,7 +638,7 @@ fn main() {
     let culled_index_buffer = new_buffer(
         Arc::clone(&device),
         vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        0,
+        alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<u32>() as vk::DeviceSize * index_len,
     );
@@ -647,7 +647,7 @@ fn main() {
         vk::BUFFER_USAGE_INDEX_BUFFER_BIT
             | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT
             | vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        0,
+        alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<f32>() as vk::DeviceSize * 4 * 5 * 1000,
     );
@@ -750,13 +750,13 @@ fn main() {
     let ubo_mapped = ubo_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
     let model_view_mapped = model_view_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
     let mut dispatcher = specs::DispatcherBuilder::new()
-        .add(SteadyRotation, "steady_rotation", &[])
-        .add(
+        .with(SteadyRotation, "steady_rotation", &[])
+        .with(
             MVPCalculation { projection, view },
             "mvp",
             &["steady_rotation"],
         )
-        .add(
+        .with(
             MVPUpload {
                 dst_mvp: ubo_mapped,
                 dst_mv: model_view_mapped,
@@ -1478,7 +1478,7 @@ fn setup_framebuffer(
                     initial_layout: vk::ImageLayout::Undefined,
                 },
                 &alloc::VmaAllocationCreateInfo {
-                    flags: 0,
+                    flags: alloc::VmaAllocationCreateFlagBits(0),
                     memoryTypeBits: 0,
                     pUserData: ptr::null_mut(),
                     pool: ptr::null_mut(),
@@ -1648,7 +1648,7 @@ fn new_fence(device: Arc<Device>) -> Arc<Fence> {
 fn new_buffer(
     device: Arc<Device>,
     buffer_usage: vk::BufferUsageFlags,
-    allocation_flags: alloc::VmaAllocationCreateFlags,
+    allocation_flags: alloc::VmaAllocationCreateFlagBits,
     allocation_usage: alloc::VmaMemoryUsage,
     size: vk::DeviceSize,
 ) -> Arc<Buffer> {

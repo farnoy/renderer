@@ -39,6 +39,17 @@ pub struct VmaAllocationInfo {
     pub pUserData: *mut ::std::os::raw::c_void,
 }
 
+#[repr(C)]
+pub struct VmaAllocationCreateInfo {
+    pub flags: VmaAllocationCreateFlagBits,
+    pub usage: VmaMemoryUsage,
+    pub requiredFlags: VkMemoryPropertyFlags,
+    pub preferredFlags: VkMemoryPropertyFlags,
+    pub memoryTypeBits: u32,
+    pub pool: VmaPool,
+    pub pUserData: *mut ::std::os::raw::c_void,
+}
+
 unsafe impl Send for VmaAllocationInfo {}
 unsafe impl Sync for VmaAllocationInfo {}
 
