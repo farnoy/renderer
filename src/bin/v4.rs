@@ -12,7 +12,7 @@ use ash::{version::DeviceV1_0, vk};
 use cgmath::Rotation3;
 use forward_renderer::{alloc, ecs::*, helpers::*};
 use futures::{
-    executor::{spawn, spawn_with_handle, ThreadPool}, future::{self, lazy}, prelude::*
+    executor::{block_on, spawn, spawn_with_handle, ThreadPool}, future::{self, lazy}, prelude::*,
 };
 use gltf_utils::PrimitiveIterators;
 use std::{default::Default, mem::size_of, path::PathBuf, ptr, sync::Arc, u64};
@@ -25,6 +25,32 @@ fn main() {
     world.register::<Scale>();
     world.register::<Matrices>();
     let mut threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
+    /*
+    multithreading example
+    threadpool.run(lazy(move |_| {
+        println!("start parent");
+        let lhs =
+            spawn_with_handle(lazy(move |_| {
+                println!("start lhs");
+                std::thread::sleep_ms(5000);
+                println!("end rhs");
+                future::ok::<u32, Never>(10)
+            }));
+        let rhs =
+            spawn_with_handle(lazy(move |_| {
+                println!("start lhs");
+                std::thread::sleep_ms(5000);
+                println!("end rhs");
+                future::ok::<u32, Never>(10)
+            }));
+        lhs.join(rhs).and_then(|(lhs, rhs)| {
+            lhs.join(rhs).and_then(|(l, r)| {
+                println!("end parent, results are ({}, {})", l, r);
+                future::ok::<u32, Never>(5)
+            })
+        })
+    })).unwrap();
+    */
     let (instance, mut events_loop) = new_window(1920, 1080);
     let device = new_device(&instance);
     let swapchain = new_swapchain(&instance, &device);
@@ -183,10 +209,7 @@ fn main() {
     );
     let gltf_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
-        &[
-            descriptor_set_layout.handle,
-            model_set_layout.handle
-        ],
+        &[descriptor_set_layout.handle, model_set_layout.handle],
         &[vk::PushConstantRange {
             stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
             offset: 0,
@@ -198,28 +221,32 @@ fn main() {
         Arc::clone(&device),
         &gltf_pipeline_layout,
         &main_renderpass,
-        &[vk::VertexInputAttributeDescription {
-            location: 0,
-            binding: 0,
-            format: vk::Format::R32g32b32Sfloat,
-            offset: 0,
-        },
-       vk::VertexInputAttributeDescription {
-            location: 1,
-            binding: 1,
-            format: vk::Format::R32g32b32Sfloat,
-            offset: 0,
-        } ],
-        &[vk::VertexInputBindingDescription {
-            binding: 0,
-            stride: size_of::<f32>() as u32 * 3,
-            input_rate: vk::VertexInputRate::Vertex,
-        },
-       vk::VertexInputBindingDescription {
-            binding: 1,
-            stride: size_of::<f32>() as u32 * 3,
-            input_rate: vk::VertexInputRate::Vertex,
-        } ],
+        &[
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32g32b32Sfloat,
+                offset: 0,
+            },
+            vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 1,
+                format: vk::Format::R32g32b32Sfloat,
+                offset: 0,
+            },
+        ],
+        &[
+            vk::VertexInputBindingDescription {
+                binding: 0,
+                stride: size_of::<f32>() as u32 * 3,
+                input_rate: vk::VertexInputRate::Vertex,
+            },
+            vk::VertexInputBindingDescription {
+                binding: 1,
+                stride: size_of::<f32>() as u32 * 3,
+                input_rate: vk::VertexInputRate::Vertex,
+            },
+        ],
         &[
             (
                 vk::SHADER_STAGE_VERTEX_BIT,
@@ -380,8 +407,7 @@ fn main() {
         }
         let normal_buffer = new_buffer(
             Arc::clone(&device),
-            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT
-                | vk::BUFFER_USAGE_TRANSFER_DST_BIT,
+            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::BUFFER_USAGE_TRANSFER_DST_BIT,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             normals_size,
@@ -426,90 +452,61 @@ fn main() {
                 *p.offset(ix as isize) = data;
             }
         }
-        let command_buffer =
-            allocate_command_buffer(Arc::clone(&device), Arc::clone(&graphics_command_pool));
-        unsafe {
-            let begin_info = vk::CommandBufferBeginInfo {
-                s_type: vk::StructureType::CommandBufferBeginInfo,
-                p_next: ptr::null(),
-                p_inheritance_info: ptr::null(),
-                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            };
-            device
-                .device
-                .begin_command_buffer(command_buffer.handle, &begin_info)
-                .unwrap();
-            device.device.cmd_copy_buffer(
-                command_buffer.handle,
-                vertex_upload_buffer.handle,
-                vertex_buffer.handle,
-                &[vk::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: 0,
-                    size: vertex_buffer.allocation_info.size,
-                }],
-            );
-            device.device.cmd_copy_buffer(
-                command_buffer.handle,
-                normal_upload_buffer.handle,
-                normal_buffer.handle,
-                &[vk::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: 0,
-                    size: normal_buffer.allocation_info.size,
-                }],
-            );
-            device.device.cmd_copy_buffer(
-                command_buffer.handle,
-                index_upload_buffer.handle,
-                index_buffer.handle,
-                &[vk::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: 0,
-                    size: index_buffer.allocation_info.size,
-                }],
-            );
-            device
-                .device
-                .end_command_buffer(command_buffer.handle)
-                .unwrap();
-
+        let upload = one_time_submit_cb(
+            Arc::clone(&graphics_command_pool),
+            Arc::clone(&device.graphics_queue),
             {
-                // submit
-                let wait_semaphores = &[];
-                let signal_semaphores = &[];
-                let dst_stage_masks = &[];
-                let submits = [vk::SubmitInfo {
-                    s_type: vk::StructureType::SubmitInfo,
-                    p_next: ptr::null(),
-                    wait_semaphore_count: wait_semaphores.len() as u32,
-                    p_wait_semaphores: wait_semaphores.as_ptr(),
-                    p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                    command_buffer_count: 1,
-                    p_command_buffers: &command_buffer.handle,
-                    signal_semaphore_count: signal_semaphores.len() as u32,
-                    p_signal_semaphores: signal_semaphores.as_ptr(),
-                }];
-                let queue_lock = device
-                    .graphics_queue
-                    .lock()
-                    .expect("can't lock the submit queue");
+                let vertex_buffer = Arc::clone(&vertex_buffer);
+                let vertex_upload_buffer = Arc::clone(&vertex_upload_buffer);
+                let normal_buffer = Arc::clone(&normal_buffer);
+                let normal_upload_buffer = Arc::clone(&normal_upload_buffer);
+                let index_buffer = Arc::clone(&index_buffer);
+                let index_upload_buffer = Arc::clone(&index_upload_buffer);
+                let device = Arc::clone(&device);
+                move |command_buffer| unsafe {
+                    device.device.cmd_copy_buffer(
+                        command_buffer,
+                        vertex_upload_buffer.handle,
+                        vertex_buffer.handle,
+                        &[vk::BufferCopy {
+                            src_offset: 0,
+                            dst_offset: 0,
+                            size: vertex_buffer.allocation_info.size,
+                        }],
+                    );
+                    device.device.cmd_copy_buffer(
+                        command_buffer,
+                        normal_upload_buffer.handle,
+                        normal_buffer.handle,
+                        &[vk::BufferCopy {
+                            src_offset: 0,
+                            dst_offset: 0,
+                            size: normal_buffer.allocation_info.size,
+                        }],
+                    );
+                    device.device.cmd_copy_buffer(
+                        command_buffer,
+                        index_upload_buffer.handle,
+                        index_buffer.handle,
+                        &[vk::BufferCopy {
+                            src_offset: 0,
+                            dst_offset: 0,
+                            size: index_buffer.allocation_info.size,
+                        }],
+                    );
+                }
+            },
+        );
 
-                let submit_fence = new_fence(Arc::clone(&device));
+        block_on(upload).unwrap();
 
-                device
-                    .device
-                    .queue_submit(*queue_lock, &submits, submit_fence.handle)
-                    .unwrap();
-
-                device
-                    .device
-                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                    .expect("Wait for fence failed.");
-            }
-
-            (vertex_buffer, normal_buffer, vertex_len, index_buffer, index_len)
-        }
+        (
+            vertex_buffer,
+            normal_buffer,
+            vertex_len,
+            index_buffer,
+            index_len,
+        )
     };
 
     let culled_index_buffer = new_buffer(
@@ -618,7 +615,11 @@ fn main() {
             .build();
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(-2.0, 0.0, 2.0 + depth as f32)))
+            .with::<Position>(Position(cgmath::Vector3::new(
+                -2.0,
+                0.0,
+                2.0 + depth as f32,
+            )))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
@@ -627,8 +628,7 @@ fn main() {
     let ubo_mapped = ubo_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
     let model_view_mapped =
         model_view_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
-    let model_mapped =
-        model_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
+    let model_mapped = model_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
     let mut dispatcher = specs::DispatcherBuilder::new()
         .with(SteadyRotation, "steady_rotation", &[])
         .with(
@@ -693,23 +693,29 @@ fn main() {
                 )
                 .unwrap()
         };
-        let command_buffer =
-            allocate_command_buffer(Arc::clone(&device), Arc::clone(&graphics_command_pool));
-        unsafe {
+        let command_buffer_future = record_one_time_cb(
+            Arc::clone(&graphics_command_pool),
             {
-                {
-                    let begin_info = vk::CommandBufferBeginInfo {
-                        s_type: vk::StructureType::CommandBufferBeginInfo,
-                        p_next: ptr::null(),
-                        p_inheritance_info: ptr::null(),
-                        flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                    };
-                    device
-                        .device
-                        .begin_command_buffer(command_buffer.handle, &begin_info)
-                        .unwrap();
-                }
-                {
+                let main_renderpass = Arc::clone(&main_renderpass);
+                let framebuffer = Arc::clone(&framebuffer);
+                let instance = Arc::clone(&instance);
+                let device = Arc::clone(&device);
+                let command_generation_buffer = Arc::clone(&command_generation_buffer);
+                let command_generation_descriptor_set = Arc::clone(&command_generation_descriptor_set);
+                let command_generation_pipeline = Arc::clone(&command_generation_pipeline);
+                let command_generation_pipeline_layout = Arc::clone(&command_generation_pipeline_layout);
+                let ubo_set = Arc::clone(&ubo_set);
+                let model_set = Arc::clone(&model_set);
+                let model_view_set = Arc::clone(&model_view_set);
+                let gltf_pipeline = Arc::clone(&gltf_pipeline);
+                let gltf_pipeline_layout = Arc::clone(&gltf_pipeline_layout);
+                let triangle_pipeline = Arc::clone(&triangle_pipeline);
+                let triangle_pipeline_layout = Arc::clone(&triangle_pipeline_layout);
+                let vertex_buffer = Arc::clone(&vertex_buffer);
+                let normal_buffer = Arc::clone(&normal_buffer);
+                let index_buffer = Arc::clone(&index_buffer);
+                let culled_index_buffer = Arc::clone(&culled_index_buffer);
+                move |command_buffer| unsafe {
                     let clear_values = &[
                         vk::ClearValue {
                             color: vk::ClearColorValue { float32: [0.0; 4] },
@@ -738,17 +744,17 @@ fn main() {
                     };
 
                     device.device.debug_marker_around(
-                        command_buffer.handle,
+                        command_buffer,
                         "generate commands",
                         [0.0, 1.0, 0.0, 1.0],
                         || {
                             device.device.cmd_bind_pipeline(
-                                command_buffer.handle,
+                                command_buffer,
                                 vk::PipelineBindPoint::Compute,
                                 command_generation_pipeline.handle,
                             );
                             device.device.cmd_bind_descriptor_sets(
-                                command_buffer.handle,
+                                command_buffer,
                                 vk::PipelineBindPoint::Compute,
                                 command_generation_pipeline_layout.handle,
                                 0,
@@ -760,14 +766,14 @@ fn main() {
                                 &[],
                             );
                             device.device.cmd_fill_buffer(
-                                command_buffer.handle,
+                                command_buffer,
                                 command_generation_buffer.handle,
                                 0,
                                 size_of::<u32>() as vk::DeviceSize * 5 * 64,
                                 0,
                             );
                             device.device.cmd_dispatch(
-                                command_buffer.handle,
+                                command_buffer,
                                 index_len as u32 / 3,
                                 1,
                                 1,
@@ -776,22 +782,22 @@ fn main() {
                     );
 
                     device.device.debug_marker_around(
-                        command_buffer.handle,
+                        command_buffer,
                         "main renderpass",
                         [0.0, 0.0, 1.0, 1.0],
                         || {
                             device.device.cmd_begin_render_pass(
-                                command_buffer.handle,
+                                command_buffer,
                                 &begin_info,
                                 vk::SubpassContents::Inline,
                             );
                             device.device.cmd_bind_pipeline(
-                                command_buffer.handle,
+                                command_buffer,
                                 vk::PipelineBindPoint::Graphics,
                                 triangle_pipeline.handle,
                             );
                             device.device.cmd_bind_descriptor_sets(
-                                command_buffer.handle,
+                                command_buffer,
                                 vk::PipelineBindPoint::Graphics,
                                 triangle_pipeline_layout.handle,
                                 0,
@@ -804,23 +810,23 @@ fn main() {
                             let casted: &[u8] =
                                 { from_raw_parts(constants.as_ptr() as *const u8, 2 * 3 * 4) };
                             device.device.cmd_push_constants(
-                                command_buffer.handle,
+                                command_buffer,
                                 triangle_pipeline_layout.handle,
                                 vk::SHADER_STAGE_VERTEX_BIT,
                                 0,
                                 casted,
                             );
-                            device.device.cmd_draw(command_buffer.handle, 3, 1, 0, 0);
+                            device.device.cmd_draw(command_buffer, 3, 1, 0, 0);
 
                             {
                                 // gltf mesh
                                 device.device.cmd_bind_pipeline(
-                                    command_buffer.handle,
+                                    command_buffer,
                                     vk::PipelineBindPoint::Graphics,
                                     gltf_pipeline.handle,
                                 );
                                 device.device.cmd_bind_descriptor_sets(
-                                    command_buffer.handle,
+                                    command_buffer,
                                     vk::PipelineBindPoint::Graphics,
                                     gltf_pipeline_layout.handle,
                                     0,
@@ -828,13 +834,13 @@ fn main() {
                                     &[],
                                 );
                                 device.device.cmd_bind_vertex_buffers(
-                                    command_buffer.handle,
+                                    command_buffer,
                                     0,
                                     &[vertex_buffer.handle, normal_buffer.handle],
                                     &[0, 0],
                                 );
                                 device.device.cmd_bind_index_buffer(
-                                    command_buffer.handle,
+                                    command_buffer,
                                     // index_buffer.handle,
                                     culled_index_buffer.handle,
                                     0,
@@ -847,7 +853,7 @@ fn main() {
                                     let casted: &[u8] =
                                         { from_raw_parts(constants.as_ptr() as *const u8, 4) };
                                     device.device.cmd_push_constants(
-                                        command_buffer.handle,
+                                        command_buffer,
                                         gltf_pipeline_layout.handle,
                                         vk::SHADER_STAGE_VERTEX_BIT,
                                         0,
@@ -855,7 +861,7 @@ fn main() {
                                     );
                                     if ix == 0 {
                                         device.device.cmd_draw_indexed_indirect(
-                                            command_buffer.handle,
+                                            command_buffer,
                                             command_generation_buffer.handle,
                                             0,
                                             1,
@@ -863,13 +869,13 @@ fn main() {
                                         );
                                     } else {
                                         device.device.cmd_bind_index_buffer(
-                                            command_buffer.handle,
+                                            command_buffer,
                                             index_buffer.handle,
                                             0,
                                             vk::IndexType::Uint32,
                                         );
                                         device.device.cmd_draw_indexed(
-                                            command_buffer.handle,
+                                            command_buffer,
                                             index_len as u32,
                                             1,
                                             0,
@@ -879,86 +885,81 @@ fn main() {
                                     }
                                 }
                             }
-                            device.device.cmd_end_render_pass(command_buffer.handle);
+                            device.device.cmd_end_render_pass(command_buffer);
                         },
                     );
-                    device.device.debug_marker_end(command_buffer.handle);
+                    device.device.debug_marker_end(command_buffer);
                 }
-                device
-                    .device
-                    .end_command_buffer(command_buffer.handle)
-                    .unwrap();
-                {
-                    let wait_semaphores = &[present_semaphore.handle];
-                    let signal_semaphores = &[rendering_complete_semaphore.handle];
-                    let dst_stage_masks =
-                        vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
-                    let submits = [vk::SubmitInfo {
-                        s_type: vk::StructureType::SubmitInfo,
-                        p_next: ptr::null(),
-                        wait_semaphore_count: wait_semaphores.len() as u32,
-                        p_wait_semaphores: wait_semaphores.as_ptr(),
-                        p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                        command_buffer_count: 1,
-                        p_command_buffers: &command_buffer.handle,
-                        signal_semaphore_count: signal_semaphores.len() as u32,
-                        p_signal_semaphores: signal_semaphores.as_ptr(),
-                    }];
-                    let queue_lock = device
-                        .graphics_queue
-                        .lock()
-                        .expect("can't lock the submit queue");
+            },
+        );
+        let command_buffer = block_on(command_buffer_future).unwrap();
+        unsafe {
+            let wait_semaphores = &[present_semaphore.handle];
+            let signal_semaphores = &[rendering_complete_semaphore.handle];
+            let dst_stage_masks = vec![vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT; wait_semaphores.len()];
+            let submits = [vk::SubmitInfo {
+                s_type: vk::StructureType::SubmitInfo,
+                p_next: ptr::null(),
+                wait_semaphore_count: wait_semaphores.len() as u32,
+                p_wait_semaphores: wait_semaphores.as_ptr(),
+                p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                command_buffer_count: 1,
+                p_command_buffers: &command_buffer.handle,
+                signal_semaphore_count: signal_semaphores.len() as u32,
+                p_signal_semaphores: signal_semaphores.as_ptr(),
+            }];
+            let queue_lock = device
+                .graphics_queue
+                .lock()
+                .expect("can't lock the submit queue");
 
-                    let submit_fence = new_fence(Arc::clone(&device));
+            let submit_fence = new_fence(Arc::clone(&device));
 
-                    device
-                        .device
-                        .queue_submit(*queue_lock, &submits, submit_fence.handle)
-                        .unwrap();
-
-                    {
-                        let device = Arc::clone(&device);
-                        threadpool
-                            .run(lazy(move |_| {
-                                spawn(lazy(move |_| {
-                                    // println!("dtor previous frame");
-                                    device
-                                        .device
-                                        .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                                        .expect("Wait for fence failed.");
-                                    drop(command_buffer);
-                                    drop(submit_fence);
-                                    Ok(())
-                                }))
-                            }))
-                            .unwrap();
-                    }
-                }
-            }
+            device
+                .device
+                .queue_submit(*queue_lock, &submits, submit_fence.handle)
+                .unwrap();
 
             {
-                let wait_semaphores = &[rendering_complete_semaphore.handle];
-                let present_info = vk::PresentInfoKHR {
-                    s_type: vk::StructureType::PresentInfoKhr,
-                    p_next: ptr::null(),
-                    wait_semaphore_count: wait_semaphores.len() as u32,
-                    p_wait_semaphores: wait_semaphores.as_ptr(),
-                    swapchain_count: 1,
-                    p_swapchains: &swapchain.handle.swapchain,
-                    p_image_indices: &image_index,
-                    p_results: ptr::null_mut(),
-                };
-                let queue = device
-                    .graphics_queue
-                    .lock()
-                    .expect("Failed to acquire lock on graphics queue");
-
-                swapchain
-                    .handle
-                    .ext
-                    .queue_present_khr(*queue, &present_info)
+                let device = Arc::clone(&device);
+                threadpool
+                    .run(lazy(move |_| {
+                        spawn(lazy(move |_| {
+                            // println!("dtor previous frame");
+                            device
+                                .device
+                                .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                                .expect("Wait for fence failed.");
+                            drop(command_buffer);
+                            drop(submit_fence);
+                            Ok(())
+                        }))
+                    }))
                     .unwrap();
             }
+        }
+        unsafe {
+            let wait_semaphores = &[rendering_complete_semaphore.handle];
+            let present_info = vk::PresentInfoKHR {
+                s_type: vk::StructureType::PresentInfoKhr,
+                p_next: ptr::null(),
+                wait_semaphore_count: wait_semaphores.len() as u32,
+                p_wait_semaphores: wait_semaphores.as_ptr(),
+                swapchain_count: 1,
+                p_swapchains: &swapchain.handle.swapchain,
+                p_image_indices: &image_index,
+                p_results: ptr::null_mut(),
+            };
+            let queue = device
+                .graphics_queue
+                .lock()
+                .expect("Failed to acquire lock on graphics queue");
+
+            swapchain
+                .handle
+                .ext
+                .queue_present_khr(*queue, &present_info)
+                .unwrap();
         }
     }
 }

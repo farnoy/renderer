@@ -2,6 +2,7 @@ use super::{alloc, create_surface, device, entry, instance, swapchain};
 use ash::{
     extensions, version::{DeviceV1_0, InstanceV1_0}, vk,
 };
+use futures::{future, prelude::*};
 use std::{
     default::Default, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
     sync::{Arc, Mutex}, u32, u64,
@@ -681,7 +682,7 @@ pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
     })
 }
 
-pub fn allocate_command_buffer(device: Arc<Device>, pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
+pub fn allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
     let command_buffers = unsafe {
         let pool_lock = pool.handle.lock().unwrap();
         let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
@@ -691,11 +692,12 @@ pub fn allocate_command_buffer(device: Arc<Device>, pool: Arc<CommandPool>) -> A
             command_pool: *pool_lock,
             level: vk::CommandBufferLevel::Primary,
         };
-        device
+        pool.device
             .device
             .allocate_command_buffers(&command_buffer_allocate_info)
             .unwrap()
     };
+    let device = Arc::clone(&pool.device);
 
     Arc::new(CommandBuffer {
         handle: command_buffers[0],
@@ -1126,5 +1128,99 @@ pub fn new_compute_pipeline(
     Arc::new(Pipeline {
         handle: pipelines[0],
         device,
+    })
+}
+
+pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
+    command_pool: Arc<CommandPool>,
+    f: F,
+) -> impl Future<Item = CommandBuffer, Error = Never> {
+    future::lazy(move |_| unsafe {
+        let command_buffer = {
+            let pool_lock = command_pool.handle.lock().unwrap();
+            let command_buffer = {
+                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+                    s_type: vk::StructureType::CommandBufferAllocateInfo,
+                    p_next: ptr::null(),
+                    command_buffer_count: 1,
+                    command_pool: *pool_lock,
+                    level: vk::CommandBufferLevel::Primary,
+                };
+                command_pool
+                    .device
+                    .device
+                    .allocate_command_buffers(&command_buffer_allocate_info)
+                    .unwrap()[0]
+            };
+
+            let begin_info = vk::CommandBufferBeginInfo {
+                s_type: vk::StructureType::CommandBufferBeginInfo,
+                p_next: ptr::null(),
+                p_inheritance_info: ptr::null(),
+                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            };
+            command_pool
+                .device
+                .device
+                .begin_command_buffer(command_buffer, &begin_info)
+                .unwrap();
+
+            f(command_buffer);
+
+            command_pool
+                .device
+                .device
+                .end_command_buffer(command_buffer)
+                .unwrap();
+
+            command_buffer
+        };
+
+        Ok(CommandBuffer {
+            device: Arc::clone(&command_pool.device),
+            pool: command_pool,
+            handle: command_buffer,
+        })
+    })
+}
+
+pub fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
+    command_pool: Arc<CommandPool>,
+    queue: Arc<Mutex<vk::Queue>>,
+    f: F,
+) -> impl Future<Item = (), Error = Never> {
+    record_one_time_cb(Arc::clone(&command_pool), f).and_then(move |command_buffer| {
+        let submit_fence = new_fence(Arc::clone(&command_pool.device));
+
+        unsafe {
+            let submits = [vk::SubmitInfo {
+                s_type: vk::StructureType::SubmitInfo,
+                p_next: ptr::null(),
+                wait_semaphore_count: 0,
+                p_wait_semaphores: ptr::null(),
+                p_wait_dst_stage_mask: ptr::null(),
+                command_buffer_count: 1,
+                p_command_buffers: &command_buffer.handle,
+                signal_semaphore_count: 0,
+                p_signal_semaphores: ptr::null(),
+            }];
+
+            let queue_lock = queue.lock().unwrap();
+
+            command_pool
+                .device
+                .device
+                .queue_submit(*queue_lock, &submits, submit_fence.handle)
+                .unwrap();
+        }
+
+        unsafe {
+            command_pool
+                .device
+                .device
+                .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                .expect("Wait for fence failed.");
+        }
+        Ok(())
     })
 }
