@@ -24,6 +24,7 @@ gltf-utils = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbe
 # gltf-utils = "~0.10.0"
 image = "0.19"
 winit = "0.15"
+rayon = "1.0"
 specs = "0.11"
 specs-derive = "0.2"
 time = "0.1"

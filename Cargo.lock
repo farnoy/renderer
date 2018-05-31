@@ -11,6 +11,7 @@ dependencies = [
  "gltf-json 0.10.1 (git+https://github.com/alteous/gltf?rev=526823d445066ffbead535a0d0314a3c94ff0c81)",
  "gltf-utils 0.10.1 (git+https://github.com/alteous/gltf?rev=526823d445066ffbead535a0d0314a3c94ff0c81)",
  "image 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rayon 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "specs 0.11.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "specs-derive 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "time 0.1.40 (registry+https://github.com/rust-lang/crates.io-index)",

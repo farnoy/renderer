@@ -1,6 +1,9 @@
 use super::components::*;
 use cgmath;
-use specs::*;
+use specs::prelude::*;
+use std::sync::Arc;
+
+use super::super::helpers;
 
 pub struct SteadyRotation;
 
@@ -42,9 +45,9 @@ impl<'a> System<'a> for MVPCalculation {
 }
 
 pub struct MVPUpload {
-    pub dst_mvp: *mut cgmath::Matrix4<f32>,
-    pub dst_mv: *mut cgmath::Matrix4<f32>,
-    pub dst_model: *mut cgmath::Matrix4<f32>,
+    pub dst_mvp: Arc<helpers::Buffer>,
+    pub dst_mv: Arc<helpers::Buffer>,
+    pub dst_model: Arc<helpers::Buffer>,
 }
 
 unsafe impl Send for MVPUpload {}
@@ -53,15 +56,32 @@ impl<'a> System<'a> for MVPUpload {
     type SystemData = (Entities<'a>, ReadStorage<'a, Matrices>);
 
     fn run(&mut self, (entities, matrices): Self::SystemData) {
-        use std::slice;
-        let out_mvp = unsafe { slice::from_raw_parts_mut(self.dst_mvp, 1024) };
-        let out_mv = unsafe { slice::from_raw_parts_mut(self.dst_mv, 1024) };
-        let out_model = unsafe { slice::from_raw_parts_mut(self.dst_model, 1024) };
-        for (entity, matrices) in (&*entities, &matrices).join() {
-            // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
-            out_mvp[entity.id() as usize] = matrices.mvp;
-            out_mv[entity.id() as usize] = matrices.mv;
-            out_model[entity.id() as usize] = matrices.model;
-        }
+        (&*entities, &matrices)
+            .par_join()
+            .for_each(|(entity, matrices)| {
+                // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
+                use std::slice;
+                let out_mvp = unsafe {
+                    slice::from_raw_parts_mut(
+                        self.dst_mvp.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
+                        1024,
+                    )
+                };
+                let out_mv = unsafe {
+                    slice::from_raw_parts_mut(
+                        self.dst_mv.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
+                        1024,
+                    )
+                };
+                let out_model = unsafe {
+                    slice::from_raw_parts_mut(
+                        self.dst_model.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
+                        1024,
+                    )
+                };
+                out_mvp[entity.id() as usize] = matrices.mvp;
+                out_mv[entity.id() as usize] = matrices.mv;
+                out_model[entity.id() as usize] = matrices.model;
+            });
     }
 }

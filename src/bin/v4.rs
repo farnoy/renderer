@@ -5,6 +5,7 @@ extern crate futures;
 extern crate gltf;
 extern crate gltf_importer;
 extern crate gltf_utils;
+extern crate rayon;
 extern crate specs;
 extern crate winit;
 
@@ -24,6 +25,7 @@ fn main() {
     world.register::<Rotation>();
     world.register::<Scale>();
     world.register::<Matrices>();
+    let rayon_threadpool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
     let mut threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
     /*
     multithreading example
@@ -625,11 +627,8 @@ fn main() {
             .with::<Matrices>(Matrices::one())
             .build();
     }
-    let ubo_mapped = ubo_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
-    let model_view_mapped =
-        model_view_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
-    let model_mapped = model_buffer.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>;
     let mut dispatcher = specs::DispatcherBuilder::new()
+        .with_pool(Arc::clone(&rayon_threadpool))
         .with(SteadyRotation, "steady_rotation", &[])
         .with(
             MVPCalculation { projection, view },
@@ -638,9 +637,9 @@ fn main() {
         )
         .with(
             MVPUpload {
-                dst_mvp: ubo_mapped,
-                dst_mv: model_view_mapped,
-                dst_model: model_mapped,
+                dst_mvp: Arc::clone(&ubo_buffer),
+                dst_mv: Arc::clone(&model_view_buffer),
+                dst_model: Arc::clone(&model_buffer),
             },
             "mvp_upload",
             &["mvp"],
