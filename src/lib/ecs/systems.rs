@@ -31,12 +31,12 @@ impl<'a> System<'a> for MVPCalculation {
 
     fn run(&mut self, (positions, rotations, scales, mut mvps): Self::SystemData) {
         for (pos, rot, scale, mvp) in (&positions, &rotations, &scales, &mut mvps).join() {
-            let model = cgmath::Matrix4::from_translation(pos.0)
+            mvp.model = cgmath::Matrix4::from_translation(pos.0)
                 * cgmath::Matrix4::from(rot.0)
                 * cgmath::Matrix4::from_scale(scale.0);
 
-            mvp.mvp = self.projection * self.view * model;
-            mvp.mv = self.view * model;
+            mvp.mvp = self.projection * self.view * mvp.model;
+            mvp.mv = self.view * mvp.model;
         }
     }
 }
@@ -44,6 +44,7 @@ impl<'a> System<'a> for MVPCalculation {
 pub struct MVPUpload {
     pub dst_mvp: *mut cgmath::Matrix4<f32>,
     pub dst_mv: *mut cgmath::Matrix4<f32>,
+    pub dst_model: *mut cgmath::Matrix4<f32>,
 }
 
 unsafe impl Send for MVPUpload {}
@@ -55,10 +56,12 @@ impl<'a> System<'a> for MVPUpload {
         use std::slice;
         let out_mvp = unsafe { slice::from_raw_parts_mut(self.dst_mvp, 1024) };
         let out_mv = unsafe { slice::from_raw_parts_mut(self.dst_mv, 1024) };
+        let out_model = unsafe { slice::from_raw_parts_mut(self.dst_model, 1024) };
         for (entity, matrices) in (&*entities, &matrices).join() {
             // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
             out_mvp[entity.id() as usize] = matrices.mvp;
             out_mv[entity.id() as usize] = matrices.mv;
+            out_model[entity.id() as usize] = matrices.model;
         }
     }
 }

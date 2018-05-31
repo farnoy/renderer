@@ -53,8 +53,7 @@ layout (local_size_x = 256) in;
 
 void main() {
     if (subgroupElect()) {
-        VkDrawIndexedIndirectCommand command = { 0, 1, 0, 0, 0};
-        indirect_commands[0] = command;
+        indirect_commands[0].instanceCount = 1;
     }
 
     uint ix0 = index_buffer[gl_GlobalInvocationID.x][0];
