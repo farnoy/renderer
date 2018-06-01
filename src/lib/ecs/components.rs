@@ -1,5 +1,7 @@
+use super::super::helpers;
 use cgmath;
 use specs::*;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
@@ -37,6 +39,20 @@ impl Matrices {
         }
     }
 }
+
+#[derive(Clone, Component)]
+#[storage(VecStorage)]
+pub struct GltfMesh {
+    pub vertex_buffer: Arc<helpers::Buffer>,
+    pub normal_buffer: Arc<helpers::Buffer>,
+    pub index_buffer: Arc<helpers::Buffer>,
+    pub index_len: u64,
+}
+
+// Index in device generated indirect commands
+#[derive(Clone, Component)]
+#[storage(VecStorage)]
+pub struct GltfMeshBufferIndex(pub u32);
 
 /*
 #[derive(Clone, Copy, Component, Debug)]

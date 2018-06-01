@@ -12,9 +12,7 @@ extern crate winit;
 use ash::{version::DeviceV1_0, vk};
 use cgmath::Rotation3;
 use forward_renderer::{alloc, ecs::*, helpers::*};
-use futures::{
-    executor::{block_on, spawn, spawn_with_handle, ThreadPool}, future::{self, lazy}, prelude::*,
-};
+use futures::executor::{block_on, ThreadPool};
 use gltf_utils::PrimitiveIterators;
 use std::{default::Default, mem::size_of, path::PathBuf, ptr, sync::Arc, u64};
 use winit::{Event, KeyboardInput, WindowEvent};
@@ -25,8 +23,15 @@ fn main() {
     world.register::<Rotation>();
     world.register::<Scale>();
     world.register::<Matrices>();
-    let rayon_threadpool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
-    let mut threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
+    world.register::<GltfMesh>();
+    world.register::<GltfMeshBufferIndex>();
+    let rayon_threadpool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap(),
+    );
+    let threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
     /*
     multithreading example
     threadpool.run(lazy(move |_| {
@@ -113,13 +118,6 @@ fn main() {
                 stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
                 p_immutable_samplers: ptr::null(),
             },
-            vk::DescriptorSetLayoutBinding {
-                binding: 4,
-                descriptor_type: vk::DescriptorType::StorageBuffer,
-                descriptor_count: 1,
-                stage_flags: vk::SHADER_STAGE_COMPUTE_BIT | vk::SHADER_STAGE_VERTEX_BIT,
-                p_immutable_samplers: ptr::null(),
-            },
         ],
     );
     let descriptor_set_layout = new_descriptor_set_layout(
@@ -154,14 +152,26 @@ fn main() {
         }],
     );
 
+    #[repr(C)]
+    struct MeshData {
+        entity_id: u32,
+        gltf_id: u32,
+        index_count: u32,
+        index_offset: u32,
+        vertex_offset: u32,
+    }
+
     let command_generation_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
         &[
             descriptor_set_layout.handle,
-            model_view_set_layout.handle,
             command_generation_descriptor_set_layout.handle,
         ],
-        &[],
+        &[vk::PushConstantRange {
+            stage_flags: vk::SHADER_STAGE_COMPUTE_BIT,
+            offset: 0,
+            size: size_of::<MeshData>() as u32,
+        }],
     );
     let command_generation_pipeline = new_compute_pipeline(
         Arc::clone(&device),
@@ -179,44 +189,14 @@ fn main() {
         vk::BUFFER_USAGE_INDIRECT_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * 5 * 64,
+        size_of::<u32>() as vk::DeviceSize + 
+        size_of::<u32>() as vk::DeviceSize * 5 * 9,
     );
 
-    let triangle_pipeline_layout = new_pipeline_layout(
-        Arc::clone(&device),
-        &[descriptor_set_layout.handle],
-        &[vk::PushConstantRange {
-            stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
-            offset: 0,
-            size: (size_of::<f32>() * 2 * 3) as u32,
-        }],
-    );
-    let triangle_pipeline = new_graphics_pipeline(
-        &instance,
-        Arc::clone(&device),
-        &triangle_pipeline_layout,
-        &main_renderpass,
-        &[],
-        &[],
-        &[
-            (
-                vk::SHADER_STAGE_VERTEX_BIT,
-                PathBuf::from(env!("OUT_DIR")).join("triangle.vert.spv"),
-            ),
-            (
-                vk::SHADER_STAGE_FRAGMENT_BIT,
-                PathBuf::from(env!("OUT_DIR")).join("triangle.frag.spv"),
-            ),
-        ],
-    );
     let gltf_pipeline_layout = new_pipeline_layout(
         Arc::clone(&device),
         &[descriptor_set_layout.handle, model_set_layout.handle],
-        &[vk::PushConstantRange {
-            stage_flags: vk::SHADER_STAGE_VERTEX_BIT,
-            offset: 0,
-            size: size_of::<u32>() as u32,
-        }],
+        &[],
     );
     let gltf_pipeline = new_graphics_pipeline(
         &instance,
@@ -370,7 +350,7 @@ fn main() {
         }
     }
 
-    let (vertex_buffer, normal_buffer, vertex_len, index_buffer, index_len) = {
+    let (vertex_buffer, normal_buffer, index_buffer, index_len) = {
         // Mesh load
         let path = "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf";
         // let path = "glTF-Sample-Models/2.0/Box/glTF/Box.gltf";
@@ -505,7 +485,6 @@ fn main() {
         (
             vertex_buffer,
             normal_buffer,
-            vertex_len,
             index_buffer,
             index_len,
         )
@@ -516,16 +495,7 @@ fn main() {
         vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * index_len,
-    );
-    let normal_debug_buffer = new_buffer(
-        Arc::clone(&device),
-        vk::BUFFER_USAGE_INDEX_BUFFER_BIT
-            | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT
-            | vk::BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        alloc::VmaAllocationCreateFlagBits(0),
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<f32>() as vk::DeviceSize * 4 * 5 * 1000,
+        size_of::<u32>() as vk::DeviceSize * index_len * 9,
     );
 
     {
@@ -533,29 +503,24 @@ fn main() {
             vk::DescriptorBufferInfo {
                 buffer: command_generation_buffer.handle,
                 offset: 0,
-                range: size_of::<u32>() as vk::DeviceSize * 5 * 64,
+                range: vk::VK_WHOLE_SIZE,
             },
             vk::DescriptorBufferInfo {
                 buffer: index_buffer.handle,
                 offset: 0,
-                range: size_of::<u32>() as vk::DeviceSize * index_len,
+                range: vk::VK_WHOLE_SIZE,
             },
             vk::DescriptorBufferInfo {
                 buffer: vertex_buffer.handle,
                 offset: 0,
-                range: size_of::<f32>() as vk::DeviceSize * 3 * vertex_len,
+                range: vk::VK_WHOLE_SIZE,
             },
             vk::DescriptorBufferInfo {
                 buffer: culled_index_buffer.handle,
                 offset: 0,
-                range: size_of::<u32>() as vk::DeviceSize * index_len,
+                range: vk::VK_WHOLE_SIZE,
             },
         ];
-        let buffer_updates2 = &[vk::DescriptorBufferInfo {
-            buffer: normal_debug_buffer.handle,
-            offset: 0,
-            range: size_of::<f32>() as vk::DeviceSize * 4 * 5 * 1000,
-        }];
         unsafe {
             device.device.update_descriptor_sets(
                 &[
@@ -569,18 +534,6 @@ fn main() {
                         descriptor_type: vk::DescriptorType::StorageBuffer,
                         p_image_info: ptr::null(),
                         p_buffer_info: buffer_updates.as_ptr(),
-                        p_texel_buffer_view: ptr::null(),
-                    },
-                    vk::WriteDescriptorSet {
-                        s_type: vk::StructureType::WriteDescriptorSet,
-                        p_next: ptr::null(),
-                        dst_set: command_generation_descriptor_set.handle,
-                        dst_binding: 4,
-                        dst_array_element: 0,
-                        descriptor_count: buffer_updates2.len() as u32,
-                        descriptor_type: vk::DescriptorType::StorageBuffer,
-                        p_image_info: ptr::null(),
-                        p_buffer_info: buffer_updates2.as_ptr(),
                         p_texel_buffer_view: ptr::null(),
                     },
                 ],
@@ -600,36 +553,30 @@ fn main() {
         cgmath::Point3::new(0.0, 0.0, 0.0),
         cgmath::vec3(0.0, -1.0, 0.0),
     );
-    for depth in 0..300 {
-        world
-            .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(2.0, 0.0, 2.0 + depth as f32)))
-            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
-            .with::<Scale>(Scale(0.6))
-            .with::<Matrices>(Matrices::one())
-            .build();
-        world
-            .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 2.0 + depth as f32)))
-            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
-            .with::<Scale>(Scale(0.6))
-            .with::<Matrices>(Matrices::one())
-            .build();
+    for ix in 0..9 {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(
-                -2.0,
+                ((ix % 3) * 2 - 2) as f32,
                 0.0,
-                2.0 + depth as f32,
+                2.0 + ix as f32,
             )))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
+            .with::<GltfMesh>(GltfMesh {
+                vertex_buffer: Arc::clone(&vertex_buffer),
+                normal_buffer: Arc::clone(&normal_buffer),
+                index_buffer: Arc::clone(&index_buffer),
+                index_len,
+            })
+            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .build();
     }
     let mut dispatcher = specs::DispatcherBuilder::new()
         .with_pool(Arc::clone(&rayon_threadpool))
         .with(SteadyRotation, "steady_rotation", &[])
+        .with(AssignBufferIndex, "assign_buffer_index", &[])
         .with(
             MVPCalculation { projection, view },
             "mvp",
@@ -643,6 +590,30 @@ fn main() {
             },
             "mvp_upload",
             &["mvp"],
+        )
+        .with(
+            RenderFrame {
+                threadpool: threadpool,
+                instance: Arc::clone(&instance),
+                device: Arc::clone(&device),
+                framebuffer: Arc::clone(&framebuffer),
+                gltf_pipeline: Arc::clone(&gltf_pipeline),
+                gltf_pipeline_layout: Arc::clone(&gltf_pipeline_layout),
+                graphics_command_pool: Arc::clone(&graphics_command_pool),
+                ubo_set: Arc::clone(&ubo_set),
+                model_set: Arc::clone(&model_set),
+                present_semaphore: Arc::clone(&present_semaphore),
+                rendering_complete_semaphore: Arc::clone(&rendering_complete_semaphore),
+                renderpass: Arc::clone(&main_renderpass),
+                swapchain: Arc::clone(&swapchain),
+                culled_commands_buffer: Arc::clone(&command_generation_buffer),
+                culled_index_buffer: Arc::clone(&culled_index_buffer),
+                cull_pipeline: Arc::clone(&command_generation_pipeline),
+                cull_pipeline_layout: Arc::clone(&command_generation_pipeline_layout),
+                cull_set: Arc::clone(&command_generation_descriptor_set),
+            },
+            "render_frame",
+            &["assign_buffer_index", "mvp_upload"],
         )
         .build();
 
@@ -680,6 +651,7 @@ fn main() {
         }
         dispatcher.dispatch(&world.res);
         world.maintain();
+        /*
         let image_index = unsafe {
             swapchain
                 .handle
@@ -960,6 +932,7 @@ fn main() {
                 .queue_present_khr(*queue, &present_info)
                 .unwrap();
         }
+        */
     }
 }
 

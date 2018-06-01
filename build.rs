@@ -12,8 +12,6 @@ fn main() {
         "generate_work.comp",
         "gltf_mesh.frag",
         "gltf_mesh.vert",
-        "triangle.frag",
-        "triangle.vert",
     ];
     for shader in shaders.iter() {
         println!("cargo:rerun-if-changed=shaders/{}", shader);
