@@ -20,6 +20,10 @@ use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
 use std::default::Default;
 use std::ptr;
+#[cfg(windows)]
+use user32;
+#[cfg(windows)]
+use winapi;
 use winit;
 
 #[cfg(all(unix, not(target_os = "android")))]
