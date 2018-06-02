@@ -46,7 +46,6 @@ impl<'a> System<'a> for MVPCalculation {
 
 pub struct MVPUpload {
     pub dst_mvp: Arc<helpers::Buffer>,
-    pub dst_mv: Arc<helpers::Buffer>,
     pub dst_model: Arc<helpers::Buffer>,
 }
 
@@ -66,12 +65,6 @@ impl<'a> System<'a> for MVPUpload {
                         1024,
                     )
                 };
-                let out_mv = unsafe {
-                    from_raw_parts_mut(
-                        self.dst_mv.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
-                        1024,
-                    )
-                };
                 let out_model = unsafe {
                     from_raw_parts_mut(
                         self.dst_model.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
@@ -79,7 +72,6 @@ impl<'a> System<'a> for MVPUpload {
                     )
                 };
                 out_mvp[entity.id() as usize] = matrices.mvp;
-                out_mv[entity.id() as usize] = matrices.mv;
                 out_model[entity.id() as usize] = matrices.model;
             });
     }
