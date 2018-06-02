@@ -876,6 +876,9 @@ pub fn new_graphics_pipeline(
     input_attributes: &[vk::VertexInputAttributeDescription],
     input_bindings: &[vk::VertexInputBindingDescription],
     shaders: &[(vk::ShaderStageFlags, PathBuf)],
+    subpass: u32,
+    rasterizer_discard: bool,
+    depth_write: bool
 ) -> Arc<Pipeline> {
     let shader_modules = shaders
         .iter()
@@ -971,7 +974,7 @@ pub fn new_graphics_pipeline(
         front_face: vk::FrontFace::Clockwise,
         line_width: 1.0,
         polygon_mode: vk::PolygonMode::Fill,
-        rasterizer_discard_enable: 0,
+        rasterizer_discard_enable: if rasterizer_discard { 1 } else { 0 },
     };
     let multisample_state_info = vk::PipelineMultisampleStateCreateInfo {
         s_type: vk::StructureType::PipelineMultisampleStateCreateInfo,
@@ -998,7 +1001,7 @@ pub fn new_graphics_pipeline(
         p_next: ptr::null(),
         flags: Default::default(),
         depth_test_enable: 1,
-        depth_write_enable: 1,
+        depth_write_enable: if depth_write { 1 } else { 0 },
         depth_compare_op: vk::CompareOp::LessOrEqual,
         depth_bounds_test_enable: 1,
         stencil_test_enable: 0,
@@ -1054,7 +1057,7 @@ pub fn new_graphics_pipeline(
         p_dynamic_state: ptr::null(), // &dynamic_state_info,
         layout: pipeline_layout.handle,
         render_pass: renderpass.handle,
-        subpass: 0,
+        subpass: subpass,
         base_pipeline_handle: vk::Pipeline::null(),
         base_pipeline_index: 0,
     };

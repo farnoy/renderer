@@ -116,6 +116,8 @@ pub struct RenderFrame {
     pub rendering_complete_semaphore: Arc<helpers::Semaphore>,
     pub graphics_command_pool: Arc<helpers::CommandPool>,
     pub renderpass: Arc<helpers::RenderPass>,
+    pub depth_pipeline: Arc<helpers::Pipeline>,
+    pub depth_pipeline_layout: Arc<helpers::PipelineLayout>,
     pub gltf_pipeline: Arc<helpers::Pipeline>,
     pub gltf_pipeline_layout: Arc<helpers::PipelineLayout>,
     pub ubo_set: Arc<helpers::DescriptorSet>,
@@ -158,6 +160,8 @@ impl<'a> System<'a> for RenderFrame {
                 let device = Arc::clone(&self.device);
                 let ubo_set = Arc::clone(&self.ubo_set);
                 let model_set = Arc::clone(&self.model_set);
+                let depth_pipeline = Arc::clone(&self.depth_pipeline);
+                let depth_pipeline_layout = Arc::clone(&self.depth_pipeline_layout);
                 let gltf_pipeline = Arc::clone(&self.gltf_pipeline);
                 let gltf_pipeline_layout = Arc::clone(&self.gltf_pipeline_layout);
                 let cull_set = Arc::clone(&self.cull_set);
@@ -228,7 +232,7 @@ impl<'a> System<'a> for RenderFrame {
                                 };
                                 device.device.cmd_push_constants(
                                     command_buffer,
-                                    gltf_pipeline_layout.handle,
+                                    cull_pipeline_layout.handle,
                                     vk::SHADER_STAGE_COMPUTE_BIT,
                                     0,
                                     casted,
@@ -294,6 +298,48 @@ impl<'a> System<'a> for RenderFrame {
                                 command_buffer,
                                 &begin_info,
                                 vk::SubpassContents::Inline,
+                            );
+                            device.device.debug_marker_around(
+                                command_buffer,
+                                "depth prepass",
+                                [0.3, 0.3, 0.3, 1.0],
+                                || {
+                                    device.device.cmd_bind_pipeline(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::Graphics,
+                                        depth_pipeline.handle,
+                                    );
+                                    device.device.cmd_bind_descriptor_sets(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::Graphics,
+                                        depth_pipeline_layout.handle,
+                                        0,
+                                        &[ubo_set.handle],
+                                        &[],
+                                    );
+                                    device.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        culled_index_buffer.handle,
+                                        0,
+                                        vk::IndexType::Uint32,
+                                    );
+                                    let first_entity = (&*entities).join().next().unwrap();
+                                    let mesh = meshes.get(first_entity).unwrap();
+                                    device.device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[mesh.vertex_buffer.handle],
+                                        &[0],
+                                    );
+                                    device.device.cmd_draw_indexed_indirect(
+                                        command_buffer,
+                                        culled_commands_buffer.handle,
+                                        0,
+                                        900, // TODO: find max of GltfMeshBufferIndex
+                                        size_of::<u32>() as u32 * 5,
+                                    );
+                                    device.device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                },
                             );
                             device.device.debug_marker_around(
                                 command_buffer,

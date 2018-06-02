@@ -238,6 +238,35 @@ fn main() {
                 PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv"),
             ),
         ],
+        1,
+        false,
+        false
+    );
+    let depth_pipeline_layout =
+        new_pipeline_layout(Arc::clone(&device), &[descriptor_set_layout.handle], &[]);
+    let depth_pipeline = new_graphics_pipeline(
+        &instance,
+        Arc::clone(&device),
+        &depth_pipeline_layout,
+        &main_renderpass,
+        &[vk::VertexInputAttributeDescription {
+            location: 0,
+            binding: 0,
+            format: vk::Format::R32g32b32Sfloat,
+            offset: 0,
+        }],
+        &[vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: size_of::<f32>() as u32 * 3,
+            input_rate: vk::VertexInputRate::Vertex,
+        }],
+        &[(
+            vk::SHADER_STAGE_VERTEX_BIT,
+            PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
+        )],
+        0,
+        true,
+        true
     );
     let ubo_set = new_descriptor_set(
         Arc::clone(&device),
@@ -481,12 +510,7 @@ fn main() {
 
         block_on(upload).unwrap();
 
-        (
-            vertex_buffer,
-            normal_buffer,
-            index_buffer,
-            index_len,
-        )
+        (vertex_buffer, normal_buffer, index_buffer, index_len)
     };
 
     let culled_index_buffer = new_buffer(
@@ -522,20 +546,18 @@ fn main() {
         ];
         unsafe {
             device.device.update_descriptor_sets(
-                &[
-                    vk::WriteDescriptorSet {
-                        s_type: vk::StructureType::WriteDescriptorSet,
-                        p_next: ptr::null(),
-                        dst_set: command_generation_descriptor_set.handle,
-                        dst_binding: 0,
-                        dst_array_element: 0,
-                        descriptor_count: buffer_updates.len() as u32,
-                        descriptor_type: vk::DescriptorType::StorageBuffer,
-                        p_image_info: ptr::null(),
-                        p_buffer_info: buffer_updates.as_ptr(),
-                        p_texel_buffer_view: ptr::null(),
-                    },
-                ],
+                &[vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WriteDescriptorSet,
+                    p_next: ptr::null(),
+                    dst_set: command_generation_descriptor_set.handle,
+                    dst_binding: 0,
+                    dst_array_element: 0,
+                    descriptor_count: buffer_updates.len() as u32,
+                    descriptor_type: vk::DescriptorType::StorageBuffer,
+                    p_image_info: ptr::null(),
+                    p_buffer_info: buffer_updates.as_ptr(),
+                    p_texel_buffer_view: ptr::null(),
+                }],
                 &[],
             );
         }
@@ -596,6 +618,8 @@ fn main() {
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
                 framebuffer: Arc::clone(&framebuffer),
+                depth_pipeline: Arc::clone(&depth_pipeline),
+                depth_pipeline_layout: Arc::clone(&depth_pipeline_layout),
                 gltf_pipeline: Arc::clone(&gltf_pipeline),
                 gltf_pipeline_layout: Arc::clone(&gltf_pipeline_layout),
                 graphics_command_pool: Arc::clone(&graphics_command_pool),
@@ -968,28 +992,54 @@ fn setup_renderpass(device: Arc<Device>, swapchain: &Swapchain) -> Arc<RenderPas
         attachment: 1,
         layout: vk::ImageLayout::DepthStencilAttachmentOptimal,
     };
-    let subpass_descs = [vk::SubpassDescription {
-        color_attachment_count: 1,
-        p_color_attachments: &color_attachment,
-        p_depth_stencil_attachment: &depth_attachment,
-        flags: Default::default(),
-        pipeline_bind_point: vk::PipelineBindPoint::Graphics,
-        input_attachment_count: 0,
-        p_input_attachments: ptr::null(),
-        p_resolve_attachments: ptr::null(),
-        preserve_attachment_count: 0,
-        p_preserve_attachments: ptr::null(),
-    }];
-    let subpass_dependencies = [vk::SubpassDependency {
-        dependency_flags: Default::default(),
-        src_subpass: vk::VK_SUBPASS_EXTERNAL,
-        dst_subpass: 0,
-        src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        src_access_mask: Default::default(),
-        dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
-            | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-    }];
+    let subpass_descs = [
+        vk::SubpassDescription {
+            color_attachment_count: 0,
+            p_color_attachments: ptr::null(),
+            p_depth_stencil_attachment: &depth_attachment,
+            flags: Default::default(),
+            pipeline_bind_point: vk::PipelineBindPoint::Graphics,
+            input_attachment_count: 0,
+            p_input_attachments: ptr::null(),
+            p_resolve_attachments: ptr::null(),
+            preserve_attachment_count: 0,
+            p_preserve_attachments: ptr::null(),
+        },
+        vk::SubpassDescription {
+            color_attachment_count: 1,
+            p_color_attachments: &color_attachment,
+            p_depth_stencil_attachment: &depth_attachment,
+            flags: Default::default(),
+            pipeline_bind_point: vk::PipelineBindPoint::Graphics,
+            input_attachment_count: 0,
+            p_input_attachments: ptr::null(),
+            p_resolve_attachments: ptr::null(),
+            preserve_attachment_count: 0,
+            p_preserve_attachments: ptr::null(),
+        },
+    ];
+    let subpass_dependencies = [
+        vk::SubpassDependency {
+            dependency_flags: Default::default(),
+            src_subpass: vk::VK_SUBPASS_EXTERNAL,
+            dst_subpass: 0,
+            src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            src_access_mask: Default::default(),
+            dst_access_mask: vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                | vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            dst_stage_mask: vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        },
+        vk::SubpassDependency {
+            dependency_flags: Default::default(),
+            src_subpass: 0,
+            dst_subpass: 1,
+            src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            src_access_mask: Default::default(),
+            dst_access_mask: vk::ACCESS_COLOR_ATTACHMENT_READ_BIT
+                | vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            dst_stage_mask: vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        },
+    ];
     new_renderpass(
         device,
         &attachment_descriptions,
