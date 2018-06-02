@@ -36,26 +36,26 @@ layout(set = 1, binding = 2) buffer readonly VertexBuffer {
 };
 
 layout(set = 1, binding = 3) buffer OutIndexBuffer {
-    uint last_index; // atomic
     uint out_index_buffer[][3];
 };
 
-layout (local_size_x = 256) in;
+layout (local_size_x = 64) in;
 
 void main() {
     if (gl_GlobalInvocationID.x == 0) {
         indirect_commands[gltfIndex].instanceCount = 1;
         indirect_commands[gltfIndex].firstInstance = entityIndex;
-        indirect_commands[gltfIndex].firstIndex = last_index;
+        indirect_commands[gltfIndex].firstIndex = indexOffset;
     }
 
     if (gl_GlobalInvocationID.x >= indexCount / 3) {
         return;
     }
 
-    uint ix0 = index_buffer[indexOffset + gl_GlobalInvocationID.x][0];
-    uint ix1 = index_buffer[indexOffset + gl_GlobalInvocationID.x][1];
-    uint ix2 = index_buffer[indexOffset + gl_GlobalInvocationID.x][2];
+    // TODO: no dynamic indexOffset here, won't work with different meshes
+    uint ix0 = index_buffer[gl_GlobalInvocationID.x][0];
+    uint ix1 = index_buffer[gl_GlobalInvocationID.x][1];
+    uint ix2 = index_buffer[gl_GlobalInvocationID.x][2];
     vec4 input0 = vec4(
         vertex_buffer[vertexOffset + ix0][0],
         vertex_buffer[vertexOffset + ix0][1],
@@ -87,7 +87,7 @@ void main() {
     uint offset = 0;
     if (subgroupElect()) {
         offset = atomicAdd(indirect_commands[gltfIndex].indexCount, count * 3);
-        offset += last_index; // to resume where previous mesh ended
+        offset += indexOffset; // to resume where previous mesh ended
         offset /= 3;
     }
     
@@ -98,11 +98,5 @@ void main() {
         out_index_buffer[local_offset][0] = ix0;
         out_index_buffer[local_offset][1] = ix1;
         out_index_buffer[local_offset][2] = ix2;
-    }
-
-    // last shader 
-    if (gl_GlobalInvocationID.x + 1 == indexCount / 3) {
-        // TODO: doesn't need to be atomic?
-        atomicAdd(last_index, indirect_commands[gltfIndex].indexCount);
     }
 }

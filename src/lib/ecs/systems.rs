@@ -192,13 +192,6 @@ impl<'a> System<'a> for RenderFrame {
                                     + size_of::<u32>() as vk::DeviceSize * 5 * 900,
                                 0,
                             );
-                            device.device.cmd_fill_buffer(
-                                command_buffer,
-                                culled_index_buffer.handle,
-                                0,
-                                size_of::<u32>() as vk::DeviceSize,
-                                0,
-                            );
                             device.device.cmd_pipeline_barrier(
                                 command_buffer,
                                 vk::PIPELINE_STAGE_TRANSFER_BIT,
@@ -214,6 +207,7 @@ impl<'a> System<'a> for RenderFrame {
                                 &[],
                                 &[],
                             );
+                            let mut index_offset = 0;
                             for (entity, mesh, mesh_index) in
                                 (&*entities, &meshes, &mesh_indices).join()
                             {
@@ -221,9 +215,10 @@ impl<'a> System<'a> for RenderFrame {
                                     entity.id() as u32,
                                     mesh_index.0,
                                     mesh.index_len as u32,
-                                    0,
+                                    index_offset,
                                     0,
                                 ];
+                                index_offset += mesh.index_len as u32;
 
                                 let casted: &[u8] = {
                                     from_raw_parts(
@@ -239,33 +234,12 @@ impl<'a> System<'a> for RenderFrame {
                                     casted,
                                 );
                                 let index_len = mesh.index_len as u32;
-                                let workgroup_size = 256; // TODO: make a specialization constant, not hardcoded
+                                let workgroup_size = 64; // TODO: make a specialization constant, not hardcoded
                                 let workgroup_count = index_len / 3 / workgroup_size
                                     + min(1, index_len / 3 % workgroup_size);
                                 device
                                     .device
                                     .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
-                                device.device.cmd_pipeline_barrier(
-                                    command_buffer,
-                                    vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                    vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                    vk::DependencyFlags::empty(),
-                                    &[],
-                                    &[
-                                        vk::BufferMemoryBarrier {
-                                            s_type: vk::StructureType::BufferMemoryBarrier,
-                                            p_next: ptr::null(),
-                                            buffer: culled_index_buffer.handle,
-                                            offset: 0,
-                                            src_queue_family_index: device.graphics_queue_family,
-                                            src_access_mask: vk::ACCESS_SHADER_READ_BIT | vk::ACCESS_SHADER_WRITE_BIT,
-                                            dst_access_mask: vk::ACCESS_SHADER_READ_BIT | vk::ACCESS_SHADER_WRITE_BIT,
-                                            dst_queue_family_index: device.graphics_queue_family,
-                                            size: vk::VK_WHOLE_SIZE,
-                                        }
-                                    ],
-                                    &[],
-                                );
                             }
                             device.device.cmd_pipeline_barrier(
                                 command_buffer,
@@ -343,7 +317,7 @@ impl<'a> System<'a> for RenderFrame {
                                     device.device.cmd_bind_index_buffer(
                                         command_buffer,
                                         culled_index_buffer.handle,
-                                        size_of::<u32>() as vk::DeviceSize,
+                                        0,
                                         vk::IndexType::Uint32,
                                     );
                                     let first_entity = (&*entities).join().next().unwrap();
