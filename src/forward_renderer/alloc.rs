@@ -1,5 +1,7 @@
 #![allow(warnings)]
 
+extern crate ash;
+
 use ash::{prelude, vk};
 use std::{mem, ptr};
 

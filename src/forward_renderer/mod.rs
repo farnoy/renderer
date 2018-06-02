@@ -1,23 +1,8 @@
-#[macro_use]
-extern crate ash;
-extern crate cgmath;
-extern crate futures;
-// extern crate futures_executor;
-extern crate gltf;
-extern crate gltf_importer;
-extern crate gltf_utils;
-extern crate image;
-extern crate specs;
-#[macro_use]
-extern crate specs_derive;
-extern crate time;
-#[cfg(windows)]
-extern crate user32;
-#[cfg(windows)]
-extern crate winapi;
-extern crate winit;
+// extern crate image;
 
-pub mod alloc;
+pub mod alloc {
+    pub use internal_alloc::*;
+}
 pub mod device;
 pub mod ecs;
 pub mod entry;
@@ -33,6 +18,7 @@ use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
 use std::default::Default;
 use std::ptr;
+use winit;
 
 #[cfg(all(unix, not(target_os = "android")))]
 pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(

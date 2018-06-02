@@ -29,16 +29,20 @@ specs = "0.11"
 specs-derive = "0.2"
 time = "0.1"
 
+[[bin]]
+name = "v4"
+path = "src/v4.rs"
+
+[lib]
+name = "internal_alloc"
+path = "src/forward_renderer/alloc.rs"
+
 [build-dependencies]
 bindgen = "0.37"
 
 [target.'cfg(windows)'.dependencies]
 user32-sys = "^0.2"
 winapi = "^0.2"
-
-[lib]
-name = "forward_renderer"
-path = "src/lib/mod.rs"
 
 [features]
 default = []

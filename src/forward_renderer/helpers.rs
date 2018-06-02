@@ -682,7 +682,7 @@ pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
     })
 }
 
-pub fn allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
+pub fn _allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
     let command_buffers = unsafe {
         let pool_lock = pool.handle.lock().unwrap();
         let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {

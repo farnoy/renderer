@@ -1,4 +1,4 @@
-use super::{super::alloc, components::*};
+use super::{components::*};
 use ash::{version::DeviceV1_0, vk};
 use cgmath;
 use futures::{
