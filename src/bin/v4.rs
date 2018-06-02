@@ -189,8 +189,7 @@ fn main() {
         vk::BUFFER_USAGE_INDIRECT_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize + 
-        size_of::<u32>() as vk::DeviceSize * 5 * 9,
+        size_of::<u32>() as vk::DeviceSize * 5 * 900,
     );
 
     let gltf_pipeline_layout = new_pipeline_layout(
@@ -495,7 +494,7 @@ fn main() {
         vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * index_len * 9,
+        size_of::<u32>() as vk::DeviceSize * index_len * 900,
     );
 
     {
@@ -553,7 +552,7 @@ fn main() {
         cgmath::Point3::new(0.0, 0.0, 0.0),
         cgmath::vec3(0.0, -1.0, 0.0),
     );
-    for ix in 0..9 {
+    for ix in 0..900 {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(

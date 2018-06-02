@@ -24,7 +24,7 @@ layout(set = 0, binding = 0) uniform UBO {
 };
 
 layout(set = 1, binding = 0) buffer IndirectCommands {
-    VkDrawIndexedIndirectCommand indirect_commands[900];
+    VkDrawIndexedIndirectCommand indirect_commands[];
 };
 
 layout(set = 1, binding = 1) buffer readonly IndexBuffer {
@@ -46,9 +46,10 @@ void main() {
     if (gl_GlobalInvocationID.x == 0) {
         indirect_commands[gltfIndex].instanceCount = 1;
         indirect_commands[gltfIndex].firstInstance = entityIndex;
+        indirect_commands[gltfIndex].firstIndex = last_index;
     }
 
-    if (gl_GlobalInvocationID.x >= indexCount) {
+    if (gl_GlobalInvocationID.x >= indexCount / 3) {
         return;
     }
 
@@ -86,8 +87,8 @@ void main() {
     uint offset = 0;
     if (subgroupElect()) {
         offset = atomicAdd(indirect_commands[gltfIndex].indexCount, count * 3);
-        offset /= 3;
         offset += last_index; // to resume where previous mesh ended
+        offset /= 3;
     }
     
     offset = subgroupBroadcastFirst(offset);
@@ -100,7 +101,7 @@ void main() {
     }
 
     // last shader 
-    if (gl_GlobalInvocationID.x + 1 == indexCount) {
+    if (gl_GlobalInvocationID.x + 1 == indexCount / 3) {
         // TODO: doesn't need to be atomic?
         atomicAdd(last_index, indirect_commands[gltfIndex].indexCount);
     }

@@ -5,7 +5,9 @@ use futures::{
     executor::{self, block_on, spawn}, future::lazy,
 };
 use specs::prelude::*;
-use std::{cmp::min, mem::size_of, ptr, slice::from_raw_parts, sync::Arc, u64};
+use std::{
+    cmp::min, mem::size_of, ptr, slice::{from_raw_parts, from_raw_parts_mut}, sync::Arc, u64,
+};
 
 use super::super::helpers;
 
@@ -64,21 +66,20 @@ impl<'a> System<'a> for MVPUpload {
             .par_join()
             .for_each(|(entity, matrices)| {
                 // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
-                use std::slice;
                 let out_mvp = unsafe {
-                    slice::from_raw_parts_mut(
+                    from_raw_parts_mut(
                         self.dst_mvp.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
                         1024,
                     )
                 };
                 let out_mv = unsafe {
-                    slice::from_raw_parts_mut(
+                    from_raw_parts_mut(
                         self.dst_mv.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
                         1024,
                     )
                 };
                 let out_model = unsafe {
-                    slice::from_raw_parts_mut(
+                    from_raw_parts_mut(
                         self.dst_model.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
                         1024,
                     )
@@ -188,20 +189,52 @@ impl<'a> System<'a> for RenderFrame {
                                 culled_commands_buffer.handle,
                                 0,
                                 size_of::<u32>() as vk::DeviceSize
-                                    + size_of::<u32>() as vk::DeviceSize * 5 * 9,
+                                    + size_of::<u32>() as vk::DeviceSize * 5 * 900,
                                 0,
+                            );
+                            device.device.cmd_fill_buffer(
+                                command_buffer,
+                                culled_index_buffer.handle,
+                                0,
+                                size_of::<u32>() as vk::DeviceSize,
+                                0,
+                            );
+                            device.device.cmd_pipeline_barrier(
+                                command_buffer,
+                                vk::PIPELINE_STAGE_TRANSFER_BIT,
+                                vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                vk::DependencyFlags::empty(),
+                                &[vk::MemoryBarrier {
+                                    s_type: vk::StructureType::MemoryBarrier,
+                                    p_next: ptr::null(),
+                                    src_access_mask: vk::ACCESS_TRANSFER_WRITE_BIT,
+                                    dst_access_mask: vk::ACCESS_SHADER_READ_BIT
+                                        | vk::ACCESS_SHADER_WRITE_BIT,
+                                }],
+                                &[],
+                                &[],
                             );
                             for (entity, mesh, mesh_index) in
                                 (&*entities, &meshes, &mesh_indices).join()
                             {
-                                let constants = [entity.id() as u32, mesh_index.0, 0, 0, 0];
+                                let constants = [
+                                    entity.id() as u32,
+                                    mesh_index.0,
+                                    mesh.index_len as u32,
+                                    0,
+                                    0,
+                                ];
 
-                                let casted: &[u8] =
-                                    { from_raw_parts(constants.as_ptr() as *const u8, 4) };
+                                let casted: &[u8] = {
+                                    from_raw_parts(
+                                        constants.as_ptr() as *const u8,
+                                        constants.len() * 4,
+                                    )
+                                };
                                 device.device.cmd_push_constants(
                                     command_buffer,
                                     gltf_pipeline_layout.handle,
-                                    vk::SHADER_STAGE_VERTEX_BIT,
+                                    vk::SHADER_STAGE_COMPUTE_BIT,
                                     0,
                                     casted,
                                 );
@@ -212,7 +245,37 @@ impl<'a> System<'a> for RenderFrame {
                                 device
                                     .device
                                     .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
+                                device.device.cmd_pipeline_barrier(
+                                    command_buffer,
+                                    vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                    vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                    vk::DependencyFlags::empty(),
+                                    &[vk::MemoryBarrier {
+                                        s_type: vk::StructureType::MemoryBarrier,
+                                        p_next: ptr::null(),
+                                        src_access_mask: vk::ACCESS_SHADER_READ_BIT
+                                            | vk::ACCESS_SHADER_WRITE_BIT,
+                                        dst_access_mask: vk::ACCESS_SHADER_READ_BIT
+                                            | vk::ACCESS_SHADER_WRITE_BIT,
+                                    }],
+                                    &[],
+                                    &[],
+                                );
                             }
+                            device.device.cmd_pipeline_barrier(
+                                command_buffer,
+                                vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                vk::PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                vk::DependencyFlags::empty(),
+                                &[vk::MemoryBarrier {
+                                    s_type: vk::StructureType::MemoryBarrier,
+                                    p_next: ptr::null(),
+                                    src_access_mask: vk::ACCESS_SHADER_WRITE_BIT,
+                                    dst_access_mask: vk::ACCESS_INDIRECT_COMMAND_READ_BIT,
+                                }],
+                                &[],
+                                &[],
+                            );
                         },
                     );
 
@@ -290,7 +353,7 @@ impl<'a> System<'a> for RenderFrame {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        9, // TODO: find max of GltfMeshBufferIndex
+                                        900, // TODO: find max of GltfMeshBufferIndex
                                         size_of::<u32>() as u32 * 5,
                                     );
                                 },
