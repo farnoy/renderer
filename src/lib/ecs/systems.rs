@@ -250,15 +250,20 @@ impl<'a> System<'a> for RenderFrame {
                                     vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                     vk::PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                     vk::DependencyFlags::empty(),
-                                    &[vk::MemoryBarrier {
-                                        s_type: vk::StructureType::MemoryBarrier,
-                                        p_next: ptr::null(),
-                                        src_access_mask: vk::ACCESS_SHADER_READ_BIT
-                                            | vk::ACCESS_SHADER_WRITE_BIT,
-                                        dst_access_mask: vk::ACCESS_SHADER_READ_BIT
-                                            | vk::ACCESS_SHADER_WRITE_BIT,
-                                    }],
                                     &[],
+                                    &[
+                                        vk::BufferMemoryBarrier {
+                                            s_type: vk::StructureType::BufferMemoryBarrier,
+                                            p_next: ptr::null(),
+                                            buffer: culled_index_buffer.handle,
+                                            offset: 0,
+                                            src_queue_family_index: device.graphics_queue_family,
+                                            src_access_mask: vk::ACCESS_SHADER_READ_BIT | vk::ACCESS_SHADER_WRITE_BIT,
+                                            dst_access_mask: vk::ACCESS_SHADER_READ_BIT | vk::ACCESS_SHADER_WRITE_BIT,
+                                            dst_queue_family_index: device.graphics_queue_family,
+                                            size: vk::VK_WHOLE_SIZE,
+                                        }
+                                    ],
                                     &[],
                                 );
                             }
