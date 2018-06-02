@@ -3,12 +3,14 @@
 pub mod alloc {
     pub use internal_alloc::*;
 }
+pub mod components;
 pub mod device;
-pub mod ecs;
 pub mod entry;
 pub mod helpers;
 pub mod instance;
+pub mod renderer;
 pub mod swapchain;
+pub mod systems;
 
 #[cfg(windows)]
 use ash::extensions::Win32Surface;

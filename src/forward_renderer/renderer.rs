@@ -1,110 +1,12 @@
-use super::{components::*};
+use super::components::*;
 use ash::{version::DeviceV1_0, vk};
-use cgmath;
 use futures::{
     executor::{self, block_on, spawn}, future::lazy,
 };
 use specs::prelude::*;
-use std::{
-    cmp::min, mem::size_of, ptr, slice::{from_raw_parts, from_raw_parts_mut}, sync::Arc, u64,
-};
+use std::{cmp::min, mem::size_of, ptr, slice::from_raw_parts, sync::Arc, u64};
 
-use super::super::helpers;
-
-pub struct SteadyRotation;
-
-impl<'a> System<'a> for SteadyRotation {
-    type SystemData = (WriteStorage<'a, Rotation>);
-
-    fn run(&mut self, mut rotations: Self::SystemData) {
-        use cgmath::Rotation3;
-        let incremental = cgmath::Quaternion::from_angle_y(cgmath::Deg(1.0));
-        for rot in (&mut rotations).join() {
-            *rot = Rotation(incremental * rot.0);
-        }
-    }
-}
-
-pub struct MVPCalculation {
-    pub projection: cgmath::Matrix4<f32>,
-    pub view: cgmath::Matrix4<f32>,
-}
-
-impl<'a> System<'a> for MVPCalculation {
-    type SystemData = (
-        ReadStorage<'a, Position>,
-        ReadStorage<'a, Rotation>,
-        ReadStorage<'a, Scale>,
-        WriteStorage<'a, Matrices>,
-    );
-
-    fn run(&mut self, (positions, rotations, scales, mut mvps): Self::SystemData) {
-        for (pos, rot, scale, mvp) in (&positions, &rotations, &scales, &mut mvps).join() {
-            mvp.model = cgmath::Matrix4::from_translation(pos.0)
-                * cgmath::Matrix4::from(rot.0)
-                * cgmath::Matrix4::from_scale(scale.0);
-
-            mvp.mvp = self.projection * self.view * mvp.model;
-            mvp.mv = self.view * mvp.model;
-        }
-    }
-}
-
-pub struct MVPUpload {
-    pub dst_mvp: Arc<helpers::Buffer>,
-    pub dst_mv: Arc<helpers::Buffer>,
-    pub dst_model: Arc<helpers::Buffer>,
-}
-
-unsafe impl Send for MVPUpload {}
-
-impl<'a> System<'a> for MVPUpload {
-    type SystemData = (Entities<'a>, ReadStorage<'a, Matrices>);
-
-    fn run(&mut self, (entities, matrices): Self::SystemData) {
-        (&*entities, &matrices)
-            .par_join()
-            .for_each(|(entity, matrices)| {
-                // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
-                let out_mvp = unsafe {
-                    from_raw_parts_mut(
-                        self.dst_mvp.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
-                        1024,
-                    )
-                };
-                let out_mv = unsafe {
-                    from_raw_parts_mut(
-                        self.dst_mv.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
-                        1024,
-                    )
-                };
-                let out_model = unsafe {
-                    from_raw_parts_mut(
-                        self.dst_model.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
-                        1024,
-                    )
-                };
-                out_mvp[entity.id() as usize] = matrices.mvp;
-                out_mv[entity.id() as usize] = matrices.mv;
-                out_model[entity.id() as usize] = matrices.model;
-            });
-    }
-}
-
-pub struct AssignBufferIndex;
-
-impl<'a> System<'a> for AssignBufferIndex {
-    type SystemData = (
-        ReadStorage<'a, GltfMesh>,
-        WriteStorage<'a, GltfMeshBufferIndex>,
-    );
-
-    fn run(&mut self, (meshes, mut indices): Self::SystemData) {
-        for (ix, (_mesh, buffer_index)) in (&meshes, &mut indices).join().enumerate() {
-            buffer_index.0 = ix as u32;
-        }
-    }
-}
+use super::helpers;
 
 pub struct RenderFrame {
     pub threadpool: executor::ThreadPool,
@@ -129,7 +31,7 @@ pub struct RenderFrame {
     pub cull_set: Arc<helpers::DescriptorSet>,
 }
 
-unsafe impl Send for RenderFrame {}
+// unsafe impl Send for RenderFrame {}
 
 impl<'a> System<'a> for RenderFrame {
     type SystemData = (
@@ -338,7 +240,10 @@ impl<'a> System<'a> for RenderFrame {
                                         900, // TODO: find max of GltfMeshBufferIndex
                                         size_of::<u32>() as u32 * 5,
                                     );
-                                    device.device.cmd_next_subpass(command_buffer, vk::SubpassContents::Inline);
+                                    device.device.cmd_next_subpass(
+                                        command_buffer,
+                                        vk::SubpassContents::Inline,
+                                    );
                                 },
                             );
                             device.device.debug_marker_around(

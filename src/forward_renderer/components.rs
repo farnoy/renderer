@@ -1,4 +1,4 @@
-use super::super::helpers;
+use super::helpers;
 use cgmath;
 use specs::*;
 use std::sync::Arc;

@@ -878,7 +878,7 @@ pub fn new_graphics_pipeline(
     shaders: &[(vk::ShaderStageFlags, PathBuf)],
     subpass: u32,
     rasterizer_discard: bool,
-    depth_write: bool
+    depth_write: bool,
 ) -> Arc<Pipeline> {
     let shader_modules = shaders
         .iter()

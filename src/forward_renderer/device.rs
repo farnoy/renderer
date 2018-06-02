@@ -249,7 +249,7 @@ impl Device {
     }
 
     #[cfg(feature = "validation")]
-    pub fn debug_marker_start(
+    pub fn _debug_marker_start(
         &self,
         command_buffer: vk::CommandBuffer,
         name: &str,

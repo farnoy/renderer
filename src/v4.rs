@@ -1,11 +1,11 @@
 #[macro_use]
 extern crate ash;
 extern crate cgmath;
-pub extern crate internal_alloc;
 extern crate futures;
 extern crate gltf;
 extern crate gltf_importer;
 extern crate gltf_utils;
+pub extern crate internal_alloc;
 extern crate rayon;
 extern crate specs;
 #[macro_use]
@@ -21,7 +21,7 @@ mod forward_renderer;
 
 use ash::{version::DeviceV1_0, vk};
 use cgmath::Rotation3;
-use forward_renderer::{alloc, ecs::*, helpers::*};
+use forward_renderer::{alloc, components::*, helpers::*, renderer::*, systems::*};
 use futures::executor::{block_on, ThreadPool};
 use gltf_utils::PrimitiveIterators;
 use std::{default::Default, mem::size_of, path::PathBuf, ptr, sync::Arc, u64};
@@ -250,7 +250,7 @@ fn main() {
         ],
         1,
         false,
-        false
+        false,
     );
     let depth_pipeline_layout =
         new_pipeline_layout(Arc::clone(&device), &[descriptor_set_layout.handle], &[]);
@@ -276,7 +276,7 @@ fn main() {
         )],
         0,
         true,
-        true
+        true,
     );
     let ubo_set = new_descriptor_set(
         Arc::clone(&device),
