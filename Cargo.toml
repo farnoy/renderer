@@ -8,7 +8,7 @@ build = "build.rs"
 # ash = { git = "https://github.com/farnoy/ash", rev = "a36f6bfd11619ac126e4406deb509e062824656e" }
 ash = "0.24.3"
 cgmath = "0.16"
-futures-preview = "0.2.0"
+futures-preview = "0.2.2"
 # futures-executor = "0.2.0-alpha"
 gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
@@ -41,8 +41,7 @@ path = "src/forward_renderer/alloc.rs"
 bindgen = "0.37"
 
 [target.'cfg(windows)'.dependencies]
-user32-sys = "^0.2"
-winapi = "^0.2"
+winapi = "^0.3.5"
 
 [features]
 default = []

@@ -12,8 +12,6 @@ extern crate specs;
 extern crate specs_derive;
 extern crate time;
 #[cfg(windows)]
-extern crate user32;
-#[cfg(windows)]
 extern crate winapi;
 extern crate winit;
 

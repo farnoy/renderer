@@ -21,8 +21,6 @@ use ash::vk;
 use std::default::Default;
 use std::ptr;
 #[cfg(windows)]
-use user32;
-#[cfg(windows)]
 use winapi;
 use winit;
 
@@ -53,8 +51,8 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     window: &winit::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::windows::WindowExt;
-    let hwnd = window.get_hwnd() as *mut winapi::windef::HWND__;
-    let hinstance = user32::GetWindow(hwnd, 0) as *const vk::c_void;
+    let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
+    let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const vk::c_void;
     let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
         s_type: vk::StructureType::Win32SurfaceCreateInfoKhr,
         p_next: ptr::null(),
