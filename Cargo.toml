@@ -8,7 +8,7 @@ build = "build.rs"
 # ash = { git = "https://github.com/farnoy/ash", rev = "a36f6bfd11619ac126e4406deb509e062824656e" }
 ash = "0.24.3"
 cgmath = "0.16"
-futures = "0.2.0-beta"
+futures-preview = "0.2.0"
 # futures-executor = "0.2.0-alpha"
 gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
@@ -25,7 +25,7 @@ gltf-utils = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbe
 image = "0.19"
 winit = "0.15"
 rayon = "1.0"
-specs = "0.11"
+specs = "0.12"
 specs-derive = "0.2"
 time = "0.1"
 

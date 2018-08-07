@@ -455,8 +455,8 @@ impl RenderFrame {
                 src_stage_mask: vk::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                 src_access_mask: Default::default(),
                 dst_access_mask: vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                    | vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                dst_stage_mask: vk::PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    | vk::ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                dst_stage_mask: vk::PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
             },
             vk::SubpassDependency {
                 dependency_flags: Default::default(),

@@ -24,6 +24,7 @@ use cgmath::Rotation3;
 use forward_renderer::{alloc, components::*, helpers::*, renderer::*, systems::*};
 use futures::executor::block_on;
 use gltf_utils::PrimitiveIterators;
+use specs::Builder;
 use std::{mem::size_of, ptr, sync::Arc, u64};
 use winit::{Event, KeyboardInput, WindowEvent};
 
