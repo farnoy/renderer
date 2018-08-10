@@ -54,7 +54,7 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
     let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const vk::c_void;
     let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
-        s_type: vk::StructureType::Win32SurfaceCreateInfoKhr,
+        s_type: vk::StructureType::WIN32_SURFACE_CREATE_INFO_KHR,
         p_next: ptr::null(),
         flags: Default::default(),
         hinstance,

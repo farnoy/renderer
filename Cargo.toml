@@ -5,8 +5,8 @@ build = "build.rs"
 
 [dependencies]
 # for relaxed raster order
-# ash = { git = "https://github.com/farnoy/ash", rev = "a36f6bfd11619ac126e4406deb509e062824656e" }
-ash = "0.24.3"
+ash = { git = "https://github.com/MaikKlein/ash", branch = "generator" }
+# ash = "0.24.3"
 cgmath = "0.16"
 futures-preview = "0.2.2"
 # futures-executor = "0.2.0-alpha"

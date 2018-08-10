@@ -1,23 +1,34 @@
 use super::entry::Entry;
 use ash;
+use ash::extensions::Surface;
 #[cfg(windows)]
 use ash::extensions::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::XlibSurface;
-use ash::extensions::{DebugReport, Surface};
 use ash::version;
 use ash::version::EntryV1_0;
 use ash::vk;
 use std::ffi::CString;
+#[allow(unused_imports)]
+use std::mem::transmute;
 use std::ops;
 use std::ptr;
 use std::sync::Arc;
 
 pub type AshInstance = ash::Instance<version::V1_0>;
 
+#[cfg(feature = "validation")]
 pub struct Instance {
     handle: AshInstance,
-    entry: Arc<Entry>,
+    _entry: Arc<Entry>,
+    debug_utils: vk::extensions::ExtDebugUtilsFn,
+    debug_messenger: vk::DebugUtilsMessengerEXT,
+}
+
+#[cfg(not(feature = "validation"))]
+pub struct Instance {
+    handle: AshInstance,
+    _entry: Arc<Entry>,
 }
 
 impl Instance {
@@ -35,7 +46,7 @@ impl Instance {
         let name = CString::new("Renderer").unwrap();
         let appinfo = vk::ApplicationInfo {
             p_application_name: name.as_ptr(),
-            s_type: vk::StructureType::ApplicationInfo,
+            s_type: vk::StructureType::APPLICATION_INFO,
             p_next: ptr::null(),
             application_version: 0,
             p_engine_name: name.as_ptr(),
@@ -43,7 +54,7 @@ impl Instance {
             api_version: vk_make_version!(1, 1, 0),
         };
         let create_info = vk::InstanceCreateInfo {
-            s_type: vk::StructureType::InstanceCreateInfo,
+            s_type: vk::StructureType::INSTANCE_CREATE_INFO,
             p_next: ptr::null(),
             flags: Default::default(),
             p_application_info: &appinfo,
@@ -54,18 +65,112 @@ impl Instance {
         };
         let instance: AshInstance = unsafe { entry.create_instance(&create_info, None)? };
 
-        Ok(Arc::new(Instance {
-            handle: instance,
-            entry: entry.clone(),
-        }))
-    }
+        #[cfg(feature = "validation")]
+        {
+            let debug_utils = vk::extensions::ExtDebugUtilsFn::load(|name| unsafe {
+                transmute(
+                    entry
+                        .vk()
+                        .get_instance_proc_addr(instance.handle(), name.as_ptr()),
+                )
+            }).expect("DebugUtils extension not supported");
 
-    pub fn entry(&self) -> &Entry {
-        &self.entry
+            unsafe extern "system" fn vulkan_debug_callback(
+                severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+                message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+                data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+                _user_data: *mut vk::c_void,
+            ) -> vk::Bool32 {
+                use std::ffi::CStr;
+                let message_id = (*data).p_message_id_name;
+                if !message_id.is_null() {
+                    let s = CStr::from_ptr(message_id)
+                        .to_str()
+                        .expect("Something weird in p_message_id_name");
+                    print!("[ {} ] ", s);
+                };
+
+                let severity_str = match severity {
+                    vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => "VERBOSE",
+                    vk::DebugUtilsMessageSeverityFlagsEXT::INFO => "INFO",
+                    vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => "WARNING",
+                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => "ERROR",
+                    _ => "OTHER",
+                };
+                let type_str = match message_type {
+                    vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "GENERAL",
+                    vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => "VALIDATION",
+                    vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "PERFORMANCE",
+                    _ => "OTHER",
+                };
+                println!(
+                    "{} & {} => {}",
+                    severity_str,
+                    type_str,
+                    CStr::from_ptr((*data).p_message)
+                        .to_str()
+                        .expect("Weird validation layer message")
+                );
+                for ix in 0..((*data).object_count) {
+                    let name = (*data).p_objects.offset(ix as isize).read();
+                    println!(
+                        "    Object[{}] - Type {:?}, Value 0x{:x?}, Name \"{}\"",
+                        ix,
+                        name.object_type,
+                        name.object_handle,
+                        CStr::from_ptr(name.p_object_name).to_str().unwrap(),
+                    );
+                }
+                1
+            }
+
+            let create_info = vk::DebugUtilsMessengerCreateInfoEXT {
+                s_type: vk::StructureType::DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                p_next: ptr::null(),
+                flags: vk::DebugUtilsMessengerCreateFlagsEXT::empty(),
+                message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                    | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                message_type: vk::DebugUtilsMessageTypeFlagsEXT::all(),
+                pfn_user_callback: vulkan_debug_callback,
+                p_user_data: ptr::null_mut(),
+            };
+
+            let mut debug_messenger = vk::DebugUtilsMessengerEXT::null();
+
+            let res = unsafe {
+                debug_utils.create_debug_utils_messenger_ext(
+                    instance.handle(),
+                    &create_info,
+                    ptr::null(),
+                    &mut debug_messenger,
+                )
+            };
+            assert_eq!(res, vk::Result::SUCCESS);
+
+            Ok(Arc::new(Instance {
+                handle: instance,
+                _entry: entry.clone(),
+                debug_utils,
+                debug_messenger,
+            }))
+        }
+
+        #[cfg(not(feature = "validation"))]
+        {
+            Ok(Arc::new(Instance {
+                handle: instance,
+                _entry: entry.clone(),
+            }))
+        }
     }
 
     pub fn vk(&self) -> &AshInstance {
         &self.handle
+    }
+
+    #[cfg(feature = "validation")]
+    pub fn debug_utils(&self) -> &vk::extensions::ExtDebugUtilsFn {
+        &self.debug_utils
     }
 }
 
@@ -80,18 +185,30 @@ impl ops::Deref for Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         use ash::version::InstanceV1_0;
+
+        #[cfg(feature = "validation")]
+        unsafe {
+            self.debug_utils.destroy_debug_utils_messenger_ext(
+                self.handle.handle(),
+                self.debug_messenger,
+                ptr::null(),
+            );
+        }
+
         unsafe {
             self.handle.destroy_instance(None);
         }
     }
 }
 
+static DEBUG_UTILS: &'static str = "VK_EXT_debug_utils\0";
+
 #[cfg(all(unix, not(target_os = "android")))]
 fn extension_names() -> Vec<*const i8> {
     vec![
         Surface::name().as_ptr(),
         XlibSurface::name().as_ptr(),
-        DebugReport::name().as_ptr(),
+        DEBUG_UTILS.as_ptr() as *const i8,
     ]
 }
 
@@ -100,6 +217,6 @@ fn extension_names() -> Vec<*const i8> {
     vec![
         Surface::name().as_ptr(),
         Win32Surface::name().as_ptr(),
-        DebugReport::name().as_ptr(),
+        DEBUG_UTILS.as_ptr() as *const i8,
     ]
 }

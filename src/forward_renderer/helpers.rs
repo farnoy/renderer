@@ -1,11 +1,20 @@
 use super::{alloc, create_surface, device, entry, instance, swapchain};
 use ash::{
-    extensions, version::{DeviceV1_0, InstanceV1_0}, vk,
+    extensions,
+    version::{DeviceV1_0, InstanceV1_0},
+    vk,
 };
 use futures::{future, prelude::*};
 use std::{
-    default::Default, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
-    sync::{Arc, Mutex}, u32, u64,
+    default::Default,
+    ffi::CString,
+    fs::File,
+    io::Read,
+    mem::transmute,
+    path::PathBuf,
+    ptr,
+    sync::{Arc, Mutex},
+    u32, u64,
 };
 use winit;
 
@@ -267,16 +276,15 @@ pub fn new_device(instance: &Instance) -> Arc<Device> {
             .iter()
             .enumerate()
             .filter_map(|(ix, info)| {
-                let supports_graphic_and_surface = info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
-                    && surface_loader
+                let supports_graphic_and_surface =
+                    info.queue_flags.subset(vk::QueueFlags::GRAPHICS) && surface_loader
                         .get_physical_device_surface_support_khr(pdevice, ix as u32, surface);
                 if supports_graphic_and_surface {
                     Some(ix as u32)
                 } else {
                     None
                 }
-            })
-            .next()
+            }).next()
             .unwrap()
     };
     let (compute_queue_family, compute_queue_len) = {
@@ -285,15 +293,14 @@ pub fn new_device(instance: &Instance) -> Arc<Device> {
             .iter()
             .enumerate()
             .filter_map(|(ix, info)| {
-                if info.queue_flags.subset(vk::QUEUE_COMPUTE_BIT)
-                    && !info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
+                if info.queue_flags.subset(vk::QueueFlags::COMPUTE)
+                    && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
                 {
                     Some((ix as u32, info.queue_count))
                 } else {
                     None
                 }
-            })
-            .next()
+            }).next()
     }.unwrap_or((graphics_queue_family, 1));
     let transfer_queue_family = if cfg!(feature = "validation") {
         compute_queue_family
@@ -303,16 +310,15 @@ pub fn new_device(instance: &Instance) -> Arc<Device> {
             .iter()
             .enumerate()
             .filter_map(|(ix, info)| {
-                if info.queue_flags.subset(vk::QUEUE_TRANSFER_BIT)
-                    && !info.queue_flags.subset(vk::QUEUE_GRAPHICS_BIT)
-                    && !info.queue_flags.subset(vk::QUEUE_COMPUTE_BIT)
+                if info.queue_flags.subset(vk::QueueFlags::TRANSFER)
+                    && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
+                    && !info.queue_flags.subset(vk::QueueFlags::COMPUTE)
                 {
                     Some(ix as u32)
                 } else {
                     None
                 }
-            })
-            .next()
+            }).next()
             .unwrap_or(compute_queue_family)
     };
     // TODO: this needs to be reworked in a DAG way, right now vk::Queue handles
@@ -372,20 +378,19 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
 
     let surface_loader = extensions::Surface::new(entry.vk(), instance.vk())
         .expect("Unable to load the Surface extension");
-    let present_mode = vk::PresentModeKHR::Fifo;
+    let present_mode = vk::PresentModeKHR::FIFO;
     let surface_formats = surface_loader
         .get_physical_device_surface_formats_khr(physical_device, surface)
         .unwrap();
     let surface_format = surface_formats
         .iter()
         .map(|sfmt| match sfmt.format {
-            vk::Format::Undefined => vk::SurfaceFormatKHR {
-                format: vk::Format::B8g8r8Unorm,
+            vk::Format::UNDEFINED => vk::SurfaceFormatKHR {
+                format: vk::Format::B8G8R8_UNORM,
                 color_space: sfmt.color_space,
             },
-            _ => sfmt.clone(),
-        })
-        .nth(0)
+            _ => *sfmt,
+        }).nth(0)
         .expect("Unable to find suitable surface format.");
     let surface_capabilities = surface_loader
         .get_physical_device_surface_capabilities_khr(physical_device, surface)
@@ -405,9 +410,9 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     };
     let pre_transform = if surface_capabilities
         .supported_transforms
-        .subset(vk::SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+        .subset(vk::SurfaceTransformFlagsKHR::IDENTITY)
     {
-        vk::SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+        vk::SurfaceTransformFlagsKHR::IDENTITY
     } else {
         surface_capabilities.current_transform
     };
@@ -415,7 +420,7 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     let swapchain_loader =
         extensions::Swapchain::new(instance.vk(), device.vk()).expect("Unable to load swapchain");
     let swapchain_create_info = vk::SwapchainCreateInfoKHR {
-        s_type: vk::StructureType::SwapchainCreateInfoKhr,
+        s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
         p_next: ptr::null(),
         flags: Default::default(),
         surface,
@@ -423,10 +428,10 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
         image_color_space: surface_format.color_space,
         image_format: surface_format.format,
         image_extent: surface_resolution,
-        image_usage: vk::IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        image_sharing_mode: vk::SharingMode::Exclusive,
+        image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        image_sharing_mode: vk::SharingMode::EXCLUSIVE,
         pre_transform,
-        composite_alpha: vk::COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
         present_mode,
         clipped: 1,
         old_swapchain: vk::SwapchainKHR::null(),
@@ -441,7 +446,7 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     };
 
     device.set_object_name(
-        vk::DebugReportObjectTypeEXT::SurfaceKhr,
+        vk::ObjectType::SURFACE_KHR,
         unsafe { transmute::<_, u64>(swapchain) },
         "Window surface",
     );
@@ -460,7 +465,7 @@ pub fn new_renderpass(
     subpass_dependencies: &[vk::SubpassDependency],
 ) -> Arc<RenderPass> {
     let renderpass_create_info = vk::RenderPassCreateInfo {
-        s_type: vk::StructureType::RenderPassCreateInfo,
+        s_type: vk::StructureType::RENDER_PASS_CREATE_INFO,
         flags: Default::default(),
         p_next: ptr::null(),
         attachment_count: attachments.len() as u32,
@@ -489,7 +494,7 @@ pub fn new_command_pool(
     flags: vk::CommandPoolCreateFlags,
 ) -> Arc<CommandPool> {
     let pool_create_info = vk::CommandPoolCreateInfo {
-        s_type: vk::StructureType::CommandPoolCreateInfo,
+        s_type: vk::StructureType::COMMAND_POOL_CREATE_INFO,
         p_next: ptr::null(),
         flags,
         queue_family_index: queue_family,
@@ -535,25 +540,25 @@ pub fn setup_framebuffer(
             alloc::create_image(
                 device.allocator,
                 &vk::ImageCreateInfo {
-                    s_type: vk::StructureType::ImageCreateInfo,
+                    s_type: vk::StructureType::IMAGE_CREATE_INFO,
                     p_next: ptr::null(),
                     flags: Default::default(),
-                    image_type: vk::ImageType::Type2d,
-                    format: vk::Format::D16Unorm,
+                    image_type: vk::ImageType::TYPE_2D,
+                    format: vk::Format::D16_UNORM,
                     extent: vk::Extent3D {
                         width: instance.window_width,
                         height: instance.window_height,
                         depth: 1,
                     },
-                    sharing_mode: vk::SharingMode::Exclusive,
+                    sharing_mode: vk::SharingMode::EXCLUSIVE,
                     queue_family_index_count: 1,
                     p_queue_family_indices: &device.graphics_queue_family,
                     mip_levels: 1,
                     array_layers: 1,
-                    samples: vk::SAMPLE_COUNT_1_BIT,
-                    tiling: vk::ImageTiling::Optimal,
-                    usage: vk::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                    initial_layout: vk::ImageLayout::Undefined,
+                    samples: vk::SampleCountFlags::TYPE_1,
+                    tiling: vk::ImageTiling::OPTIMAL,
+                    usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                    initial_layout: vk::ImageLayout::UNDEFINED,
                 },
                 &alloc::VmaAllocationCreateInfo {
                     flags: alloc::VmaAllocationCreateFlagBits(0),
@@ -565,16 +570,15 @@ pub fn setup_framebuffer(
                     usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 },
             ).unwrap()
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
     let image_views = images
         .iter()
         .map(|&image| {
             let create_view_info = vk::ImageViewCreateInfo {
-                s_type: vk::StructureType::ImageViewCreateInfo,
+                s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
                 p_next: ptr::null(),
                 flags: Default::default(),
-                view_type: vk::ImageViewType::Type2d,
+                view_type: vk::ImageViewType::TYPE_2D,
                 format: surface_format.format,
                 components: vk::ComponentMapping {
                     r: vk::ComponentSwizzle::R,
@@ -583,7 +587,7 @@ pub fn setup_framebuffer(
                     a: vk::ComponentSwizzle::A,
                 },
                 subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::IMAGE_ASPECT_COLOR_BIT,
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
@@ -597,25 +601,24 @@ pub fn setup_framebuffer(
                     .create_image_view(&create_view_info, None)
                     .unwrap()
             }
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
     let depth_image_views = depth_images
         .iter()
         .map(|ref image| {
             let create_view_info = vk::ImageViewCreateInfo {
-                s_type: vk::StructureType::ImageViewCreateInfo,
+                s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
                 p_next: ptr::null(),
                 flags: Default::default(),
-                view_type: vk::ImageViewType::Type2d,
-                format: vk::Format::D16Unorm,
+                view_type: vk::ImageViewType::TYPE_2D,
+                format: vk::Format::D16_UNORM,
                 components: vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::Identity,
-                    g: vk::ComponentSwizzle::Identity,
-                    b: vk::ComponentSwizzle::Identity,
-                    a: vk::ComponentSwizzle::Identity,
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
                 },
                 subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::IMAGE_ASPECT_DEPTH_BIT,
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
@@ -629,15 +632,14 @@ pub fn setup_framebuffer(
                     .create_image_view(&create_view_info, None)
                     .unwrap()
             }
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
     let handles = image_views
         .iter()
         .zip(depth_image_views.iter())
         .map(|(&present_image_view, &depth_image_view)| {
             let framebuffer_attachments = [present_image_view, depth_image_view];
             let frame_buffer_create_info = vk::FramebufferCreateInfo {
-                s_type: vk::StructureType::FramebufferCreateInfo,
+                s_type: vk::StructureType::FRAMEBUFFER_CREATE_INFO,
                 p_next: ptr::null(),
                 flags: Default::default(),
                 render_pass: renderpass.handle,
@@ -653,8 +655,7 @@ pub fn setup_framebuffer(
                     .create_framebuffer(&frame_buffer_create_info, None)
                     .unwrap()
             }
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
 
     let framebuffer = Framebuffer {
         _images: images,
@@ -670,7 +671,7 @@ pub fn setup_framebuffer(
 
 pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
     let create_info = vk::SemaphoreCreateInfo {
-        s_type: vk::StructureType::SemaphoreCreateInfo,
+        s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::SemaphoreCreateFlags::empty(),
     };
@@ -686,11 +687,11 @@ pub fn _allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
     let command_buffers = unsafe {
         let pool_lock = pool.handle.lock().unwrap();
         let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-            s_type: vk::StructureType::CommandBufferAllocateInfo,
+            s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
             p_next: ptr::null(),
             command_buffer_count: 1,
             command_pool: *pool_lock,
-            level: vk::CommandBufferLevel::Primary,
+            level: vk::CommandBufferLevel::PRIMARY,
         };
         pool.device
             .device
@@ -708,7 +709,7 @@ pub fn _allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
 
 pub fn new_fence(device: Arc<Device>) -> Arc<Fence> {
     let create_info = vk::FenceCreateInfo {
-        s_type: vk::StructureType::FenceCreateInfo,
+        s_type: vk::StructureType::FENCE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::FenceCreateFlags::empty(),
     };
@@ -733,12 +734,12 @@ pub fn new_buffer(
 ) -> Arc<Buffer> {
     let queue_families = [device.graphics_queue_family, device.compute_queue_family];
     let buffer_create_info = vk::BufferCreateInfo {
-        s_type: vk::StructureType::BufferCreateInfo,
+        s_type: vk::StructureType::BUFFER_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         size,
         usage: buffer_usage,
-        sharing_mode: vk::SharingMode::Exclusive,
+        sharing_mode: vk::SharingMode::EXCLUSIVE,
         queue_family_index_count: queue_families.len() as u32,
         p_queue_family_indices: &queue_families as *const _,
     };
@@ -772,7 +773,7 @@ pub fn new_descriptor_set_layout(
     bindings: &[vk::DescriptorSetLayoutBinding],
 ) -> Arc<DescriptorSetLayout> {
     let create_info = vk::DescriptorSetLayoutCreateInfo {
-        s_type: vk::StructureType::DescriptorSetLayoutCreateInfo,
+        s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         binding_count: bindings.len() as u32,
@@ -794,9 +795,9 @@ pub fn new_descriptor_pool(
     pool_sizes: &[vk::DescriptorPoolSize],
 ) -> Arc<DescriptorPool> {
     let create_info = vk::DescriptorPoolCreateInfo {
-        s_type: vk::StructureType::DescriptorPoolCreateInfo,
+        s_type: vk::StructureType::DESCRIPTOR_POOL_CREATE_INFO,
         p_next: ptr::null(),
-        flags: vk::DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        flags: vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
         max_sets,
         pool_size_count: pool_sizes.len() as u32,
         p_pool_sizes: pool_sizes.as_ptr(),
@@ -819,7 +820,7 @@ pub fn new_descriptor_set(
 ) -> Arc<DescriptorSet> {
     let layouts = &[layout.handle];
     let desc_alloc_info = vk::DescriptorSetAllocateInfo {
-        s_type: vk::StructureType::DescriptorSetAllocateInfo,
+        s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
         p_next: ptr::null(),
         descriptor_pool: pool.handle,
         descriptor_set_count: layouts.len() as u32,
@@ -846,7 +847,7 @@ pub fn new_pipeline_layout(
     push_constant_ranges: &[vk::PushConstantRange],
 ) -> Arc<PipelineLayout> {
     let create_info = vk::PipelineLayoutCreateInfo {
-        s_type: vk::StructureType::PipelineLayoutCreateInfo,
+        s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         set_layout_count: descriptor_set_layouts.len() as u32,
@@ -886,7 +887,7 @@ pub fn new_graphics_pipeline(
             let file = File::open(path).expect("Could not find shader.");
             let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
             let shader_info = vk::ShaderModuleCreateInfo {
-                s_type: vk::StructureType::ShaderModuleCreateInfo,
+                s_type: vk::StructureType::SHADER_MODULE_CREATE_INFO,
                 p_next: ptr::null(),
                 flags: Default::default(),
                 code_size: bytes.len(),
@@ -899,23 +900,21 @@ pub fn new_graphics_pipeline(
                     .expect("Vertex shader module error")
             };
             (shader_module, stage)
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
     let shader_entry_name = CString::new("main").unwrap();
     let shader_stage_create_infos = shader_modules
         .iter()
         .map(|&(module, stage)| vk::PipelineShaderStageCreateInfo {
-            s_type: vk::StructureType::PipelineShaderStageCreateInfo,
+            s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
             p_next: ptr::null(),
             flags: Default::default(),
             module,
             p_name: shader_entry_name.as_ptr(),
             p_specialization_info: ptr::null(),
             stage,
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
     let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
-        s_type: vk::StructureType::PipelineVertexInputStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         vertex_attribute_description_count: input_attributes.len() as u32,
@@ -924,11 +923,11 @@ pub fn new_graphics_pipeline(
         p_vertex_binding_descriptions: input_bindings.as_ptr(),
     };
     let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
-        s_type: vk::StructureType::PipelineInputAssemblyStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         flags: Default::default(),
         p_next: ptr::null(),
         primitive_restart_enable: 0,
-        topology: vk::PrimitiveTopology::TriangleList,
+        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
     };
     let viewports = [vk::Viewport {
         x: 0.0,
@@ -946,7 +945,7 @@ pub fn new_graphics_pipeline(
         },
     }];
     let viewport_state_info = vk::PipelineViewportStateCreateInfo {
-        s_type: vk::StructureType::PipelineViewportStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         scissor_count: scissors.len() as u32,
@@ -962,25 +961,25 @@ pub fn new_graphics_pipeline(
     };
     */
     let rasterization_info = vk::PipelineRasterizationStateCreateInfo {
-        s_type: vk::StructureType::PipelineRasterizationStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         p_next: ptr::null(), // unsafe { transmute(&raster_order_amd) },
         flags: Default::default(),
-        cull_mode: vk::CULL_MODE_BACK_BIT,
+        cull_mode: vk::CullModeFlags::BACK,
         depth_bias_clamp: 0.0,
         depth_bias_constant_factor: 0.0,
         depth_bias_enable: 0,
         depth_bias_slope_factor: 0.0,
         depth_clamp_enable: 0,
-        front_face: vk::FrontFace::Clockwise,
+        front_face: vk::FrontFace::CLOCKWISE,
         line_width: 1.0,
-        polygon_mode: vk::PolygonMode::Fill,
+        polygon_mode: vk::PolygonMode::FILL,
         rasterizer_discard_enable: if rasterizer_discard { 1 } else { 0 },
     };
     let multisample_state_info = vk::PipelineMultisampleStateCreateInfo {
-        s_type: vk::StructureType::PipelineMultisampleStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         flags: Default::default(),
         p_next: ptr::null(),
-        rasterization_samples: vk::SAMPLE_COUNT_1_BIT,
+        rasterization_samples: vk::SampleCountFlags::TYPE_1,
         sample_shading_enable: 0,
         min_sample_shading: 0.0,
         p_sample_mask: ptr::null(),
@@ -988,21 +987,21 @@ pub fn new_graphics_pipeline(
         alpha_to_coverage_enable: 0,
     };
     let noop_stencil_state = vk::StencilOpState {
-        fail_op: vk::StencilOp::Keep,
-        pass_op: vk::StencilOp::Keep,
-        depth_fail_op: vk::StencilOp::Keep,
-        compare_op: vk::CompareOp::Always,
+        fail_op: vk::StencilOp::KEEP,
+        pass_op: vk::StencilOp::KEEP,
+        depth_fail_op: vk::StencilOp::KEEP,
+        compare_op: vk::CompareOp::ALWAYS,
         compare_mask: 0,
         write_mask: 0,
         reference: 0,
     };
     let depth_state_info = vk::PipelineDepthStencilStateCreateInfo {
-        s_type: vk::StructureType::PipelineDepthStencilStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         depth_test_enable: 1,
         depth_write_enable: if depth_write { 1 } else { 0 },
-        depth_compare_op: vk::CompareOp::LessOrEqual,
+        depth_compare_op: vk::CompareOp::LESS_OR_EQUAL,
         depth_bounds_test_enable: 1,
         stencil_test_enable: 0,
         front: noop_stencil_state,
@@ -1012,20 +1011,20 @@ pub fn new_graphics_pipeline(
     };
     let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
         blend_enable: 0,
-        src_color_blend_factor: vk::BlendFactor::SrcColor,
-        dst_color_blend_factor: vk::BlendFactor::OneMinusDstColor,
-        color_blend_op: vk::BlendOp::Add,
-        src_alpha_blend_factor: vk::BlendFactor::Zero,
-        dst_alpha_blend_factor: vk::BlendFactor::Zero,
-        alpha_blend_op: vk::BlendOp::Add,
+        src_color_blend_factor: vk::BlendFactor::SRC_COLOR,
+        dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        color_blend_op: vk::BlendOp::ADD,
+        src_alpha_blend_factor: vk::BlendFactor::ZERO,
+        dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+        alpha_blend_op: vk::BlendOp::ADD,
         color_write_mask: vk::ColorComponentFlags::all(),
     }];
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
-        s_type: vk::StructureType::PipelineColorBlendStateCreateInfo,
+        s_type: vk::StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         logic_op_enable: 0,
-        logic_op: vk::LogicOp::Clear,
+        logic_op: vk::LogicOp::CLEAR,
         attachment_count: color_blend_attachment_states.len() as u32,
         p_attachments: color_blend_attachment_states.as_ptr(),
         blend_constants: [0.0, 0.0, 0.0, 0.0],
@@ -1041,7 +1040,7 @@ pub fn new_graphics_pipeline(
         };
         */
     let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo {
-        s_type: vk::StructureType::GraphicsPipelineCreateInfo,
+        s_type: vk::StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineCreateFlags::empty(),
         stage_count: shader_stage_create_infos.len() as u32,
@@ -1057,7 +1056,7 @@ pub fn new_graphics_pipeline(
         p_dynamic_state: ptr::null(), // &dynamic_state_info,
         layout: pipeline_layout.handle,
         render_pass: renderpass.handle,
-        subpass: subpass,
+        subpass,
         base_pipeline_handle: vk::Pipeline::null(),
         base_pipeline_index: 0,
     };
@@ -1088,7 +1087,7 @@ pub fn new_compute_pipeline(
         let file = File::open(shader).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
         let shader_info = vk::ShaderModuleCreateInfo {
-            s_type: vk::StructureType::ShaderModuleCreateInfo,
+            s_type: vk::StructureType::SHADER_MODULE_CREATE_INFO,
             p_next: ptr::null(),
             flags: Default::default(),
             code_size: bytes.len(),
@@ -1103,16 +1102,16 @@ pub fn new_compute_pipeline(
     };
     let shader_entry_name = CString::new("main").unwrap();
     let shader_stage = vk::PipelineShaderStageCreateInfo {
-        s_type: vk::StructureType::PipelineShaderStageCreateInfo,
+        s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         module: shader_module,
         p_name: shader_entry_name.as_ptr(),
         p_specialization_info: ptr::null(),
-        stage: vk::SHADER_STAGE_COMPUTE_BIT,
+        stage: vk::ShaderStageFlags::COMPUTE,
     };
     let create_info = vk::ComputePipelineCreateInfo {
-        s_type: vk::StructureType::ComputePipelineCreateInfo,
+        s_type: vk::StructureType::COMPUTE_PIPELINE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineCreateFlags::empty(),
         stage: shader_stage,
@@ -1127,6 +1126,10 @@ pub fn new_compute_pipeline(
             .create_compute_pipelines(vk::PipelineCache::null(), &[create_info], None)
             .unwrap()
     };
+
+    unsafe {
+        device.device.destroy_shader_module(shader_module, None);
+    }
 
     Arc::new(Pipeline {
         handle: pipelines[0],
@@ -1143,11 +1146,11 @@ pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
             let pool_lock = command_pool.handle.lock().unwrap();
             let command_buffer = {
                 let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-                    s_type: vk::StructureType::CommandBufferAllocateInfo,
+                    s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
                     p_next: ptr::null(),
                     command_buffer_count: 1,
                     command_pool: *pool_lock,
-                    level: vk::CommandBufferLevel::Primary,
+                    level: vk::CommandBufferLevel::PRIMARY,
                 };
                 command_pool
                     .device
@@ -1157,10 +1160,10 @@ pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
             };
 
             let begin_info = vk::CommandBufferBeginInfo {
-                s_type: vk::StructureType::CommandBufferBeginInfo,
+                s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
                 p_next: ptr::null(),
                 p_inheritance_info: ptr::null(),
-                flags: vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
             };
             command_pool
                 .device
@@ -1197,7 +1200,7 @@ pub fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
 
         unsafe {
             let submits = [vk::SubmitInfo {
-                s_type: vk::StructureType::SubmitInfo,
+                s_type: vk::StructureType::SUBMIT_INFO,
                 p_next: ptr::null(),
                 wait_semaphore_count: 0,
                 p_wait_semaphores: ptr::null(),

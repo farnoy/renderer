@@ -86,16 +86,16 @@ fn main() {
         let normals_size = size_of::<f32>() as u64 * 3 * vertex_len;
         let vertex_buffer = new_buffer(
             Arc::clone(&renderer.device),
-            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT
-                | vk::BUFFER_USAGE_TRANSFER_DST_BIT
-                | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::STORAGE_BUFFER,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             vertex_size,
         );
         let vertex_upload_buffer = new_buffer(
             Arc::clone(&renderer.device),
-            vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
+            vk::BufferUsageFlags::TRANSFER_SRC,
             alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             vertex_size,
@@ -108,14 +108,14 @@ fn main() {
         }
         let normal_buffer = new_buffer(
             Arc::clone(&renderer.device),
-            vk::BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::BUFFER_USAGE_TRANSFER_DST_BIT,
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             normals_size,
         );
         let normal_upload_buffer = new_buffer(
             Arc::clone(&renderer.device),
-            vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
+            vk::BufferUsageFlags::TRANSFER_SRC,
             alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             normals_size,
@@ -133,16 +133,16 @@ fn main() {
         let index_size = size_of::<u32>() as u64 * index_len;
         let index_buffer = new_buffer(
             Arc::clone(&renderer.device),
-            vk::BUFFER_USAGE_INDEX_BUFFER_BIT
-                | vk::BUFFER_USAGE_TRANSFER_DST_BIT
-                | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::STORAGE_BUFFER,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             index_size,
         );
         let index_upload_buffer = new_buffer(
             Arc::clone(&renderer.device),
-            vk::BUFFER_USAGE_TRANSFER_SRC_BIT,
+            vk::BufferUsageFlags::TRANSFER_SRC,
             alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             index_size,
@@ -206,7 +206,7 @@ fn main() {
 
     let culled_index_buffer = new_buffer(
         Arc::clone(&renderer.device),
-        vk::BUFFER_USAGE_INDEX_BUFFER_BIT | vk::BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<u32>() as vk::DeviceSize * index_len * 900,
@@ -217,34 +217,34 @@ fn main() {
             vk::DescriptorBufferInfo {
                 buffer: renderer.culled_commands_buffer.handle,
                 offset: 0,
-                range: vk::VK_WHOLE_SIZE,
+                range: vk::WHOLE_SIZE,
             },
             vk::DescriptorBufferInfo {
                 buffer: index_buffer.handle,
                 offset: 0,
-                range: vk::VK_WHOLE_SIZE,
+                range: vk::WHOLE_SIZE,
             },
             vk::DescriptorBufferInfo {
                 buffer: vertex_buffer.handle,
                 offset: 0,
-                range: vk::VK_WHOLE_SIZE,
+                range: vk::WHOLE_SIZE,
             },
             vk::DescriptorBufferInfo {
                 buffer: culled_index_buffer.handle,
                 offset: 0,
-                range: vk::VK_WHOLE_SIZE,
+                range: vk::WHOLE_SIZE,
             },
         ];
         unsafe {
             renderer.device.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet {
-                    s_type: vk::StructureType::WriteDescriptorSet,
+                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
                     p_next: ptr::null(),
                     dst_set: renderer.cull_set.handle,
                     dst_binding: 0,
                     dst_array_element: 0,
                     descriptor_count: buffer_updates.len() as u32,
-                    descriptor_type: vk::DescriptorType::StorageBuffer,
+                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
                     p_image_info: ptr::null(),
                     p_buffer_info: buffer_updates.as_ptr(),
                     p_texel_buffer_view: ptr::null(),
@@ -274,8 +274,7 @@ fn main() {
                 ((ix % 3) * 2 - 2) as f32,
                 0.0,
                 2.0 + ix as f32,
-            )))
-            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
+            ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<GltfMesh>(GltfMesh {
@@ -283,8 +282,7 @@ fn main() {
                 normal_buffer: Arc::clone(&normal_buffer),
                 index_buffer: Arc::clone(&index_buffer),
                 index_len,
-            })
-            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+            }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .build();
     }
     let mut dispatcher = specs::DispatcherBuilder::new()
@@ -295,21 +293,18 @@ fn main() {
             MVPCalculation { projection, view },
             "mvp",
             &["steady_rotation"],
-        )
-        .with(
+        ).with(
             MVPUpload {
                 dst_mvp: Arc::clone(&renderer.ubo_buffer),
                 dst_model: Arc::clone(&renderer.model_buffer),
             },
             "mvp_upload",
             &["mvp"],
-        )
-        .with(
+        ).with(
             renderer,
             "render_frame",
             &["assign_buffer_index", "mvp_upload"],
-        )
-        .build();
+        ).build();
 
     'frame: loop {
         let mut quit = false;

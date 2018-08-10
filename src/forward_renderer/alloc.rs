@@ -71,7 +71,7 @@ pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkRes
     let err_code =
         unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
     match err_code {
-        vk::Result::Success => Ok(allocator),
+        vk::Result::SUCCESS => Ok(allocator),
         _ => Err(err_code),
     }
 }
@@ -98,7 +98,7 @@ pub fn create_buffer(
             &mut info as *mut _,
         );
         match err_code {
-            vk::Result::Success => Ok((buffer, allocation, info)),
+            vk::Result::SUCCESS => Ok((buffer, allocation, info)),
             _ => Err(err_code),
         }
     }
@@ -126,7 +126,7 @@ pub fn create_image(
             &mut info as *mut _,
         );
         match err_code {
-            vk::Result::Success => Ok((image, allocation, info)),
+            vk::Result::SUCCESS => Ok((image, allocation, info)),
             _ => Err(err_code),
         }
     }
