@@ -35,14 +35,6 @@ fn main() {
         assert!(result, "failed to compile shader");
     }
 
-    if cfg!(windows) {
-        println!("cargo:rustc-link-lib=static=vulkan-1");
-        println!("cargo:rustc-link-lib=msvcrt");
-        println!("cargo:rustc-link-search=native=C:\\VulkanSDK\\1.1.82.0\\Lib");
-    } else {
-        println!("cargo:rustc-link-lib=vulkan");
-        println!("cargo:rustc-link-lib=stdc++");
-    }
     println!("cargo:rustc-link-lib=static=amd_alloc");
     println!("cargo:rustc-link-search=native={}", src);
     println!("cargo:rerun-if-changed=wrapper.h");
@@ -65,6 +57,7 @@ fn main() {
         .whitelist_type("VmaAllocation")
         .whitelist_type("VmaAllocationCreateFlagBits")
         .whitelist_type("VmaAllocationInfo")
+        .whitelist_type("VmaVulkanFunctions")
         .bitfield_enum("VmaAllocatorCreateFlagBits")
         .bitfield_enum("VmaAllocationCreateFlagBits")
         .rustified_enum("VmaMemoryUsage")

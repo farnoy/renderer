@@ -2,8 +2,12 @@
 
 extern crate ash;
 
-use ash::{prelude, vk};
-use std::{mem, ptr};
+use ash::{
+    prelude,
+    version::{self, DeviceV1_0, EntryV1_0, V1_0, V1_1},
+    vk,
+};
+use std::{ffi::CStr, mem::{self, transmute}, ptr};
 
 type VkFlags = vk::Flags;
 type VkBuffer = vk::Buffer;
@@ -55,7 +59,33 @@ pub struct VmaAllocationCreateInfo {
 unsafe impl Send for VmaAllocationInfo {}
 unsafe impl Sync for VmaAllocationInfo {}
 
-pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkResult<VmaAllocator> {
+pub fn create(
+    entry: &ash::Entry<V1_0>,
+    instance: vk::Instance,
+    device: vk::Device,
+    pdevice: vk::PhysicalDevice,
+) -> prelude::VkResult<VmaAllocator> {
+    let vma_functions = unsafe {
+        VmaVulkanFunctions {
+            vkAllocateMemory: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkAllocateMemory\0").unwrap().as_ptr())),
+            vkBindBufferMemory: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkBindBufferMemory\0").unwrap().as_ptr())),
+            vkBindImageMemory: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkBindImageMemory\0").unwrap().as_ptr())),
+            vkCreateBuffer: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkCreateBuffer\0").unwrap().as_ptr())),
+            vkCreateImage: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkCreateImage\0").unwrap().as_ptr())),
+            vkDestroyBuffer: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkDestroyBuffer\0").unwrap().as_ptr())),
+            vkDestroyImage: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkDestroyImage\0").unwrap().as_ptr())),
+            vkFreeMemory: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkFreeMemory\0").unwrap().as_ptr())),
+            vkGetBufferMemoryRequirements: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkGetBufferMemoryRequirements\0").unwrap().as_ptr())),
+            vkGetBufferMemoryRequirements2KHR: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkGetBufferMemoryRequirements2KHR\0").unwrap().as_ptr())),
+            vkGetImageMemoryRequirements: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkGetImageMemoryRequirements\0").unwrap().as_ptr())),
+            vkGetImageMemoryRequirements2KHR: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkGetImageMemoryRequirements2KHR\0").unwrap().as_ptr())),
+            vkGetPhysicalDeviceMemoryProperties: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceMemoryProperties\0").unwrap().as_ptr())),
+            vkGetPhysicalDeviceProperties: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceProperties\0").unwrap().as_ptr())),
+            vkMapMemory: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkMapMemory\0").unwrap().as_ptr())),
+            vkUnmapMemory: transmute(entry.get_instance_proc_addr(instance, CStr::from_bytes_with_nul(b"vkUnmapMemory\0").unwrap().as_ptr())),
+        }
+    };
+    println!("functions for vma are {:?}", vma_functions);
     let create_info = VmaAllocatorCreateInfo {
         flags: 0,
         device: device,
@@ -65,7 +95,7 @@ pub fn create(device: vk::Device, pdevice: vk::PhysicalDevice) -> prelude::VkRes
         pDeviceMemoryCallbacks: ptr::null(),
         frameInUseCount: 1,
         pHeapSizeLimit: ptr::null(),
-        pVulkanFunctions: ptr::null(),
+        pVulkanFunctions: &vma_functions,
     };
     let mut allocator: VmaAllocator = VmaAllocator(ptr::null_mut());
     let err_code =

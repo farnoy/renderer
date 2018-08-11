@@ -32,10 +32,10 @@ pub struct Device {
     pub physical_device: vk::PhysicalDevice,
     pub allocator: alloc::VmaAllocator,
     pub graphics_queue_family: u32,
-    pub compute_queue_family: u32,
+    // pub compute_queue_family: u32,
     pub graphics_queue: Arc<Mutex<vk::Queue>>,
-    pub _compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
-    pub _transfer_queue: Arc<Mutex<vk::Queue>>,
+    // pub _compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
+    // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
 pub struct Swapchain {
@@ -239,7 +239,7 @@ pub fn new_window(window_width: u32, window_height: u32) -> (Arc<Instance>, wini
     let (window_width, window_height) = window.get_inner_size().unwrap();
 
     let entry = entry::Entry::new().unwrap();
-    let instance = instance::Instance::new(&entry).unwrap();
+    let instance = instance::Instance::new(&entry).expect("failed to create vk instance");
     let surface = unsafe { create_surface(entry.vk(), instance.vk(), &window).unwrap() };
 
     (
@@ -287,77 +287,22 @@ pub fn new_device(instance: &Instance) -> Arc<Device> {
             }).next()
             .unwrap()
     };
-    let (compute_queue_family, compute_queue_len) = {
-        instance
-            .get_physical_device_queue_family_properties(pdevice)
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, info)| {
-                if info.queue_flags.subset(vk::QueueFlags::COMPUTE)
-                    && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
-                {
-                    Some((ix as u32, info.queue_count))
-                } else {
-                    None
-                }
-            }).next()
-    }.unwrap_or((graphics_queue_family, 1));
-    let transfer_queue_family = if cfg!(feature = "validation") {
-        compute_queue_family
-    } else {
-        instance
-            .get_physical_device_queue_family_properties(pdevice)
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, info)| {
-                if info.queue_flags.subset(vk::QueueFlags::TRANSFER)
-                    && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
-                    && !info.queue_flags.subset(vk::QueueFlags::COMPUTE)
-                {
-                    Some(ix as u32)
-                } else {
-                    None
-                }
-            }).next()
-            .unwrap_or(compute_queue_family)
-    };
-    // TODO: this needs to be reworked in a DAG way, right now vk::Queue handles
-    // are copied so there is no thread safety
-    let queue_decl = if graphics_queue_family == compute_queue_family
-        && graphics_queue_family == transfer_queue_family
-    {
-        // Renderdoc
-        vec![(graphics_queue_family, 1)]
-    } else if cfg!(feature = "validation") || compute_queue_family == transfer_queue_family {
-        vec![
-            (graphics_queue_family, 1),
-            (compute_queue_family, compute_queue_len),
-        ]
-    } else {
-        vec![
-            (graphics_queue_family, 1),
-            (compute_queue_family, compute_queue_len),
-            (transfer_queue_family, 1),
-        ]
-    };
+    let queue_decl = vec![(graphics_queue_family, 1)];
     let device = device::Device::new(&instance, pdevice, &queue_decl).unwrap();
-    let allocator = alloc::create(device.vk().handle(), pdevice).unwrap();
+    let allocator = alloc::create(
+        entry.vk(),
+        instance.vk().handle(),
+        device.vk().handle(),
+        pdevice,
+    ).unwrap();
     let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
-    let compute_queues = (0..compute_queue_len)
-        .map(|ix| unsafe { device.vk().get_device_queue(compute_queue_family, ix) })
-        .collect::<Vec<_>>();
-
-    let transfer_queue = unsafe { device.vk().get_device_queue(transfer_queue_family, 0) };
 
     Arc::new(Device {
         device,
         physical_device: pdevice,
         allocator,
         graphics_queue_family,
-        compute_queue_family,
         graphics_queue: Arc::new(Mutex::new(graphics_queue)),
-        _compute_queues: Arc::new(compute_queues.iter().cloned().map(Mutex::new).collect()),
-        _transfer_queue: Arc::new(Mutex::new(transfer_queue)),
     })
 }
 
@@ -732,7 +677,7 @@ pub fn new_buffer(
     allocation_usage: alloc::VmaMemoryUsage,
     size: vk::DeviceSize,
 ) -> Arc<Buffer> {
-    let queue_families = [device.graphics_queue_family, device.compute_queue_family];
+    let queue_families = [device.graphics_queue_family];
     let buffer_create_info = vk::BufferCreateInfo {
         s_type: vk::StructureType::BUFFER_CREATE_INFO,
         p_next: ptr::null(),

@@ -5,8 +5,7 @@ use ash::extensions::Surface;
 use ash::extensions::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::XlibSurface;
-use ash::version;
-use ash::version::EntryV1_0;
+use ash::version::{EntryV1_0, InstanceFpV1_1, InstanceLoader, InstanceV1_0, V1_1};
 use ash::vk;
 use std::ffi::CString;
 #[allow(unused_imports)]
@@ -15,7 +14,7 @@ use std::ops;
 use std::ptr;
 use std::sync::Arc;
 
-pub type AshInstance = ash::Instance<version::V1_0>;
+pub type AshInstance = ash::Instance<V1_1>;
 
 #[cfg(feature = "validation")]
 pub struct Instance {
@@ -33,7 +32,7 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(entry: &Arc<Entry>) -> Result<Arc<Instance>, ash::InstanceError> {
-        let layer_names = if cfg!(all(feature = "validation", not(feature = "renderdoc"))) {
+        let layer_names = if cfg!(all(feature = "validation")) {
             vec![CString::new("VK_LAYER_LUNARG_standard_validation").unwrap()]
         } else {
             vec![]
@@ -63,7 +62,14 @@ impl Instance {
             pp_enabled_extension_names: extension_names_raw.as_ptr(),
             enabled_extension_count: extension_names_raw.len() as u32,
         };
-        let instance: AshInstance = unsafe { entry.create_instance(&create_info, None)? };
+        let instance = unsafe { entry.create_instance(&create_info, None)? };
+
+        let fp_1_1 = unsafe {
+            InstanceFpV1_1::load((*entry).static_fn(), instance.handle())
+                .expect("failed to load 1.1 instance functions")
+        };
+
+        let instance_1_1 = ash::Instance::<V1_1>::from_raw(instance.handle(), fp_1_1);
 
         #[cfg(feature = "validation")]
         {
@@ -148,7 +154,7 @@ impl Instance {
             assert_eq!(res, vk::Result::SUCCESS);
 
             Ok(Arc::new(Instance {
-                handle: instance,
+                handle: instance_1_1,
                 _entry: entry.clone(),
                 debug_utils,
                 debug_messenger,
@@ -158,7 +164,7 @@ impl Instance {
         #[cfg(not(feature = "validation"))]
         {
             Ok(Arc::new(Instance {
-                handle: instance,
+                handle: instance_1_1,
                 _entry: entry.clone(),
             }))
         }
@@ -184,8 +190,6 @@ impl ops::Deref for Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        use ash::version::InstanceV1_0;
-
         #[cfg(feature = "validation")]
         unsafe {
             self.debug_utils.destroy_debug_utils_messenger_ext(

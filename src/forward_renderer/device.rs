@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::instance::Instance;
 
-pub type AshDevice = ash::Device<version::V1_0>;
+pub type AshDevice = ash::Device<version::V1_1>;
 
 pub struct Device {
     device: AshDevice,
