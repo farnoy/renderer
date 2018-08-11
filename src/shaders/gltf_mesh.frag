@@ -21,4 +21,5 @@ void main() {
     vec3 specular = specular_strength * spec * light_color;
 
     o_color = vec4(diffuse + specular, 1.0);
+    o_color = vec4(1.0);
 }

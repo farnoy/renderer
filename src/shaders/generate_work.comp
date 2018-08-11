@@ -42,11 +42,13 @@ layout(set = 1, binding = 3) buffer OutIndexBuffer {
 layout (local_size_x = 64) in;
 
 void main() {
+    /*
     if (gl_GlobalInvocationID.x == 0) {
         indirect_commands[gltfIndex].instanceCount = 1;
         indirect_commands[gltfIndex].firstInstance = entityIndex;
         indirect_commands[gltfIndex].firstIndex = indexOffset;
     }
+    */
 
     if (gl_GlobalInvocationID.x >= indexCount / 3) {
         return;

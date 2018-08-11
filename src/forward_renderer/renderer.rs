@@ -40,6 +40,7 @@ pub struct RenderFrame {
     pub model_buffer: Arc<Buffer>,
     pub culled_commands_buffer: Arc<Buffer>,
     pub culled_index_buffer: Option<Arc<Buffer>>,
+    pub cull_pipeline_reset: Arc<Pipeline>,
     pub cull_pipeline: Arc<Pipeline>,
     pub cull_pipeline_layout: Arc<PipelineLayout>,
     pub cull_set_layout: Arc<DescriptorSetLayout>,
@@ -178,6 +179,12 @@ impl RenderFrame {
                 size: size_of::<MeshData>() as u32,
             }],
         );
+        let command_generation_reset_pipeline = new_compute_pipeline(
+            Arc::clone(&device),
+            &command_generation_pipeline_layout,
+            &PathBuf::from(env!("OUT_DIR")).join("reset_indices.comp.spv"),
+        );
+
         let command_generation_pipeline = new_compute_pipeline(
             Arc::clone(&device),
             &command_generation_pipeline_layout,
@@ -287,7 +294,7 @@ impl RenderFrame {
                 PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
             )],
             0,
-            true,
+            false,
             true,
         );
         let ubo_set = new_descriptor_set(
@@ -437,6 +444,7 @@ impl RenderFrame {
                 swapchain: Arc::clone(&swapchain),
                 culled_commands_buffer: Arc::clone(&command_generation_buffer),
                 culled_index_buffer: None,
+                cull_pipeline_reset: Arc::clone(&command_generation_reset_pipeline),
                 cull_pipeline: Arc::clone(&command_generation_pipeline),
                 cull_pipeline_layout: Arc::clone(&command_generation_pipeline_layout),
                 cull_set_layout: Arc::clone(&command_generation_descriptor_set_layout),
@@ -464,7 +472,7 @@ impl RenderFrame {
                 flags: vk::AttachmentDescriptionFlags::empty(),
                 samples: vk::SampleCountFlags::TYPE_1,
                 load_op: vk::AttachmentLoadOp::CLEAR,
-                store_op: vk::AttachmentStoreOp::STORE,
+                store_op: vk::AttachmentStoreOp::DONT_CARE,
                 stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
                 stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
                 initial_layout: vk::ImageLayout::UNDEFINED,
@@ -520,11 +528,10 @@ impl RenderFrame {
                 dependency_flags: Default::default(),
                 src_subpass: 0,
                 dst_subpass: 1,
-                src_stage_mask: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                src_access_mask: Default::default(),
-                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ
-                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
             },
         ];
         new_renderpass(
@@ -569,6 +576,7 @@ impl<'a> System<'a> for RenderFrame {
             let cull_set = Arc::clone(&self.cull_set);
             let culled_index_buffer = Arc::clone(self.culled_index_buffer.as_ref().unwrap());
             let culled_commands_buffer = Arc::clone(&self.culled_commands_buffer);
+            let cull_pipeline_reset = Arc::clone(&self.cull_pipeline_reset);
             let cull_pipeline = Arc::clone(&self.cull_pipeline);
             let cull_pipeline_layout = Arc::clone(&self.cull_pipeline_layout);
             move |command_buffer| unsafe {
@@ -577,11 +585,6 @@ impl<'a> System<'a> for RenderFrame {
                     "cull pass",
                     [0.0, 1.0, 0.0, 1.0],
                     || {
-                        device.device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            cull_pipeline.handle,
-                        );
                         device.device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::COMPUTE,
@@ -590,30 +593,58 @@ impl<'a> System<'a> for RenderFrame {
                             &[ubo_set.handle, cull_set.handle],
                             &[],
                         );
-                        device.device.cmd_fill_buffer(
+                        let mut index_offset = 0;
+                        device.device.cmd_bind_pipeline(
                             command_buffer,
-                            culled_commands_buffer.handle,
-                            0,
-                            size_of::<u32>() as vk::DeviceSize
-                                + size_of::<u32>() as vk::DeviceSize * 5 * 900,
-                            0,
+                            vk::PipelineBindPoint::COMPUTE,
+                            cull_pipeline_reset.handle,
                         );
+                        for (entity, mesh, mesh_index) in
+                            (&*entities, &meshes, &mesh_indices).join()
+                        {
+                            let constants = [
+                                entity.id() as u32,
+                                mesh_index.0,
+                                mesh.index_len as u32,
+                                index_offset,
+                                0,
+                            ];
+                            index_offset += mesh.index_len as u32;
+
+                            let casted: &[u8] = {
+                                from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
+                            };
+                            device.device.cmd_push_constants(
+                                command_buffer,
+                                cull_pipeline_layout.handle,
+                                vk::ShaderStageFlags::COMPUTE,
+                                0,
+                                casted,
+                            );
+                            device
+                                .device
+                                .cmd_dispatch(command_buffer, 1, 1, 1);
+                        }
                         device.device.cmd_pipeline_barrier(
                             command_buffer,
-                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
                             vk::PipelineStageFlags::COMPUTE_SHADER,
                             vk::DependencyFlags::empty(),
                             &[vk::MemoryBarrier {
                                 s_type: vk::StructureType::MEMORY_BARRIER,
                                 p_next: ptr::null(),
-                                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                                dst_access_mask: vk::AccessFlags::SHADER_READ
-                                    | vk::AccessFlags::SHADER_WRITE,
+                                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                                dst_access_mask: vk::AccessFlags::SHADER_READ,
                             }],
                             &[],
                             &[],
                         );
-                        let mut index_offset = 0;
+                        index_offset = 0;
+                        device.device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::COMPUTE,
+                            cull_pipeline.handle,
+                        );
                         for (entity, mesh, mesh_index) in
                             (&*entities, &meshes, &mesh_indices).join()
                         {

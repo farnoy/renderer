@@ -36,6 +36,7 @@ impl Device {
                 multi_draw_indirect: 1,
                 vertex_pipeline_stores_and_atomics: 1,
                 robust_buffer_access: 1,
+                fill_mode_non_solid: 0,
                 ..Default::default()
             };
             let mut priorities = vec![];

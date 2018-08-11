@@ -1,0 +1,35 @@
+#version 450
+
+#extension GL_KHR_shader_subgroup_basic: require
+#extension GL_KHR_shader_subgroup_ballot: require
+
+struct VkDrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    uint vertexOffset;
+    uint firstInstance;
+};
+
+layout(push_constant) uniform PushConstants {
+    uint entityIndex;
+    uint gltfIndex;
+    uint indexCount;
+    uint indexOffset; 
+    uint vertexOffset; 
+};
+
+layout(set = 1, binding = 0) buffer IndirectCommands {
+    VkDrawIndexedIndirectCommand indirect_commands[];
+};
+
+layout (local_size_x = 1) in;
+
+void main() {
+    if (subgroupElect()) {
+        indirect_commands[gltfIndex].indexCount = 0;
+        indirect_commands[gltfIndex].instanceCount = 1;
+        indirect_commands[gltfIndex].firstInstance = entityIndex;
+        indirect_commands[gltfIndex].firstIndex = indexOffset;
+    }
+}

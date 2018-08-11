@@ -274,7 +274,7 @@ fn main() {
                 ((ix % 3) * 2 - 2) as f32,
                 0.0,
                 2.0 + ix as f32,
-            ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_x(cgmath::Deg(0.0))))
+            ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 10) as f32))))
             .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<GltfMesh>(GltfMesh {
