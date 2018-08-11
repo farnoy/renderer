@@ -34,7 +34,7 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     let x11_display = window.get_xlib_display().unwrap();
     let x11_window = window.get_xlib_window().unwrap();
     let x11_create_info = vk::XlibSurfaceCreateInfoKHR {
-        s_type: vk::StructureType::XlibSurfaceCreateInfoKhr,
+        s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
         p_next: ptr::null(),
         flags: Default::default(),
         window: x11_window as vk::Window,
