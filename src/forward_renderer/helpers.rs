@@ -289,12 +289,8 @@ pub fn new_device(instance: &Instance) -> Arc<Device> {
     };
     let queue_decl = vec![(graphics_queue_family, 1)];
     let device = device::Device::new(&instance, pdevice, &queue_decl).unwrap();
-    let allocator = alloc::create(
-        entry.vk(),
-        instance.vk().handle(),
-        device.vk().handle(),
-        pdevice,
-    ).unwrap();
+    let allocator =
+        alloc::create(entry.vk(), instance.vk(), device.vk().handle(), pdevice).unwrap();
     let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
 
     Arc::new(Device {

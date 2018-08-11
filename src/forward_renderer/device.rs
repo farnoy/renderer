@@ -5,9 +5,7 @@ use ash::extensions::Win32Surface;
 use ash::version;
 use ash::version::InstanceV1_0;
 use ash::vk;
-use std::ops;
-use std::ptr;
-use std::sync::Arc;
+use std::{ops, ptr, sync::Arc};
 
 use super::instance::Instance;
 
