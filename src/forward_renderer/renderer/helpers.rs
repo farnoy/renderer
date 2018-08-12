@@ -9,16 +9,10 @@ use ash::{
     vk,
 };
 use futures::{future, prelude::*};
+use parking_lot::Mutex;
 use std::{
-    default::Default,
-    ffi::CString,
-    fs::File,
-    io::Read,
-    mem::transmute,
-    path::PathBuf,
-    ptr,
-    sync::{Arc, Mutex},
-    u32, u64,
+    default::Default, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
+    sync::Arc, u32, u64,
 };
 #[cfg(windows)]
 use winapi;
@@ -108,9 +102,8 @@ impl Drop for RenderPass {
 impl Drop for CommandPool {
     fn drop(&mut self) {
         unsafe {
-            self.device
-                .device
-                .destroy_command_pool(*self.handle.lock().unwrap(), None)
+            let lock = self.handle.lock();
+            self.device.device.destroy_command_pool(*lock, None)
         }
     }
 }
@@ -151,7 +144,7 @@ impl Drop for Fence {
 impl Drop for CommandBuffer {
     fn drop(&mut self) {
         unsafe {
-            let pool_lock = self.pool.handle.lock().unwrap();
+            let pool_lock = self.pool.handle.lock();
             self.device
                 .device
                 .free_command_buffers(*pool_lock, &[self.handle]);
@@ -532,7 +525,7 @@ pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
 
 pub fn _allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
     let command_buffers = unsafe {
-        let pool_lock = pool.handle.lock().unwrap();
+        let pool_lock = pool.handle.lock();
         let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
             p_next: ptr::null(),
@@ -990,7 +983,7 @@ pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
 ) -> impl Future<Output = CommandBuffer> {
     future::lazy(move |_| unsafe {
         let command_buffer = {
-            let pool_lock = command_pool.handle.lock().unwrap();
+            let pool_lock = command_pool.handle.lock();
             let command_buffer = {
                 let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
                     s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1063,7 +1056,7 @@ pub async fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
             p_signal_semaphores: ptr::null(),
         }];
 
-        let queue_lock = queue.lock().unwrap();
+        let queue_lock = queue.lock();
 
         command_pool
             .device

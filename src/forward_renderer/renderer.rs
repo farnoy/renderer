@@ -14,6 +14,7 @@ use futures::{
     executor::{self, block_on, spawn, ThreadPool},
     future::lazy,
 };
+use parking_lot::Mutex;
 use specs::prelude::*;
 use std::{
     cmp::min,
@@ -21,7 +22,7 @@ use std::{
     path::PathBuf,
     ptr,
     slice::from_raw_parts,
-    sync::{Arc, Mutex},
+    sync::Arc,
     u64,
 };
 use winit;
@@ -863,11 +864,7 @@ impl<'a> System<'a> for Renderer {
                 signal_semaphore_count: signal_semaphores.len() as u32,
                 p_signal_semaphores: signal_semaphores.as_ptr(),
             }];
-            let queue = renderer
-                .device
-                .graphics_queue
-                .lock()
-                .expect("can't lock the submit queue");
+            let queue = renderer.device.graphics_queue.lock();
 
             let submit_fence = new_fence(Arc::clone(&renderer.device));
             renderer.device.set_object_name(
@@ -884,22 +881,16 @@ impl<'a> System<'a> for Renderer {
 
             {
                 let device = Arc::clone(&renderer.device);
-                renderer
-                    .threadpool
-                    .lock()
-                    .expect("can't lock threadpool")
-                    .run(
-                        spawn(lazy(move |_| {
-                            // println!("dtor previous frame");
-                            device
-                                .device
-                                .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                                .expect("Wait for fence failed.");
-                            drop(command_buffer);
-                            drop(submit_fence);
-                            ()
-                        }))
-                    );
+                renderer.threadpool.lock().run(spawn(lazy(move |_| {
+                    // println!("dtor previous frame");
+                    device
+                        .device
+                        .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                        .expect("Wait for fence failed.");
+                    drop(command_buffer);
+                    drop(submit_fence);
+                    ()
+                })));
             }
 
             {

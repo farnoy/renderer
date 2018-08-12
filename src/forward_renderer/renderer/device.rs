@@ -7,11 +7,8 @@ use ash::{
     version::{self, DeviceV1_0, InstanceV1_0},
     vk,
 };
-use std::{
-    ops::Deref,
-    ptr,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{ops::Deref, ptr, sync::Arc};
 
 use super::{alloc, Instance};
 
