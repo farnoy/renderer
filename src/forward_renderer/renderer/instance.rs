@@ -25,6 +25,7 @@ pub struct Instance {
     pub surface: vk::SurfaceKHR,
     pub window_width: u32,
     pub window_height: u32,
+    #[allow(dead_code)]
     debug: Debug,
 }
 
@@ -45,10 +46,10 @@ impl Instance {
         let events_loop = winit::EventsLoop::new();
         let window = winit::WindowBuilder::new()
             .with_title("Renderer v3")
-            .with_dimensions(window_width, window_height)
+            .with_dimensions((window_width, window_height).into())
             .build(&events_loop)
             .unwrap();
-        let (window_width, window_height) = window.get_inner_size().unwrap();
+        let (window_width, window_height) = window.get_inner_size().unwrap().into();
 
         let entry = Entry::new().unwrap();
 

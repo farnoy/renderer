@@ -26,7 +26,7 @@ use forward_renderer::{
 };
 use specs::Builder;
 use std::{mem::size_of, ptr, sync::Arc};
-use winit::{Event, KeyboardInput, WindowEvent};
+use winit::{dpi::LogicalSize, Event, KeyboardInput, WindowEvent};
 
 fn main() {
     let mut world = specs::World::new();
@@ -180,10 +180,10 @@ fn main() {
         let mut quit = false;
         events_loop.poll_events(|event| match event {
             Event::WindowEvent {
-                event: WindowEvent::Resized(w, h),
+                event: WindowEvent::Resized(LogicalSize { width, height }),
                 ..
             } => {
-                println!("The window was resized to {}x{}", w, h);
+                println!("The window was resized to {}x{}", width, height);
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
