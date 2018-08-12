@@ -36,6 +36,9 @@ fn main() {
     }
 
     println!("cargo:rustc-link-lib=static=amd_alloc");
+    if cfg!(unix) {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
     println!("cargo:rustc-link-search=native={}", src);
     println!("cargo:rerun-if-changed=wrapper.h");
 
