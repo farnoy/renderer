@@ -1,4 +1,7 @@
 #![feature(non_modrs_mods)]
+#![feature(futures_api)]
+#![feature(await_macro)]
+#![feature(async_await)]
 
 #[macro_use]
 extern crate ash;
@@ -206,7 +209,11 @@ fn main() {
             _ => (),
         });
         if quit {
-            world.read_resource::<RenderFrame>().device.device_wait_idle().unwrap();
+            world
+                .read_resource::<RenderFrame>()
+                .device
+                .device_wait_idle()
+                .unwrap();
             break 'frame;
         }
         dispatcher.dispatch(&world.res);

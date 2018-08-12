@@ -847,7 +847,7 @@ impl<'a> System<'a> for Renderer {
                 }
             },
         );
-        let command_buffer = block_on(command_buffer_future).unwrap();
+        let command_buffer = block_on(command_buffer_future);
         unsafe {
             let wait_semaphores = &[renderer.present_semaphore.handle];
             let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
@@ -870,6 +870,11 @@ impl<'a> System<'a> for Renderer {
                 .expect("can't lock the submit queue");
 
             let submit_fence = new_fence(Arc::clone(&renderer.device));
+            renderer.device.set_object_name(
+                vk::ObjectType::FENCE,
+                transmute::<_, u64>(submit_fence.handle),
+                "frame submit fence",
+            );
 
             renderer
                 .device
@@ -883,7 +888,7 @@ impl<'a> System<'a> for Renderer {
                     .threadpool
                     .lock()
                     .expect("can't lock threadpool")
-                    .run(lazy(move |_| {
+                    .run(
                         spawn(lazy(move |_| {
                             // println!("dtor previous frame");
                             device
@@ -892,9 +897,9 @@ impl<'a> System<'a> for Renderer {
                                 .expect("Wait for fence failed.");
                             drop(command_buffer);
                             drop(submit_fence);
-                            Ok(())
+                            ()
                         }))
-                    })).unwrap();
+                    );
             }
 
             {

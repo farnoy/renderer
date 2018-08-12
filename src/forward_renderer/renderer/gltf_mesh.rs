@@ -2,7 +2,10 @@ use ash::{version::DeviceV1_0, vk};
 use futures::executor::block_on;
 use gltf_importer;
 use gltf_utils::PrimitiveIterators;
-use std::{mem::{size_of, transmute}, sync::Arc};
+use std::{
+    mem::{size_of, transmute},
+    sync::Arc,
+};
 
 use super::{alloc, new_buffer, one_time_submit_cb, Buffer, RenderFrame};
 
@@ -163,7 +166,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Ar
         },
     );
 
-    block_on(upload).unwrap();
+    block_on(upload);
 
     (vertex_buffer, normal_buffer, index_buffer, index_len)
 }

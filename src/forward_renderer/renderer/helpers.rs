@@ -987,7 +987,7 @@ pub fn new_compute_pipeline(
 pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
     command_pool: Arc<CommandPool>,
     f: F,
-) -> impl Future<Item = CommandBuffer, Error = Never> {
+) -> impl Future<Output = CommandBuffer> {
     future::lazy(move |_| unsafe {
         let command_buffer = {
             let pool_lock = command_pool.handle.lock().unwrap();
@@ -1029,53 +1029,57 @@ pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
             command_buffer
         };
 
-        Ok(CommandBuffer {
+        CommandBuffer {
             device: Arc::clone(&command_pool.device),
             pool: command_pool,
             handle: command_buffer,
-        })
+        }
     })
 }
 
-pub fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
+pub async fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
     command_pool: Arc<CommandPool>,
     queue: Arc<Mutex<vk::Queue>>,
     f: F,
-) -> impl Future<Item = (), Error = Never> {
-    record_one_time_cb(Arc::clone(&command_pool), f).and_then(move |command_buffer| {
-        let submit_fence = new_fence(Arc::clone(&command_pool.device));
+) -> () {
+    let command_buffer = await!(record_one_time_cb(Arc::clone(&command_pool), f));
+    let submit_fence = new_fence(Arc::clone(&command_pool.device));
+    command_pool.device.set_object_name(
+        vk::ObjectType::FENCE,
+        unsafe { transmute::<_, u64>(submit_fence.handle) },
+        "one_time_submit_cb fence",
+    );
 
-        unsafe {
-            let submits = [vk::SubmitInfo {
-                s_type: vk::StructureType::SUBMIT_INFO,
-                p_next: ptr::null(),
-                wait_semaphore_count: 0,
-                p_wait_semaphores: ptr::null(),
-                p_wait_dst_stage_mask: ptr::null(),
-                command_buffer_count: 1,
-                p_command_buffers: &command_buffer.handle,
-                signal_semaphore_count: 0,
-                p_signal_semaphores: ptr::null(),
-            }];
+    unsafe {
+        let submits = [vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            p_next: ptr::null(),
+            wait_semaphore_count: 0,
+            p_wait_semaphores: ptr::null(),
+            p_wait_dst_stage_mask: ptr::null(),
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer.handle,
+            signal_semaphore_count: 0,
+            p_signal_semaphores: ptr::null(),
+        }];
 
-            let queue_lock = queue.lock().unwrap();
+        let queue_lock = queue.lock().unwrap();
 
-            command_pool
-                .device
-                .device
-                .queue_submit(*queue_lock, &submits, submit_fence.handle)
-                .unwrap();
-        }
+        command_pool
+            .device
+            .device
+            .queue_submit(*queue_lock, &submits, submit_fence.handle)
+            .unwrap();
+    }
 
-        unsafe {
-            command_pool
-                .device
-                .device
-                .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                .expect("Wait for fence failed.");
-        }
-        Ok(())
-    })
+    unsafe {
+        command_pool
+            .device
+            .device
+            .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+            .expect("Wait for fence failed.");
+    }
+    ()
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
