@@ -1,13 +1,13 @@
 use ash::{version::DeviceV1_0, vk};
-use futures::executor::block_on;
 use gltf_importer;
 use gltf_utils::PrimitiveIterators;
 use std::{
     mem::{size_of, transmute},
     sync::Arc,
+    u64,
 };
 
-use super::{alloc, new_buffer, one_time_submit_cb, Buffer, RenderFrame};
+use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
 pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Arc<Buffer>, u64) {
     let importer = gltf_importer::import(path);
@@ -120,53 +120,55 @@ pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Ar
             *p.offset(ix as isize) = data;
         }
     }
-    let upload = one_time_submit_cb(
-        Arc::clone(&renderer.graphics_command_pool),
-        Arc::clone(&renderer.device.graphics_queue),
-        {
-            let vertex_buffer = Arc::clone(&vertex_buffer);
-            let vertex_upload_buffer = Arc::clone(&vertex_upload_buffer);
-            let normal_buffer = Arc::clone(&normal_buffer);
-            let normal_upload_buffer = Arc::clone(&normal_upload_buffer);
-            let index_buffer = Arc::clone(&index_buffer);
-            let index_upload_buffer = Arc::clone(&index_upload_buffer);
-            let device = Arc::clone(&renderer.device);
-            move |command_buffer| unsafe {
-                device.device.cmd_copy_buffer(
-                    command_buffer,
-                    vertex_upload_buffer.handle,
-                    vertex_buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: vertex_buffer.allocation_info.size,
-                    }],
-                );
-                device.device.cmd_copy_buffer(
-                    command_buffer,
-                    normal_upload_buffer.handle,
-                    normal_buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: normal_buffer.allocation_info.size,
-                    }],
-                );
-                device.device.cmd_copy_buffer(
-                    command_buffer,
-                    index_upload_buffer.handle,
-                    index_buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: index_buffer.allocation_info.size,
-                    }],
-                );
-            }
-        },
-    );
-
-    block_on(upload);
+    let upload = commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
+        let vertex_buffer = Arc::clone(&vertex_buffer);
+        let vertex_upload_buffer = Arc::clone(&vertex_upload_buffer);
+        let normal_buffer = Arc::clone(&normal_buffer);
+        let normal_upload_buffer = Arc::clone(&normal_upload_buffer);
+        let index_buffer = Arc::clone(&index_buffer);
+        let index_upload_buffer = Arc::clone(&index_upload_buffer);
+        let device = Arc::clone(&renderer.device);
+        move |command_buffer| unsafe {
+            device.device.cmd_copy_buffer(
+                command_buffer,
+                vertex_upload_buffer.handle,
+                vertex_buffer.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: vertex_buffer.allocation_info.size,
+                }],
+            );
+            device.device.cmd_copy_buffer(
+                command_buffer,
+                normal_upload_buffer.handle,
+                normal_buffer.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: normal_buffer.allocation_info.size,
+                }],
+            );
+            device.device.cmd_copy_buffer(
+                command_buffer,
+                index_upload_buffer.handle,
+                index_buffer.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: index_buffer.allocation_info.size,
+                }],
+            );
+        }
+    });
+    let mut graphics_queue = renderer.device.graphics_queue.lock();
+    let upload_fence = upload.submit_once(&mut *graphics_queue, "upload gltf mesh commands");
+    unsafe {
+        renderer
+            .device
+            .wait_for_fences(&[upload_fence.handle], true, u64::MAX)
+            .expect("Wait for fence failed.");
+    }
 
     (vertex_buffer, normal_buffer, index_buffer, index_len)
 }

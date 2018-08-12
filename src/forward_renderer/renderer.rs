@@ -1,5 +1,6 @@
 // TODO: pub(crate) should disappear?
 pub mod alloc;
+mod commands;
 mod device;
 mod entry;
 mod gltf_mesh;
@@ -10,11 +11,6 @@ mod swapchain;
 use super::ecs::components::{GltfMesh, GltfMeshBufferIndex};
 use ash::{version::DeviceV1_0, vk};
 use cgmath;
-use futures::{
-    executor::{self, block_on, spawn, ThreadPool},
-    future::lazy,
-};
-use parking_lot::Mutex;
 use specs::prelude::*;
 use std::{
     cmp::min,
@@ -23,18 +19,18 @@ use std::{
     ptr,
     slice::from_raw_parts,
     sync::Arc,
+    thread,
     u64,
 };
 use winit;
 
-use self::{device::Device, helpers::*, instance::Instance};
+use self::{commands::CommandPool, device::Device, helpers::*, instance::Instance};
 
 pub use self::gltf_mesh::load as load_gltf;
-pub use self::helpers::{new_buffer, one_time_submit_cb, Buffer};
+pub use self::helpers::{new_buffer, Buffer};
 
 // TODO: rename
 pub struct RenderFrame {
-    pub threadpool: Mutex<executor::ThreadPool>,
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
     pub swapchain: Arc<Swapchain>,
@@ -73,7 +69,7 @@ impl RenderFrame {
         let swapchain = new_swapchain(&instance, &device);
         let present_semaphore = new_semaphore(Arc::clone(&device));
         let rendering_complete_semaphore = new_semaphore(Arc::clone(&device));
-        let graphics_command_pool = new_command_pool(
+        let graphics_command_pool = CommandPool::new(
             Arc::clone(&device),
             device.graphics_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
@@ -441,10 +437,8 @@ impl RenderFrame {
             }
         }
 
-        let threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
         (
             RenderFrame {
-                threadpool: Mutex::new(threadpool),
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
                 framebuffer: Arc::clone(&framebuffer),
@@ -585,7 +579,7 @@ impl<'a> System<'a> for Renderer {
                     vk::Fence::null(),
                 ).unwrap()
         };
-        let command_buffer_future = record_one_time_cb(
+        let command_buffer = commands::record_one_time(
             Arc::clone(&renderer.graphics_command_pool),
             {
                 let main_renderpass = Arc::clone(&renderer.renderpass);
@@ -848,7 +842,6 @@ impl<'a> System<'a> for Renderer {
                 }
             },
         );
-        let command_buffer = block_on(command_buffer_future);
         unsafe {
             let wait_semaphores = &[renderer.present_semaphore.handle];
             let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
@@ -860,7 +853,7 @@ impl<'a> System<'a> for Renderer {
                 p_wait_semaphores: wait_semaphores.as_ptr(),
                 p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
                 command_buffer_count: 1,
-                p_command_buffers: &command_buffer.handle,
+                p_command_buffers: &*command_buffer,
                 signal_semaphore_count: signal_semaphores.len() as u32,
                 p_signal_semaphores: signal_semaphores.as_ptr(),
             }];
@@ -881,7 +874,7 @@ impl<'a> System<'a> for Renderer {
 
             {
                 let device = Arc::clone(&renderer.device);
-                renderer.threadpool.lock().run(spawn(lazy(move |_| {
+                thread::spawn(move || {
                     // println!("dtor previous frame");
                     device
                         .device
@@ -889,8 +882,7 @@ impl<'a> System<'a> for Renderer {
                         .expect("Wait for fence failed.");
                     drop(command_buffer);
                     drop(submit_fence);
-                    ()
-                })));
+                });
             }
 
             {

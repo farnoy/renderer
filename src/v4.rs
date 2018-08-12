@@ -1,12 +1,8 @@
 #![feature(non_modrs_mods)]
-#![feature(futures_api)]
-#![feature(await_macro)]
-#![feature(async_await)]
 
 #[macro_use]
 extern crate ash;
 extern crate cgmath;
-extern crate futures;
 extern crate gltf;
 extern crate gltf_importer;
 extern crate gltf_utils;

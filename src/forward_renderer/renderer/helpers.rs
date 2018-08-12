@@ -8,8 +8,6 @@ use ash::{
     version::{DeviceV1_0, EntryV1_0, InstanceV1_0},
     vk,
 };
-use futures::{future, prelude::*};
-use parking_lot::Mutex;
 use std::{
     default::Default, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
     sync::Arc, u32, u64,
@@ -18,7 +16,10 @@ use std::{
 use winapi;
 use winit;
 
-use super::{device::Device, instance::Instance};
+use super::{
+    device::Device,
+    instance::Instance,
+};
 
 pub struct Swapchain {
     pub handle: swapchain::Swapchain,
@@ -27,11 +28,6 @@ pub struct Swapchain {
 
 pub struct RenderPass {
     pub handle: vk::RenderPass,
-    pub device: Arc<Device>,
-}
-
-pub struct CommandPool {
-    pub handle: Mutex<vk::CommandPool>,
     pub device: Arc<Device>,
 }
 
@@ -51,12 +47,6 @@ pub struct Semaphore {
 
 pub struct Fence {
     pub handle: vk::Fence,
-    pub device: Arc<Device>,
-}
-
-pub struct CommandBuffer {
-    pub handle: vk::CommandBuffer,
-    pub pool: Arc<CommandPool>,
     pub device: Arc<Device>,
 }
 
@@ -99,15 +89,6 @@ impl Drop for RenderPass {
     }
 }
 
-impl Drop for CommandPool {
-    fn drop(&mut self) {
-        unsafe {
-            let lock = self.handle.lock();
-            self.device.device.destroy_command_pool(*lock, None)
-        }
-    }
-}
-
 impl Drop for Framebuffer {
     fn drop(&mut self) {
         unsafe {
@@ -137,17 +118,6 @@ impl Drop for Fence {
     fn drop(&mut self) {
         unsafe {
             self.device.device.destroy_fence(self.handle, None);
-        }
-    }
-}
-
-impl Drop for CommandBuffer {
-    fn drop(&mut self) {
-        unsafe {
-            let pool_lock = self.pool.handle.lock();
-            self.device
-                .device
-                .free_command_buffers(*pool_lock, &[self.handle]);
         }
     }
 }
@@ -328,31 +298,6 @@ pub fn new_renderpass(
     })
 }
 
-pub fn new_command_pool(
-    device: Arc<Device>,
-    queue_family: u32,
-    flags: vk::CommandPoolCreateFlags,
-) -> Arc<CommandPool> {
-    let pool_create_info = vk::CommandPoolCreateInfo {
-        s_type: vk::StructureType::COMMAND_POOL_CREATE_INFO,
-        p_next: ptr::null(),
-        flags,
-        queue_family_index: queue_family,
-    };
-    let pool = unsafe {
-        device
-            .device
-            .create_command_pool(&pool_create_info, None)
-            .unwrap()
-    };
-
-    let cp = CommandPool {
-        handle: Mutex::new(pool),
-        device,
-    };
-    Arc::new(cp)
-}
-
 pub fn setup_framebuffer(
     instance: &Instance,
     device: Arc<Device>,
@@ -519,30 +464,6 @@ pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
 
     Arc::new(Semaphore {
         handle: semaphore,
-        device,
-    })
-}
-
-pub fn _allocate_command_buffer(pool: Arc<CommandPool>) -> Arc<CommandBuffer> {
-    let command_buffers = unsafe {
-        let pool_lock = pool.handle.lock();
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
-            p_next: ptr::null(),
-            command_buffer_count: 1,
-            command_pool: *pool_lock,
-            level: vk::CommandBufferLevel::PRIMARY,
-        };
-        pool.device
-            .device
-            .allocate_command_buffers(&command_buffer_allocate_info)
-            .unwrap()
-    };
-    let device = Arc::clone(&pool.device);
-
-    Arc::new(CommandBuffer {
-        handle: command_buffers[0],
-        pool,
         device,
     })
 }
@@ -975,104 +896,6 @@ pub fn new_compute_pipeline(
         handle: pipelines[0],
         device,
     })
-}
-
-pub fn record_one_time_cb<F: FnOnce(vk::CommandBuffer)>(
-    command_pool: Arc<CommandPool>,
-    f: F,
-) -> impl Future<Output = CommandBuffer> {
-    future::lazy(move |_| unsafe {
-        let command_buffer = {
-            let pool_lock = command_pool.handle.lock();
-            let command_buffer = {
-                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-                    s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
-                    p_next: ptr::null(),
-                    command_buffer_count: 1,
-                    command_pool: *pool_lock,
-                    level: vk::CommandBufferLevel::PRIMARY,
-                };
-                command_pool
-                    .device
-                    .device
-                    .allocate_command_buffers(&command_buffer_allocate_info)
-                    .unwrap()[0]
-            };
-
-            let begin_info = vk::CommandBufferBeginInfo {
-                s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
-                p_next: ptr::null(),
-                p_inheritance_info: ptr::null(),
-                flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-            };
-            command_pool
-                .device
-                .device
-                .begin_command_buffer(command_buffer, &begin_info)
-                .unwrap();
-
-            f(command_buffer);
-
-            command_pool
-                .device
-                .device
-                .end_command_buffer(command_buffer)
-                .unwrap();
-
-            command_buffer
-        };
-
-        CommandBuffer {
-            device: Arc::clone(&command_pool.device),
-            pool: command_pool,
-            handle: command_buffer,
-        }
-    })
-}
-
-pub async fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
-    command_pool: Arc<CommandPool>,
-    queue: Arc<Mutex<vk::Queue>>,
-    f: F,
-) -> () {
-    let command_buffer = await!(record_one_time_cb(Arc::clone(&command_pool), f));
-    let submit_fence = new_fence(Arc::clone(&command_pool.device));
-    command_pool.device.set_object_name(
-        vk::ObjectType::FENCE,
-        unsafe { transmute::<_, u64>(submit_fence.handle) },
-        "one_time_submit_cb fence",
-    );
-
-    unsafe {
-        let submits = [vk::SubmitInfo {
-            s_type: vk::StructureType::SUBMIT_INFO,
-            p_next: ptr::null(),
-            wait_semaphore_count: 0,
-            p_wait_semaphores: ptr::null(),
-            p_wait_dst_stage_mask: ptr::null(),
-            command_buffer_count: 1,
-            p_command_buffers: &command_buffer.handle,
-            signal_semaphore_count: 0,
-            p_signal_semaphores: ptr::null(),
-        }];
-
-        let queue_lock = queue.lock();
-
-        command_pool
-            .device
-            .device
-            .queue_submit(*queue_lock, &submits, submit_fence.handle)
-            .unwrap();
-    }
-
-    unsafe {
-        command_pool
-            .device
-            .device
-            .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-            .expect("Wait for fence failed.");
-    }
-    ()
 }
 
 #[cfg(all(unix, not(target_os = "android")))]

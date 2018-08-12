@@ -7,7 +7,6 @@ build = "build.rs"
 ash = { git = "https://github.com/MaikKlein/ash", branch = "generator" }
 cgmath = "0.16"
 parking_lot = "0.6.3"
-futures-preview = "0.3.0-alpha.2"
 gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-importer = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
