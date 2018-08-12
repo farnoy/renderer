@@ -1,7 +1,11 @@
-use super::{alloc, create_surface, device, entry, instance, swapchain};
+use super::{alloc, swapchain};
+#[cfg(windows)]
+use ash::extensions::Win32Surface;
+#[cfg(all(unix, not(target_os = "android")))]
+use ash::extensions::XlibSurface;
 use ash::{
     extensions,
-    version::{DeviceV1_0, InstanceV1_0},
+    version::{DeviceV1_0, EntryV1_0, InstanceV1_0},
     vk,
 };
 use futures::{future, prelude::*};
@@ -16,27 +20,11 @@ use std::{
     sync::{Arc, Mutex},
     u32, u64,
 };
+#[cfg(windows)]
+use winapi;
 use winit;
 
-pub struct Instance {
-    pub _window: Arc<winit::Window>,
-    pub instance: Arc<instance::Instance>,
-    pub entry: Arc<entry::Entry>,
-    pub surface: vk::SurfaceKHR,
-    pub window_width: u32,
-    pub window_height: u32,
-}
-
-pub struct Device {
-    pub device: Arc<device::Device>,
-    pub physical_device: vk::PhysicalDevice,
-    pub allocator: alloc::VmaAllocator,
-    pub graphics_queue_family: u32,
-    // pub compute_queue_family: u32,
-    pub graphics_queue: Arc<Mutex<vk::Queue>>,
-    // pub _compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
-    // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
-}
+use super::{device::Device, instance::Instance};
 
 pub struct Swapchain {
     pub handle: swapchain::Swapchain,
@@ -109,12 +97,6 @@ pub struct PipelineLayout {
 pub struct Pipeline {
     pub handle: vk::Pipeline,
     pub device: Arc<Device>,
-}
-
-impl Drop for Device {
-    fn drop(&mut self) {
-        alloc::destroy(self.allocator);
-    }
 }
 
 impl Drop for RenderPass {
@@ -229,92 +211,16 @@ impl Drop for Pipeline {
     }
 }
 
-pub fn new_window(window_width: u32, window_height: u32) -> (Arc<Instance>, winit::EventsLoop) {
-    let events_loop = winit::EventsLoop::new();
-    let window = winit::WindowBuilder::new()
-        .with_title("Renderer v3")
-        .with_dimensions(window_width, window_height)
-        .build(&events_loop)
-        .unwrap();
-    let (window_width, window_height) = window.get_inner_size().unwrap();
-
-    let entry = entry::Entry::new().unwrap();
-    let instance = instance::Instance::new(&entry).expect("failed to create vk instance");
-    let surface = unsafe { create_surface(entry.vk(), instance.vk(), &window).unwrap() };
-
-    (
-        Arc::new(Instance {
-            _window: Arc::new(window),
-            instance,
-            entry,
-            surface,
-            window_width,
-            window_height,
-        }),
-        events_loop,
-    )
-}
-
-pub fn new_device(instance: &Instance) -> Arc<Device> {
-    let Instance {
-        ref entry,
-        ref instance,
-        surface,
-        ..
-    } = *instance;
-
-    let pdevices = instance
-        .enumerate_physical_devices()
-        .expect("Physical device error");
-    let surface_loader = extensions::Surface::new(entry.vk(), instance.vk())
-        .expect("Unable to load the Surface extension");
-
-    let pdevice = pdevices[0];
-    let graphics_queue_family = {
-        instance
-            .get_physical_device_queue_family_properties(pdevice)
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, info)| {
-                let supports_graphic_and_surface =
-                    info.queue_flags.subset(vk::QueueFlags::GRAPHICS) && surface_loader
-                        .get_physical_device_surface_support_khr(pdevice, ix as u32, surface);
-                if supports_graphic_and_surface {
-                    Some(ix as u32)
-                } else {
-                    None
-                }
-            }).next()
-            .unwrap()
-    };
-    let queue_decl = vec![(graphics_queue_family, 1)];
-    let device = device::Device::new(&instance, pdevice, &queue_decl).unwrap();
-    let allocator =
-        alloc::create(entry.vk(), instance.vk(), device.vk().handle(), pdevice).unwrap();
-    let graphics_queue = unsafe { device.vk().get_device_queue(graphics_queue_family, 0) };
-
-    Arc::new(Device {
-        device,
-        physical_device: pdevice,
-        allocator,
-        graphics_queue_family,
-        graphics_queue: Arc::new(Mutex::new(graphics_queue)),
-    })
-}
-
 pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     let Instance {
         ref entry,
-        ref instance,
         surface,
         window_width,
         window_height,
         ..
     } = *instance;
     let Device {
-        ref device,
-        physical_device,
-        ..
+        physical_device, ..
     } = *device;
 
     let surface_loader = extensions::Surface::new(entry.vk(), instance.vk())
@@ -1170,4 +1076,45 @@ pub fn one_time_submit_cb<F: FnOnce(vk::CommandBuffer)>(
         }
         Ok(())
     })
+}
+
+#[cfg(all(unix, not(target_os = "android")))]
+pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+    entry: &E,
+    instance: &I,
+    window: &winit::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
+    use winit::os::unix::WindowExt;
+    let x11_display = window.get_xlib_display().unwrap();
+    let x11_window = window.get_xlib_window().unwrap();
+    let x11_create_info = vk::XlibSurfaceCreateInfoKHR {
+        s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
+        p_next: ptr::null(),
+        flags: Default::default(),
+        window: x11_window as vk::Window,
+        dpy: x11_display as *mut vk::Display,
+    };
+    let xlib_surface_loader =
+        XlibSurface::new(entry, instance).expect("Unable to load xlib surface");
+    xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
+}
+#[cfg(windows)]
+pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+    entry: &E,
+    instance: &I,
+    window: &winit::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
+    use winit::os::windows::WindowExt;
+    let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
+    let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const vk::c_void;
+    let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
+        s_type: vk::StructureType::WIN32_SURFACE_CREATE_INFO_KHR,
+        p_next: ptr::null(),
+        flags: Default::default(),
+        hinstance,
+        hwnd: hwnd as *const vk::c_void,
+    };
+    let win32_surface_loader =
+        Win32Surface::new(entry, instance).expect("Unable to load win32 surface");
+    win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)
 }

@@ -1,4 +1,4 @@
-use super::helpers;
+use super::super::renderer::Buffer;
 use cgmath;
 use specs::*;
 use std::sync::Arc;
@@ -43,9 +43,9 @@ impl Matrices {
 #[derive(Clone, Component)]
 #[storage(VecStorage)]
 pub struct GltfMesh {
-    pub vertex_buffer: Arc<helpers::Buffer>,
-    pub normal_buffer: Arc<helpers::Buffer>,
-    pub index_buffer: Arc<helpers::Buffer>,
+    pub vertex_buffer: Arc<Buffer>,
+    pub normal_buffer: Arc<Buffer>,
+    pub index_buffer: Arc<Buffer>,
     pub index_len: u64,
 }
 

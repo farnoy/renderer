@@ -3,7 +3,7 @@ use cgmath;
 use specs::prelude::*;
 use std::{slice::from_raw_parts_mut, sync::Arc};
 
-use super::helpers;
+use super::super::renderer::Buffer;
 
 pub struct SteadyRotation;
 
@@ -45,8 +45,8 @@ impl<'a> System<'a> for MVPCalculation {
 }
 
 pub struct MVPUpload {
-    pub dst_mvp: Arc<helpers::Buffer>,
-    pub dst_model: Arc<helpers::Buffer>,
+    pub dst_mvp: Arc<Buffer>,
+    pub dst_model: Arc<Buffer>,
 }
 
 unsafe impl Send for MVPUpload {}

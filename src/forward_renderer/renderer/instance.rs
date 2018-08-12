@@ -1,4 +1,3 @@
-use super::entry::Entry;
 use ash;
 use ash::extensions::Surface;
 #[cfg(windows)]
@@ -10,28 +9,49 @@ use ash::vk;
 use std::ffi::CString;
 #[allow(unused_imports)]
 use std::mem::transmute;
-use std::ops;
+use std::ops::Deref;
 use std::ptr;
 use std::sync::Arc;
+use winit;
+
+use super::{entry::Entry, helpers::create_surface};
 
 pub type AshInstance = ash::Instance<V1_1>;
 
-#[cfg(feature = "validation")]
 pub struct Instance {
     handle: AshInstance,
-    _entry: Arc<Entry>,
-    debug_utils: vk::extensions::ExtDebugUtilsFn,
-    debug_messenger: vk::DebugUtilsMessengerEXT,
+    pub entry: Arc<Entry>,
+    _window: winit::Window,
+    pub surface: vk::SurfaceKHR,
+    pub window_width: u32,
+    pub window_height: u32,
+    debug: Debug,
+}
+
+#[cfg(feature = "validation")]
+struct Debug {
+    utils: vk::extensions::ExtDebugUtilsFn,
+    messenger: vk::DebugUtilsMessengerEXT,
 }
 
 #[cfg(not(feature = "validation"))]
-pub struct Instance {
-    handle: AshInstance,
-    _entry: Arc<Entry>,
-}
+struct Debug;
 
 impl Instance {
-    pub fn new(entry: &Arc<Entry>) -> Result<Arc<Instance>, ash::InstanceError> {
+    pub fn new(
+        window_width: u32,
+        window_height: u32,
+    ) -> Result<(Instance, winit::EventsLoop), ash::InstanceError> {
+        let events_loop = winit::EventsLoop::new();
+        let window = winit::WindowBuilder::new()
+            .with_title("Renderer v3")
+            .with_dimensions(window_width, window_height)
+            .build(&events_loop)
+            .unwrap();
+        let (window_width, window_height) = window.get_inner_size().unwrap();
+
+        let entry = Entry::new().unwrap();
+
         let layer_names = if cfg!(all(feature = "validation")) {
             vec![CString::new("VK_LAYER_LUNARG_standard_validation").unwrap()]
         } else {
@@ -70,6 +90,8 @@ impl Instance {
         };
 
         let instance_1_1 = ash::Instance::<V1_1>::from_raw(instance.handle(), fp_1_1);
+
+        let surface = unsafe { create_surface(entry.vk(), &instance_1_1, &window).unwrap() };
 
         #[cfg(feature = "validation")]
         {
@@ -153,20 +175,37 @@ impl Instance {
             };
             assert_eq!(res, vk::Result::SUCCESS);
 
-            Ok(Arc::new(Instance {
-                handle: instance_1_1,
-                _entry: entry.clone(),
-                debug_utils,
-                debug_messenger,
-            }))
+            Ok((
+                Instance {
+                    handle: instance_1_1,
+                    _window: window,
+                    surface,
+                    entry: Arc::new(entry),
+                    window_width,
+                    window_height,
+                    debug: Debug {
+                        utils: debug_utils,
+                        messenger: debug_messenger,
+                    },
+                },
+                events_loop,
+            ))
         }
 
         #[cfg(not(feature = "validation"))]
         {
-            Ok(Arc::new(Instance {
-                handle: instance_1_1,
-                _entry: entry.clone(),
-            }))
+            Ok((
+                Instance {
+                    handle: instance_1_1,
+                    _window: window,
+                    surface,
+                    entry: Arc::new(entry),
+                    window_width,
+                    window_height,
+                    debug: Debug,
+                },
+                events_loop,
+            ))
         }
     }
 
@@ -176,11 +215,11 @@ impl Instance {
 
     #[cfg(feature = "validation")]
     pub fn debug_utils(&self) -> &vk::extensions::ExtDebugUtilsFn {
-        &self.debug_utils
+        &self.debug.utils
     }
 }
 
-impl ops::Deref for Instance {
+impl Deref for Instance {
     type Target = AshInstance;
 
     fn deref(&self) -> &AshInstance {
@@ -192,9 +231,9 @@ impl Drop for Instance {
     fn drop(&mut self) {
         #[cfg(feature = "validation")]
         unsafe {
-            self.debug_utils.destroy_debug_utils_messenger_ext(
+            self.debug.utils.destroy_debug_utils_messenger_ext(
                 self.handle.handle(),
-                self.debug_messenger,
+                self.debug.messenger,
                 ptr::null(),
             );
         }

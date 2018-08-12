@@ -1,28 +1,73 @@
-use ash;
 use ash::extensions::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
-use ash::version;
-use ash::version::InstanceV1_0;
-use ash::vk;
-use std::{ops, ptr, sync::Arc};
+use ash::{
+    self,
+    extensions::Surface,
+    version::{self, DeviceV1_0, InstanceV1_0},
+    vk,
+};
+use std::{
+    ops::Deref,
+    ptr,
+    sync::{Arc, Mutex},
+};
 
-use super::instance::Instance;
+use super::{alloc, Instance};
 
 pub type AshDevice = ash::Device<version::V1_1>;
 
 pub struct Device {
-    device: AshDevice,
-    #[allow(dead_code)]
-    instance: Arc<Instance>,
+    pub device: AshDevice,
+    pub instance: Arc<Instance>,
+    pub physical_device: vk::PhysicalDevice,
+    pub allocator: alloc::VmaAllocator,
+    pub graphics_queue_family: u32,
+    // pub compute_queue_family: u32,
+    pub graphics_queue: Arc<Mutex<vk::Queue>>,
+    // pub _compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
+    // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
 impl Device {
-    pub fn new(
-        instance: &Arc<Instance>,
-        physical_device: vk::PhysicalDevice,
-        queues: &[(u32, u32)],
-    ) -> Result<Arc<Device>, ash::DeviceError> {
+    pub fn new(instance: &Arc<Instance>) -> Result<Device, ash::DeviceError> {
+        let Instance {
+            ref entry,
+            // ref instance,
+            surface,
+            ..
+        } = **instance;
+
+        let pdevices = instance
+            .enumerate_physical_devices()
+            .expect("Physical device error");
+        let surface_loader =
+            Surface::new(entry.vk(), &***instance).expect("Unable to load the Surface extension");
+
+        let physical_device = pdevices[0];
+        let graphics_queue_family = {
+            instance
+                .get_physical_device_queue_family_properties(physical_device)
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, info)| {
+                    let supports_graphic_and_surface =
+                        info.queue_flags.subset(vk::QueueFlags::GRAPHICS) && surface_loader
+                            .get_physical_device_surface_support_khr(
+                                physical_device,
+                                ix as u32,
+                                surface,
+                            );
+                    if supports_graphic_and_surface {
+                        Some(ix as u32)
+                    } else {
+                        None
+                    }
+                }).next()
+                .unwrap()
+        };
+        let queues = vec![(graphics_queue_family, 1)];
+        // let device = device::Device::new(&instance, pdevice, &queue_decl).unwrap();
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
             let device_extension_names_raw = vec![Swapchain::name().as_ptr()];
@@ -67,29 +112,18 @@ impl Device {
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
-        #[cfg(feature = "validation")]
-        {
-            let device = Device {
-                device: device,
-                instance: instance.clone(),
-            };
-            unsafe {
-                use std::mem::transmute;
-                device.set_object_name(
-                    vk::ObjectType::DEVICE,
-                    transmute(device.vk().handle()),
-                    "Device",
-                );
-            }
-            Ok(Arc::new(device))
-        }
-        #[cfg(not(feature = "validation"))]
-        {
-            Ok(Arc::new(Device {
-                device,
-                instance: instance.clone(),
-            }))
-        }
+        let allocator =
+            alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
+        let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
+
+        Ok(Device {
+            device,
+            instance: Arc::clone(instance),
+            physical_device,
+            allocator,
+            graphics_queue_family,
+            graphics_queue: Arc::new(Mutex::new(graphics_queue)),
+        })
     }
 
     pub fn vk(&self) -> &AshDevice {
@@ -162,7 +196,7 @@ impl Device {
     }
 }
 
-impl ops::Deref for Device {
+impl Deref for Device {
     type Target = AshDevice;
 
     fn deref(&self) -> &AshDevice {
@@ -174,6 +208,7 @@ impl Drop for Device {
     fn drop(&mut self) {
         use ash::version::DeviceV1_0;
         self.device.device_wait_idle().unwrap();
+        alloc::destroy(self.allocator);
         unsafe {
             self.device.destroy_device(None);
         }

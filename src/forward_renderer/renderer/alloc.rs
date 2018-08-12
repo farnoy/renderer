@@ -1,9 +1,7 @@
 #![allow(warnings)]
 
-extern crate ash;
-
 use ash::{
-    prelude,
+    self, prelude,
     version::{self, DeviceV1_0, EntryV1_0, InstanceV1_0, V1_0, V1_1},
     vk,
 };
@@ -201,7 +199,6 @@ pub fn create(
             ),
         }
     };
-    println!("functions for vma are {:?}", vma_functions);
     let create_info = VmaAllocatorCreateInfo {
         flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0
             as u32,

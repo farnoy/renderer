@@ -1,3 +1,5 @@
+#![feature(non_modrs_mods)]
+
 #[macro_use]
 extern crate ash;
 extern crate cgmath;
@@ -5,7 +7,6 @@ extern crate futures;
 extern crate gltf;
 extern crate gltf_importer;
 extern crate gltf_utils;
-pub extern crate internal_alloc;
 extern crate rayon;
 extern crate specs;
 #[macro_use]
@@ -19,21 +20,17 @@ mod forward_renderer;
 
 use ash::{version::DeviceV1_0, vk};
 use cgmath::Rotation3;
-use forward_renderer::{alloc, components::*, helpers::*, renderer::*, systems::*};
-use futures::executor::block_on;
-use gltf_utils::PrimitiveIterators;
+use forward_renderer::{
+    ecs::{components::*, systems::*, Bundle},
+    renderer::{alloc, load_gltf, new_buffer, RenderFrame, Renderer},
+};
 use specs::Builder;
-use std::{mem::size_of, ptr, sync::Arc, u64};
+use std::{mem::size_of, ptr, sync::Arc};
 use winit::{Event, KeyboardInput, WindowEvent};
 
 fn main() {
     let mut world = specs::World::new();
-    world.register::<Position>();
-    world.register::<Rotation>();
-    world.register::<Scale>();
-    world.register::<Matrices>();
-    world.register::<GltfMesh>();
-    world.register::<GltfMeshBufferIndex>();
+    world.add_bundle(Bundle);
     let rayon_threadpool = Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(2)
@@ -69,147 +66,30 @@ fn main() {
 
     let (mut renderer, mut events_loop) = RenderFrame::new();
 
-    let (vertex_buffer, normal_buffer, index_buffer, index_len) = {
-        // Mesh load
-        let path = "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf";
-        // let path = "glTF-Sample-Models/2.0/Box/glTF/Box.gltf";
-        let importer = gltf_importer::import(path);
-        let (loaded, buffers) = importer.unwrap();
-        // let scene = loaded.scenes().next().unwrap();
-        // let node = scene.nodes().next().unwrap();
-        let mesh = loaded.meshes().next().unwrap();
-        let primitive = mesh.primitives().next().unwrap();
-        let positions = primitive.positions(&buffers).unwrap();
-        let normals = primitive.normals(&buffers).unwrap();
-        let vertex_len = positions.len() as u64;
-        let vertex_size = size_of::<f32>() as u64 * 3 * vertex_len;
-        let normals_size = size_of::<f32>() as u64 * 3 * vertex_len;
-        let vertex_buffer = new_buffer(
-            Arc::clone(&renderer.device),
-            vk::BufferUsageFlags::VERTEX_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::STORAGE_BUFFER,
-            alloc::VmaAllocationCreateFlagBits(0),
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            vertex_size,
-        );
-        let vertex_upload_buffer = new_buffer(
-            Arc::clone(&renderer.device),
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            vertex_size,
-        );
-        unsafe {
-            let p = vertex_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
-            for (ix, data) in positions.enumerate() {
-                *p.offset(ix as isize) = data;
-            }
-        }
-        let normal_buffer = new_buffer(
-            Arc::clone(&renderer.device),
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            alloc::VmaAllocationCreateFlagBits(0),
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            normals_size,
-        );
-        let normal_upload_buffer = new_buffer(
-            Arc::clone(&renderer.device),
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            normals_size,
-        );
-        unsafe {
-            let p = normal_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
-            for (ix, data) in normals.enumerate() {
-                *p.offset(ix as isize) = data;
-            }
-        }
-        let indices = PrimitiveIterators::indices(&primitive, &buffers)
-            .unwrap()
-            .into_u32();
-        let index_len = indices.len() as u64;
-        let index_size = size_of::<u32>() as u64 * index_len;
-        let index_buffer = new_buffer(
-            Arc::clone(&renderer.device),
-            vk::BufferUsageFlags::INDEX_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::STORAGE_BUFFER,
-            alloc::VmaAllocationCreateFlagBits(0),
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            index_size,
-        );
-        let index_upload_buffer = new_buffer(
-            Arc::clone(&renderer.device),
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            index_size,
-        );
-        unsafe {
-            let p = index_upload_buffer.allocation_info.pMappedData as *mut u32;
-            for (ix, data) in indices.enumerate() {
-                *p.offset(ix as isize) = data;
-            }
-        }
-        let upload = one_time_submit_cb(
-            Arc::clone(&renderer.graphics_command_pool),
-            Arc::clone(&renderer.device.graphics_queue),
-            {
-                let vertex_buffer = Arc::clone(&vertex_buffer);
-                let vertex_upload_buffer = Arc::clone(&vertex_upload_buffer);
-                let normal_buffer = Arc::clone(&normal_buffer);
-                let normal_upload_buffer = Arc::clone(&normal_upload_buffer);
-                let index_buffer = Arc::clone(&index_buffer);
-                let index_upload_buffer = Arc::clone(&index_upload_buffer);
-                let device = Arc::clone(&renderer.device);
-                move |command_buffer| unsafe {
-                    device.device.cmd_copy_buffer(
-                        command_buffer,
-                        vertex_upload_buffer.handle,
-                        vertex_buffer.handle,
-                        &[vk::BufferCopy {
-                            src_offset: 0,
-                            dst_offset: 0,
-                            size: vertex_buffer.allocation_info.size,
-                        }],
-                    );
-                    device.device.cmd_copy_buffer(
-                        command_buffer,
-                        normal_upload_buffer.handle,
-                        normal_buffer.handle,
-                        &[vk::BufferCopy {
-                            src_offset: 0,
-                            dst_offset: 0,
-                            size: normal_buffer.allocation_info.size,
-                        }],
-                    );
-                    device.device.cmd_copy_buffer(
-                        command_buffer,
-                        index_upload_buffer.handle,
-                        index_buffer.handle,
-                        &[vk::BufferCopy {
-                            src_offset: 0,
-                            dst_offset: 0,
-                            size: index_buffer.allocation_info.size,
-                        }],
-                    );
-                }
-            },
-        );
+    let projection = cgmath::perspective(
+        cgmath::Deg(60.0),
+        renderer.instance.window_width as f32 / renderer.instance.window_height as f32,
+        0.1,
+        100.0,
+    );
 
-        block_on(upload).unwrap();
+    let view = cgmath::Matrix4::look_at(
+        cgmath::Point3::new(0.0, 1.0, -2.0),
+        cgmath::Point3::new(0.0, 0.0, 0.0),
+        cgmath::vec3(0.0, -1.0, 0.0),
+    );
 
-        (vertex_buffer, normal_buffer, index_buffer, index_len)
-    };
+    let (vertex_buffer, normal_buffer, index_buffer, index_len) = load_gltf(
+        &renderer,
+        "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
+    );
 
     let culled_index_buffer = new_buffer(
         Arc::clone(&renderer.device),
         vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * index_len * 900,
+        size_of::<u32>() as vk::DeviceSize * index_len * 100,
     );
 
     {
@@ -256,26 +136,16 @@ fn main() {
 
     renderer.culled_index_buffer = Some(culled_index_buffer);
 
-    let projection = cgmath::perspective(
-        cgmath::Deg(60.0),
-        renderer.instance.window_width as f32 / renderer.instance.window_height as f32,
-        0.1,
-        100.0,
-    );
-    let view = cgmath::Matrix4::look_at(
-        cgmath::Point3::new(0.0, 1.0, -2.0),
-        cgmath::Point3::new(0.0, 0.0, 0.0),
-        cgmath::vec3(0.0, -1.0, 0.0),
-    );
-    for ix in 0..900 {
+    for ix in 0..100 {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(
                 ((ix % 3) * 2 - 2) as f32,
                 0.0,
                 2.0 + ix as f32,
-            ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 10) as f32))))
-            .with::<Scale>(Scale(0.6))
+            ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
+                (ix * 10) as f32,
+            )))).with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
@@ -285,6 +155,12 @@ fn main() {
             }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .build();
     }
+
+    let dst_mvp = Arc::clone(&renderer.ubo_buffer);
+    let dst_model = Arc::clone(&renderer.model_buffer);
+
+    world.add_resource(renderer);
+
     let mut dispatcher = specs::DispatcherBuilder::new()
         .with_pool(Arc::clone(&rayon_threadpool))
         .with(SteadyRotation, "steady_rotation", &[])
@@ -293,15 +169,9 @@ fn main() {
             MVPCalculation { projection, view },
             "mvp",
             &["steady_rotation"],
-        ).with(
-            MVPUpload {
-                dst_mvp: Arc::clone(&renderer.ubo_buffer),
-                dst_model: Arc::clone(&renderer.model_buffer),
-            },
-            "mvp_upload",
-            &["mvp"],
-        ).with(
-            renderer,
+        ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
+        .with(
+            Renderer,
             "render_frame",
             &["assign_buffer_index", "mvp_upload"],
         ).build();
@@ -336,6 +206,7 @@ fn main() {
             _ => (),
         });
         if quit {
+            world.read_resource::<RenderFrame>().device.device_wait_idle().unwrap();
             break 'frame;
         }
         dispatcher.dispatch(&world.res);

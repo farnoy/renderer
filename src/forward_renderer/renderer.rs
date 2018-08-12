@@ -1,5 +1,13 @@
-use super::alloc;
-use super::components::*;
+// TODO: pub(crate) should disappear?
+pub mod alloc;
+mod device;
+mod entry;
+mod gltf_mesh;
+mod helpers;
+mod instance;
+mod swapchain;
+
+use super::ecs::components::{GltfMesh, GltfMeshBufferIndex};
 use ash::{version::DeviceV1_0, vk};
 use cgmath;
 use futures::{
@@ -13,15 +21,19 @@ use std::{
     path::PathBuf,
     ptr,
     slice::from_raw_parts,
-    sync::Arc,
+    sync::{Arc, Mutex},
     u64,
 };
 use winit;
 
-use super::helpers::*;
+use self::{device::Device, helpers::*, instance::Instance};
 
+pub use self::gltf_mesh::load as load_gltf;
+pub use self::helpers::{new_buffer, one_time_submit_cb, Buffer};
+
+// TODO: rename
 pub struct RenderFrame {
-    pub threadpool: executor::ThreadPool,
+    pub threadpool: Mutex<executor::ThreadPool>,
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
     pub swapchain: Arc<Swapchain>,
@@ -49,8 +61,14 @@ pub struct RenderFrame {
 
 impl RenderFrame {
     pub fn new() -> (RenderFrame, winit::EventsLoop) {
-        let (instance, events_loop) = new_window(1920, 1080);
-        let device = new_device(&instance);
+        let (instance, events_loop) = Instance::new(1920, 1080).expect("Failed to create instance");
+        let instance = Arc::new(instance);
+        let device = Arc::new(Device::new(&instance).expect("Failed to create device"));
+        device.set_object_name(
+            vk::ObjectType::DEVICE,
+            unsafe { transmute(device.handle()) },
+            "Device",
+        );
         let swapchain = new_swapchain(&instance, &device);
         let present_semaphore = new_semaphore(Arc::clone(&device));
         let rendering_complete_semaphore = new_semaphore(Arc::clone(&device));
@@ -111,7 +129,7 @@ impl RenderFrame {
                 },
             ],
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
             unsafe { transmute::<_, u64>(command_generation_descriptor_set_layout.handle) },
             "Command Generation Descriptor Set Layout",
@@ -126,7 +144,7 @@ impl RenderFrame {
                 p_immutable_samplers: ptr::null(),
             }],
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
             unsafe { transmute::<_, u64>(ubo_set_layout.handle) },
             "UBO Set Layout",
@@ -141,7 +159,7 @@ impl RenderFrame {
                 p_immutable_samplers: ptr::null(),
             }],
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
             unsafe { transmute::<_, u64>(model_view_set_layout.handle) },
             "Model View Set Layout",
@@ -196,7 +214,7 @@ impl RenderFrame {
             Arc::clone(&descriptor_pool),
             &command_generation_descriptor_set_layout,
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET,
             unsafe { transmute::<_, u64>(command_generation_descriptor_set.handle) },
             "Command Generation Descriptor Set",
@@ -208,7 +226,7 @@ impl RenderFrame {
                 | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<u32>() as vk::DeviceSize * 5 * 900,
+            size_of::<u32>() as vk::DeviceSize * 5 * 100,
         );
 
         let gltf_pipeline_layout = new_pipeline_layout(
@@ -216,7 +234,7 @@ impl RenderFrame {
             &[ubo_set_layout.handle, model_set_layout.handle],
             &[],
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::PIPELINE_LAYOUT,
             unsafe { transmute::<_, u64>(gltf_pipeline_layout.handle) },
             "GLTF Pipeline Layout",
@@ -266,7 +284,7 @@ impl RenderFrame {
             false,
             false,
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::PIPELINE,
             unsafe { transmute::<_, u64>(gltf_pipeline.handle) },
             "GLTF Pipeline",
@@ -302,7 +320,7 @@ impl RenderFrame {
             Arc::clone(&descriptor_pool),
             &ubo_set_layout,
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET,
             unsafe { transmute::<_, u64>(ubo_set.handle) },
             "UBO Set",
@@ -343,7 +361,7 @@ impl RenderFrame {
             Arc::clone(&descriptor_pool),
             &model_view_set_layout,
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET,
             unsafe { transmute::<_, u64>(model_view_set.handle) },
             "Model View Set",
@@ -385,7 +403,7 @@ impl RenderFrame {
             Arc::clone(&descriptor_pool),
             &model_set_layout,
         );
-        device.device.set_object_name(
+        device.set_object_name(
             vk::ObjectType::DESCRIPTOR_SET,
             unsafe { transmute::<_, u64>(model_set.handle) },
             "Model Set",
@@ -425,7 +443,7 @@ impl RenderFrame {
         let threadpool = ThreadPool::builder().pool_size(4).create().unwrap();
         (
             RenderFrame {
-                threadpool,
+                threadpool: Mutex::new(threadpool),
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
                 framebuffer: Arc::clone(&framebuffer),
@@ -543,44 +561,51 @@ impl RenderFrame {
     }
 }
 
-impl<'a> System<'a> for RenderFrame {
+pub struct Renderer;
+
+impl<'a> System<'a> for Renderer {
     type SystemData = (
         Entities<'a>,
+        ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
     );
 
-    fn run(&mut self, (entities, meshes, mesh_indices): Self::SystemData) {
+    fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
         let image_index = unsafe {
-            self.swapchain
+            renderer
+                .swapchain
                 .handle
                 .ext
                 .acquire_next_image_khr(
-                    self.swapchain.handle.swapchain,
+                    renderer.swapchain.handle.swapchain,
                     u64::MAX,
-                    self.present_semaphore.handle,
+                    renderer.present_semaphore.handle,
                     vk::Fence::null(),
                 ).unwrap()
         };
-        let command_buffer_future = record_one_time_cb(Arc::clone(&self.graphics_command_pool), {
-            let main_renderpass = Arc::clone(&self.renderpass);
-            let framebuffer = Arc::clone(&self.framebuffer);
-            let instance = Arc::clone(&self.instance);
-            let device = Arc::clone(&self.device);
-            let ubo_set = Arc::clone(&self.ubo_set);
-            let model_set = Arc::clone(&self.model_set);
-            let depth_pipeline = Arc::clone(&self.depth_pipeline);
-            let depth_pipeline_layout = Arc::clone(&self.depth_pipeline_layout);
-            let gltf_pipeline = Arc::clone(&self.gltf_pipeline);
-            let gltf_pipeline_layout = Arc::clone(&self.gltf_pipeline_layout);
-            let cull_set = Arc::clone(&self.cull_set);
-            let culled_index_buffer = Arc::clone(self.culled_index_buffer.as_ref().unwrap());
-            let culled_commands_buffer = Arc::clone(&self.culled_commands_buffer);
-            let cull_pipeline_reset = Arc::clone(&self.cull_pipeline_reset);
-            let cull_pipeline = Arc::clone(&self.cull_pipeline);
-            let cull_pipeline_layout = Arc::clone(&self.cull_pipeline_layout);
-            move |command_buffer| unsafe {
-                device.device.debug_marker_around(
+        let command_buffer_future = record_one_time_cb(
+            Arc::clone(&renderer.graphics_command_pool),
+            {
+                let main_renderpass = Arc::clone(&renderer.renderpass);
+                let framebuffer = Arc::clone(&renderer.framebuffer);
+                let instance = Arc::clone(&renderer.instance);
+                let device = Arc::clone(&renderer.device);
+                let ubo_set = Arc::clone(&renderer.ubo_set);
+                let model_set = Arc::clone(&renderer.model_set);
+                let depth_pipeline = Arc::clone(&renderer.depth_pipeline);
+                let depth_pipeline_layout = Arc::clone(&renderer.depth_pipeline_layout);
+                let gltf_pipeline = Arc::clone(&renderer.gltf_pipeline);
+                let gltf_pipeline_layout = Arc::clone(&renderer.gltf_pipeline_layout);
+                let cull_set = Arc::clone(&renderer.cull_set);
+                let culled_index_buffer =
+                    Arc::clone(renderer.culled_index_buffer.as_ref().unwrap());
+                let culled_commands_buffer = Arc::clone(&renderer.culled_commands_buffer);
+                let cull_pipeline_reset = Arc::clone(&renderer.cull_pipeline_reset);
+                let cull_pipeline = Arc::clone(&renderer.cull_pipeline);
+                let cull_pipeline_layout = Arc::clone(&renderer.cull_pipeline_layout);
+                move |command_buffer| unsafe {
+                    device.debug_marker_around(
                     command_buffer,
                     "cull pass",
                     [0.0, 1.0, 0.0, 1.0],
@@ -692,138 +717,140 @@ impl<'a> System<'a> for RenderFrame {
                     },
                 );
 
-                let clear_values = &[
-                    vk::ClearValue {
-                        color: vk::ClearColorValue { float32: [0.0; 4] },
-                    },
-                    vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
+                    let clear_values = &[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue { float32: [0.0; 4] },
                         },
-                    },
-                ];
-                let begin_info = vk::RenderPassBeginInfo {
-                    s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
-                    p_next: ptr::null(),
-                    render_pass: main_renderpass.handle,
-                    framebuffer: framebuffer.handles[image_index as usize],
-                    render_area: vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: vk::Extent2D {
-                            width: instance.window_width,
-                            height: instance.window_height,
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
                         },
-                    },
-                    clear_value_count: clear_values.len() as u32,
-                    p_clear_values: clear_values.as_ptr(),
-                };
+                    ];
+                    let begin_info = vk::RenderPassBeginInfo {
+                        s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
+                        p_next: ptr::null(),
+                        render_pass: main_renderpass.handle,
+                        framebuffer: framebuffer.handles[image_index as usize],
+                        render_area: vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: vk::Extent2D {
+                                width: instance.window_width,
+                                height: instance.window_height,
+                            },
+                        },
+                        clear_value_count: clear_values.len() as u32,
+                        p_clear_values: clear_values.as_ptr(),
+                    };
 
-                device.device.debug_marker_around(
-                    command_buffer,
-                    "main renderpass",
-                    [0.0, 0.0, 1.0, 1.0],
-                    || {
-                        device.device.cmd_begin_render_pass(
-                            command_buffer,
-                            &begin_info,
-                            vk::SubpassContents::INLINE,
-                        );
-                        device.device.debug_marker_around(
-                            command_buffer,
-                            "depth prepass",
-                            [0.3, 0.3, 0.3, 1.0],
-                            || {
-                                device.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    depth_pipeline.handle,
-                                );
-                                device.device.cmd_bind_descriptor_sets(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    depth_pipeline_layout.handle,
-                                    0,
-                                    &[ubo_set.handle],
-                                    &[],
-                                );
-                                device.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    culled_index_buffer.handle,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                let first_entity = (&*entities).join().next().unwrap();
-                                let mesh = meshes.get(first_entity).unwrap();
-                                device.device.cmd_bind_vertex_buffers(
-                                    command_buffer,
-                                    0,
-                                    &[mesh.vertex_buffer.handle],
-                                    &[0],
-                                );
-                                device.device.cmd_draw_indexed_indirect(
-                                    command_buffer,
-                                    culled_commands_buffer.handle,
-                                    0,
-                                    900, // TODO: find max of GltfMeshBufferIndex
-                                    size_of::<u32>() as u32 * 5,
-                                );
-                                device
-                                    .device
-                                    .cmd_next_subpass(command_buffer, vk::SubpassContents::INLINE);
-                            },
-                        );
-                        device.device.debug_marker_around(
-                            command_buffer,
-                            "gltf meshes",
-                            [1.0, 0.0, 0.0, 1.0],
-                            || {
-                                // gltf mesh
-                                device.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    gltf_pipeline.handle,
-                                );
-                                device.device.cmd_bind_descriptor_sets(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    gltf_pipeline_layout.handle,
-                                    0,
-                                    &[ubo_set.handle, model_set.handle],
-                                    &[],
-                                );
-                                device.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    culled_index_buffer.handle,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                let first_entity = (&*entities).join().next().unwrap();
-                                let mesh = meshes.get(first_entity).unwrap();
-                                device.device.cmd_bind_vertex_buffers(
-                                    command_buffer,
-                                    0,
-                                    &[mesh.vertex_buffer.handle, mesh.normal_buffer.handle],
-                                    &[0, 0],
-                                );
-                                device.device.cmd_draw_indexed_indirect(
-                                    command_buffer,
-                                    culled_commands_buffer.handle,
-                                    0,
-                                    900, // TODO: find max of GltfMeshBufferIndex
-                                    size_of::<u32>() as u32 * 5,
-                                );
-                            },
-                        );
-                        device.device.cmd_end_render_pass(command_buffer);
-                    },
-                );
-            }
-        });
+                    device.debug_marker_around(
+                        command_buffer,
+                        "main renderpass",
+                        [0.0, 0.0, 1.0, 1.0],
+                        || {
+                            device.device.cmd_begin_render_pass(
+                                command_buffer,
+                                &begin_info,
+                                vk::SubpassContents::INLINE,
+                            );
+                            device.debug_marker_around(
+                                command_buffer,
+                                "depth prepass",
+                                [0.3, 0.3, 0.3, 1.0],
+                                || {
+                                    device.device.cmd_bind_pipeline(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        depth_pipeline.handle,
+                                    );
+                                    device.device.cmd_bind_descriptor_sets(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        depth_pipeline_layout.handle,
+                                        0,
+                                        &[ubo_set.handle],
+                                        &[],
+                                    );
+                                    device.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        culled_index_buffer.handle,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    let first_entity = (&*entities).join().next().unwrap();
+                                    let mesh = meshes.get(first_entity).unwrap();
+                                    device.device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[mesh.vertex_buffer.handle],
+                                        &[0],
+                                    );
+                                    device.device.cmd_draw_indexed_indirect(
+                                        command_buffer,
+                                        culled_commands_buffer.handle,
+                                        0,
+                                        100, // TODO: find max of GltfMeshBufferIndex
+                                        size_of::<u32>() as u32 * 5,
+                                    );
+                                    device.device.cmd_next_subpass(
+                                        command_buffer,
+                                        vk::SubpassContents::INLINE,
+                                    );
+                                },
+                            );
+                            device.debug_marker_around(
+                                command_buffer,
+                                "gltf meshes",
+                                [1.0, 0.0, 0.0, 1.0],
+                                || {
+                                    // gltf mesh
+                                    device.device.cmd_bind_pipeline(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        gltf_pipeline.handle,
+                                    );
+                                    device.device.cmd_bind_descriptor_sets(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        gltf_pipeline_layout.handle,
+                                        0,
+                                        &[ubo_set.handle, model_set.handle],
+                                        &[],
+                                    );
+                                    device.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        culled_index_buffer.handle,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    let first_entity = (&*entities).join().next().unwrap();
+                                    let mesh = meshes.get(first_entity).unwrap();
+                                    device.device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[mesh.vertex_buffer.handle, mesh.normal_buffer.handle],
+                                        &[0, 0],
+                                    );
+                                    device.device.cmd_draw_indexed_indirect(
+                                        command_buffer,
+                                        culled_commands_buffer.handle,
+                                        0,
+                                        100, // TODO: find max of GltfMeshBufferIndex
+                                        size_of::<u32>() as u32 * 5,
+                                    );
+                                },
+                            );
+                            device.device.cmd_end_render_pass(command_buffer);
+                        },
+                    );
+                }
+            },
+        );
         let command_buffer = block_on(command_buffer_future).unwrap();
         unsafe {
-            let wait_semaphores = &[self.present_semaphore.handle];
-            let signal_semaphores = &[self.rendering_complete_semaphore.handle];
+            let wait_semaphores = &[renderer.present_semaphore.handle];
+            let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
             let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
             let submits = [vk::SubmitInfo {
                 s_type: vk::StructureType::SUBMIT_INFO,
@@ -836,22 +863,26 @@ impl<'a> System<'a> for RenderFrame {
                 signal_semaphore_count: signal_semaphores.len() as u32,
                 p_signal_semaphores: signal_semaphores.as_ptr(),
             }];
-            let queue = self
+            let queue = renderer
                 .device
                 .graphics_queue
                 .lock()
                 .expect("can't lock the submit queue");
 
-            let submit_fence = new_fence(Arc::clone(&self.device));
+            let submit_fence = new_fence(Arc::clone(&renderer.device));
 
-            self.device
+            renderer
+                .device
                 .device
                 .queue_submit(*queue, &submits, submit_fence.handle)
                 .unwrap();
 
             {
-                let device = Arc::clone(&self.device);
-                self.threadpool
+                let device = Arc::clone(&renderer.device);
+                renderer
+                    .threadpool
+                    .lock()
+                    .expect("can't lock threadpool")
                     .run(lazy(move |_| {
                         spawn(lazy(move |_| {
                             // println!("dtor previous frame");
@@ -867,19 +898,20 @@ impl<'a> System<'a> for RenderFrame {
             }
 
             {
-                let wait_semaphores = &[self.rendering_complete_semaphore.handle];
+                let wait_semaphores = &[renderer.rendering_complete_semaphore.handle];
                 let present_info = vk::PresentInfoKHR {
                     s_type: vk::StructureType::PRESENT_INFO_KHR,
                     p_next: ptr::null(),
                     wait_semaphore_count: wait_semaphores.len() as u32,
                     p_wait_semaphores: wait_semaphores.as_ptr(),
                     swapchain_count: 1,
-                    p_swapchains: &self.swapchain.handle.swapchain,
+                    p_swapchains: &renderer.swapchain.handle.swapchain,
                     p_image_indices: &image_index,
                     p_results: ptr::null_mut(),
                 };
 
-                self.swapchain
+                renderer
+                    .swapchain
                     .handle
                     .ext
                     .queue_present_khr(*queue, &present_info)

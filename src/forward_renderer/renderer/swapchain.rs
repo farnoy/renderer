@@ -2,7 +2,6 @@ use ash;
 use ash::vk;
 
 // just a handle to implement Drop
-#[derive(Clone)]
 pub struct Swapchain {
     pub ext: ash::extensions::Swapchain,
     pub swapchain: vk::SwapchainKHR,

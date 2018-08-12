@@ -33,10 +33,6 @@ time = "0.1"
 name = "v4"
 path = "src/v4.rs"
 
-[lib]
-name = "internal_alloc"
-path = "src/forward_renderer/alloc.rs"
-
 [build-dependencies]
 bindgen = "0.37"
 
@@ -51,7 +47,7 @@ gapid = ["renderdoc"]
 
 [profile.dev]
 lto = false
-codegen-units = 4
+codegen-units = 8
 
 [profile.release]
 debug = true
