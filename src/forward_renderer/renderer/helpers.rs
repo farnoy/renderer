@@ -16,10 +16,7 @@ use std::{
 use winapi;
 use winit;
 
-use super::{
-    device::Device,
-    instance::Instance,
-};
+use super::{device::Device, instance::Instance};
 
 pub struct Swapchain {
     pub handle: swapchain::Swapchain,
@@ -493,14 +490,14 @@ pub fn new_buffer(
     allocation_usage: alloc::VmaMemoryUsage,
     size: vk::DeviceSize,
 ) -> Arc<Buffer> {
-    let queue_families = [device.graphics_queue_family];
+    let queue_families = [device.graphics_queue_family, device.compute_queue_family];
     let buffer_create_info = vk::BufferCreateInfo {
         s_type: vk::StructureType::BUFFER_CREATE_INFO,
         p_next: ptr::null(),
         flags: Default::default(),
         size,
         usage: buffer_usage,
-        sharing_mode: vk::SharingMode::EXCLUSIVE,
+        sharing_mode: vk::SharingMode::CONCURRENT,
         queue_family_index_count: queue_families.len() as u32,
         p_queue_family_indices: &queue_families as *const _,
     };

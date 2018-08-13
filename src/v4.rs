@@ -22,10 +22,14 @@ use ash::{version::DeviceV1_0, vk};
 use cgmath::Rotation3;
 use forward_renderer::{
     ecs::{components::*, systems::*, Bundle},
-    renderer::{alloc, load_gltf, new_buffer, RenderFrame, Renderer},
+    renderer::{alloc, load_gltf, new_buffer, CullGeometry, RenderFrame, Renderer},
 };
 use specs::Builder;
-use std::{mem::{size_of, transmute}, ptr, sync::Arc};
+use std::{
+    mem::{size_of, transmute},
+    ptr,
+    sync::Arc,
+};
 use winit::{dpi::LogicalSize, Event, KeyboardInput, WindowEvent};
 
 fn main() {
@@ -176,10 +180,11 @@ fn main() {
             &["steady_rotation"],
         ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
         .with(
-            Renderer,
-            "render_frame",
+            CullGeometry,
+            "cull_geometry",
             &["assign_buffer_index", "mvp_upload"],
-        ).build();
+        ).with(Renderer, "render_frame", &["cull_geometry"])
+        .build();
 
     'frame: loop {
         let mut quit = false;

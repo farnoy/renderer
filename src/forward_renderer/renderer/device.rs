@@ -20,9 +20,9 @@ pub struct Device {
     pub physical_device: vk::PhysicalDevice,
     pub allocator: alloc::VmaAllocator,
     pub graphics_queue_family: u32,
-    // pub compute_queue_family: u32,
+    pub compute_queue_family: u32,
     pub graphics_queue: Arc<Mutex<vk::Queue>>,
-    // pub _compute_queues: Arc<Vec<Mutex<vk::Queue>>>,
+    pub compute_queue: Arc<Mutex<vk::Queue>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -42,9 +42,9 @@ impl Device {
             Surface::new(entry.vk(), &***instance).expect("Unable to load the Surface extension");
 
         let physical_device = pdevices[0];
+        let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
         let graphics_queue_family = {
-            instance
-                .get_physical_device_queue_family_properties(physical_device)
+            queue_families
                 .iter()
                 .enumerate()
                 .filter_map(|(ix, info)| {
@@ -63,8 +63,22 @@ impl Device {
                 }).next()
                 .unwrap()
         };
-        let queues = vec![(graphics_queue_family, 1)];
-        // let device = device::Device::new(&instance, pdevice, &queue_decl).unwrap();
+        let compute_queue_family = {
+            queue_families
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, info)| {
+                    if info.queue_flags.subset(vk::QueueFlags::COMPUTE)
+                        && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
+                    {
+                        Some(ix as u32)
+                    } else {
+                        None
+                    }
+                }).next()
+                .expect("no suitable compute queue")
+        };
+        let queues = vec![(graphics_queue_family, 1), (compute_queue_family, 1)];
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
             let device_extension_names_raw = vec![Swapchain::name().as_ptr()];
@@ -112,6 +126,7 @@ impl Device {
         let allocator =
             alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
+        let compute_queue = unsafe { device.get_device_queue(compute_queue_family, 0) };
 
         Ok(Device {
             device,
@@ -119,7 +134,9 @@ impl Device {
             physical_device,
             allocator,
             graphics_queue_family,
+            compute_queue_family,
             graphics_queue: Arc::new(Mutex::new(graphics_queue)),
+            compute_queue: Arc::new(Mutex::new(compute_queue)),
         })
     }
 

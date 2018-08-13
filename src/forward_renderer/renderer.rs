@@ -19,8 +19,7 @@ use std::{
     ptr,
     slice::from_raw_parts,
     sync::Arc,
-    thread,
-    u64,
+    thread, u64,
 };
 use winit;
 
@@ -38,6 +37,7 @@ pub struct RenderFrame {
     pub present_semaphore: Arc<Semaphore>,
     pub rendering_complete_semaphore: Arc<Semaphore>,
     pub graphics_command_pool: Arc<CommandPool>,
+    pub compute_command_pool: Arc<CommandPool>,
     pub renderpass: Arc<RenderPass>,
     pub depth_pipeline: Arc<Pipeline>,
     pub depth_pipeline_layout: Arc<PipelineLayout>,
@@ -53,6 +53,7 @@ pub struct RenderFrame {
     pub cull_pipeline_layout: Arc<PipelineLayout>,
     pub cull_set_layout: Arc<DescriptorSetLayout>,
     pub cull_set: Arc<DescriptorSet>,
+    pub cull_complete_semaphore: Arc<Semaphore>,
 }
 
 impl RenderFrame {
@@ -67,10 +68,16 @@ impl RenderFrame {
         );
         let swapchain = new_swapchain(&instance, &device);
         let present_semaphore = new_semaphore(Arc::clone(&device));
+        let cull_complete_semaphore = new_semaphore(Arc::clone(&device));
         let rendering_complete_semaphore = new_semaphore(Arc::clone(&device));
         let graphics_command_pool = CommandPool::new(
             Arc::clone(&device),
             device.graphics_queue_family,
+            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        );
+        let compute_command_pool = CommandPool::new(
+            Arc::clone(&device),
+            device.compute_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
         let main_renderpass = RenderFrame::setup_renderpass(Arc::clone(&device), &swapchain);
@@ -444,7 +451,8 @@ impl RenderFrame {
                 depth_pipeline_layout: Arc::clone(&depth_pipeline_layout),
                 gltf_pipeline: Arc::clone(&gltf_pipeline),
                 gltf_pipeline_layout: Arc::clone(&gltf_pipeline_layout),
-                graphics_command_pool: Arc::clone(&graphics_command_pool),
+                graphics_command_pool,
+                compute_command_pool,
                 ubo_set: Arc::clone(&ubo_set),
                 ubo_buffer,
                 model_set: Arc::clone(&model_set),
@@ -459,6 +467,7 @@ impl RenderFrame {
                 cull_pipeline_layout: Arc::clone(&command_generation_pipeline_layout),
                 cull_set_layout: Arc::clone(&command_generation_descriptor_set_layout),
                 cull_set: Arc::clone(&command_generation_descriptor_set),
+                cull_complete_semaphore,
             },
             events_loop,
         )
@@ -553,9 +562,9 @@ impl RenderFrame {
     }
 }
 
-pub struct Renderer;
+pub struct CullGeometry;
 
-impl<'a> System<'a> for Renderer {
+impl<'a> System<'a> for CullGeometry {
     type SystemData = (
         Entities<'a>,
         ReadExpect<'a, RenderFrame>,
@@ -564,39 +573,14 @@ impl<'a> System<'a> for Renderer {
     );
 
     fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
-        let image_index = unsafe {
-            renderer
-                .swapchain
-                .handle
-                .ext
-                .acquire_next_image_khr(
-                    renderer.swapchain.handle.swapchain,
-                    u64::MAX,
-                    renderer.present_semaphore.handle,
-                    vk::Fence::null(),
-                ).unwrap()
-        };
-        let command_buffer = commands::record_one_time(
-            Arc::clone(&renderer.graphics_command_pool),
-            {
-                let main_renderpass = Arc::clone(&renderer.renderpass);
-                let framebuffer = Arc::clone(&renderer.framebuffer);
-                let instance = Arc::clone(&renderer.instance);
-                let device = Arc::clone(&renderer.device);
-                let ubo_set = Arc::clone(&renderer.ubo_set);
-                let model_set = Arc::clone(&renderer.model_set);
-                let depth_pipeline = Arc::clone(&renderer.depth_pipeline);
-                let depth_pipeline_layout = Arc::clone(&renderer.depth_pipeline_layout);
-                let gltf_pipeline = Arc::clone(&renderer.gltf_pipeline);
-                let gltf_pipeline_layout = Arc::clone(&renderer.gltf_pipeline_layout);
-                let cull_set = Arc::clone(&renderer.cull_set);
-                let culled_index_buffer =
-                    Arc::clone(renderer.culled_index_buffer.as_ref().unwrap());
-                let culled_commands_buffer = Arc::clone(&renderer.culled_commands_buffer);
-                let cull_pipeline = Arc::clone(&renderer.cull_pipeline);
-                let cull_pipeline_layout = Arc::clone(&renderer.cull_pipeline_layout);
-                move |command_buffer| unsafe {
-                    device.debug_marker_around(
+        let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
+            let device = Arc::clone(&renderer.device);
+            let ubo_set = Arc::clone(&renderer.ubo_set);
+            let cull_set = Arc::clone(&renderer.cull_set);
+            let cull_pipeline = Arc::clone(&renderer.cull_pipeline);
+            let cull_pipeline_layout = Arc::clone(&renderer.cull_pipeline_layout);
+            move |command_buffer| unsafe {
+                device.debug_marker_around(
                     command_buffer,
                     "cull pass",
                     [0.0, 1.0, 0.0, 1.0],
@@ -645,23 +629,93 @@ impl<'a> System<'a> for Renderer {
                                 .device
                                 .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
                         }
-                        device.device.cmd_pipeline_barrier(
-                            command_buffer,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::PipelineStageFlags::DRAW_INDIRECT,
-                            vk::DependencyFlags::empty(),
-                            &[vk::MemoryBarrier {
-                                s_type: vk::StructureType::MEMORY_BARRIER,
-                                p_next: ptr::null(),
-                                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                                dst_access_mask: vk::AccessFlags::INDIRECT_COMMAND_READ,
-                            }],
-                            &[],
-                            &[],
-                        );
                     },
                 );
+            }
+        });
+        let wait_semaphores = &[];
+        let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
+        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+        let submits = [vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            p_next: ptr::null(),
+            wait_semaphore_count: wait_semaphores.len() as u32,
+            p_wait_semaphores: wait_semaphores.as_ptr(),
+            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+            command_buffer_count: 1,
+            p_command_buffers: &*cull_cb,
+            signal_semaphore_count: signal_semaphores.len() as u32,
+            p_signal_semaphores: signal_semaphores.as_ptr(),
+        }];
+        let submit_fence = new_fence(Arc::clone(&renderer.device));
+        renderer.device.set_object_name(
+            vk::ObjectType::FENCE,
+            unsafe { transmute::<_, u64>(submit_fence.handle) },
+            "cull async compute submit fence",
+        );
 
+        let queue = renderer.device.compute_queue.lock();
+
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &submits, submit_fence.handle)
+                .unwrap();
+        }
+
+        {
+            let device = Arc::clone(&renderer.device);
+            thread::spawn(move || unsafe {
+                device
+                    .device
+                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                    .expect("Wait for fence failed.");
+                drop(cull_cb);
+                drop(submit_fence);
+            });
+        }
+    }
+}
+
+pub struct Renderer;
+
+impl<'a> System<'a> for Renderer {
+    type SystemData = (
+        Entities<'a>,
+        ReadExpect<'a, RenderFrame>,
+        ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, GltfMeshBufferIndex>,
+    );
+
+    fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
+        let image_index = unsafe {
+            renderer
+                .swapchain
+                .handle
+                .ext
+                .acquire_next_image_khr(
+                    renderer.swapchain.handle.swapchain,
+                    u64::MAX,
+                    renderer.present_semaphore.handle,
+                    vk::Fence::null(),
+                ).unwrap()
+        };
+        let command_buffer =
+            commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
+                let main_renderpass = Arc::clone(&renderer.renderpass);
+                let framebuffer = Arc::clone(&renderer.framebuffer);
+                let instance = Arc::clone(&renderer.instance);
+                let device = Arc::clone(&renderer.device);
+                let ubo_set = Arc::clone(&renderer.ubo_set);
+                let model_set = Arc::clone(&renderer.model_set);
+                let depth_pipeline = Arc::clone(&renderer.depth_pipeline);
+                let depth_pipeline_layout = Arc::clone(&renderer.depth_pipeline_layout);
+                let gltf_pipeline = Arc::clone(&renderer.gltf_pipeline);
+                let gltf_pipeline_layout = Arc::clone(&renderer.gltf_pipeline_layout);
+                let culled_index_buffer =
+                    Arc::clone(renderer.culled_index_buffer.as_ref().unwrap());
+                let culled_commands_buffer = Arc::clone(&renderer.culled_commands_buffer);
+                move |command_buffer| unsafe {
                     let clear_values = &[
                         vk::ClearValue {
                             color: vk::ClearColorValue { float32: [0.0; 4] },
@@ -790,10 +844,12 @@ impl<'a> System<'a> for Renderer {
                         },
                     );
                 }
-            },
-        );
+            });
         unsafe {
-            let wait_semaphores = &[renderer.present_semaphore.handle];
+            let wait_semaphores = &[
+                renderer.present_semaphore.handle,
+                renderer.cull_complete_semaphore.handle,
+            ];
             let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
             let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
             let submits = [vk::SubmitInfo {
