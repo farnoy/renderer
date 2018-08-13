@@ -49,7 +49,6 @@ pub struct RenderFrame {
     pub model_buffer: Arc<Buffer>,
     pub culled_commands_buffer: Arc<Buffer>,
     pub culled_index_buffer: Option<Arc<Buffer>>,
-    pub cull_pipeline_reset: Arc<Pipeline>,
     pub cull_pipeline: Arc<Pipeline>,
     pub cull_pipeline_layout: Arc<PipelineLayout>,
     pub cull_set_layout: Arc<DescriptorSetLayout>,
@@ -194,12 +193,6 @@ impl RenderFrame {
                 size: size_of::<MeshData>() as u32,
             }],
         );
-        let command_generation_reset_pipeline = new_compute_pipeline(
-            Arc::clone(&device),
-            &command_generation_pipeline_layout,
-            &PathBuf::from(env!("OUT_DIR")).join("reset_indices.comp.spv"),
-        );
-
         let command_generation_pipeline = new_compute_pipeline(
             Arc::clone(&device),
             &command_generation_pipeline_layout,
@@ -223,7 +216,12 @@ impl RenderFrame {
                 | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<u32>() as vk::DeviceSize * 5 * 100,
+            size_of::<u32>() as vk::DeviceSize * 5 * 600,
+        );
+        device.set_object_name(
+            vk::ObjectType::BUFFER,
+            unsafe { transmute::<_, u64>(command_generation_buffer.handle) },
+            "indirect draw commands buffer",
         );
 
         let gltf_pipeline_layout = new_pipeline_layout(
@@ -279,7 +277,7 @@ impl RenderFrame {
             ],
             1,
             false,
-            false,
+            true,
         );
         device.set_object_name(
             vk::ObjectType::PIPELINE,
@@ -309,8 +307,8 @@ impl RenderFrame {
                 PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
             )],
             0,
-            false,
             true,
+            false,
         );
         let ubo_set = new_descriptor_set(
             Arc::clone(&device),
@@ -457,7 +455,6 @@ impl RenderFrame {
                 swapchain: Arc::clone(&swapchain),
                 culled_commands_buffer: Arc::clone(&command_generation_buffer),
                 culled_index_buffer: None,
-                cull_pipeline_reset: Arc::clone(&command_generation_reset_pipeline),
                 cull_pipeline: Arc::clone(&command_generation_pipeline),
                 cull_pipeline_layout: Arc::clone(&command_generation_pipeline_layout),
                 cull_set_layout: Arc::clone(&command_generation_descriptor_set_layout),
@@ -596,7 +593,6 @@ impl<'a> System<'a> for Renderer {
                 let culled_index_buffer =
                     Arc::clone(renderer.culled_index_buffer.as_ref().unwrap());
                 let culled_commands_buffer = Arc::clone(&renderer.culled_commands_buffer);
-                let cull_pipeline_reset = Arc::clone(&renderer.cull_pipeline_reset);
                 let cull_pipeline = Arc::clone(&renderer.cull_pipeline);
                 let cull_pipeline_layout = Arc::clone(&renderer.cull_pipeline_layout);
                 move |command_buffer| unsafe {
@@ -614,52 +610,6 @@ impl<'a> System<'a> for Renderer {
                             &[],
                         );
                         let mut index_offset = 0;
-                        device.device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            cull_pipeline_reset.handle,
-                        );
-                        for (entity, mesh, mesh_index) in
-                            (&*entities, &meshes, &mesh_indices).join()
-                        {
-                            let constants = [
-                                entity.id() as u32,
-                                mesh_index.0,
-                                mesh.index_len as u32,
-                                index_offset,
-                                0,
-                            ];
-                            index_offset += mesh.index_len as u32;
-
-                            let casted: &[u8] = {
-                                from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
-                            };
-                            device.device.cmd_push_constants(
-                                command_buffer,
-                                cull_pipeline_layout.handle,
-                                vk::ShaderStageFlags::COMPUTE,
-                                0,
-                                casted,
-                            );
-                            device
-                                .device
-                                .cmd_dispatch(command_buffer, 1, 1, 1);
-                        }
-                        device.device.cmd_pipeline_barrier(
-                            command_buffer,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[vk::MemoryBarrier {
-                                s_type: vk::StructureType::MEMORY_BARRIER,
-                                p_next: ptr::null(),
-                                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                            }],
-                            &[],
-                            &[],
-                        );
-                        index_offset = 0;
                         device.device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::COMPUTE,
@@ -688,7 +638,7 @@ impl<'a> System<'a> for Renderer {
                                 casted,
                             );
                             let index_len = mesh.index_len as u32;
-                            let workgroup_size = 64; // TODO: make a specialization constant, not hardcoded
+                            let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
                             let workgroup_count = index_len / 3 / workgroup_size
                                 + min(1, index_len / 3 % workgroup_size);
                             device
@@ -785,7 +735,7 @@ impl<'a> System<'a> for Renderer {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        100, // TODO: find max of GltfMeshBufferIndex
+                                        600, // TODO: find max of GltfMeshBufferIndex
                                         size_of::<u32>() as u32 * 5,
                                     );
                                     device.device.cmd_next_subpass(
@@ -831,7 +781,7 @@ impl<'a> System<'a> for Renderer {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        100, // TODO: find max of GltfMeshBufferIndex
+                                        600, // TODO: find max of GltfMeshBufferIndex
                                         size_of::<u32>() as u32 * 5,
                                     );
                                 },

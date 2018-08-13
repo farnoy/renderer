@@ -10,7 +10,6 @@ fn main() {
     let dest = Path::new(&dest);
     let shaders = [
         "depth_prepass.vert",
-        "reset_indices.comp",
         "generate_work.comp",
         "gltf_mesh.frag",
         "gltf_mesh.vert",

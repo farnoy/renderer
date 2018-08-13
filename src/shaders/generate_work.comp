@@ -39,16 +39,23 @@ layout(set = 1, binding = 3) buffer OutIndexBuffer {
     uint out_index_buffer[][3];
 };
 
-layout (local_size_x = 64) in;
+layout (local_size_x = 512) in;
+
+shared uint localOffset;
+shared uint globalOffset;
 
 void main() {
-    /*
     if (gl_GlobalInvocationID.x == 0) {
+        indirect_commands[gltfIndex].indexCount = 0;
         indirect_commands[gltfIndex].instanceCount = 1;
         indirect_commands[gltfIndex].firstInstance = entityIndex;
         indirect_commands[gltfIndex].firstIndex = indexOffset;
+        indirect_commands[gltfIndex].vertexOffset = vertexOffset;
     }
-    */
+    if (gl_LocalInvocationID.x == 0) {
+        localOffset = 0;
+    }
+    memoryBarrierShared();
 
     if (gl_GlobalInvocationID.x >= indexCount / 3) {
         return;
@@ -85,18 +92,26 @@ void main() {
     bool cond = det > 0;
     uvec4 ballot = subgroupBallot(cond);
     uint count = subgroupBallotBitCount(ballot);
+    uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
 
     uint offset = 0;
     if (subgroupElect()) {
-        offset = atomicAdd(indirect_commands[gltfIndex].indexCount, count * 3);
-        offset += indexOffset; // to resume where previous mesh ended
-        offset /= 3;
+        offset = atomicAdd(localOffset, count);
     }
-    
     offset = subgroupBroadcastFirst(offset);
 
+    barrier();
+
+    if (gl_LocalInvocationID.x == 0) {
+        globalOffset = atomicAdd(indirect_commands[gltfIndex].indexCount, localOffset * 3);
+        globalOffset += indexOffset; // to resume where previous mesh ended
+        globalOffset /= 3;
+    }
+
+    barrier();
+
     if (cond) {
-        uint local_offset = offset + subgroupBallotExclusiveBitCount(ballot);
+        uint local_offset = globalOffset + offset + exclusiveBitCount;
         out_index_buffer[local_offset][0] = ix0;
         out_index_buffer[local_offset][1] = ix1;
         out_index_buffer[local_offset][2] = ix2;

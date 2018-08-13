@@ -25,7 +25,7 @@ use forward_renderer::{
     renderer::{alloc, load_gltf, new_buffer, RenderFrame, Renderer},
 };
 use specs::Builder;
-use std::{mem::size_of, ptr, sync::Arc};
+use std::{mem::{size_of, transmute}, ptr, sync::Arc};
 use winit::{dpi::LogicalSize, Event, KeyboardInput, WindowEvent};
 
 fn main() {
@@ -89,7 +89,12 @@ fn main() {
         vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * index_len * 100,
+        size_of::<u32>() as vk::DeviceSize * index_len * 600,
+    );
+    renderer.device.set_object_name(
+        vk::ObjectType::BUFFER,
+        unsafe { transmute::<_, u64>(culled_index_buffer.handle) },
+        "culled index buffer",
     );
 
     {
@@ -136,7 +141,7 @@ fn main() {
 
     renderer.culled_index_buffer = Some(culled_index_buffer);
 
-    for ix in 0..100 {
+    for ix in 0..600 {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(
@@ -144,7 +149,7 @@ fn main() {
                 0.0,
                 2.0 + ix as f32,
             ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
-                (ix * 10) as f32,
+                (ix * 20) as f32,
             )))).with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<GltfMesh>(GltfMesh {
