@@ -22,7 +22,10 @@ use ash::{version::DeviceV1_0, vk};
 use cgmath::Rotation3;
 use forward_renderer::{
     ecs::{components::*, systems::*, Bundle},
-    renderer::{alloc, load_gltf, new_buffer, CullGeometry, RenderFrame, Renderer},
+    renderer::{
+        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, PresentData, PresentFramebuffer,
+        RenderFrame, Renderer,
+    },
 };
 use specs::Builder;
 use std::{
@@ -37,7 +40,7 @@ fn main() {
     world.add_bundle(Bundle);
     let rayon_threadpool = Arc::new(
         rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
+            .num_threads(4)
             .build()
             .unwrap(),
     );
@@ -169,6 +172,7 @@ fn main() {
     let dst_model = Arc::clone(&renderer.model_buffer);
 
     world.add_resource(renderer);
+    world.add_resource(PresentData::new());
 
     let mut dispatcher = specs::DispatcherBuilder::new()
         .with_pool(Arc::clone(&rayon_threadpool))
@@ -179,11 +183,13 @@ fn main() {
             "mvp",
             &["steady_rotation"],
         ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
+        .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
             CullGeometry,
             "cull_geometry",
-            &["assign_buffer_index", "mvp_upload"],
+            &["acquire_framebuffer", "assign_buffer_index", "mvp_upload"],
         ).with(Renderer, "render_frame", &["cull_geometry"])
+        .with(PresentFramebuffer, "present_framebuffer", &["render_frame"])
         .build();
 
     'frame: loop {

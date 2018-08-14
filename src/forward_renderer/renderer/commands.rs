@@ -105,7 +105,7 @@ impl CommandPool {
 }
 
 impl CommandBuffer {
-    pub fn submit_once(&self, queue: &mut vk::Queue, fence_name: &str) -> Arc<Fence> {
+    pub fn submit_once(&self, queue: &mut vk::Queue, fence_name: &str) -> Fence {
         let submit_fence = new_fence(Arc::clone(&self.pool.device));
         self.pool.device.set_object_name(
             vk::ObjectType::FENCE,

@@ -465,7 +465,7 @@ pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
     })
 }
 
-pub fn new_fence(device: Arc<Device>) -> Arc<Fence> {
+pub fn new_fence(device: Arc<Device>) -> Fence {
     let create_info = vk::FenceCreateInfo {
         s_type: vk::StructureType::FENCE_CREATE_INFO,
         p_next: ptr::null(),
@@ -477,10 +477,10 @@ pub fn new_fence(device: Arc<Device>) -> Arc<Fence> {
             .create_fence(&create_info, None)
             .expect("Create fence failed.")
     };
-    Arc::new(Fence {
+    Fence {
         device,
         handle: fence,
-    })
+    }
 }
 
 pub fn new_buffer(

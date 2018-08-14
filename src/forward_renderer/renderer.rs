@@ -23,7 +23,12 @@ use std::{
 };
 use winit;
 
-use self::{commands::CommandPool, device::Device, helpers::*, instance::Instance};
+use self::{
+    commands::{CommandBuffer, CommandPool},
+    device::Device,
+    helpers::*,
+    instance::Instance,
+};
 
 pub use self::gltf_mesh::load as load_gltf;
 pub use self::helpers::{new_buffer, Buffer};
@@ -34,6 +39,7 @@ pub struct RenderFrame {
     pub device: Arc<Device>,
     pub swapchain: Arc<Swapchain>,
     pub framebuffer: Arc<Framebuffer>,
+    pub image_index: u32,
     pub present_semaphore: Arc<Semaphore>,
     pub rendering_complete_semaphore: Arc<Semaphore>,
     pub graphics_command_pool: Arc<CommandPool>,
@@ -447,6 +453,7 @@ impl RenderFrame {
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
                 framebuffer: Arc::clone(&framebuffer),
+                image_index: 0,
                 depth_pipeline: Arc::clone(&depth_pipeline),
                 depth_pipeline_layout: Arc::clone(&depth_pipeline_layout),
                 gltf_pipeline: Arc::clone(&gltf_pipeline),
@@ -562,6 +569,35 @@ impl RenderFrame {
     }
 }
 
+pub struct AcquireFramebuffer;
+
+impl<'a> System<'a> for AcquireFramebuffer {
+    type SystemData = (WriteExpect<'a, RenderFrame>, ReadExpect<'a, PresentData>);
+
+    fn run(&mut self, (mut renderer, present_data): Self::SystemData) {
+        if let Some(ref fence) = present_data.render_complete_fence {
+            unsafe {
+        renderer
+            .device
+            .wait_for_fences(&[fence.handle], true, u64::MAX)
+            .expect("Wait for fence failed.");
+            }
+        }
+        renderer.image_index = unsafe {
+            renderer
+                .swapchain
+                .handle
+                .ext
+                .acquire_next_image_khr(
+                    renderer.swapchain.handle.swapchain,
+                    u64::MAX,
+                    renderer.present_semaphore.handle,
+                    vk::Fence::null(),
+                ).unwrap()
+        };
+    }
+}
+
 pub struct CullGeometry;
 
 impl<'a> System<'a> for CullGeometry {
@@ -656,6 +692,7 @@ impl<'a> System<'a> for CullGeometry {
 
         let queue = renderer.device.compute_queue.lock();
 
+        println!("submit async");
         unsafe {
             renderer
                 .device
@@ -684,24 +721,13 @@ impl<'a> System<'a> for Renderer {
         Entities<'a>,
         ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMesh>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
+        WriteExpect<'a, PresentData>,
     );
 
-    fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
-        let image_index = unsafe {
-            renderer
-                .swapchain
-                .handle
-                .ext
-                .acquire_next_image_khr(
-                    renderer.swapchain.handle.swapchain,
-                    u64::MAX,
-                    renderer.present_semaphore.handle,
-                    vk::Fence::null(),
-                ).unwrap()
-        };
+    fn run(&mut self, (entities, renderer, meshes, mut present_data): Self::SystemData) {
         let command_buffer =
             commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
+                let image_index = renderer.image_index;
                 let main_renderpass = Arc::clone(&renderer.renderpass);
                 let framebuffer = Arc::clone(&renderer.framebuffer);
                 let instance = Arc::clone(&renderer.instance);
@@ -851,7 +877,10 @@ impl<'a> System<'a> for Renderer {
                 renderer.cull_complete_semaphore.handle,
             ];
             let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
-            let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+            let dst_stage_masks = &[
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            ];
             let submits = [vk::SubmitInfo {
                 s_type: vk::StructureType::SUBMIT_INFO,
                 p_next: ptr::null(),
@@ -874,42 +903,56 @@ impl<'a> System<'a> for Renderer {
 
             renderer
                 .device
-                .device
                 .queue_submit(*queue, &submits, submit_fence.handle)
                 .unwrap();
 
-            {
-                let device = Arc::clone(&renderer.device);
-                thread::spawn(move || {
-                    // println!("dtor previous frame");
-                    device
-                        .device
-                        .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                        .expect("Wait for fence failed.");
-                    drop(command_buffer);
-                    drop(submit_fence);
-                });
-            }
+            present_data.render_command_buffer = Some(command_buffer);
+            present_data.render_complete_fence = Some(submit_fence);
+        }
+    }
+}
 
-            {
-                let wait_semaphores = &[renderer.rendering_complete_semaphore.handle];
-                let present_info = vk::PresentInfoKHR {
-                    s_type: vk::StructureType::PRESENT_INFO_KHR,
-                    p_next: ptr::null(),
-                    wait_semaphore_count: wait_semaphores.len() as u32,
-                    p_wait_semaphores: wait_semaphores.as_ptr(),
-                    swapchain_count: 1,
-                    p_swapchains: &renderer.swapchain.handle.swapchain,
-                    p_image_indices: &image_index,
-                    p_results: ptr::null_mut(),
-                };
+pub struct PresentData {
+    render_command_buffer: Option<CommandBuffer>,
+    render_complete_fence: Option<Fence>,
+}
 
-                renderer
-                    .swapchain
-                    .handle
-                    .ext
-                    .queue_present_khr(*queue, &present_info)
-                    .unwrap();
+impl PresentData {
+    pub fn new() -> PresentData {
+        PresentData {
+            render_command_buffer: None,
+            render_complete_fence: None,
+        }
+    }
+}
+
+pub struct PresentFramebuffer;
+
+impl<'a> System<'a> for PresentFramebuffer {
+    type SystemData = (ReadExpect<'a, RenderFrame>, WriteExpect<'a, PresentData>);
+
+    fn run(&mut self, (renderer, mut present_data): Self::SystemData) {
+        {
+            let wait_semaphores = &[renderer.rendering_complete_semaphore.handle];
+            let present_info = vk::PresentInfoKHR {
+                s_type: vk::StructureType::PRESENT_INFO_KHR,
+                p_next: ptr::null(),
+                wait_semaphore_count: wait_semaphores.len() as u32,
+                p_wait_semaphores: wait_semaphores.as_ptr(),
+                swapchain_count: 1,
+                p_swapchains: &renderer.swapchain.handle.swapchain,
+                p_image_indices: &renderer.image_index,
+                p_results: ptr::null_mut(),
+            };
+
+            let queue = renderer.device.graphics_queue.lock();
+            unsafe {
+            renderer
+                .swapchain
+                .handle
+                .ext
+                .queue_present_khr(*queue, &present_info)
+                .unwrap();
             }
         }
     }
