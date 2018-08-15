@@ -185,7 +185,7 @@ fn main() {
         ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
-            CullGeometry,
+            CullGeometry::new(world.read_resource::<RenderFrame>().device.clone()),
             "cull_geometry",
             &["acquire_framebuffer", "assign_buffer_index", "mvp_upload"],
         ).with(Renderer, "render_frame", &["cull_geometry"])

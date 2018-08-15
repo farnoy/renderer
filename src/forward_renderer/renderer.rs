@@ -598,7 +598,19 @@ impl<'a> System<'a> for AcquireFramebuffer {
     }
 }
 
-pub struct CullGeometry;
+pub struct CullGeometry {
+    sem_0: Arc<Semaphore>,
+    sem_1: Arc<Semaphore>,
+}
+
+impl CullGeometry {
+    pub fn new(device: Arc<Device>) -> CullGeometry {
+        CullGeometry {
+            sem_0: new_semaphore(device.clone()),
+            sem_1: new_semaphore(device.clone()),
+        }
+    }
+}
 
 impl<'a> System<'a> for CullGeometry {
     type SystemData = (
@@ -609,13 +621,10 @@ impl<'a> System<'a> for CullGeometry {
     );
 
     fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
-        let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
-            let device = Arc::clone(&renderer.device);
-            let ubo_set = Arc::clone(&renderer.ubo_set);
-            let cull_set = Arc::clone(&renderer.cull_set);
-            let cull_pipeline = Arc::clone(&renderer.cull_pipeline);
-            let cull_pipeline_layout = Arc::clone(&renderer.cull_pipeline_layout);
-            move |command_buffer| unsafe {
+        let mut index_offset = 0;
+        let device = Arc::clone(&renderer.device);
+        let cull_cb_0 = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
+            |command_buffer| unsafe {
                 device.debug_marker_around(
                     command_buffer,
                     "cull pass",
@@ -624,19 +633,18 @@ impl<'a> System<'a> for CullGeometry {
                         device.device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::COMPUTE,
-                            cull_pipeline_layout.handle,
+                            renderer.cull_pipeline_layout.handle,
                             0,
-                            &[ubo_set.handle, cull_set.handle],
+                            &[renderer.ubo_set.handle, renderer.cull_set.handle],
                             &[],
                         );
-                        let mut index_offset = 0;
                         device.device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::COMPUTE,
-                            cull_pipeline.handle,
+                            renderer.cull_pipeline.handle,
                         );
                         for (entity, mesh, mesh_index) in
-                            (&*entities, &meshes, &mesh_indices).join()
+                            (&*entities, &meshes, &mesh_indices).join().take(300)
                         {
                             let constants = [
                                 entity.id() as u32,
@@ -650,9 +658,9 @@ impl<'a> System<'a> for CullGeometry {
                             let casted: &[u8] = {
                                 from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
                             };
-                            device.device.cmd_push_constants(
+                            renderer.device.cmd_push_constants(
                                 command_buffer,
-                                cull_pipeline_layout.handle,
+                                renderer.cull_pipeline_layout.handle,
                                 vk::ShaderStageFlags::COMPUTE,
                                 0,
                                 casted,
@@ -670,7 +678,102 @@ impl<'a> System<'a> for CullGeometry {
             }
         });
         let wait_semaphores = &[];
-        let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
+        let signal_semaphores = &[self.sem_0.handle];
+        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+        let submits = [vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            p_next: ptr::null(),
+            wait_semaphore_count: wait_semaphores.len() as u32,
+            p_wait_semaphores: wait_semaphores.as_ptr(),
+            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+            command_buffer_count: 1,
+            p_command_buffers: &*cull_cb_0,
+            signal_semaphore_count: signal_semaphores.len() as u32,
+            p_signal_semaphores: signal_semaphores.as_ptr(),
+        }];
+        let submit_fence = new_fence(Arc::clone(&renderer.device));
+        renderer.device.set_object_name(
+            vk::ObjectType::FENCE,
+            unsafe { transmute::<_, u64>(submit_fence.handle) },
+            "cull async compute phase 0 submit fence",
+        );
+
+        let queue = renderer.device.compute_queues[0].lock();
+
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &submits, submit_fence.handle)
+                .unwrap();
+        }
+
+        {
+            let device = Arc::clone(&renderer.device);
+            thread::spawn(move || unsafe {
+                device
+                    .device
+                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                    .expect("Wait for fence failed.");
+                drop(cull_cb_0);
+                drop(submit_fence);
+            });
+        }
+        let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
+            |command_buffer| unsafe {
+                renderer.device.debug_marker_around(
+                    command_buffer,
+                    "cull pass",
+                    [0.0, 1.0, 0.0, 1.0],
+                    || {
+                        renderer.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::COMPUTE,
+                            renderer.cull_pipeline_layout.handle,
+                            0,
+                            &[renderer.ubo_set.handle, renderer.cull_set.handle],
+                            &[],
+                        );
+                        renderer.device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::COMPUTE,
+                            renderer.cull_pipeline.handle,
+                        );
+                        for (entity, mesh, mesh_index) in
+                            (&*entities, &meshes, &mesh_indices).join().skip(300)
+                        {
+                            let constants = [
+                                entity.id() as u32,
+                                mesh_index.0,
+                                mesh.index_len as u32,
+                                index_offset,
+                                0,
+                            ];
+                            index_offset += mesh.index_len as u32;
+
+                            let casted: &[u8] = {
+                                from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
+                            };
+                            renderer.device.cmd_push_constants(
+                                command_buffer,
+                                renderer.cull_pipeline_layout.handle,
+                                vk::ShaderStageFlags::COMPUTE,
+                                0,
+                                casted,
+                            );
+                            let index_len = mesh.index_len as u32;
+                            let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
+                            let workgroup_count = index_len / 3 / workgroup_size
+                                + min(1, index_len / 3 % workgroup_size);
+                            device
+                                .device
+                                .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
+                        }
+                    },
+                );
+            }
+        });
+        let wait_semaphores = &[];
+        let signal_semaphores = &[self.sem_1.handle];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let submits = [vk::SubmitInfo {
             s_type: vk::StructureType::SUBMIT_INFO,
@@ -687,12 +790,11 @@ impl<'a> System<'a> for CullGeometry {
         renderer.device.set_object_name(
             vk::ObjectType::FENCE,
             unsafe { transmute::<_, u64>(submit_fence.handle) },
-            "cull async compute submit fence",
+            "cull async compute phase 1 submit fence",
         );
 
-        let queue = renderer.device.compute_queues[0].lock();
+        let queue = renderer.device.compute_queues[1].lock();
 
-        println!("submit async");
         unsafe {
             renderer
                 .device
@@ -708,6 +810,50 @@ impl<'a> System<'a> for CullGeometry {
                     .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
                     .expect("Wait for fence failed.");
                 drop(cull_cb);
+                drop(submit_fence);
+            });
+        }
+
+        let cull_cb_integrate =
+            commands::record_one_time(Arc::clone(&renderer.compute_command_pool), { |_| {} });
+        let wait_semaphores = &[self.sem_0.handle, self.sem_1.handle];
+        let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
+        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+        let submits = [vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            p_next: ptr::null(),
+            wait_semaphore_count: wait_semaphores.len() as u32,
+            p_wait_semaphores: wait_semaphores.as_ptr(),
+            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+            command_buffer_count: 1,
+            p_command_buffers: &*cull_cb_integrate,
+            signal_semaphore_count: signal_semaphores.len() as u32,
+            p_signal_semaphores: signal_semaphores.as_ptr(),
+        }];
+        let submit_fence = new_fence(Arc::clone(&renderer.device));
+        renderer.device.set_object_name(
+            vk::ObjectType::FENCE,
+            unsafe { transmute::<_, u64>(submit_fence.handle) },
+            "cull async compute integration phase submit fence",
+        );
+
+        let queue = renderer.device.compute_queues[2].lock();
+
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &submits, submit_fence.handle)
+                .unwrap();
+        }
+
+        {
+            let device = Arc::clone(&renderer.device);
+            thread::spawn(move || unsafe {
+                device
+                    .device
+                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                    .expect("Wait for fence failed.");
+                drop(cull_cb_integrate);
                 drop(submit_fence);
             });
         }

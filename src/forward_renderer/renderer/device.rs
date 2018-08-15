@@ -131,7 +131,7 @@ impl Device {
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
         let compute_queues = (0..compute_queue_len)
             .map(|ix| unsafe {
-                Arc::new(Mutex::new(device.get_device_queue(compute_queue_family, 0)))
+                Arc::new(Mutex::new(device.get_device_queue(compute_queue_family, ix)))
             }).collect::<Vec<_>>();
 
         Ok(Device {
@@ -176,7 +176,7 @@ impl Device {
     pub fn set_object_name(&self, _object_type: vk::ObjectType, _object: u64, _name: &str) {}
 
     #[cfg(feature = "validation")]
-    pub fn debug_marker_around<F: Fn()>(
+    pub fn debug_marker_around<F: FnOnce()>(
         &self,
         command_buffer: vk::CommandBuffer,
         name: &str,
@@ -205,7 +205,7 @@ impl Device {
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn debug_marker_around<R, F: Fn() -> R>(
+    pub fn debug_marker_around<R, F: FnOnce() -> R>(
         &self,
         _command_buffer: vk::CommandBuffer,
         _name: &str,

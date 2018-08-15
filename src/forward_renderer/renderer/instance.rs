@@ -150,7 +150,7 @@ impl Instance {
                         CStr::from_ptr(name.p_object_name).to_str().unwrap(),
                     );
                 }
-                1
+                0
             }
 
             let create_info = vk::DebugUtilsMessengerCreateInfoEXT {
