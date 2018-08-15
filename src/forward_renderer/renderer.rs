@@ -577,10 +577,10 @@ impl<'a> System<'a> for AcquireFramebuffer {
     fn run(&mut self, (mut renderer, present_data): Self::SystemData) {
         if let Some(ref fence) = present_data.render_complete_fence {
             unsafe {
-        renderer
-            .device
-            .wait_for_fences(&[fence.handle], true, u64::MAX)
-            .expect("Wait for fence failed.");
+                renderer
+                    .device
+                    .wait_for_fences(&[fence.handle], true, u64::MAX)
+                    .expect("Wait for fence failed.");
             }
         }
         renderer.image_index = unsafe {
@@ -690,7 +690,7 @@ impl<'a> System<'a> for CullGeometry {
             "cull async compute submit fence",
         );
 
-        let queue = renderer.device.compute_queue.lock();
+        let queue = renderer.device.compute_queues[0].lock();
 
         println!("submit async");
         unsafe {
@@ -947,12 +947,12 @@ impl<'a> System<'a> for PresentFramebuffer {
 
             let queue = renderer.device.graphics_queue.lock();
             unsafe {
-            renderer
-                .swapchain
-                .handle
-                .ext
-                .queue_present_khr(*queue, &present_info)
-                .unwrap();
+                renderer
+                    .swapchain
+                    .handle
+                    .ext
+                    .queue_present_khr(*queue, &present_info)
+                    .unwrap();
             }
         }
     }

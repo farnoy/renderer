@@ -22,7 +22,7 @@ pub struct Device {
     pub graphics_queue_family: u32,
     pub compute_queue_family: u32,
     pub graphics_queue: Arc<Mutex<vk::Queue>>,
-    pub compute_queue: Arc<Mutex<vk::Queue>>,
+    pub compute_queues: Vec<Arc<Mutex<vk::Queue>>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -63,7 +63,7 @@ impl Device {
                 }).next()
                 .unwrap()
         };
-        let compute_queue_family = {
+        let (compute_queue_family, compute_queue_len) = {
             queue_families
                 .iter()
                 .enumerate()
@@ -71,14 +71,17 @@ impl Device {
                     if info.queue_flags.subset(vk::QueueFlags::COMPUTE)
                         && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
                     {
-                        Some(ix as u32)
+                        Some((ix as u32, info.queue_count))
                     } else {
                         None
                     }
                 }).next()
                 .expect("no suitable compute queue")
         };
-        let queues = vec![(graphics_queue_family, 1), (compute_queue_family, 1)];
+        let queues = vec![
+            (graphics_queue_family, 1),
+            (compute_queue_family, compute_queue_len),
+        ];
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
             let device_extension_names_raw = vec![Swapchain::name().as_ptr()];
@@ -126,7 +129,10 @@ impl Device {
         let allocator =
             alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
-        let compute_queue = unsafe { device.get_device_queue(compute_queue_family, 0) };
+        let compute_queues = (0..compute_queue_len)
+            .map(|ix| unsafe {
+                Arc::new(Mutex::new(device.get_device_queue(compute_queue_family, 0)))
+            }).collect::<Vec<_>>();
 
         Ok(Device {
             device,
@@ -136,7 +142,7 @@ impl Device {
             graphics_queue_family,
             compute_queue_family,
             graphics_queue: Arc::new(Mutex::new(graphics_queue)),
-            compute_queue: Arc::new(Mutex::new(compute_queue)),
+            compute_queues,
         })
     }
 

@@ -23,8 +23,8 @@ use cgmath::Rotation3;
 use forward_renderer::{
     ecs::{components::*, systems::*, Bundle},
     renderer::{
-        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, PresentData, PresentFramebuffer,
-        RenderFrame, Renderer,
+        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, PresentData,
+        PresentFramebuffer, RenderFrame, Renderer,
     },
 };
 use specs::Builder;
