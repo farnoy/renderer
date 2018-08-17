@@ -96,7 +96,7 @@ fn main() {
         vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
         alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * index_len * 600,
+        size_of::<u32>() as vk::DeviceSize * index_len * 2400,
     );
     renderer.device.set_object_name(
         vk::ObjectType::BUFFER,
@@ -148,7 +148,7 @@ fn main() {
 
     renderer.culled_index_buffer = Some(culled_index_buffer);
 
-    for ix in 0..600 {
+    for ix in 0..2400 {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(

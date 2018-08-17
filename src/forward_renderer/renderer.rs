@@ -96,11 +96,11 @@ impl RenderFrame {
             &[
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
-                    descriptor_count: 1024,
+                    descriptor_count: 4096,
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 1024,
+                    descriptor_count: 4096,
                 },
             ],
         );
@@ -229,7 +229,7 @@ impl RenderFrame {
                 | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<u32>() as vk::DeviceSize * 5 * 600,
+            size_of::<u32>() as vk::DeviceSize * 5 * 2400,
         );
         device.set_object_name(
             vk::ObjectType::BUFFER,
@@ -338,13 +338,13 @@ impl RenderFrame {
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4 * 4 * 4 * 1024,
+            4 * 4 * 4 * 4096,
         );
         {
             let buffer_updates = &[vk::DescriptorBufferInfo {
                 buffer: ubo_buffer.handle,
                 offset: 0,
-                range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
             }];
             unsafe {
                 device.device.update_descriptor_sets(
@@ -379,13 +379,13 @@ impl RenderFrame {
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4 * 4 * 4 * 1024,
+            4 * 4 * 4 * 4096,
         );
         {
             let buffer_updates = &[vk::DescriptorBufferInfo {
                 buffer: model_view_buffer.handle,
                 offset: 0,
-                range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
             }];
             unsafe {
                 device.device.update_descriptor_sets(
@@ -421,13 +421,13 @@ impl RenderFrame {
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4 * 4 * 4 * 1024,
+            4 * 4 * 4 * 4096,
         );
         {
             let buffer_updates = &[vk::DescriptorBufferInfo {
                 buffer: model_buffer.handle,
                 offset: 0,
-                range: 1024 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
             }];
             unsafe {
                 device.device.update_descriptor_sets(
@@ -599,18 +599,18 @@ impl<'a> System<'a> for AcquireFramebuffer {
 }
 
 pub struct CullGeometry {
-    sem_0: Arc<Semaphore>,
-    sem_1: Arc<Semaphore>,
+    semaphores: Vec<Arc<Semaphore>>,
 }
 
 impl CullGeometry {
     pub fn new(device: Arc<Device>) -> CullGeometry {
         CullGeometry {
-            sem_0: new_semaphore(device.clone()),
-            sem_1: new_semaphore(device.clone()),
+            semaphores: (0..PARALLEL).map(|_| new_semaphore(device.clone())).collect(),
         }
     }
 }
+
+static PARALLEL: usize = 4;
 
 impl<'a> System<'a> for CullGeometry {
     type SystemData = (
@@ -622,105 +622,11 @@ impl<'a> System<'a> for CullGeometry {
 
     fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
         let mut index_offset = 0;
-        let device = Arc::clone(&renderer.device);
-        let cull_cb_0 = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
-            |command_buffer| unsafe {
-                device.debug_marker_around(
-                    command_buffer,
-                    "cull pass",
-                    [0.0, 1.0, 0.0, 1.0],
-                    || {
-                        device.device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            renderer.cull_pipeline_layout.handle,
-                            0,
-                            &[renderer.ubo_set.handle, renderer.cull_set.handle],
-                            &[],
-                        );
-                        device.device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            renderer.cull_pipeline.handle,
-                        );
-                        for (entity, mesh, mesh_index) in
-                            (&*entities, &meshes, &mesh_indices).join().take(300)
-                        {
-                            let constants = [
-                                entity.id() as u32,
-                                mesh_index.0,
-                                mesh.index_len as u32,
-                                index_offset,
-                                0,
-                            ];
-                            index_offset += mesh.index_len as u32;
-
-                            let casted: &[u8] = {
-                                from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
-                            };
-                            renderer.device.cmd_push_constants(
-                                command_buffer,
-                                renderer.cull_pipeline_layout.handle,
-                                vk::ShaderStageFlags::COMPUTE,
-                                0,
-                                casted,
-                            );
-                            let index_len = mesh.index_len as u32;
-                            let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
-                            let workgroup_count = index_len / 3 / workgroup_size
-                                + min(1, index_len / 3 % workgroup_size);
-                            device
-                                .device
-                                .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
-                        }
-                    },
-                );
-            }
-        });
-        let wait_semaphores = &[];
-        let signal_semaphores = &[self.sem_0.handle];
-        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-        let submits = [vk::SubmitInfo {
-            s_type: vk::StructureType::SUBMIT_INFO,
-            p_next: ptr::null(),
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &*cull_cb_0,
-            signal_semaphore_count: signal_semaphores.len() as u32,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-        }];
-        let submit_fence = new_fence(Arc::clone(&renderer.device));
-        renderer.device.set_object_name(
-            vk::ObjectType::FENCE,
-            unsafe { transmute::<_, u64>(submit_fence.handle) },
-            "cull async compute phase 0 submit fence",
-        );
-
-        let queue = renderer.device.compute_queues[0].lock();
-
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &submits, submit_fence.handle)
-                .unwrap();
-        }
-
-        {
-            let device = Arc::clone(&renderer.device);
-            thread::spawn(move || unsafe {
-                device
-                    .device
-                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                    .expect("Wait for fence failed.");
-                drop(cull_cb_0);
-                drop(submit_fence);
-            });
-        }
-        let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
-            |command_buffer| unsafe {
-                renderer.device.debug_marker_around(
+        let total = 2400;
+        for ix in 0..PARALLEL {
+            let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
+                |command_buffer| unsafe {
+                    renderer.device.debug_marker_around(
                     command_buffer,
                     "cull pass",
                     [0.0, 1.0, 0.0, 1.0],
@@ -739,7 +645,7 @@ impl<'a> System<'a> for CullGeometry {
                             renderer.cull_pipeline.handle,
                         );
                         for (entity, mesh, mesh_index) in
-                            (&*entities, &meshes, &mesh_indices).join().skip(300)
+                            (&*entities, &meshes, &mesh_indices).join().skip(total / PARALLEL * ix).take(total / PARALLEL)
                         {
                             let constants = [
                                 entity.id() as u32,
@@ -764,59 +670,58 @@ impl<'a> System<'a> for CullGeometry {
                             let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
                             let workgroup_count = index_len / 3 / workgroup_size
                                 + min(1, index_len / 3 % workgroup_size);
-                            device
-                                .device
+                            renderer.device
                                 .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
                         }
                     },
                 );
-            }
-        });
-        let wait_semaphores = &[];
-        let signal_semaphores = &[self.sem_1.handle];
-        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-        let submits = [vk::SubmitInfo {
-            s_type: vk::StructureType::SUBMIT_INFO,
-            p_next: ptr::null(),
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &*cull_cb,
-            signal_semaphore_count: signal_semaphores.len() as u32,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-        }];
-        let submit_fence = new_fence(Arc::clone(&renderer.device));
-        renderer.device.set_object_name(
-            vk::ObjectType::FENCE,
-            unsafe { transmute::<_, u64>(submit_fence.handle) },
-            "cull async compute phase 1 submit fence",
-        );
-
-        let queue = renderer.device.compute_queues[1].lock();
-
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &submits, submit_fence.handle)
-                .unwrap();
-        }
-
-        {
-            let device = Arc::clone(&renderer.device);
-            thread::spawn(move || unsafe {
-                device
-                    .device
-                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                    .expect("Wait for fence failed.");
-                drop(cull_cb);
-                drop(submit_fence);
+                }
             });
+            let wait_semaphores = &[];
+            let signal_semaphores = &[self.semaphores[ix].handle];
+            let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+            let submits = [vk::SubmitInfo {
+                s_type: vk::StructureType::SUBMIT_INFO,
+                p_next: ptr::null(),
+                wait_semaphore_count: wait_semaphores.len() as u32,
+                p_wait_semaphores: wait_semaphores.as_ptr(),
+                p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                command_buffer_count: 1,
+                p_command_buffers: &*cull_cb,
+                signal_semaphore_count: signal_semaphores.len() as u32,
+                p_signal_semaphores: signal_semaphores.as_ptr(),
+            }];
+            let submit_fence = new_fence(Arc::clone(&renderer.device));
+            renderer.device.set_object_name(
+                vk::ObjectType::FENCE,
+                unsafe { transmute::<_, u64>(submit_fence.handle) },
+                &format!("cull async compute phase {} submit fence", ix),
+            );
+
+            let queue = renderer.device.compute_queues[ix].lock();
+
+            unsafe {
+                renderer
+                    .device
+                    .queue_submit(*queue, &submits, submit_fence.handle)
+                    .unwrap();
+            }
+
+            {
+                let device = Arc::clone(&renderer.device);
+                thread::spawn(move || unsafe {
+                    device
+                        .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                        .expect("Wait for fence failed.");
+                    drop(cull_cb);
+                    drop(submit_fence);
+                });
+            }
         }
 
         let cull_cb_integrate =
             commands::record_one_time(Arc::clone(&renderer.compute_command_pool), { |_| {} });
-        let wait_semaphores = &[self.sem_0.handle, self.sem_1.handle];
+        let wait_semaphores = self.semaphores.iter().map(|sem| sem.handle).collect::<Vec<_>>();
         let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let submits = [vk::SubmitInfo {
@@ -837,7 +742,7 @@ impl<'a> System<'a> for CullGeometry {
             "cull async compute integration phase submit fence",
         );
 
-        let queue = renderer.device.compute_queues[2].lock();
+        let queue = renderer.device.compute_queues[0].lock();
 
         unsafe {
             renderer
@@ -949,8 +854,7 @@ impl<'a> System<'a> for Renderer {
                                         0,
                                         vk::IndexType::UINT32,
                                     );
-                                    let first_entity = (&*entities).join().next().unwrap();
-                                    let mesh = meshes.get(first_entity).unwrap();
+                                    let mesh = (&*entities, &meshes).join().next().unwrap().1;
                                     device.device.cmd_bind_vertex_buffers(
                                         command_buffer,
                                         0,
@@ -961,7 +865,7 @@ impl<'a> System<'a> for Renderer {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        600, // TODO: find max of GltfMeshBufferIndex
+                                        2400, // TODO: find max of GltfMeshBufferIndex
                                         size_of::<u32>() as u32 * 5,
                                     );
                                     device.device.cmd_next_subpass(
@@ -995,8 +899,7 @@ impl<'a> System<'a> for Renderer {
                                         0,
                                         vk::IndexType::UINT32,
                                     );
-                                    let first_entity = (&*entities).join().next().unwrap();
-                                    let mesh = meshes.get(first_entity).unwrap();
+                                    let mesh = (&*entities, &meshes).join().next().unwrap().1;
                                     device.device.cmd_bind_vertex_buffers(
                                         command_buffer,
                                         0,
@@ -1007,7 +910,7 @@ impl<'a> System<'a> for Renderer {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        600, // TODO: find max of GltfMeshBufferIndex
+                                        2400, // TODO: find max of GltfMeshBufferIndex
                                         size_of::<u32>() as u32 * 5,
                                     );
                                 },

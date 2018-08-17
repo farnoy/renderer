@@ -20,7 +20,7 @@ layout(push_constant) uniform PushConstants {
 };
 
 layout(set = 0, binding = 0) uniform UBO {
-    mat4 mvp[1024];
+    mat4 mvp[4096];
 };
 
 layout(set = 1, binding = 0) buffer IndirectCommands {

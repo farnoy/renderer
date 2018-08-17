@@ -1,7 +1,7 @@
 #version 450
 
 layout(set = 0, binding = 0) uniform UBO {
-    mat4 mvp[1024];
+    mat4 mvp[4096];
 };
 layout (location = 0) in vec3 position;
 

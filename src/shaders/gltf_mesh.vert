@@ -1,11 +1,11 @@
 #version 450
 
 layout(set = 0, binding = 0) uniform UBO {
-    mat4 mvp[1024];
+    mat4 mvp[4096];
 };
 
 layout(set = 1, binding = 0) uniform ModelBuffer {
-    mat4 model[1024];
+    mat4 model[4096];
 };
 
 layout (location = 0) in vec3 position;

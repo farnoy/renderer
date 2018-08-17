@@ -62,13 +62,13 @@ impl<'a> System<'a> for MVPUpload {
                 let out_mvp = unsafe {
                     from_raw_parts_mut(
                         self.dst_mvp.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
-                        1024,
+                        4096,
                     )
                 };
                 let out_model = unsafe {
                     from_raw_parts_mut(
                         self.dst_model.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
-                        1024,
+                        4096,
                     )
                 };
                 out_mvp[entity.id() as usize] = matrices.mvp;

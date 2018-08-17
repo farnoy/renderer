@@ -131,7 +131,9 @@ impl Device {
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
         let compute_queues = (0..compute_queue_len)
             .map(|ix| unsafe {
-                Arc::new(Mutex::new(device.get_device_queue(compute_queue_family, ix)))
+                Arc::new(Mutex::new(
+                    device.get_device_queue(compute_queue_family, ix),
+                ))
             }).collect::<Vec<_>>();
 
         Ok(Device {
