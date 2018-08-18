@@ -689,9 +689,9 @@ pub fn new_graphics_pipeline(
     };
     let viewports = [vk::Viewport {
         x: 0.0,
-        y: 0.0,
+        y: (instance.window_height as f32),
         width: instance.window_width as f32,
-        height: instance.window_height as f32,
+        height: -(instance.window_height as f32),
         min_depth: 0.0,
         max_depth: 1.0,
     }];

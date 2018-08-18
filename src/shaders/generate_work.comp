@@ -89,8 +89,13 @@ void main() {
 
     float det = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw));
 
-    bool cond = det > 0;
-    uvec4 ballot = subgroupBallot(cond);
+    bool cull = det > 0;
+    if (!cull && vertex0.z > 100.0 && vertex1.z > 100.0 && vertex2.z > 100.0)
+        cull = true;
+    if (!cull && vertex0.z < 0.1 && vertex1.z < 0.1 && vertex2.z < 0.1)
+        cull = true;
+
+    uvec4 ballot = subgroupBallot(!cull);
     uint count = subgroupBallotBitCount(ballot);
     uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
 
@@ -110,7 +115,7 @@ void main() {
 
     barrier();
 
-    if (cond) {
+    if (!cull) {
         uint local_offset = globalOffset + offset + exclusiveBitCount;
         out_index_buffer[local_offset][0] = ix0;
         out_index_buffer[local_offset][1] = ix1;

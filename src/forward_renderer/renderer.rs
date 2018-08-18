@@ -603,7 +603,7 @@ pub struct CullGeometry {
 }
 
 impl CullGeometry {
-    pub fn new(device: Arc<Device>) -> CullGeometry {
+    pub fn new(device: &Arc<Device>) -> CullGeometry {
         CullGeometry {
             semaphores: (0..PARALLEL)
                 .map(|_| new_semaphore(device.clone()))
@@ -990,9 +990,9 @@ impl PresentData {
 pub struct PresentFramebuffer;
 
 impl<'a> System<'a> for PresentFramebuffer {
-    type SystemData = (ReadExpect<'a, RenderFrame>, WriteExpect<'a, PresentData>);
+    type SystemData = ReadExpect<'a, RenderFrame>;
 
-    fn run(&mut self, (renderer, mut present_data): Self::SystemData) {
+    fn run(&mut self, renderer: Self::SystemData) {
         {
             let wait_semaphores = &[renderer.rendering_complete_semaphore.handle];
             let present_info = vk::PresentInfoKHR {

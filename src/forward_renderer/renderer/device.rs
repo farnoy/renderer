@@ -162,7 +162,7 @@ impl Device {
             let name_info = vk::DebugUtilsObjectNameInfoEXT {
                 s_type: vk::StructureType::DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
                 p_next: ptr::null(),
-                object_type: object_type,
+                object_type,
                 object_handle: object,
                 p_object_name: name.as_ptr(),
             };
@@ -194,7 +194,7 @@ impl Device {
                 s_type: vk::StructureType::DEBUG_UTILS_LABEL_EXT,
                 p_next: ptr::null(),
                 p_label_name: name.as_ptr(),
-                color: color,
+                color,
             };
             self.instance
                 .debug_utils()

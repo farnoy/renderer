@@ -34,7 +34,6 @@ use std::{
     ptr,
     sync::Arc,
 };
-use winit::{dpi::LogicalSize, Event, KeyboardInput, WindowEvent};
 
 fn main() {
     let mut world = specs::World::new();
@@ -72,20 +71,7 @@ fn main() {
     })).unwrap();
     */
 
-    let (mut renderer, mut events_loop) = RenderFrame::new();
-
-    let projection = cgmath::perspective(
-        cgmath::Deg(60.0),
-        renderer.instance.window_width as f32 / renderer.instance.window_height as f32,
-        0.1,
-        100.0,
-    );
-
-    let view = cgmath::Matrix4::look_at(
-        cgmath::Point3::new(0.0, 1.0, -2.0),
-        cgmath::Point3::new(0.0, 0.0, 0.0),
-        cgmath::vec3(0.0, -1.0, 0.0),
-    );
+    let (mut renderer, events_loop) = RenderFrame::new();
 
     let (vertex_buffer, normal_buffer, index_buffer, index_len) = load_gltf(
         &renderer,
@@ -149,7 +135,35 @@ fn main() {
 
     renderer.culled_index_buffer = Some(culled_index_buffer);
 
-    for ix in 0..2400 {
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Vector3::new(5.0, 0.0, 2.0)))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
+        .with::<Scale>(Scale(4.0))
+        .with::<Matrices>(Matrices::one())
+        .with::<GltfMesh>(GltfMesh {
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            index_buffer: Arc::clone(&index_buffer),
+            index_len,
+        }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        .build();
+
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Vector3::new(-5.0, 3.0, 2.0)))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
+        .with::<Scale>(Scale(1.0))
+        .with::<Matrices>(Matrices::one())
+        .with::<GltfMesh>(GltfMesh {
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            index_buffer: Arc::clone(&index_buffer),
+            index_len,
+        }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        .build();
+
+    for ix in 0..2398 {
         world
             .create_entity()
             .with::<Position>(Position(cgmath::Vector3::new(
@@ -177,26 +191,37 @@ fn main() {
 
     let quit_handle = Arc::new(Mutex::new(false));
 
-    let mut dispatcher = specs::DispatcherBuilder::new()
+    let dispatcher_builder = specs::DispatcherBuilder::new()
         .with_pool(Arc::clone(&rayon_threadpool))
         .with_thread_local(InputHandler {
             events_loop,
             quit_handle: quit_handle.clone(),
-        }).with(SteadyRotation, "steady_rotation", &[])
+            move_mouse: true,
+        }).with(CalculateFrameTiming, "calculate_frame_timing", &[])
+        .with_barrier()
+        .with(SteadyRotation, "steady_rotation", &[])
+        .with(FlyCamera::default(), "fly_camera", &[])
+        .with(ProjectCamera, "project_camera", &["fly_camera"])
         .with(AssignBufferIndex, "assign_buffer_index", &[])
         .with(
-            MVPCalculation { projection, view },
+            MVPCalculation,
             "mvp",
-            &["steady_rotation"],
+            &["steady_rotation", "project_camera"],
         ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
-            CullGeometry::new(world.read_resource::<RenderFrame>().device.clone()),
+            CullGeometry::new(&world.read_resource::<RenderFrame>().device),
             "cull_geometry",
             &["acquire_framebuffer", "assign_buffer_index", "mvp_upload"],
         ).with(Renderer, "render_frame", &["cull_geometry"])
-        .with(PresentFramebuffer, "present_framebuffer", &["render_frame"])
-        .build();
+        .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
+
+    // print stages of execution
+    println!("{:?}", dispatcher_builder);
+
+    let mut dispatcher = dispatcher_builder.build();
+
+    dispatcher.setup(&mut world.res);
 
     'frame: loop {
         dispatcher.dispatch_thread_local(&world.res);

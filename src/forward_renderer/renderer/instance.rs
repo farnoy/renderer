@@ -21,7 +21,7 @@ pub type AshInstance = ash::Instance<V1_1>;
 pub struct Instance {
     handle: AshInstance,
     pub entry: Arc<Entry>,
-    _window: winit::Window,
+    pub window: winit::Window,
     pub surface: vk::SurfaceKHR,
     pub window_width: u32,
     pub window_height: u32,
@@ -179,7 +179,7 @@ impl Instance {
             Ok((
                 Instance {
                     handle: instance_1_1,
-                    _window: window,
+                    window,
                     surface,
                     entry: Arc::new(entry),
                     window_width,
@@ -198,7 +198,7 @@ impl Instance {
             Ok((
                 Instance {
                     handle: instance_1_1,
-                    _window: window,
+                    window,
                     surface,
                     entry: Arc::new(entry),
                     window_width,

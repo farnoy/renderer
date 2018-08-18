@@ -5,7 +5,7 @@ build = "build.rs"
 
 [dependencies]
 ash = { git = "https://github.com/MaikKlein/ash", branch = "generator" }
-cgmath = "0.16"
+cgmath = { version = "0.16", features = ["swizzle"] }
 parking_lot = "0.6.3"
 gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
 gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
@@ -31,7 +31,7 @@ name = "v4"
 path = "src/v4.rs"
 
 [build-dependencies]
-bindgen = "0.37"
+bindgen = "0.38"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "^0.3.5"
