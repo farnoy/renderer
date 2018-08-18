@@ -27,6 +27,7 @@ use forward_renderer::{
         PresentFramebuffer, RenderFrame, Renderer,
     },
 };
+use parking_lot::Mutex;
 use specs::Builder;
 use std::{
     mem::{size_of, transmute},
@@ -174,9 +175,14 @@ fn main() {
     world.add_resource(renderer);
     world.add_resource(PresentData::new());
 
+    let quit_handle = Arc::new(Mutex::new(false));
+
     let mut dispatcher = specs::DispatcherBuilder::new()
         .with_pool(Arc::clone(&rayon_threadpool))
-        .with(SteadyRotation, "steady_rotation", &[])
+        .with_thread_local(InputHandler {
+            events_loop,
+            quit_handle: quit_handle.clone(),
+        }).with(SteadyRotation, "steady_rotation", &[])
         .with(AssignBufferIndex, "assign_buffer_index", &[])
         .with(
             MVPCalculation { projection, view },
@@ -193,35 +199,10 @@ fn main() {
         .build();
 
     'frame: loop {
-        let mut quit = false;
-        events_loop.poll_events(|event| match event {
-            Event::WindowEvent {
-                event: WindowEvent::Resized(LogicalSize { width, height }),
-                ..
-            } => {
-                println!("The window was resized to {}x{}", width, height);
-            }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            }
-            | Event::WindowEvent {
-                event:
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                virtual_keycode: Some(winit::VirtualKeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    },
-                ..
-            } => {
-                quit = true;
-            }
-            _ => (),
-        });
-        if quit {
+        dispatcher.dispatch_thread_local(&world.res);
+        dispatcher.dispatch_par(&world.res);
+        world.maintain();
+        if *quit_handle.lock() {
             world
                 .read_resource::<RenderFrame>()
                 .device
@@ -229,7 +210,5 @@ fn main() {
                 .unwrap();
             break 'frame;
         }
-        dispatcher.dispatch(&world.res);
-        world.maintain();
     }
 }

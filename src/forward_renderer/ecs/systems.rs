@@ -1,7 +1,9 @@
 use super::components::*;
 use cgmath;
+use parking_lot::Mutex;
 use specs::prelude::*;
 use std::{slice::from_raw_parts_mut, sync::Arc};
+use winit::{self, dpi::LogicalSize, Event, KeyboardInput, WindowEvent};
 
 use super::super::renderer::Buffer;
 
@@ -89,5 +91,45 @@ impl<'a> System<'a> for AssignBufferIndex {
         for (ix, (_mesh, buffer_index)) in (&meshes, &mut indices).join().enumerate() {
             buffer_index.0 = ix as u32;
         }
+    }
+}
+
+pub struct InputHandler {
+    pub events_loop: winit::EventsLoop,
+    pub quit_handle: Arc<Mutex<bool>>,
+}
+
+impl<'a> System<'a> for InputHandler {
+    type SystemData = (Entities<'a>,);
+
+    fn run(&mut self, entities: Self::SystemData) {
+        let quit_handle = Arc::clone(&self.quit_handle);
+        self.events_loop.poll_events(|event| match event {
+            Event::WindowEvent {
+                event: WindowEvent::Resized(LogicalSize { width, height }),
+                ..
+            } => {
+                println!("The window was resized to {}x{}", width, height);
+            }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+            | Event::WindowEvent {
+                event:
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                virtual_keycode: Some(winit::VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            } => {
+                *quit_handle.lock() = true;
+            }
+            _ => (),
+        });
     }
 }

@@ -605,7 +605,9 @@ pub struct CullGeometry {
 impl CullGeometry {
     pub fn new(device: Arc<Device>) -> CullGeometry {
         CullGeometry {
-            semaphores: (0..PARALLEL).map(|_| new_semaphore(device.clone())).collect(),
+            semaphores: (0..PARALLEL)
+                .map(|_| new_semaphore(device.clone()))
+                .collect(),
         }
     }
 }
@@ -627,54 +629,60 @@ impl<'a> System<'a> for CullGeometry {
             let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
                 |command_buffer| unsafe {
                     renderer.device.debug_marker_around(
-                    command_buffer,
-                    "cull pass",
-                    [0.0, 1.0, 0.0, 1.0],
-                    || {
-                        renderer.device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            renderer.cull_pipeline_layout.handle,
-                            0,
-                            &[renderer.ubo_set.handle, renderer.cull_set.handle],
-                            &[],
-                        );
-                        renderer.device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            renderer.cull_pipeline.handle,
-                        );
-                        for (entity, mesh, mesh_index) in
-                            (&*entities, &meshes, &mesh_indices).join().skip(total / PARALLEL * ix).take(total / PARALLEL)
-                        {
-                            let constants = [
-                                entity.id() as u32,
-                                mesh_index.0,
-                                mesh.index_len as u32,
-                                index_offset,
-                                0,
-                            ];
-                            index_offset += mesh.index_len as u32;
-
-                            let casted: &[u8] = {
-                                from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
-                            };
-                            renderer.device.cmd_push_constants(
+                        command_buffer,
+                        "cull pass",
+                        [0.0, 1.0, 0.0, 1.0],
+                        || {
+                            renderer.device.cmd_bind_descriptor_sets(
                                 command_buffer,
+                                vk::PipelineBindPoint::COMPUTE,
                                 renderer.cull_pipeline_layout.handle,
-                                vk::ShaderStageFlags::COMPUTE,
                                 0,
-                                casted,
+                                &[renderer.ubo_set.handle, renderer.cull_set.handle],
+                                &[],
                             );
-                            let index_len = mesh.index_len as u32;
-                            let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
-                            let workgroup_count = index_len / 3 / workgroup_size
-                                + min(1, index_len / 3 % workgroup_size);
-                            renderer.device
-                                .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
-                        }
-                    },
-                );
+                            renderer.device.cmd_bind_pipeline(
+                                command_buffer,
+                                vk::PipelineBindPoint::COMPUTE,
+                                renderer.cull_pipeline.handle,
+                            );
+                            for (entity, mesh, mesh_index) in (&*entities, &meshes, &mesh_indices)
+                                .join()
+                                .skip(total / PARALLEL * ix)
+                                .take(total / PARALLEL)
+                            {
+                                let constants = [
+                                    entity.id() as u32,
+                                    mesh_index.0,
+                                    mesh.index_len as u32,
+                                    index_offset,
+                                    0,
+                                ];
+                                index_offset += mesh.index_len as u32;
+
+                                let casted: &[u8] = {
+                                    from_raw_parts(
+                                        constants.as_ptr() as *const u8,
+                                        constants.len() * 4,
+                                    )
+                                };
+                                renderer.device.cmd_push_constants(
+                                    command_buffer,
+                                    renderer.cull_pipeline_layout.handle,
+                                    vk::ShaderStageFlags::COMPUTE,
+                                    0,
+                                    casted,
+                                );
+                                let index_len = mesh.index_len as u32;
+                                let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
+                                let workgroup_count = index_len / 3 / workgroup_size
+                                    + min(1, index_len / 3 % workgroup_size);
+                                renderer
+                                    .device
+                                    .cmd_dispatch(command_buffer, workgroup_count, 1, 1);
+                            }
+                        },
+                    );
                 }
             });
             let wait_semaphores = &[];
@@ -721,7 +729,11 @@ impl<'a> System<'a> for CullGeometry {
 
         let cull_cb_integrate =
             commands::record_one_time(Arc::clone(&renderer.compute_command_pool), { |_| {} });
-        let wait_semaphores = self.semaphores.iter().map(|sem| sem.handle).collect::<Vec<_>>();
+        let wait_semaphores = self
+            .semaphores
+            .iter()
+            .map(|sem| sem.handle)
+            .collect::<Vec<_>>();
         let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let submits = [vk::SubmitInfo {
