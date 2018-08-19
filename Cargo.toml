@@ -7,18 +7,7 @@ build = "build.rs"
 ash = { git = "https://github.com/MaikKlein/ash", branch = "generator" }
 cgmath = { version = "0.16", features = ["swizzle"] }
 parking_lot = "0.6.3"
-gltf = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
-gltf-json = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
-gltf-importer = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
-gltf-utils = { git = "https://github.com/alteous/gltf", rev = "526823d445066ffbead535a0d0314a3c94ff0c81" }
-
-# broken for now
-# nalgebra = "0.14.4"
-
-# gltf = "~0.10.0"
-# gltf-json = "~0.10.0"
-# gltf-importer = "~0.10.0"
-# gltf-utils = "~0.10.0"
+gltf = "0.11.2"
 image = "0.19"
 winit = "0.17.1"
 rayon = "1.0"

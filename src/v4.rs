@@ -4,8 +4,6 @@
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;
-extern crate gltf_importer;
-extern crate gltf_utils;
 extern crate parking_lot;
 extern crate rayon;
 extern crate specs;

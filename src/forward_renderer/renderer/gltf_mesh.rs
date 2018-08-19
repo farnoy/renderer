@@ -1,6 +1,5 @@
 use ash::{version::DeviceV1_0, vk};
-use gltf_importer;
-use gltf_utils::PrimitiveIterators;
+use gltf;
 use std::{
     mem::{size_of, transmute},
     sync::Arc,
@@ -10,14 +9,13 @@ use std::{
 use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
 pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Arc<Buffer>, u64) {
-    let importer = gltf_importer::import(path);
-    let (loaded, buffers) = importer.unwrap();
-    // let scene = loaded.scenes().next().unwrap();
-    // let node = scene.nodes().next().unwrap();
+    let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded.meshes().next().unwrap();
     let primitive = mesh.primitives().next().unwrap();
-    let positions = primitive.positions(&buffers).unwrap();
-    let normals = primitive.normals(&buffers).unwrap();
+    let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+    let positions = reader.read_positions().unwrap();
+    let normals = reader.read_normals().unwrap();
+    let indices = reader.read_indices().unwrap().into_u32();
     let vertex_len = positions.len() as u64;
     let vertex_size = size_of::<f32>() as u64 * 3 * vertex_len;
     let normals_size = size_of::<f32>() as u64 * 3 * vertex_len;
@@ -83,9 +81,6 @@ pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Ar
             *p.offset(ix as isize) = data;
         }
     }
-    let indices = PrimitiveIterators::indices(&primitive, &buffers)
-        .unwrap()
-        .into_u32();
     let index_len = indices.len() as u64;
     let index_size = size_of::<u32>() as u64 * index_len;
     let index_buffer = new_buffer(
