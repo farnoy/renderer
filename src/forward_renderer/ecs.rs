@@ -15,5 +15,7 @@ impl world::Bundle for Bundle {
         world.register::<Matrices>();
         world.register::<GltfMesh>();
         world.register::<GltfMeshBufferIndex>();
+        world.register::<AABB>();
+        world.register::<CoarseCulled>();
     }
 }

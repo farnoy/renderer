@@ -47,9 +47,71 @@ pub struct GltfMesh {
     pub normal_buffer: Arc<Buffer>,
     pub index_buffer: Arc<Buffer>,
     pub index_len: u64,
+    pub bounding_box: (cgmath::Vector3<f32>, cgmath::Vector3<f32>),
 }
 
+impl GltfMesh {
+    pub fn aabb_vertices(&self) -> [cgmath::Vector3<f32>; 8] {
+        let (min, max) = self.bounding_box;
+        [
+            // bottom half (min y)
+            cgmath::vec3(min.x, min.y, min.z),
+            cgmath::vec3(max.x, min.y, min.z),
+            cgmath::vec3(min.x, min.y, max.z),
+            cgmath::vec3(max.x, min.y, max.z),
+            // top half (max y)
+            cgmath::vec3(min.x, max.y, min.z),
+            cgmath::vec3(max.x, max.y, min.z),
+            cgmath::vec3(min.x, max.y, max.z),
+            cgmath::vec3(max.x, max.y, max.z),
+        ]
+    }
+}
+
+// Stores AABB in clip space, after mvp transformation
+#[derive(Clone, Component)]
+#[storage(VecStorage)]
+pub struct AABB {
+    pub min: cgmath::Vector3<f32>,
+    pub max: cgmath::Vector3<f32>,
+}
+
+impl AABB {
+    pub fn aabb_vertices(&self) -> [cgmath::Vector3<f32>; 8] {
+        let (min, max) = (self.min, self.max);
+        [
+            // bottom half (min y)
+            cgmath::vec3(min.x, min.y, min.z),
+            cgmath::vec3(max.x, min.y, min.z),
+            cgmath::vec3(min.x, min.y, max.z),
+            cgmath::vec3(max.x, min.y, max.z),
+            // top half (max y)
+            cgmath::vec3(min.x, max.y, min.z),
+            cgmath::vec3(max.x, max.y, min.z),
+            cgmath::vec3(min.x, max.y, max.z),
+            cgmath::vec3(max.x, max.y, max.z),
+        ]
+    }
+}
+
+impl Default for AABB {
+    fn default() -> AABB {
+        use cgmath::Zero;
+        AABB {
+            min: cgmath::Vector3::zero(),
+            max: cgmath::Vector3::zero(),
+        }
+    }
+}
+
+// Should this entity be discarded when rendering
+// Coarse and based on AABB being fully out of the frustum
+#[derive(Clone, Component, Debug)]
+#[storage(VecStorage)]
+pub struct CoarseCulled(pub bool);
+
 // Index in device generated indirect commands
+// Can be absent if culled
 #[derive(Clone, Component)]
 #[storage(VecStorage)]
 pub struct GltfMeshBufferIndex(pub u32);

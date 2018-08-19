@@ -605,14 +605,14 @@ pub struct CullGeometry {
 impl CullGeometry {
     pub fn new(device: &Arc<Device>) -> CullGeometry {
         CullGeometry {
-            semaphores: (0..PARALLEL)
+            semaphores: (0..MAX_PARALLEL)
                 .map(|_| new_semaphore(device.clone()))
                 .collect(),
         }
     }
 }
 
-static PARALLEL: usize = 4;
+static MAX_PARALLEL: usize = 4;
 
 impl<'a> System<'a> for CullGeometry {
     type SystemData = (
@@ -623,9 +623,11 @@ impl<'a> System<'a> for CullGeometry {
     );
 
     fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
+        use std::cmp::max;
         let mut index_offset = 0;
-        let total = 2400;
-        for ix in 0..PARALLEL {
+        let total = mesh_indices.join().count();
+        let parallel = max(1, min(total / 600, MAX_PARALLEL));
+        for ix in 0..parallel {
             let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
                 |command_buffer| unsafe {
                     renderer.device.debug_marker_around(
@@ -648,8 +650,8 @@ impl<'a> System<'a> for CullGeometry {
                             );
                             for (entity, mesh, mesh_index) in (&*entities, &meshes, &mesh_indices)
                                 .join()
-                                .skip(total / PARALLEL * ix)
-                                .take(total / PARALLEL)
+                                .skip(total / parallel * ix)
+                                .take(total / parallel)
                             {
                                 let constants = [
                                     entity.id() as u32,
@@ -686,7 +688,11 @@ impl<'a> System<'a> for CullGeometry {
                 }
             });
             let wait_semaphores = &[];
-            let signal_semaphores = &[self.semaphores[ix].handle];
+            let signal_semaphores = if parallel > 1 {
+                [self.semaphores[ix].handle]
+            } else {
+                [renderer.cull_complete_semaphore.handle]
+            };
             let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
             let submits = [vk::SubmitInfo {
                 s_type: vk::StructureType::SUBMIT_INFO,
@@ -727,52 +733,56 @@ impl<'a> System<'a> for CullGeometry {
             }
         }
 
-        let cull_cb_integrate =
-            commands::record_one_time(Arc::clone(&renderer.compute_command_pool), { |_| {} });
-        let wait_semaphores = self
-            .semaphores
-            .iter()
-            .map(|sem| sem.handle)
-            .collect::<Vec<_>>();
-        let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
-        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-        let submits = [vk::SubmitInfo {
-            s_type: vk::StructureType::SUBMIT_INFO,
-            p_next: ptr::null(),
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &*cull_cb_integrate,
-            signal_semaphore_count: signal_semaphores.len() as u32,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-        }];
-        let submit_fence = new_fence(Arc::clone(&renderer.device));
-        renderer.device.set_object_name(
-            vk::ObjectType::FENCE,
-            unsafe { transmute::<_, u64>(submit_fence.handle) },
-            "cull async compute integration phase submit fence",
-        );
+        // When async cull was sharded between queues, define a sync point
+        if parallel > 1 {
+            let cull_cb_integrate =
+                commands::record_one_time(Arc::clone(&renderer.compute_command_pool), { |_| {} });
+            let wait_semaphores = self
+                .semaphores
+                .iter()
+                .take(parallel)
+                .map(|sem| sem.handle)
+                .collect::<Vec<_>>();
+            let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
+            let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+            let submits = [vk::SubmitInfo {
+                s_type: vk::StructureType::SUBMIT_INFO,
+                p_next: ptr::null(),
+                wait_semaphore_count: wait_semaphores.len() as u32,
+                p_wait_semaphores: wait_semaphores.as_ptr(),
+                p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
+                command_buffer_count: 1,
+                p_command_buffers: &*cull_cb_integrate,
+                signal_semaphore_count: signal_semaphores.len() as u32,
+                p_signal_semaphores: signal_semaphores.as_ptr(),
+            }];
+            let submit_fence = new_fence(Arc::clone(&renderer.device));
+            renderer.device.set_object_name(
+                vk::ObjectType::FENCE,
+                unsafe { transmute::<_, u64>(submit_fence.handle) },
+                "cull async compute integration phase submit fence",
+            );
 
-        let queue = renderer.device.compute_queues[0].lock();
+            let queue = renderer.device.compute_queues[0].lock();
 
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &submits, submit_fence.handle)
-                .unwrap();
-        }
-
-        {
-            let device = Arc::clone(&renderer.device);
-            thread::spawn(move || unsafe {
-                device
+            unsafe {
+                renderer
                     .device
-                    .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                    .expect("Wait for fence failed.");
-                drop(cull_cb_integrate);
-                drop(submit_fence);
-            });
+                    .queue_submit(*queue, &submits, submit_fence.handle)
+                    .unwrap();
+            }
+
+            {
+                let device = Arc::clone(&renderer.device);
+                thread::spawn(move || unsafe {
+                    device
+                        .device
+                        .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
+                        .expect("Wait for fence failed.");
+                    drop(cull_cb_integrate);
+                    drop(submit_fence);
+                });
+            }
         }
     }
 }
@@ -784,10 +794,15 @@ impl<'a> System<'a> for Renderer {
         Entities<'a>,
         ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, GltfMeshBufferIndex>,
         WriteExpect<'a, PresentData>,
     );
 
-    fn run(&mut self, (entities, renderer, meshes, mut present_data): Self::SystemData) {
+    fn run(
+        &mut self,
+        (entities, renderer, meshes, coarse_culled, mut present_data): Self::SystemData,
+    ) {
+        let total = coarse_culled.join().count() as u32;
         let command_buffer =
             commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
                 let image_index = renderer.image_index;
@@ -877,7 +892,7 @@ impl<'a> System<'a> for Renderer {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        2400, // TODO: find max of GltfMeshBufferIndex
+                                        total,
                                         size_of::<u32>() as u32 * 5,
                                     );
                                     device.device.cmd_next_subpass(
@@ -922,7 +937,7 @@ impl<'a> System<'a> for Renderer {
                                         command_buffer,
                                         culled_commands_buffer.handle,
                                         0,
-                                        2400, // TODO: find max of GltfMeshBufferIndex
+                                        total,
                                         size_of::<u32>() as u32 * 5,
                                     );
                                 },

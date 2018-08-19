@@ -18,9 +18,9 @@ impl<'a> System<'a> for SteadyRotation {
     fn run(&mut self, mut rotations: Self::SystemData) {
         use cgmath::Rotation3;
         let incremental = cgmath::Quaternion::from_angle_y(cgmath::Deg(1.0));
-        for rot in (&mut rotations).join() {
-            *rot = Rotation(incremental * rot.0);
-        }
+        // for rot in (&mut rotations).join() {
+            // *rot = Rotation(incremental * rot.0);
+        // }
     }
 }
 
@@ -85,13 +85,21 @@ pub struct AssignBufferIndex;
 
 impl<'a> System<'a> for AssignBufferIndex {
     type SystemData = (
+        Entities<'a>,
         ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, CoarseCulled>,
         WriteStorage<'a, GltfMeshBufferIndex>,
     );
 
-    fn run(&mut self, (meshes, mut indices): Self::SystemData) {
-        for (ix, (_mesh, buffer_index)) in (&meshes, &mut indices).join().enumerate() {
-            buffer_index.0 = ix as u32;
+    fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
+        for (ix, (entity, _mesh, coarse_culled)) in
+            (&*entities, &meshes, &coarse_culled).join().enumerate()
+        {
+            if coarse_culled.0 {
+                indices.remove(entity);
+            } else {
+                drop(indices.insert(entity, GltfMeshBufferIndex(ix as u32)));
+            }
         }
     }
 }
@@ -101,6 +109,7 @@ pub struct Camera {
     pub rotation: cgmath::Quaternion<f32>,
     pub projection: cgmath::Matrix4<f32>,
     pub view: cgmath::Matrix4<f32>,
+    pub frustum_planes: [cgmath::Vector4<f32>; 6],
 }
 
 static UP_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
@@ -126,16 +135,19 @@ static CENTER_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
 
 impl Default for Camera {
     fn default() -> Camera {
+        use cgmath::Zero;
         let position = cgmath::Point3::new(0.0, 1.0, 2.0);
         let projection = cgmath::Matrix4::one();
         let view = cgmath::Matrix4::one();
         let rotation = cgmath::Quaternion::one();
+        let frustum_planes = [cgmath::Vector4::zero(); 6];
 
         Camera {
             position,
             rotation,
             projection,
             view,
+            frustum_planes,
         }
     }
 }
@@ -222,7 +234,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
-        use cgmath::{Angle, Rotation};
+        use cgmath::{Angle, Rotation, Zero};
         // Left handed perspective projection
         let near = 0.1;
         let far = 100.0;
@@ -257,6 +269,17 @@ impl<'a> System<'a> for ProjectCamera {
         let dir = CENTER_VECTOR - camera.rotation.rotate_vector(FORWARD_VECTOR);
         let up = camera.rotation.rotate_vector(UP_VECTOR);
         camera.view = cgmath::Matrix4::look_at_dir(camera.position, dir, up);
+        println!("Camera position is {:?}", camera.position);
+
+        /*
+        let frustum_planes = [cgmath::Vector4::zero(); 6];
+        let m = camera.projection;
+        for ix in (0..4) {
+            // left
+            frustum_planes[0][ix] = 
+        }
+        camera.frustum_planes = frustum_planes;
+        */
     }
 }
 
@@ -285,6 +308,105 @@ impl<'a> System<'a> for CalculateFrameTiming {
         frame_timing.time_delta =
             duration.as_secs() as f32 + (duration.subsec_micros() as f32 / 1e6);
         frame_timing.previous_frame = now;
+    }
+}
+
+pub struct AABBCalculation;
+
+impl<'a> System<'a> for AABBCalculation {
+    type SystemData = (
+        ReadStorage<'a, Matrices>,
+        ReadStorage<'a, GltfMesh>,
+        WriteStorage<'a, AABB>,
+    );
+
+    fn run(&mut self, (matrices, mesh, mut aabb): Self::SystemData) {
+        use std::f32::{MAX, MIN};
+        let mut ix = 0;
+        for (matrices, mesh, aabb) in (&matrices, &mesh, &mut aabb).join() {
+            let ((minx, miny, minz), (maxx, maxy, maxz)) = mesh
+                .aabb_vertices()
+                .iter()
+                .map(|vertex| matrices.model * vertex.extend(1.0))
+                .fold(
+                    ((MAX, MAX, MAX), (MIN, MIN, MIN)),
+                    |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
+                        (
+                            (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
+                            (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
+                        )
+                    },
+                );
+            *aabb = AABB {
+                min: cgmath::vec3(minx, miny, minz),
+                max: cgmath::vec3(maxx, maxy, maxz),
+            };
+            if ix < 10 {
+                println!("aabb min of {} is {:?}", ix, aabb.min);
+            }
+            ix += 1;
+        }
+    }
+}
+
+pub struct CoarseCulling;
+
+impl<'a> System<'a> for CoarseCulling {
+    type SystemData = (
+        ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, Matrices>,
+        WriteStorage<'a, CoarseCulled>,
+    );
+
+    fn run(&mut self, (mesh, matrices, mut culled): Self::SystemData) {
+        use cgmath::InnerSpace;
+        for (mesh, matrices, culled) in (&mesh, &matrices, &mut culled).join() {
+            let M = matrices.mvp;
+            let planes = [
+                (M.w + M.x), // left
+                (M.w - M.x), // right
+                (M.w + M.y), // bottom
+                (M.w - M.y), // top
+                (M.w + M.z), // near
+                (M.w - M.z), // far
+            ];
+            // what space is this in? why does it work? does it always work?
+            let vertices = mesh.aabb_vertices()
+                    .iter()
+                    // transform
+                    .map(|vertex| {
+                        let v = matrices.mvp * vertex.extend(1.0);
+                        (v.xyz() / v.w).extend(1.0)
+                    })
+                    .collect::<Vec<_>>();
+
+            // culled.0 = false;
+
+            /*
+            // check if all vertices of the bounding box are outside at least one
+            // half-space defined by frustum planes
+            'outer: for ix in 0..6 {
+                let all_outside = vertices.iter().all(|vertex| planes[ix].dot(*vertex) < 0.0);
+                if all_outside {
+                    culled.0 = true;
+                    break 'outer;
+                }
+            }
+            */
+            culled.0 = vertices.iter().all(|v| v.x < -1.0 || v.x > 1.0 || v.y < -1.0 || v.y > 1.0 || v.z > 1.0 || v.z < 0.0);
+        }
+
+        println!(
+            "coarse Culled {}",
+            (&culled).join().filter(|culled| culled.0).count()
+        );
+        for ix in 0..10 {
+            println!(
+                "coarse Culled {} is {:?}",
+                ix,
+                culled.join().nth(ix)
+            );
+        }
     }
 }
 

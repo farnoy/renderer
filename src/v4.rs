@@ -38,7 +38,7 @@ fn main() {
     world.add_bundle(Bundle);
     let rayon_threadpool = Arc::new(
         rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
+            .num_threads(16)
             .build()
             .unwrap(),
     );
@@ -71,7 +71,7 @@ fn main() {
 
     let (mut renderer, events_loop) = RenderFrame::new();
 
-    let (vertex_buffer, normal_buffer, index_buffer, index_len) = load_gltf(
+    let (vertex_buffer, normal_buffer, index_buffer, index_len, bounding_box) = load_gltf(
         &renderer,
         "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
     );
@@ -139,11 +139,14 @@ fn main() {
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
         .with::<Scale>(Scale(4.0))
         .with::<Matrices>(Matrices::one())
+        .with::<AABB>(AABB::default())
+        .with::<CoarseCulled>(CoarseCulled(false))
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
             index_buffer: Arc::clone(&index_buffer),
             index_len,
+            bounding_box: bounding_box.clone(),
         }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .build();
 
@@ -153,11 +156,14 @@ fn main() {
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
+        .with::<AABB>(AABB::default())
+        .with::<CoarseCulled>(CoarseCulled(false))
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
             index_buffer: Arc::clone(&index_buffer),
             index_len,
+            bounding_box: bounding_box.clone(),
         }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .build();
 
@@ -172,11 +178,14 @@ fn main() {
                 (ix * 20) as f32,
             )))).with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
+            .with::<AABB>(AABB::default())
+            .with::<CoarseCulled>(CoarseCulled(false))
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
                 index_buffer: Arc::clone(&index_buffer),
                 index_len,
+                bounding_box: bounding_box.clone(),
             }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .build();
     }
@@ -200,17 +209,30 @@ fn main() {
         .with(SteadyRotation, "steady_rotation", &[])
         .with(FlyCamera::default(), "fly_camera", &[])
         .with(ProjectCamera, "project_camera", &["fly_camera"])
-        .with(AssignBufferIndex, "assign_buffer_index", &[])
         .with(
             MVPCalculation,
             "mvp",
             &["steady_rotation", "project_camera"],
+        ).with(AABBCalculation, "aabb_calculation", &["mvp"])
+        .with(
+            CoarseCulling,
+            "coarse_culling",
+            &["aabb_calculation", "project_camera"],
+        ).with(
+            AssignBufferIndex,
+            "assign_buffer_index",
+            &["coarse_culling"],
         ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
             CullGeometry::new(&world.read_resource::<RenderFrame>().device),
             "cull_geometry",
-            &["acquire_framebuffer", "assign_buffer_index", "mvp_upload"],
+            &[
+                "acquire_framebuffer",
+                "assign_buffer_index",
+                "mvp_upload",
+                "coarse_culling",
+            ],
         ).with(Renderer, "render_frame", &["cull_geometry"])
         .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
 

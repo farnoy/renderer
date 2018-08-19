@@ -1,4 +1,5 @@
 use ash::{version::DeviceV1_0, vk};
+use cgmath;
 use gltf;
 use std::{
     mem::{size_of, transmute},
@@ -8,12 +9,26 @@ use std::{
 
 use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
-pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Arc<Buffer>, u64) {
+pub fn load(
+    renderer: &RenderFrame,
+    path: &str,
+) -> (
+    Arc<Buffer>,
+    Arc<Buffer>,
+    Arc<Buffer>,
+    u64,
+    (cgmath::Vector3<f32>, cgmath::Vector3<f32>),
+) {
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded.meshes().next().unwrap();
     let primitive = mesh.primitives().next().unwrap();
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
     let positions = reader.read_positions().unwrap();
+    let bounding_box = primitive.bounding_box();
+    let bounding_box = (
+        cgmath::Vector3::from(bounding_box.min),
+        cgmath::Vector3::from(bounding_box.max),
+    );
     let normals = reader.read_normals().unwrap();
     let indices = reader.read_indices().unwrap().into_u32();
     let vertex_len = positions.len() as u64;
@@ -165,5 +180,11 @@ pub fn load(renderer: &RenderFrame, path: &str) -> (Arc<Buffer>, Arc<Buffer>, Ar
             .expect("Wait for fence failed.");
     }
 
-    (vertex_buffer, normal_buffer, index_buffer, index_len)
+    (
+        vertex_buffer,
+        normal_buffer,
+        index_buffer,
+        index_len,
+        bounding_box,
+    )
 }
