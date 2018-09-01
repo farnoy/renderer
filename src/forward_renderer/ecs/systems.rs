@@ -18,9 +18,9 @@ impl<'a> System<'a> for SteadyRotation {
     fn run(&mut self, mut rotations: Self::SystemData) {
         use cgmath::Rotation3;
         let incremental = cgmath::Quaternion::from_angle_y(cgmath::Deg(1.0));
-        // for rot in (&mut rotations).join() {
-            // *rot = Rotation(incremental * rot.0);
-        // }
+        for rot in (&mut rotations).join() {
+            *rot = Rotation(incremental * rot.0);
+        }
     }
 }
 
@@ -269,9 +269,9 @@ impl<'a> System<'a> for ProjectCamera {
         let dir = CENTER_VECTOR - camera.rotation.rotate_vector(FORWARD_VECTOR);
         let up = camera.rotation.rotate_vector(UP_VECTOR);
         camera.view = cgmath::Matrix4::look_at_dir(camera.position, dir, up);
+        /*
         println!("Camera position is {:?}", camera.position);
 
-        /*
         let frustum_planes = [cgmath::Vector4::zero(); 6];
         let m = camera.projection;
         for ix in (0..4) {
@@ -342,7 +342,7 @@ impl<'a> System<'a> for AABBCalculation {
                 max: cgmath::vec3(maxx, maxy, maxz),
             };
             if ix < 10 {
-                println!("aabb min of {} is {:?}", ix, aabb.min);
+                // println!("aabb min of {} is {:?}", ix, aabb.min);
             }
             ix += 1;
         }
@@ -359,10 +359,11 @@ impl<'a> System<'a> for CoarseCulling {
     );
 
     fn run(&mut self, (mesh, matrices, mut culled): Self::SystemData) {
-        use cgmath::InnerSpace;
+        // use cgmath::InnerSpace;
         for (mesh, matrices, culled) in (&mesh, &matrices, &mut culled).join() {
+            #[allow(non_snake_case)]
             let M = matrices.mvp;
-            let planes = [
+            let _planes = [
                 (M.w + M.x), // left
                 (M.w - M.x), // right
                 (M.w + M.y), // bottom
@@ -371,7 +372,7 @@ impl<'a> System<'a> for CoarseCulling {
                 (M.w - M.z), // far
             ];
             // what space is this in? why does it work? does it always work?
-            let vertices = mesh.aabb_vertices()
+            let _vertices = mesh.aabb_vertices()
                     .iter()
                     // transform
                     .map(|vertex| {
@@ -380,7 +381,7 @@ impl<'a> System<'a> for CoarseCulling {
                     })
                     .collect::<Vec<_>>();
 
-            // culled.0 = false;
+            culled.0 = false;
 
             /*
             // check if all vertices of the bounding box are outside at least one
@@ -392,10 +393,13 @@ impl<'a> System<'a> for CoarseCulling {
                     break 'outer;
                 }
             }
+            culled.0 = vertices.iter().all(|v| {
+                v.x < -1.0 || v.x > 1.0 || v.y < -1.0 || v.y > 1.0 || v.z > 1.0 || v.z < 0.0
+            });
             */
-            culled.0 = vertices.iter().all(|v| v.x < -1.0 || v.x > 1.0 || v.y < -1.0 || v.y > 1.0 || v.z > 1.0 || v.z < 0.0);
         }
 
+        /*
         println!(
             "coarse Culled {}",
             (&culled).join().filter(|culled| culled.0).count()
@@ -407,6 +411,7 @@ impl<'a> System<'a> for CoarseCulling {
                 culled.join().nth(ix)
             );
         }
+        */
     }
 }
 
