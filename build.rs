@@ -15,7 +15,7 @@ fn main() {
         "gltf_mesh.vert",
     ];
     for shader in shaders.iter() {
-        println!("cargo:rerun-if-changed=shaders/{}", shader);
+        println!("cargo:rerun-if-changed=src/shaders/{}", shader);
         let output_path = &dest.join(format!("{}.spv", shader));
         let result = Command::new("glslangValidator")
             .arg("-C")
