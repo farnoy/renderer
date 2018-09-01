@@ -197,6 +197,22 @@ pub fn create(
                         .as_ptr(),
                 ),
             ),
+            vkFlushMappedMemoryRanges: transmute(
+                entry.get_instance_proc_addr(
+                    instance.handle(),
+                    CStr::from_bytes_with_nul(b"vkFlushMappedMemoryRanges\0")
+                        .unwrap()
+                        .as_ptr(),
+                ),
+            ),
+            vkInvalidateMappedMemoryRanges: transmute(
+                entry.get_instance_proc_addr(
+                    instance.handle(),
+                    CStr::from_bytes_with_nul(b"vkInvalidateMappedMemoryRanges\0")
+                        .unwrap()
+                        .as_ptr(),
+                ),
+            ),
         }
     };
     let create_info = VmaAllocatorCreateInfo {
@@ -210,6 +226,7 @@ pub fn create(
         frameInUseCount: 1,
         pHeapSizeLimit: ptr::null(),
         pVulkanFunctions: &vma_functions,
+        pRecordSettings: ptr::null(),
     };
     let mut allocator: VmaAllocator = VmaAllocator(ptr::null_mut());
     let err_code =
