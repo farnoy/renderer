@@ -10,6 +10,7 @@ use std::ffi::CString;
 #[allow(unused_imports)]
 use std::mem::transmute;
 use std::ops::Deref;
+use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
 use winit;
@@ -108,7 +109,7 @@ impl Instance {
                 severity: vk::DebugUtilsMessageSeverityFlagsEXT,
                 message_type: vk::DebugUtilsMessageTypeFlagsEXT,
                 data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-                _user_data: *mut vk::c_void,
+                _user_data: *mut c_void,
             ) -> vk::Bool32 {
                 use std::ffi::CStr;
                 let message_id = (*data).p_message_id_name;
