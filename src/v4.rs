@@ -4,6 +4,8 @@
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;
+#[macro_use]
+extern crate imgui;
 extern crate parking_lot;
 extern crate rayon;
 extern crate specs;
@@ -21,8 +23,8 @@ use cgmath::Rotation3;
 use forward_renderer::{
     ecs::{components::*, systems::*, Bundle},
     renderer::{
-        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, PresentData,
-        PresentFramebuffer, RenderFrame, Renderer,
+        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, Gui, PresentFramebuffer,
+        RenderFrame, Renderer,
     },
 };
 use parking_lot::Mutex;
@@ -193,8 +195,10 @@ fn main() {
     let dst_mvp = Arc::clone(&renderer.ubo_buffer);
     let dst_model = Arc::clone(&renderer.model_buffer);
 
+    let gui = Gui::new(&renderer);
+
     world.add_resource(renderer);
-    world.add_resource(PresentData::new());
+    world.add_resource(gui);
 
     let quit_handle = Arc::new(Mutex::new(false));
 

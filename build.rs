@@ -13,6 +13,8 @@ fn main() {
         "generate_work.comp",
         "gltf_mesh.frag",
         "gltf_mesh.vert",
+        "gui.frag",
+        "gui.vert",
     ];
     for shader in shaders.iter() {
         println!("cargo:rerun-if-changed=src/shaders/{}", shader);
@@ -66,6 +68,9 @@ fn main() {
         .whitelist_function("vmaCreateAllocator")
         .whitelist_function("vmaDestroyAllocator")
         .whitelist_function("vmaSetCurrentFrameIndex")
+        .whitelist_function("vmaMapMemory")
+        .whitelist_function("vmaFlushAllocation")
+        .whitelist_function("vmaUnmapMemory")
         .whitelist_function("vmaCreateBuffer")
         .whitelist_function("vmaDestroyBuffer")
         .whitelist_function("vmaCreateImage")

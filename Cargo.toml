@@ -9,6 +9,7 @@ cgmath = { version = "0.16", features = ["swizzle"] }
 parking_lot = "0.6.3"
 gltf = "0.11.2"
 image = "0.19"
+imgui = "0.0.20"
 winit = "0.17.1"
 rayon = "1.0"
 specs = "0.12"

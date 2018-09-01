@@ -11,13 +11,15 @@ mod swapchain;
 use super::ecs::components::{GltfMesh, GltfMeshBufferIndex};
 use ash::{version::DeviceV1_0, vk};
 use cgmath;
+use imgui;
 use specs::prelude::*;
 use std::{
     cmp::min,
     mem::{size_of, transmute},
+    os::raw::c_uchar,
     path::PathBuf,
     ptr,
-    slice::from_raw_parts,
+    slice::{from_raw_parts, from_raw_parts_mut},
     sync::Arc,
     thread, u64,
 };
@@ -44,6 +46,7 @@ pub struct RenderFrame {
     pub rendering_complete_semaphore: Arc<Semaphore>,
     pub graphics_command_pool: Arc<CommandPool>,
     pub compute_command_pool: Arc<CommandPool>,
+    pub descriptor_pool: Arc<DescriptorPool>,
     pub renderpass: Arc<RenderPass>,
     pub depth_pipeline: Arc<Pipeline>,
     pub depth_pipeline_layout: Arc<PipelineLayout>,
@@ -101,6 +104,10 @@ impl RenderFrame {
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::STORAGE_BUFFER,
                     descriptor_count: 4096,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 512,
                 },
             ],
         );
@@ -247,12 +254,8 @@ impl RenderFrame {
             unsafe { transmute::<_, u64>(gltf_pipeline_layout.handle) },
             "GLTF Pipeline Layout",
         );
-        let gltf_pipeline = new_graphics_pipeline(
-            &instance,
-            Arc::clone(&device),
-            &gltf_pipeline_layout,
-            &main_renderpass,
-            &[
+        let gltf_pipeline = {
+            let input_attributes = &[
                 vk::VertexInputAttributeDescription {
                     location: 0,
                     binding: 0,
@@ -265,8 +268,8 @@ impl RenderFrame {
                     format: vk::Format::R32G32B32_SFLOAT,
                     offset: 0,
                 },
-            ],
-            &[
+            ];
+            let input_bindings = &[
                 vk::VertexInputBindingDescription {
                     binding: 0,
                     stride: size_of::<f32>() as u32 * 3,
@@ -277,21 +280,106 @@ impl RenderFrame {
                     stride: size_of::<f32>() as u32 * 3,
                     input_rate: vk::VertexInputRate::VERTEX,
                 },
-            ],
-            &[
-                (
-                    vk::ShaderStageFlags::VERTEX,
-                    PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv"),
-                ),
-                (
-                    vk::ShaderStageFlags::FRAGMENT,
-                    PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv"),
-                ),
-            ],
-            1,
-            false,
-            true,
-        );
+            ];
+            let viewports = [vk::Viewport {
+                x: 0.0,
+                y: (instance.window_height as f32),
+                width: instance.window_width as f32,
+                height: -(instance.window_height as f32),
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }];
+            let scissors = [vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: instance.window_width,
+                    height: instance.window_height,
+                },
+            }];
+            let noop_stencil_state = vk::StencilOpState {
+                fail_op: vk::StencilOp::KEEP,
+                pass_op: vk::StencilOp::KEEP,
+                depth_fail_op: vk::StencilOp::KEEP,
+                compare_op: vk::CompareOp::ALWAYS,
+                compare_mask: 0,
+                write_mask: 0,
+                reference: 0,
+            };
+            let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
+                blend_enable: 1,
+                src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+                dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                color_blend_op: vk::BlendOp::ADD,
+                src_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+                alpha_blend_op: vk::BlendOp::ADD,
+                color_write_mask: vk::ColorComponentFlags::all(),
+            }];
+            new_graphics_pipeline2(
+                Arc::clone(&device),
+                &[
+                    (
+                        vk::ShaderStageFlags::VERTEX,
+                        PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv"),
+                    ),
+                    (
+                        vk::ShaderStageFlags::FRAGMENT,
+                        PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv"),
+                    ),
+                ],
+                vk::GraphicsPipelineCreateInfo {
+                    p_vertex_input_state: &vk::PipelineVertexInputStateCreateInfo {
+                        vertex_attribute_description_count: input_attributes.len() as u32,
+                        p_vertex_attribute_descriptions: input_attributes.as_ptr(),
+                        vertex_binding_description_count: input_bindings.len() as u32,
+                        p_vertex_binding_descriptions: input_bindings.as_ptr(),
+                        ..Default::default()
+                    },
+                    p_input_assembly_state: &vk::PipelineInputAssemblyStateCreateInfo {
+                        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                        ..Default::default()
+                    },
+                    p_viewport_state: &vk::PipelineViewportStateCreateInfo {
+                        scissor_count: scissors.len() as u32,
+                        p_scissors: scissors.as_ptr(),
+                        viewport_count: viewports.len() as u32,
+                        p_viewports: viewports.as_ptr(),
+                        ..Default::default()
+                    },
+                    p_rasterization_state: &vk::PipelineRasterizationStateCreateInfo {
+                        cull_mode: vk::CullModeFlags::BACK,
+                        front_face: vk::FrontFace::CLOCKWISE,
+                        line_width: 1.0,
+                        polygon_mode: vk::PolygonMode::FILL,
+                        ..Default::default()
+                    },
+                    p_multisample_state: &vk::PipelineMultisampleStateCreateInfo {
+                        rasterization_samples: vk::SampleCountFlags::TYPE_1,
+                        ..Default::default()
+                    },
+                    p_depth_stencil_state: &vk::PipelineDepthStencilStateCreateInfo {
+                        depth_test_enable: 1,
+                        depth_compare_op: vk::CompareOp::LESS_OR_EQUAL,
+                        depth_bounds_test_enable: 1,
+                        stencil_test_enable: 0,
+                        front: noop_stencil_state,
+                        back: noop_stencil_state,
+                        max_depth_bounds: 1.0,
+                        min_depth_bounds: 0.0,
+                        ..Default::default()
+                    },
+                    p_color_blend_state: &vk::PipelineColorBlendStateCreateInfo {
+                        attachment_count: color_blend_attachment_states.len() as u32,
+                        p_attachments: color_blend_attachment_states.as_ptr(),
+                        ..Default::default()
+                    },
+                    layout: gltf_pipeline_layout.handle,
+                    render_pass: main_renderpass.handle,
+                    subpass: 1,
+                    ..Default::default()
+                },
+            )
+        };
         device.set_object_name(
             vk::ObjectType::PIPELINE,
             unsafe { transmute::<_, u64>(gltf_pipeline.handle) },
@@ -299,30 +387,119 @@ impl RenderFrame {
         );
         let depth_pipeline_layout =
             new_pipeline_layout(Arc::clone(&device), &[ubo_set_layout.handle], &[]);
-        let depth_pipeline = new_graphics_pipeline(
-            &instance,
-            Arc::clone(&device),
-            &depth_pipeline_layout,
-            &main_renderpass,
-            &[vk::VertexInputAttributeDescription {
+        let depth_pipeline = {
+            let input_attributes = &[vk::VertexInputAttributeDescription {
                 location: 0,
                 binding: 0,
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: 0,
-            }],
-            &[vk::VertexInputBindingDescription {
+            }];
+            let input_bindings = &[vk::VertexInputBindingDescription {
                 binding: 0,
                 stride: size_of::<f32>() as u32 * 3,
                 input_rate: vk::VertexInputRate::VERTEX,
-            }],
-            &[(
-                vk::ShaderStageFlags::VERTEX,
-                PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
-            )],
-            0,
-            true,
-            false,
+            }];
+            let viewports = [vk::Viewport {
+                x: 0.0,
+                y: (instance.window_height as f32),
+                width: instance.window_width as f32,
+                height: -(instance.window_height as f32),
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }];
+            let scissors = [vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: instance.window_width,
+                    height: instance.window_height,
+                },
+            }];
+            let noop_stencil_state = vk::StencilOpState {
+                fail_op: vk::StencilOp::KEEP,
+                pass_op: vk::StencilOp::KEEP,
+                depth_fail_op: vk::StencilOp::KEEP,
+                compare_op: vk::CompareOp::ALWAYS,
+                compare_mask: 0,
+                write_mask: 0,
+                reference: 0,
+            };
+            let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
+                blend_enable: 1,
+                src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+                dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                color_blend_op: vk::BlendOp::ADD,
+                src_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+                alpha_blend_op: vk::BlendOp::ADD,
+                color_write_mask: vk::ColorComponentFlags::all(),
+            }];
+            new_graphics_pipeline2(
+                Arc::clone(&device),
+                &[(
+                    vk::ShaderStageFlags::VERTEX,
+                    PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
+                )],
+                vk::GraphicsPipelineCreateInfo {
+                    p_vertex_input_state: &vk::PipelineVertexInputStateCreateInfo {
+                        vertex_attribute_description_count: input_attributes.len() as u32,
+                        p_vertex_attribute_descriptions: input_attributes.as_ptr(),
+                        vertex_binding_description_count: input_bindings.len() as u32,
+                        p_vertex_binding_descriptions: input_bindings.as_ptr(),
+                        ..Default::default()
+                    },
+                    p_input_assembly_state: &vk::PipelineInputAssemblyStateCreateInfo {
+                        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                        ..Default::default()
+                    },
+                    p_viewport_state: &vk::PipelineViewportStateCreateInfo {
+                        scissor_count: scissors.len() as u32,
+                        p_scissors: scissors.as_ptr(),
+                        viewport_count: viewports.len() as u32,
+                        p_viewports: viewports.as_ptr(),
+                        ..Default::default()
+                    },
+                    p_rasterization_state: &vk::PipelineRasterizationStateCreateInfo {
+                        cull_mode: vk::CullModeFlags::BACK,
+                        front_face: vk::FrontFace::CLOCKWISE,
+                        line_width: 1.0,
+                        polygon_mode: vk::PolygonMode::FILL,
+                        ..Default::default()
+                    },
+                    p_multisample_state: &vk::PipelineMultisampleStateCreateInfo {
+                        rasterization_samples: vk::SampleCountFlags::TYPE_1,
+                        ..Default::default()
+                    },
+                    p_depth_stencil_state: &vk::PipelineDepthStencilStateCreateInfo {
+                        depth_test_enable: 1,
+                        depth_write_enable: 1,
+                        depth_compare_op: vk::CompareOp::LESS_OR_EQUAL,
+                        depth_bounds_test_enable: 1,
+                        stencil_test_enable: 0,
+                        front: noop_stencil_state,
+                        back: noop_stencil_state,
+                        max_depth_bounds: 1.0,
+                        min_depth_bounds: 0.0,
+                        ..Default::default()
+                    },
+                    p_color_blend_state: &vk::PipelineColorBlendStateCreateInfo {
+                        attachment_count: color_blend_attachment_states.len() as u32,
+                        p_attachments: color_blend_attachment_states.as_ptr(),
+                        ..Default::default()
+                    },
+                    layout: depth_pipeline_layout.handle,
+                    render_pass: main_renderpass.handle,
+                    subpass: 0,
+                    ..Default::default()
+                },
+            )
+        };
+
+        device.set_object_name(
+            vk::ObjectType::PIPELINE,
+            unsafe { transmute::<_, u64>(depth_pipeline.handle) },
+            "Depth Pipeline",
         );
+
         let ubo_set = new_descriptor_set(
             Arc::clone(&device),
             Arc::clone(&descriptor_pool),
@@ -454,15 +631,16 @@ impl RenderFrame {
                 device: Arc::clone(&device),
                 framebuffer: Arc::clone(&framebuffer),
                 image_index: 0,
-                depth_pipeline: Arc::clone(&depth_pipeline),
-                depth_pipeline_layout: Arc::clone(&depth_pipeline_layout),
-                gltf_pipeline: Arc::clone(&gltf_pipeline),
-                gltf_pipeline_layout: Arc::clone(&gltf_pipeline_layout),
+                depth_pipeline: Arc::new(depth_pipeline),
+                depth_pipeline_layout: Arc::new(depth_pipeline_layout),
+                gltf_pipeline: Arc::new(gltf_pipeline),
+                gltf_pipeline_layout: Arc::new(gltf_pipeline_layout),
                 graphics_command_pool,
                 compute_command_pool,
-                ubo_set: Arc::clone(&ubo_set),
+                descriptor_pool,
+                ubo_set: Arc::new(ubo_set),
                 ubo_buffer,
-                model_set: Arc::clone(&model_set),
+                model_set: Arc::new(model_set),
                 model_buffer,
                 present_semaphore: Arc::clone(&present_semaphore),
                 rendering_complete_semaphore: Arc::clone(&rendering_complete_semaphore),
@@ -470,10 +648,10 @@ impl RenderFrame {
                 swapchain: Arc::clone(&swapchain),
                 culled_commands_buffer: Arc::clone(&command_generation_buffer),
                 culled_index_buffer: None,
-                cull_pipeline: Arc::clone(&command_generation_pipeline),
-                cull_pipeline_layout: Arc::clone(&command_generation_pipeline_layout),
-                cull_set_layout: Arc::clone(&command_generation_descriptor_set_layout),
-                cull_set: Arc::clone(&command_generation_descriptor_set),
+                cull_pipeline: Arc::new(command_generation_pipeline),
+                cull_pipeline_layout: Arc::new(command_generation_pipeline_layout),
+                cull_set_layout: Arc::new(command_generation_descriptor_set_layout),
+                cull_set: Arc::new(command_generation_descriptor_set),
                 cull_complete_semaphore,
             },
             events_loop,
@@ -572,7 +750,7 @@ impl RenderFrame {
 pub struct AcquireFramebuffer;
 
 impl<'a> System<'a> for AcquireFramebuffer {
-    type SystemData = (WriteExpect<'a, RenderFrame>, ReadExpect<'a, PresentData>);
+    type SystemData = (WriteExpect<'a, RenderFrame>, Read<'a, PresentData>);
 
     fn run(&mut self, (mut renderer, present_data): Self::SystemData) {
         if let Some(ref fence) = present_data.render_complete_fence {
@@ -793,14 +971,15 @@ impl<'a> System<'a> for Renderer {
     type SystemData = (
         Entities<'a>,
         ReadExpect<'a, RenderFrame>,
+        WriteExpect<'a, Gui>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
-        WriteExpect<'a, PresentData>,
+        Write<'a, PresentData>,
     );
 
     fn run(
         &mut self,
-        (entities, renderer, meshes, coarse_culled, mut present_data): Self::SystemData,
+        (entities, renderer, mut gui, meshes, coarse_culled, mut present_data): Self::SystemData,
     ) {
         let total = coarse_culled.join().count() as u32;
         let command_buffer =
@@ -820,6 +999,32 @@ impl<'a> System<'a> for Renderer {
                     Arc::clone(renderer.culled_index_buffer.as_ref().unwrap());
                 let culled_commands_buffer = Arc::clone(&renderer.culled_commands_buffer);
                 move |command_buffer| unsafe {
+                    if !gui.transitioned {
+                        device.cmd_pipeline_barrier(
+                            command_buffer,
+                            vk::PipelineStageFlags::TOP_OF_PIPE,
+                            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                            Default::default(),
+                            &[],
+                            &[],
+                            &[vk::ImageMemoryBarrier {
+                                image: gui.texture.handle,
+                                subresource_range: vk::ImageSubresourceRange {
+                                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                                    base_mip_level: 0,
+                                    level_count: 1,
+                                    base_array_layer: 0,
+                                    layer_count: 1,
+                                },
+                                old_layout: vk::ImageLayout::PREINITIALIZED,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                                ..Default::default()
+                            }],
+                        );
+                    }
+                    gui.transitioned = true;
                     let clear_values = &[
                         vk::ClearValue {
                             color: vk::ClearColorValue { float32: [0.0; 4] },
@@ -942,6 +1147,103 @@ impl<'a> System<'a> for Renderer {
                                     );
                                 },
                             );
+                            device.debug_marker_around(
+                                command_buffer,
+                                "GUI",
+                                [1.0, 1.0, 0.0, 1.0],
+                                || {
+                                    let vertex_slice = from_raw_parts_mut(
+                                        gui.vertex_buffer.allocation_info.pMappedData
+                                            as *mut imgui::ImDrawVert,
+                                        4096,
+                                    );
+                                    let index_slice = from_raw_parts_mut(
+                                        gui.index_buffer.allocation_info.pMappedData
+                                            as *mut imgui::ImDrawIdx,
+                                        4096,
+                                    );
+                                    let pipeline_layout = gui.pipeline_layout.handle;
+                                    device.cmd_bind_descriptor_sets(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        pipeline_layout,
+                                        0,
+                                        &[gui.descriptor_set.handle],
+                                        &[],
+                                    );
+                                    device.cmd_bind_pipeline(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        gui.pipeline.handle,
+                                    );
+                                    device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[gui.vertex_buffer.handle],
+                                        &[0],
+                                    );
+                                    device.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        gui.index_buffer.handle,
+                                        0,
+                                        vk::IndexType::UINT16,
+                                    );
+                                    let ui = gui.imgui.frame(
+                                        imgui::FrameSize {
+                                            logical_size: (
+                                                instance.window_width as f64,
+                                                instance.window_height as f64,
+                                            ),
+                                            hidpi_factor: 1.0,
+                                        },
+                                        1.0,
+                                    );
+                                    let mut opened = true;
+                                    ui.show_demo_window(&mut opened);
+                                    ui.render(|ui, draw_data| {
+                                        let (x, y) = ui.imgui().display_size();
+                                        let constants = [2.0 / x, 2.0 / y, -1.0, -1.0];
+
+                                        let casted: &[u8] = {
+                                            from_raw_parts(
+                                                constants.as_ptr() as *const u8,
+                                                constants.len() * 4,
+                                            )
+                                        };
+                                        device.cmd_push_constants(
+                                            command_buffer,
+                                            pipeline_layout,
+                                            vk::ShaderStageFlags::VERTEX,
+                                            0,
+                                            casted,
+                                        );
+                                        let mut vertex_offset = 0;
+                                        let mut index_offset = 0;
+                                        for draw_list in draw_data.into_iter() {
+                                            index_slice[0..draw_list.idx_buffer.len()]
+                                                .copy_from_slice(draw_list.idx_buffer);
+                                            vertex_slice[0..draw_list.vtx_buffer.len()]
+                                                .copy_from_slice(draw_list.vtx_buffer);
+                                            for draw_cmd in draw_list.cmd_buffer {
+                                                device.cmd_draw_indexed(
+                                                    command_buffer,
+                                                    draw_cmd.elem_count,
+                                                    1,
+                                                    index_offset,
+                                                    vertex_offset,
+                                                    0,
+                                                );
+                                                index_offset += draw_cmd.elem_count as u32;
+                                            }
+                                            vertex_offset += draw_list.vtx_buffer.len() as i32;
+                                        }
+                                        if false {
+                                            return Err(3i8);
+                                        }
+                                        Ok(())
+                                    }).expect("failed rendering ui");
+                                },
+                            );
                             device.device.cmd_end_render_pass(command_buffer);
                         },
                     );
@@ -993,8 +1295,8 @@ pub struct PresentData {
     render_complete_fence: Option<Fence>,
 }
 
-impl PresentData {
-    pub fn new() -> PresentData {
+impl Default for PresentData {
+    fn default() -> PresentData {
         PresentData {
             render_command_buffer: None,
             render_complete_fence: None,
@@ -1030,6 +1332,285 @@ impl<'a> System<'a> for PresentFramebuffer {
                     .queue_present_khr(*queue, &present_info)
                     .unwrap();
             }
+        }
+    }
+}
+
+pub struct Gui {
+    pub imgui: imgui::ImGui,
+    pub vertex_buffer: Arc<Buffer>,
+    pub index_buffer: Arc<Buffer>,
+    pub texture: Image,
+    pub sampler: Sampler,
+    pub descriptor_set_layout: DescriptorSetLayout,
+    pub descriptor_set: DescriptorSet,
+    pub pipeline_layout: PipelineLayout,
+    pub pipeline: Pipeline,
+    pub transitioned: bool,
+}
+
+impl Gui {
+    pub fn new(renderer: &RenderFrame) -> Gui {
+        let mut imgui = imgui::ImGui::init();
+        let vertex_buffer = new_buffer(
+            renderer.device.clone(),
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+            4096 * size_of::<imgui::ImDrawVert>() as vk::DeviceSize,
+        );
+        let index_buffer = new_buffer(
+            renderer.device.clone(),
+            vk::BufferUsageFlags::INDEX_BUFFER,
+            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+            4096 * size_of::<imgui::ImDrawIdx>() as vk::DeviceSize,
+        );
+        let texture = imgui.prepare_texture(|handle| {
+            let mut texture = new_image(
+                renderer.device.clone(),
+                vk::Format::R8G8B8A8_UNORM,
+                vk::Extent3D {
+                    width: handle.width,
+                    height: handle.height,
+                    depth: 1,
+                },
+                vk::SampleCountFlags::TYPE_1,
+                vk::ImageUsageFlags::SAMPLED,
+                alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+            );
+            let texture_data = unsafe {
+                from_raw_parts_mut(
+                    texture.allocation_info.pMappedData as *mut c_uchar,
+                    texture.allocation_info.size as usize,
+                )
+            };
+            texture_data[0..handle.pixels.len()].copy_from_slice(handle.pixels);
+            unsafe {
+                alloc::vmaFlushAllocation(
+                    renderer.device.allocator,
+                    texture.allocation,
+                    0,
+                    vk::WHOLE_SIZE,
+                );
+                alloc::vmaUnmapMemory(renderer.device.allocator, texture.allocation);
+            }
+            texture.allocation_info.pMappedData = ptr::null_mut();
+            texture
+        });
+        let sampler = new_sampler(
+            renderer.device.clone(),
+            &vk::SamplerCreateInfo {
+                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                ..Default::default()
+            },
+        );
+
+        let descriptor_set_layout = new_descriptor_set_layout(
+            renderer.device.clone(),
+            &[vk::DescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                p_immutable_samplers: ptr::null(),
+            }],
+        );
+
+        let descriptor_set = new_descriptor_set(
+            renderer.device.clone(),
+            renderer.descriptor_pool.clone(),
+            &descriptor_set_layout,
+        );
+
+        let pipeline_layout = new_pipeline_layout(
+            renderer.device.clone(),
+            &[descriptor_set_layout.handle],
+            &[vk::PushConstantRange {
+                offset: 0,
+                size: 4 * size_of::<f32>() as u32,
+                stage_flags: vk::ShaderStageFlags::VERTEX,
+            }],
+        );
+
+        let pipeline = {
+            let input_attributes = &[
+                vk::VertexInputAttributeDescription {
+                    location: 0,
+                    binding: 0,
+                    format: vk::Format::R32G32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 1,
+                    binding: 0,
+                    format: vk::Format::R32G32_SFLOAT,
+                    offset: size_of::<f32>() as u32 * 2,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 2,
+                    binding: 0,
+                    format: vk::Format::R8G8B8A8_UNORM,
+                    offset: size_of::<f32>() as u32 * 4,
+                },
+            ];
+            let input_bindings = &[vk::VertexInputBindingDescription {
+                binding: 0,
+                stride: size_of::<imgui::ImDrawVert>() as u32,
+                input_rate: vk::VertexInputRate::VERTEX,
+            }];
+            let viewports = [vk::Viewport {
+                x: 0.0,
+                y: (renderer.instance.window_height as f32),
+                width: renderer.instance.window_width as f32,
+                height: -(renderer.instance.window_height as f32),
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }];
+            let scissors = [vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: renderer.instance.window_width,
+                    height: renderer.instance.window_height,
+                },
+            }];
+            let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
+                blend_enable: 1,
+                src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+                dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                color_blend_op: vk::BlendOp::ADD,
+                src_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+                alpha_blend_op: vk::BlendOp::ADD,
+                color_write_mask: vk::ColorComponentFlags::all(),
+            }];
+            new_graphics_pipeline2(
+                renderer.device.clone(),
+                &[
+                    (
+                        vk::ShaderStageFlags::VERTEX,
+                        PathBuf::from(env!("OUT_DIR")).join("gui.vert.spv"),
+                    ),
+                    (
+                        vk::ShaderStageFlags::FRAGMENT,
+                        PathBuf::from(env!("OUT_DIR")).join("gui.frag.spv"),
+                    ),
+                ],
+                vk::GraphicsPipelineCreateInfo {
+                    p_vertex_input_state: &vk::PipelineVertexInputStateCreateInfo {
+                        vertex_attribute_description_count: input_attributes.len() as u32,
+                        p_vertex_attribute_descriptions: input_attributes.as_ptr(),
+                        vertex_binding_description_count: input_bindings.len() as u32,
+                        p_vertex_binding_descriptions: input_bindings.as_ptr(),
+                        ..Default::default()
+                    },
+                    p_input_assembly_state: &vk::PipelineInputAssemblyStateCreateInfo {
+                        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                        ..Default::default()
+                    },
+                    p_viewport_state: &vk::PipelineViewportStateCreateInfo {
+                        scissor_count: scissors.len() as u32,
+                        p_scissors: scissors.as_ptr(),
+                        viewport_count: viewports.len() as u32,
+                        p_viewports: viewports.as_ptr(),
+                        ..Default::default()
+                    },
+                    p_rasterization_state: &vk::PipelineRasterizationStateCreateInfo {
+                        cull_mode: vk::CullModeFlags::NONE,
+                        line_width: 1.0,
+                        polygon_mode: vk::PolygonMode::FILL,
+                        ..Default::default()
+                    },
+                    p_multisample_state: &vk::PipelineMultisampleStateCreateInfo {
+                        rasterization_samples: vk::SampleCountFlags::TYPE_1,
+                        ..Default::default()
+                    },
+                    p_depth_stencil_state: &vk::PipelineDepthStencilStateCreateInfo {
+                        ..Default::default()
+                    },
+                    p_color_blend_state: &vk::PipelineColorBlendStateCreateInfo {
+                        attachment_count: color_blend_attachment_states.len() as u32,
+                        p_attachments: color_blend_attachment_states.as_ptr(),
+                        ..Default::default()
+                    },
+                    layout: pipeline_layout.handle,
+                    render_pass: renderer.renderpass.handle,
+                    subpass: 1,
+                    ..Default::default()
+                },
+            )
+        };
+        renderer.device.set_object_name(
+            vk::ObjectType::PIPELINE,
+            unsafe { transmute::<_, u64>(pipeline.handle) },
+            "GUI Pipeline",
+        );
+
+        let create_view_info = vk::ImageViewCreateInfo {
+            s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: Default::default(),
+            view_type: vk::ImageViewType::TYPE_2D,
+            format: vk::Format::R8G8B8A8_UNORM,
+            components: vk::ComponentMapping {
+                r: vk::ComponentSwizzle::IDENTITY,
+                g: vk::ComponentSwizzle::IDENTITY,
+                b: vk::ComponentSwizzle::IDENTITY,
+                a: vk::ComponentSwizzle::IDENTITY,
+            },
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image: texture.handle,
+        };
+        let image_view = unsafe {
+            renderer
+                .device
+                .create_image_view(&create_view_info, None)
+                .unwrap()
+        };
+
+        let image_updates = &[vk::DescriptorImageInfo {
+            sampler: sampler.handle,
+            image_view,
+            image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        }];
+        unsafe {
+            renderer.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                    p_next: ptr::null(),
+                    dst_set: descriptor_set.handle,
+                    dst_binding: 0,
+                    dst_array_element: 0,
+                    descriptor_count: 1,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    p_image_info: image_updates.as_ptr(),
+                    p_buffer_info: ptr::null(),
+                    p_texel_buffer_view: ptr::null(),
+                }],
+                &[],
+            );
+        }
+
+        Gui {
+            imgui,
+            vertex_buffer,
+            index_buffer,
+            texture,
+            sampler,
+            descriptor_set_layout,
+            descriptor_set,
+            pipeline_layout,
+            pipeline,
+            transitioned: false,
         }
     }
 }

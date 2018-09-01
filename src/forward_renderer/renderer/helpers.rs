@@ -54,6 +54,18 @@ pub struct Buffer {
     pub device: Arc<Device>,
 }
 
+pub struct Image {
+    pub handle: vk::Image,
+    pub allocation: alloc::VmaAllocation,
+    pub allocation_info: alloc::VmaAllocationInfo,
+    pub device: Arc<Device>,
+}
+
+pub struct Sampler {
+    pub handle: vk::Sampler,
+    pub device: Arc<Device>,
+}
+
 pub struct DescriptorPool {
     pub handle: vk::DescriptorPool,
     pub device: Arc<Device>,
@@ -122,6 +134,20 @@ impl Drop for Fence {
 impl Drop for Buffer {
     fn drop(&mut self) {
         alloc::destroy_buffer(self.device.allocator, self.handle, self.allocation)
+    }
+}
+
+impl Drop for Image {
+    fn drop(&mut self) {
+        alloc::destroy_image(self.device.allocator, self.handle, self.allocation)
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.device.destroy_sampler(self.handle, None);
+        }
     }
 }
 
@@ -526,10 +552,73 @@ pub fn new_buffer(
     })
 }
 
+pub fn new_image(
+    device: Arc<Device>,
+    format: vk::Format,
+    extent: vk::Extent3D,
+    samples: vk::SampleCountFlags,
+    usage: vk::ImageUsageFlags,
+    allocation_flags: alloc::VmaAllocationCreateFlagBits,
+    allocation_usage: alloc::VmaMemoryUsage,
+) -> Image {
+    let queue_families = [device.graphics_queue_family, device.compute_queue_family];
+    let image_create_info = vk::ImageCreateInfo {
+        format,
+        extent,
+        samples,
+        usage,
+        mip_levels: 1,
+        array_layers: 1,
+        image_type: vk::ImageType::TYPE_2D,
+        tiling: vk::ImageTiling::LINEAR,
+        initial_layout: vk::ImageLayout::PREINITIALIZED,
+        sharing_mode: vk::SharingMode::CONCURRENT,
+        queue_family_index_count: queue_families.len() as u32,
+        p_queue_family_indices: &queue_families as *const _,
+        ..Default::default()
+    };
+
+    let allocation_create_info = alloc::VmaAllocationCreateInfo {
+        flags: allocation_flags,
+        memoryTypeBits: 0,
+        pUserData: ptr::null_mut(),
+        pool: ptr::null_mut(),
+        preferredFlags: 0,
+        requiredFlags: 0,
+        usage: allocation_usage,
+    };
+
+    let (handle, allocation, allocation_info) = alloc::create_image(
+        device.allocator,
+        &image_create_info,
+        &allocation_create_info,
+    ).unwrap();
+
+    Image {
+        handle,
+        allocation,
+        allocation_info,
+        device,
+    }
+}
+
+pub fn new_sampler(device: Arc<Device>, info: &vk::SamplerCreateInfo) -> Sampler {
+    let sampler = unsafe {
+        device
+            .create_sampler(info, None)
+            .expect("Failed to create sampler")
+    };
+
+    Sampler {
+        handle: sampler,
+        device,
+    }
+}
+
 pub fn new_descriptor_set_layout(
     device: Arc<Device>,
     bindings: &[vk::DescriptorSetLayoutBinding],
-) -> Arc<DescriptorSetLayout> {
+) -> DescriptorSetLayout {
     let create_info = vk::DescriptorSetLayoutCreateInfo {
         s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
@@ -544,7 +633,7 @@ pub fn new_descriptor_set_layout(
             .unwrap()
     };
 
-    Arc::new(DescriptorSetLayout { handle, device })
+    DescriptorSetLayout { handle, device }
 }
 
 pub fn new_descriptor_pool(
@@ -575,7 +664,7 @@ pub fn new_descriptor_set(
     device: Arc<Device>,
     pool: Arc<DescriptorPool>,
     layout: &DescriptorSetLayout,
-) -> Arc<DescriptorSet> {
+) -> DescriptorSet {
     let layouts = &[layout.handle];
     let desc_alloc_info = vk::DescriptorSetAllocateInfo {
         s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -592,18 +681,18 @@ pub fn new_descriptor_set(
     };
     let handle = new_descriptor_sets.remove(0);
 
-    Arc::new(DescriptorSet {
+    DescriptorSet {
         handle,
         pool,
         device,
-    })
+    }
 }
 
 pub fn new_pipeline_layout(
     device: Arc<Device>,
     descriptor_set_layouts: &[vk::DescriptorSetLayout],
     push_constant_ranges: &[vk::PushConstantRange],
-) -> Arc<PipelineLayout> {
+) -> PipelineLayout {
     let create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
@@ -621,24 +710,17 @@ pub fn new_pipeline_layout(
             .unwrap()
     };
 
-    Arc::new(PipelineLayout {
+    PipelineLayout {
         handle: pipeline_layout,
         device,
-    })
+    }
 }
 
-pub fn new_graphics_pipeline(
-    instance: &Instance,
+pub fn new_graphics_pipeline2(
     device: Arc<Device>,
-    pipeline_layout: &PipelineLayout,
-    renderpass: &RenderPass,
-    input_attributes: &[vk::VertexInputAttributeDescription],
-    input_bindings: &[vk::VertexInputBindingDescription],
     shaders: &[(vk::ShaderStageFlags, PathBuf)],
-    subpass: u32,
-    rasterizer_discard: bool,
-    depth_write: bool,
-) -> Arc<Pipeline> {
+    mut create_info: vk::GraphicsPipelineCreateInfo,
+) -> Pipeline {
     let shader_modules = shaders
         .iter()
         .map(|&(stage, ref path)| {
@@ -671,157 +753,12 @@ pub fn new_graphics_pipeline(
             p_specialization_info: ptr::null(),
             stage,
         }).collect::<Vec<_>>();
-    let vertex_input_state_info = vk::PipelineVertexInputStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        vertex_attribute_description_count: input_attributes.len() as u32,
-        p_vertex_attribute_descriptions: input_attributes.as_ptr(),
-        vertex_binding_description_count: input_bindings.len() as u32,
-        p_vertex_binding_descriptions: input_bindings.as_ptr(),
-    };
-    let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        flags: Default::default(),
-        p_next: ptr::null(),
-        primitive_restart_enable: 0,
-        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-    };
-    let viewports = [vk::Viewport {
-        x: 0.0,
-        y: (instance.window_height as f32),
-        width: instance.window_width as f32,
-        height: -(instance.window_height as f32),
-        min_depth: 0.0,
-        max_depth: 1.0,
-    }];
-    let scissors = [vk::Rect2D {
-        offset: vk::Offset2D { x: 0, y: 0 },
-        extent: vk::Extent2D {
-            width: instance.window_width,
-            height: instance.window_height,
-        },
-    }];
-    let viewport_state_info = vk::PipelineViewportStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        scissor_count: scissors.len() as u32,
-        p_scissors: scissors.as_ptr(),
-        viewport_count: viewports.len() as u32,
-        p_viewports: viewports.as_ptr(),
-    };
-    /*
-    let raster_order_amd = vk::PipelineRasterizationStateRasterizationOrderAMD {
-        s_type: vk::StructureType::PipelineRasterizationStateRasterizationOrderAMD,
-        p_next: ptr::null(),
-        rasterization_order: vk::RasterizationOrderAMD::Relaxed,
-    };
-    */
-    let rasterization_info = vk::PipelineRasterizationStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        p_next: ptr::null(), // unsafe { transmute(&raster_order_amd) },
-        flags: Default::default(),
-        cull_mode: vk::CullModeFlags::BACK,
-        depth_bias_clamp: 0.0,
-        depth_bias_constant_factor: 0.0,
-        depth_bias_enable: 0,
-        depth_bias_slope_factor: 0.0,
-        depth_clamp_enable: 0,
-        front_face: vk::FrontFace::CLOCKWISE,
-        line_width: 1.0,
-        polygon_mode: vk::PolygonMode::FILL,
-        rasterizer_discard_enable: if rasterizer_discard { 1 } else { 0 },
-    };
-    let multisample_state_info = vk::PipelineMultisampleStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        flags: Default::default(),
-        p_next: ptr::null(),
-        rasterization_samples: vk::SampleCountFlags::TYPE_1,
-        sample_shading_enable: 0,
-        min_sample_shading: 0.0,
-        p_sample_mask: ptr::null(),
-        alpha_to_one_enable: 0,
-        alpha_to_coverage_enable: 0,
-    };
-    let noop_stencil_state = vk::StencilOpState {
-        fail_op: vk::StencilOp::KEEP,
-        pass_op: vk::StencilOp::KEEP,
-        depth_fail_op: vk::StencilOp::KEEP,
-        compare_op: vk::CompareOp::ALWAYS,
-        compare_mask: 0,
-        write_mask: 0,
-        reference: 0,
-    };
-    let depth_state_info = vk::PipelineDepthStencilStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        depth_test_enable: 1,
-        depth_write_enable: if depth_write { 1 } else { 0 },
-        depth_compare_op: vk::CompareOp::LESS_OR_EQUAL,
-        depth_bounds_test_enable: 1,
-        stencil_test_enable: 0,
-        front: noop_stencil_state,
-        back: noop_stencil_state,
-        max_depth_bounds: 1.0,
-        min_depth_bounds: 0.0,
-    };
-    let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
-        blend_enable: 0,
-        src_color_blend_factor: vk::BlendFactor::SRC_COLOR,
-        dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_DST_COLOR,
-        color_blend_op: vk::BlendOp::ADD,
-        src_alpha_blend_factor: vk::BlendFactor::ZERO,
-        dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-        alpha_blend_op: vk::BlendOp::ADD,
-        color_write_mask: vk::ColorComponentFlags::all(),
-    }];
-    let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
-        s_type: vk::StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        logic_op_enable: 0,
-        logic_op: vk::LogicOp::CLEAR,
-        attachment_count: color_blend_attachment_states.len() as u32,
-        p_attachments: color_blend_attachment_states.as_ptr(),
-        blend_constants: [0.0, 0.0, 0.0, 0.0],
-    };
-    /*
-        let dynamic_state = [vk::DynamicState::Viewport, vk::DynamicState::Scissor];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
-            s_type: vk::StructureType::PipelineDynamicStateCreateInfo,
-            p_next: ptr::null(),
-            flags: Default::default(),
-            dynamic_state_count: dynamic_state.len() as u32,
-            p_dynamic_states: dynamic_state.as_ptr(),
-        };
-        */
-    let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo {
-        s_type: vk::StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: vk::PipelineCreateFlags::empty(),
-        stage_count: shader_stage_create_infos.len() as u32,
-        p_stages: shader_stage_create_infos.as_ptr(),
-        p_vertex_input_state: &vertex_input_state_info,
-        p_input_assembly_state: &vertex_input_assembly_state_info,
-        p_tessellation_state: ptr::null(),
-        p_viewport_state: &viewport_state_info,
-        p_rasterization_state: &rasterization_info,
-        p_multisample_state: &multisample_state_info,
-        p_depth_stencil_state: &depth_state_info,
-        p_color_blend_state: &color_blend_state,
-        p_dynamic_state: ptr::null(), // &dynamic_state_info,
-        layout: pipeline_layout.handle,
-        render_pass: renderpass.handle,
-        subpass,
-        base_pipeline_handle: vk::Pipeline::null(),
-        base_pipeline_index: 0,
-    };
+    create_info.stage_count = shader_stage_create_infos.len() as u32;
+    create_info.p_stages = shader_stage_create_infos.as_ptr();
     let graphics_pipelines = unsafe {
         device
             .device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[graphic_pipeline_info], None)
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
             .expect("Unable to create graphics pipeline")
     };
     for (shader_module, _stage) in shader_modules {
@@ -830,17 +767,17 @@ pub fn new_graphics_pipeline(
         }
     }
 
-    Arc::new(Pipeline {
+    Pipeline {
         handle: graphics_pipelines[0],
         device,
-    })
+    }
 }
 
 pub fn new_compute_pipeline(
     device: Arc<Device>,
     pipeline_layout: &PipelineLayout,
     shader: &PathBuf,
-) -> Arc<Pipeline> {
+) -> Pipeline {
     let shader_module = {
         let file = File::open(shader).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
@@ -889,10 +826,10 @@ pub fn new_compute_pipeline(
         device.device.destroy_shader_module(shader_module, None);
     }
 
-    Arc::new(Pipeline {
+    Pipeline {
         handle: pipelines[0],
         device,
-    })
+    }
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
