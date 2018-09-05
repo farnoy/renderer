@@ -1199,7 +1199,30 @@ impl<'a> System<'a> for Renderer {
                                         1.0,
                                     );
                                     let mut opened = true;
-                                    ui.show_demo_window(&mut opened);
+                                    // ui.show_demo_window(&mut opened);
+                                    let alloc_stats = alloc::stats(device.allocator);
+                                    let s = format!("Alloc stats {:?}", alloc_stats.total);
+                                    ui.window(im_str!("Renderer"))
+                                        .size((300.0, 100.0), imgui::ImGuiCond::FirstUseEver)
+                                        .build(|| {
+                                            ui.progress_bar(0.6).build();
+                                            ui.small_button(im_str!("ASD"));
+                                            ui.columns(2, im_str!("BlaBla"), true);
+                                            ui.small_button(im_str!("Left"));
+                                            ui.next_column();
+                                            ui.small_button(im_str!("Left"));
+                                            ui.columns(1, im_str!("asd"), false);
+                                            ui.text(im_str!("After"));
+                                            /*
+                                            ui.child_frame(im_str!("Allocator stats"), (200.0, 100.0))
+                                                .show_borders(true)
+                                                .always_show_vertical_scroll_bar(true)
+                                                .build(|| {
+                                                    ui.small_button(im_str!("ASD"));
+                                                    ui.text_wrapped(im_str!("{}", s));
+                                                });
+                                                */
+                                        });
                                     ui.render(|ui, draw_data| {
                                         let (x, y) = ui.imgui().display_size();
                                         let constants = [2.0 / x, 2.0 / y, -1.0, -1.0];

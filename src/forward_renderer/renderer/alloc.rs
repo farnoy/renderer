@@ -241,6 +241,14 @@ pub fn destroy(allocator: VmaAllocator) {
     unsafe { vmaDestroyAllocator(allocator) }
 }
 
+pub fn stats(allocator: VmaAllocator) -> VmaStats {
+    unsafe {
+        let mut stats: VmaStats = mem::uninitialized();
+        vmaCalculateStats(allocator, &mut stats as *mut _);
+        stats
+    }
+}
+
 pub fn create_buffer(
     allocator: VmaAllocator,
     buffer_create_info: &vk::BufferCreateInfo,

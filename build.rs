@@ -65,6 +65,7 @@ fn main() {
         .bitfield_enum("VmaAllocatorCreateFlagBits")
         .bitfield_enum("VmaAllocationCreateFlagBits")
         .rustified_enum("VmaMemoryUsage")
+        .whitelist_function("vmaCalculateStats")
         .whitelist_function("vmaCreateAllocator")
         .whitelist_function("vmaDestroyAllocator")
         .whitelist_function("vmaSetCurrentFrameIndex")
