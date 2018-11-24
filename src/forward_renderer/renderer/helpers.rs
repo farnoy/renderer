@@ -255,26 +255,19 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     };
 
     let swapchain_loader = extensions::Swapchain::new(instance.vk(), device.vk());
-    let swapchain_create_info = vk::SwapchainCreateInfoKHR {
-        s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        surface,
-        min_image_count: desired_image_count,
-        image_color_space: surface_format.color_space,
-        image_format: surface_format.format,
-        image_extent: surface_resolution,
-        image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-        image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-        pre_transform,
-        composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-        present_mode,
-        clipped: 1,
-        old_swapchain: vk::SwapchainKHR::null(),
-        image_array_layers: 1,
-        p_queue_family_indices: ptr::null(),
-        queue_family_index_count: 0,
-    };
+    let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        .surface(surface)
+        .min_image_count(desired_image_count)
+        .image_color_space(surface_format.color_space)
+        .image_format(surface_format.format)
+        .image_extent(surface_resolution)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .pre_transform(pre_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(present_mode)
+        .clipped(true)
+        .image_array_layers(1);
     let swapchain = unsafe {
         swapchain_loader
             .create_swapchain_khr(&swapchain_create_info, None)
@@ -322,27 +315,20 @@ pub fn setup_framebuffer(
         .map(|_| {
             alloc::create_image(
                 device.allocator,
-                &vk::ImageCreateInfo {
-                    s_type: vk::StructureType::IMAGE_CREATE_INFO,
-                    p_next: ptr::null(),
-                    flags: Default::default(),
-                    image_type: vk::ImageType::TYPE_2D,
-                    format: vk::Format::D16_UNORM,
-                    extent: vk::Extent3D {
+                &vk::ImageCreateInfo::builder()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(vk::Format::D16_UNORM)
+                    .extent(vk::Extent3D {
                         width: instance.window_width,
                         height: instance.window_height,
                         depth: 1,
-                    },
-                    sharing_mode: vk::SharingMode::EXCLUSIVE,
-                    queue_family_index_count: 1,
-                    p_queue_family_indices: &device.graphics_queue_family,
-                    mip_levels: 1,
-                    array_layers: 1,
-                    samples: vk::SampleCountFlags::TYPE_1,
-                    tiling: vk::ImageTiling::OPTIMAL,
-                    usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                    initial_layout: vk::ImageLayout::UNDEFINED,
-                },
+                    })
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .queue_family_indices(&[device.graphics_queue_family])
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
                 &alloc::VmaAllocationCreateInfo {
                     flags: alloc::VmaAllocationCreateFlagBits(0),
                     memoryTypeBits: 0,
@@ -359,27 +345,23 @@ pub fn setup_framebuffer(
     let image_views = images
         .iter()
         .map(|&image| {
-            let create_view_info = vk::ImageViewCreateInfo {
-                s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: Default::default(),
-                view_type: vk::ImageViewType::TYPE_2D,
-                format: surface_format.format,
-                components: vk::ComponentMapping {
+            let create_view_info = vk::ImageViewCreateInfo::builder()
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(surface_format.format)
+                .components(vk::ComponentMapping {
                     r: vk::ComponentSwizzle::R,
                     g: vk::ComponentSwizzle::G,
                     b: vk::ComponentSwizzle::B,
                     a: vk::ComponentSwizzle::A,
-                },
-                subresource_range: vk::ImageSubresourceRange {
+                })
+                .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
-                },
-                image,
-            };
+                })
+                .image(image);
             unsafe {
                 device
                     .device
@@ -391,27 +373,23 @@ pub fn setup_framebuffer(
     let depth_image_views = depth_images
         .iter()
         .map(|ref image| {
-            let create_view_info = vk::ImageViewCreateInfo {
-                s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: Default::default(),
-                view_type: vk::ImageViewType::TYPE_2D,
-                format: vk::Format::D16_UNORM,
-                components: vk::ComponentMapping {
+            let create_view_info = vk::ImageViewCreateInfo::builder()
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::D16_UNORM)
+                .components(vk::ComponentMapping {
                     r: vk::ComponentSwizzle::IDENTITY,
                     g: vk::ComponentSwizzle::IDENTITY,
                     b: vk::ComponentSwizzle::IDENTITY,
                     a: vk::ComponentSwizzle::IDENTITY,
-                },
-                subresource_range: vk::ImageSubresourceRange {
+                })
+                .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::DEPTH,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
-                },
-                image: image.0,
-            };
+                })
+                .image(image.0);
             unsafe {
                 device
                     .device
@@ -425,17 +403,12 @@ pub fn setup_framebuffer(
         .zip(depth_image_views.iter())
         .map(|(&present_image_view, &depth_image_view)| {
             let framebuffer_attachments = [present_image_view, depth_image_view];
-            let frame_buffer_create_info = vk::FramebufferCreateInfo {
-                s_type: vk::StructureType::FRAMEBUFFER_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: Default::default(),
-                render_pass: renderpass.handle,
-                attachment_count: framebuffer_attachments.len() as u32,
-                p_attachments: framebuffer_attachments.as_ptr(),
-                width: window_width,
-                height: window_height,
-                layers: 1,
-            };
+            let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
+                .render_pass(renderpass.handle)
+                .attachments(&framebuffer_attachments)
+                .width(window_width)
+                .height(window_height)
+                .layers(1);
             unsafe {
                 device
                     .device

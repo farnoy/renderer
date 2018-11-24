@@ -89,7 +89,8 @@ impl RenderFrame {
             device.compute_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
-        let main_renderpass = RenderFrame::setup_renderpass(Arc::clone(&device), &swapchain).expect("Failed to create renderpass");
+        let main_renderpass = RenderFrame::setup_renderpass(Arc::clone(&device), &swapchain)
+            .expect("Failed to create renderpass");
         let framebuffer =
             setup_framebuffer(&instance, Arc::clone(&device), &swapchain, &main_renderpass);
 
