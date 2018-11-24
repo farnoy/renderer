@@ -4,7 +4,7 @@ use ash::extensions::Win32Surface;
 use ash::{
     self,
     extensions::Surface,
-    version::{self, DeviceV1_0, InstanceV1_0},
+    version::{DeviceV1_0, InstanceV1_0},
     vk,
 };
 use parking_lot::Mutex;
@@ -12,7 +12,7 @@ use std::{ops::Deref, ptr, sync::Arc};
 
 use super::{alloc, Instance};
 
-pub type AshDevice = ash::Device<version::V1_1>;
+pub type AshDevice = ash::Device;
 
 pub struct Device {
     pub device: AshDevice,
@@ -27,7 +27,7 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(instance: &Arc<Instance>) -> Result<Device, ash::DeviceError> {
+    pub fn new(instance: &Arc<Instance>) -> Result<Device, vk::Result> {
         let Instance {
             ref entry,
             // ref instance,
@@ -35,22 +35,24 @@ impl Device {
             ..
         } = **instance;
 
-        let pdevices = instance
-            .enumerate_physical_devices()
-            .expect("Physical device error");
-        let surface_loader =
-            Surface::new(entry.vk(), &***instance).expect("Unable to load the Surface extension");
+        let pdevices = unsafe {
+            instance
+                .enumerate_physical_devices()
+                .expect("Physical device error")
+        };
+        let surface_loader = Surface::new(entry.vk(), &***instance);
 
         let physical_device = pdevices[0];
-        let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
         let graphics_queue_family = {
             queue_families
                 .iter()
                 .enumerate()
-                .filter_map(|(ix, info)| {
+                .filter_map(|(ix, info)| unsafe {
                     let supports_graphic_and_surface =
-                        info.queue_flags.subset(vk::QueueFlags::GRAPHICS) && surface_loader
-                            .get_physical_device_surface_support_khr(
+                        info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                            && surface_loader.get_physical_device_surface_support_khr(
                                 physical_device,
                                 ix as u32,
                                 surface,
@@ -60,7 +62,8 @@ impl Device {
                     } else {
                         None
                     }
-                }).next()
+                })
+                .next()
                 .unwrap()
         };
         let (compute_queue_family, compute_queue_len) = {
@@ -68,14 +71,15 @@ impl Device {
                 .iter()
                 .enumerate()
                 .filter_map(|(ix, info)| {
-                    if info.queue_flags.subset(vk::QueueFlags::COMPUTE)
-                        && !info.queue_flags.subset(vk::QueueFlags::GRAPHICS)
+                    if info.queue_flags.contains(vk::QueueFlags::COMPUTE)
+                        && !info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                     {
                         Some((ix as u32, info.queue_count))
                     } else {
                         None
                     }
-                }).next()
+                })
+                .next()
                 .expect("no suitable compute queue")
         };
         let queues = vec![
@@ -110,7 +114,8 @@ impl Device {
                         p_queue_priorities: p.as_ptr(),
                         queue_count: p.len() as u32,
                     }
-                }).collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
             let device_create_info = vk::DeviceCreateInfo {
                 s_type: vk::StructureType::DEVICE_CREATE_INFO,
                 p_next: ptr::null(),
@@ -134,7 +139,8 @@ impl Device {
                 Arc::new(Mutex::new(
                     device.get_device_queue(compute_queue_family, ix),
                 ))
-            }).collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
 
         Ok(Device {
             device,
@@ -228,10 +234,9 @@ impl Deref for Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        use ash::version::DeviceV1_0;
-        self.device.device_wait_idle().unwrap();
-        alloc::destroy(self.allocator);
         unsafe {
+            self.device.device_wait_idle().unwrap();
+            alloc::destroy(self.allocator);
             self.device.destroy_device(None);
         }
     }

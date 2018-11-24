@@ -1,7 +1,7 @@
-use ash::{self, version::V1_0};
+use ash;
 use std::ops::Deref;
 
-pub type AshEntry = ash::Entry<V1_0>;
+pub type AshEntry = ash::Entry;
 
 pub struct Entry {
     handle: AshEntry,

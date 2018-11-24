@@ -1,4 +1,4 @@
-#![feature(non_modrs_mods)]
+#![feature(tool_lints)]
 
 #[macro_use]
 extern crate ash;
@@ -18,17 +18,17 @@ extern crate winit;
 
 mod forward_renderer;
 
-use ash::{version::DeviceV1_0, vk};
-use cgmath::Rotation3;
-use forward_renderer::{
-    ecs::{components::*, systems::*, Bundle},
+use crate::forward_renderer::{
+    ecs::{components::*, setup, systems::*},
     renderer::{
         alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, Gui, PresentFramebuffer,
         RenderFrame, Renderer,
     },
 };
+use ash::{version::DeviceV1_0, vk};
+use cgmath::Rotation3;
 use parking_lot::Mutex;
-use specs::Builder;
+use specs::{Builder, ReadStorage};
 use std::{
     mem::{size_of, transmute},
     ptr,
@@ -37,10 +37,10 @@ use std::{
 
 fn main() {
     let mut world = specs::World::new();
-    world.add_bundle(Bundle);
+    setup(&mut world);
     let rayon_threadpool = Arc::new(
         rayon::ThreadPoolBuilder::new()
-            .num_threads(16)
+            .num_threads(8)
             .build()
             .unwrap(),
     );
@@ -149,7 +149,8 @@ fn main() {
             index_buffer: Arc::clone(&index_buffer),
             index_len,
             bounding_box: bounding_box.clone(),
-        }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        })
+        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .build();
 
     world
@@ -166,7 +167,8 @@ fn main() {
             index_buffer: Arc::clone(&index_buffer),
             index_len,
             bounding_box: bounding_box.clone(),
-        }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        })
+        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .build();
 
     for ix in 0..2398 {
@@ -176,9 +178,11 @@ fn main() {
                 ((ix % 3) * 2 - 2) as f32,
                 0.0,
                 2.0 + ix as f32,
-            ))).with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
+            )))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
                 (ix * 20) as f32,
-            )))).with::<Scale>(Scale(0.6))
+            ))))
+            .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<AABB>(AABB::default())
             .with::<CoarseCulled>(CoarseCulled(false))
@@ -188,7 +192,8 @@ fn main() {
                 index_buffer: Arc::clone(&index_buffer),
                 index_len,
                 bounding_box: bounding_box.clone(),
-            }).with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+            })
+            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .build();
     }
 
@@ -208,7 +213,8 @@ fn main() {
             events_loop,
             quit_handle: quit_handle.clone(),
             move_mouse: true,
-        }).with(CalculateFrameTiming, "calculate_frame_timing", &[])
+        })
+        .with(CalculateFrameTiming, "calculate_frame_timing", &[])
         .with_barrier()
         .with(SteadyRotation, "steady_rotation", &[])
         .with(FlyCamera::default(), "fly_camera", &[])
@@ -217,16 +223,19 @@ fn main() {
             MVPCalculation,
             "mvp",
             &["steady_rotation", "project_camera"],
-        ).with(AABBCalculation, "aabb_calculation", &["mvp"])
+        )
+        .with(AABBCalculation, "aabb_calculation", &["mvp"])
         .with(
             CoarseCulling,
             "coarse_culling",
             &["aabb_calculation", "project_camera"],
-        ).with(
+        )
+        .with(
             AssignBufferIndex,
             "assign_buffer_index",
             &["coarse_culling"],
-        ).with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
+        )
+        .with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
             CullGeometry::new(&world.read_resource::<RenderFrame>().device),
@@ -237,7 +246,8 @@ fn main() {
                 "mvp_upload",
                 "coarse_culling",
             ],
-        ).with(Renderer, "render_frame", &["cull_geometry"])
+        )
+        .with(Renderer, "render_frame", &["cull_geometry"])
         .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
 
     // print stages of execution
@@ -252,11 +262,13 @@ fn main() {
         dispatcher.dispatch_par(&world.res);
         world.maintain();
         if *quit_handle.lock() {
-            world
-                .read_resource::<RenderFrame>()
-                .device
-                .device_wait_idle()
-                .unwrap();
+            unsafe {
+                world
+                    .read_resource::<RenderFrame>()
+                    .device
+                    .device_wait_idle()
+                    .unwrap();
+            }
             break 'frame;
         }
     }

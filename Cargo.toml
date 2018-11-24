@@ -2,18 +2,19 @@
 name = "Renderer"
 version = "0.1.0"
 build = "build.rs"
+edition = "2018"
 
 [dependencies]
-ash = { git = "https://github.com/MaikKlein/ash", branch = "generator" }
+ash = "0.26.2"
 cgmath = { version = "0.16", features = ["swizzle"] }
 parking_lot = "0.6.3"
 gltf = "0.11.2"
-image = "0.19"
-imgui = "0.0.20"
-winit = "0.17.1"
+image = "0.20"
+imgui = "0.0.21"
+winit = "0.18.0"
 rayon = "1.0"
-specs = "0.12"
-specs-derive = "0.2"
+specs = "0.14"
+specs-derive = "0.3"
 time = "0.1"
 
 [[bin]]
@@ -21,7 +22,7 @@ name = "v4"
 path = "src/v4.rs"
 
 [build-dependencies]
-bindgen = "0.38"
+bindgen = "0.43"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "^0.3.5"

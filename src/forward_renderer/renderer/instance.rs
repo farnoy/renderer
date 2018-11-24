@@ -4,7 +4,7 @@ use ash::extensions::Surface;
 use ash::extensions::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::XlibSurface;
-use ash::version::{EntryV1_0, InstanceFpV1_1, InstanceLoader, InstanceV1_0, V1_1};
+use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
 use std::ffi::CString;
 #[allow(unused_imports)]
@@ -17,7 +17,7 @@ use winit;
 
 use super::{entry::Entry, helpers::create_surface};
 
-pub type AshInstance = ash::Instance<V1_1>;
+pub type AshInstance = ash::Instance;
 
 pub struct Instance {
     handle: AshInstance,
@@ -32,7 +32,7 @@ pub struct Instance {
 
 #[cfg(feature = "validation")]
 struct Debug {
-    utils: vk::extensions::ExtDebugUtilsFn,
+    utils: vk::ExtDebugUtilsFn,
     messenger: vk::DebugUtilsMessengerEXT,
 }
 
@@ -86,24 +86,17 @@ impl Instance {
         };
         let instance = unsafe { entry.create_instance(&create_info, None)? };
 
-        let fp_1_1 = unsafe {
-            InstanceFpV1_1::load((*entry).static_fn(), instance.handle())
-                .expect("failed to load 1.1 instance functions")
-        };
-
-        let instance_1_1 = ash::Instance::<V1_1>::from_raw(instance.handle(), fp_1_1);
-
-        let surface = unsafe { create_surface(entry.vk(), &instance_1_1, &window).unwrap() };
+        let surface = unsafe { create_surface(entry.vk(), &instance, &window).unwrap() };
 
         #[cfg(feature = "validation")]
         {
-            let debug_utils = vk::extensions::ExtDebugUtilsFn::load(|name| unsafe {
+            let debug_utils = vk::ExtDebugUtilsFn::load(|name| unsafe {
                 transmute(
                     entry
                         .vk()
                         .get_instance_proc_addr(instance.handle(), name.as_ptr()),
                 )
-            }).expect("DebugUtils extension not supported");
+            });
 
             unsafe extern "system" fn vulkan_debug_callback(
                 severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -161,7 +154,7 @@ impl Instance {
                 message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
                 message_type: vk::DebugUtilsMessageTypeFlagsEXT::all(),
-                pfn_user_callback: vulkan_debug_callback,
+                pfn_user_callback: Some(vulkan_debug_callback),
                 p_user_data: ptr::null_mut(),
             };
 
@@ -179,7 +172,7 @@ impl Instance {
 
             Ok((
                 Instance {
-                    handle: instance_1_1,
+                    handle: instance,
                     window,
                     surface,
                     entry: Arc::new(entry),
@@ -216,7 +209,7 @@ impl Instance {
     }
 
     #[cfg(feature = "validation")]
-    pub fn debug_utils(&self) -> &vk::extensions::ExtDebugUtilsFn {
+    pub fn debug_utils(&self) -> &vk::ExtDebugUtilsFn {
         &self.debug.utils
     }
 }

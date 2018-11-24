@@ -27,7 +27,7 @@ impl<'a> System<'a> for SteadyRotation {
 pub struct MVPCalculation;
 
 impl<'a> System<'a> for MVPCalculation {
-    #[allow(type_complexity)]
+    #[allow(clippy::type_complexity)]
     type SystemData = (
         ReadStorage<'a, Position>,
         ReadStorage<'a, Rotation>,
@@ -210,9 +210,7 @@ impl<'a> System<'a> for InputHandler {
             Event::DeviceEvent {
                 event: DeviceEvent::MouseMotion { delta: (x, y), .. },
                 ..
-            }
-                if move_mouse =>
-            {
+            } if move_mouse => {
                 camera.rotation =
                     camera.rotation * cgmath::Quaternion::from_angle_x(cgmath::Deg(y as f32));
                 camera.rotation =
@@ -234,7 +232,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
-        use cgmath::{Angle, Rotation, Zero};
+        use cgmath::{Angle, Rotation};
         // Left handed perspective projection
         let near = 0.1;
         let far = 100.0;
@@ -276,7 +274,7 @@ impl<'a> System<'a> for ProjectCamera {
         let m = camera.projection;
         for ix in (0..4) {
             // left
-            frustum_planes[0][ix] = 
+            frustum_planes[0][ix] =
         }
         camera.frustum_planes = frustum_planes;
         */
@@ -372,14 +370,15 @@ impl<'a> System<'a> for CoarseCulling {
                 (M.w - M.z), // far
             ];
             // what space is this in? why does it work? does it always work?
-            let _vertices = mesh.aabb_vertices()
-                    .iter()
-                    // transform
-                    .map(|vertex| {
-                        let v = matrices.mvp * vertex.extend(1.0);
-                        (v.xyz() / v.w).extend(1.0)
-                    })
-                    .collect::<Vec<_>>();
+            let _vertices = mesh
+                .aabb_vertices()
+                .iter()
+                // transform
+                .map(|vertex| {
+                    let v = matrices.mvp * vertex.extend(1.0);
+                    (v.xyz() / v.w).extend(1.0)
+                })
+                .collect::<Vec<_>>();
 
             culled.0 = false;
 

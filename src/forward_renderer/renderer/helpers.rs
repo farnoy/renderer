@@ -5,8 +5,8 @@ use ash::extensions::Win32Surface;
 use ash::extensions::XlibSurface;
 use ash::{
     extensions,
-    version::{DeviceV1_0, EntryV1_0, InstanceV1_0},
-    vk,
+    version::{DeviceV1_0, EntryV1_0},
+    vk, Instance as AshInstance,
 };
 use std::{
     default::Default, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
@@ -209,12 +209,13 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
         physical_device, ..
     } = *device;
 
-    let surface_loader = extensions::Surface::new(entry.vk(), instance.vk())
-        .expect("Unable to load the Surface extension");
+    let surface_loader = extensions::Surface::new(entry.vk(), instance.vk());
     let present_mode = vk::PresentModeKHR::FIFO;
-    let surface_formats = surface_loader
-        .get_physical_device_surface_formats_khr(physical_device, surface)
-        .unwrap();
+    let surface_formats = unsafe {
+        surface_loader
+            .get_physical_device_surface_formats_khr(physical_device, surface)
+            .unwrap()
+    };
     let surface_format = surface_formats
         .iter()
         .map(|sfmt| match sfmt.format {
@@ -223,11 +224,14 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
                 color_space: sfmt.color_space,
             },
             _ => *sfmt,
-        }).nth(0)
+        })
+        .nth(0)
         .expect("Unable to find suitable surface format.");
-    let surface_capabilities = surface_loader
-        .get_physical_device_surface_capabilities_khr(physical_device, surface)
-        .unwrap();
+    let surface_capabilities = unsafe {
+        surface_loader
+            .get_physical_device_surface_capabilities_khr(physical_device, surface)
+            .unwrap()
+    };
     let mut desired_image_count = surface_capabilities.min_image_count + 1;
     if surface_capabilities.max_image_count > 0
         && desired_image_count > surface_capabilities.max_image_count
@@ -243,15 +247,14 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     };
     let pre_transform = if surface_capabilities
         .supported_transforms
-        .subset(vk::SurfaceTransformFlagsKHR::IDENTITY)
+        .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
     {
         vk::SurfaceTransformFlagsKHR::IDENTITY
     } else {
         surface_capabilities.current_transform
     };
 
-    let swapchain_loader =
-        extensions::Swapchain::new(instance.vk(), device.vk()).expect("Unable to load swapchain");
+    let swapchain_loader = extensions::Swapchain::new(instance.vk(), device.vk());
     let swapchain_create_info = vk::SwapchainCreateInfoKHR {
         s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
         p_next: ptr::null(),
@@ -338,10 +341,12 @@ pub fn setup_framebuffer(
         ..
     } = *instance;
 
-    let images = swapchain
-        .ext
-        .get_swapchain_images_khr(swapchain.swapchain)
-        .unwrap();
+    let images = unsafe {
+        swapchain
+            .ext
+            .get_swapchain_images_khr(swapchain.swapchain)
+            .unwrap()
+    };
     println!("swapchain images len {}", images.len());
     let depth_images = (0..images.len())
         .map(|_| {
@@ -377,8 +382,10 @@ pub fn setup_framebuffer(
                     requiredFlags: 0,
                     usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 },
-            ).unwrap()
-        }).collect::<Vec<_>>();
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
     let image_views = images
         .iter()
         .map(|&image| {
@@ -409,7 +416,8 @@ pub fn setup_framebuffer(
                     .create_image_view(&create_view_info, None)
                     .unwrap()
             }
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     let depth_image_views = depth_images
         .iter()
         .map(|ref image| {
@@ -440,7 +448,8 @@ pub fn setup_framebuffer(
                     .create_image_view(&create_view_info, None)
                     .unwrap()
             }
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     let handles = image_views
         .iter()
         .zip(depth_image_views.iter())
@@ -463,7 +472,8 @@ pub fn setup_framebuffer(
                     .create_framebuffer(&frame_buffer_create_info, None)
                     .unwrap()
             }
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
 
     let framebuffer = Framebuffer {
         _images: images,
@@ -542,7 +552,8 @@ pub fn new_buffer(
         device.allocator,
         &buffer_create_info,
         &allocation_create_info,
-    ).unwrap();
+    )
+    .unwrap();
 
     Arc::new(Buffer {
         handle,
@@ -592,7 +603,8 @@ pub fn new_image(
         device.allocator,
         &image_create_info,
         &allocation_create_info,
-    ).unwrap();
+    )
+    .unwrap();
 
     Image {
         handle,
@@ -740,7 +752,8 @@ pub fn new_graphics_pipeline2(
                     .expect("Vertex shader module error")
             };
             (shader_module, stage)
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     let shader_entry_name = CString::new("main").unwrap();
     let shader_stage_create_infos = shader_modules
         .iter()
@@ -752,7 +765,8 @@ pub fn new_graphics_pipeline2(
             p_name: shader_entry_name.as_ptr(),
             p_specialization_info: ptr::null(),
             stage,
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     create_info.stage_count = shader_stage_create_infos.len() as u32;
     create_info.p_stages = shader_stage_create_infos.as_ptr();
     let graphics_pipelines = unsafe {
@@ -833,9 +847,9 @@ pub fn new_compute_pipeline(
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+pub unsafe fn create_surface<E: EntryV1_0>(
     entry: &E,
-    instance: &I,
+    instance: &AshInstance,
     window: &winit::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::unix::WindowExt;
@@ -848,14 +862,13 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
         window: x11_window as vk::Window,
         dpy: x11_display as *mut vk::Display,
     };
-    let xlib_surface_loader =
-        XlibSurface::new(entry, instance).expect("Unable to load xlib surface");
+    let xlib_surface_loader = XlibSurface::new(entry, instance);
     xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
 }
 #[cfg(windows)]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
+pub unsafe fn create_surface<E: EntryV1_0>(
     entry: &E,
-    instance: &I,
+    instance: &AshInstance,
     window: &winit::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::windows::WindowExt;
@@ -868,7 +881,6 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
         hinstance,
         hwnd: hwnd as *const vk::c_void,
     };
-    let win32_surface_loader =
-        Win32Surface::new(entry, instance).expect("Unable to load win32 surface");
+    let win32_surface_loader = Win32Surface::new(entry, instance);
     win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)
 }

@@ -771,7 +771,9 @@ impl<'a> System<'a> for AcquireFramebuffer {
                     u64::MAX,
                     renderer.present_semaphore.handle,
                     vk::Fence::null(),
-                ).unwrap()
+                )
+                .unwrap()
+                .0 // TODO: 2nd argument is boolean describing surface optimality
         };
     }
 }
@@ -1198,10 +1200,10 @@ impl<'a> System<'a> for Renderer {
                                         },
                                         1.0,
                                     );
-                                    let mut opened = true;
+                                    let _opened = true;
                                     // ui.show_demo_window(&mut opened);
                                     let alloc_stats = alloc::stats(device.allocator);
-                                    let s = format!("Alloc stats {:?}", alloc_stats.total);
+                                    let _s = format!("Alloc stats {:?}", alloc_stats.total);
                                     ui.window(im_str!("Renderer"))
                                         .size((300.0, 100.0), imgui::ImGuiCond::FirstUseEver)
                                         .build(|| {
@@ -1264,7 +1266,8 @@ impl<'a> System<'a> for Renderer {
                                             return Err(3i8);
                                         }
                                         Ok(())
-                                    }).expect("failed rendering ui");
+                                    })
+                                    .expect("failed rendering ui");
                                 },
                             );
                             device.device.cmd_end_render_pass(command_buffer);

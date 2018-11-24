@@ -2,7 +2,7 @@
 
 use ash::{
     self, prelude,
-    version::{self, DeviceV1_0, EntryV1_0, InstanceV1_0, V1_0, V1_1},
+    version::{self, DeviceV1_0, EntryV1_0, InstanceV1_0},
     vk,
 };
 use std::{
@@ -62,8 +62,8 @@ unsafe impl Send for VmaAllocationInfo {}
 unsafe impl Sync for VmaAllocationInfo {}
 
 pub fn create(
-    entry: &ash::Entry<V1_0>,
-    instance: &ash::Instance<V1_1>,
+    entry: &ash::Entry,
+    instance: &ash::Instance,
     device: vk::Device,
     pdevice: vk::PhysicalDevice,
 ) -> prelude::VkResult<VmaAllocator> {

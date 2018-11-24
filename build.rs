@@ -55,7 +55,8 @@ fn main() {
             "-IC:\\VulkanSDK\\1.1.82.0\\Include"
         } else {
             ""
-        }).whitelist_type("VmaAllocatorCreateInfo")
+        })
+        .whitelist_type("VmaAllocatorCreateInfo")
         .whitelist_type("VmaAllocatorCreateFlags")
         .whitelist_type("VmaAllocatorCreateFlagBits")
         .whitelist_type("VmaAllocation")
