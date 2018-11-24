@@ -11,7 +11,7 @@ mod swapchain;
 use super::ecs::components::{GltfMesh, GltfMeshBufferIndex};
 use ash::{prelude::*, version::DeviceV1_0, vk};
 use cgmath;
-use imgui;
+use imgui::{self, im_str};
 use specs::prelude::*;
 use std::{
     cmp::min,

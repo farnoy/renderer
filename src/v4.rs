@@ -1,7 +1,6 @@
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;
-#[macro_use]
 extern crate imgui;
 extern crate parking_lot;
 extern crate rayon;
