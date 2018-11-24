@@ -69,13 +69,11 @@ impl Instance {
             .application_name(&name)
             .application_version(0)
             .engine_name(&name)
-            .api_version(ash::vk_make_version!(1, 1, 0))
-            .build();
+            .api_version(ash::vk_make_version!(1, 1, 0));
         let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&appinfo)
             .enabled_layer_names(&layers_names_raw)
-            .enabled_extension_names(&extension_names_raw)
-            .build();
+            .enabled_extension_names(&extension_names_raw);
         let instance = unsafe { entry.create_instance(&create_info, None)? };
 
         let surface = unsafe { create_surface(entry.vk(), &instance, &window).unwrap() };
@@ -145,15 +143,14 @@ impl Instance {
                         | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
                 )
                 .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
-                .pfn_user_callback(Some(vulkan_debug_callback))
-                .build();
+                .pfn_user_callback(Some(vulkan_debug_callback));
 
             let mut debug_messenger = vk::DebugUtilsMessengerEXT::null();
 
             let res = unsafe {
                 debug_utils.create_debug_utils_messenger_ext(
                     instance.handle(),
-                    &create_info,
+                    &*create_info,
                     ptr::null(),
                     &mut debug_messenger,
                 )

@@ -115,8 +115,7 @@ impl Device {
             let device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
-                .enabled_features(&features)
-                .build();
+                .enabled_features(&features);
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
