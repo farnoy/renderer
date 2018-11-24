@@ -65,25 +65,17 @@ impl Instance {
             .collect();
         let extension_names_raw = extension_names();
         let name = CString::new("Renderer").unwrap();
-        let appinfo = vk::ApplicationInfo {
-            p_application_name: name.as_ptr(),
-            s_type: vk::StructureType::APPLICATION_INFO,
-            p_next: ptr::null(),
-            application_version: 0,
-            p_engine_name: name.as_ptr(),
-            engine_version: 0,
-            api_version: ash::vk_make_version!(1, 1, 0),
-        };
-        let create_info = vk::InstanceCreateInfo {
-            s_type: vk::StructureType::INSTANCE_CREATE_INFO,
-            p_next: ptr::null(),
-            flags: Default::default(),
-            p_application_info: &appinfo,
-            pp_enabled_layer_names: layers_names_raw.as_ptr(),
-            enabled_layer_count: layers_names_raw.len() as u32,
-            pp_enabled_extension_names: extension_names_raw.as_ptr(),
-            enabled_extension_count: extension_names_raw.len() as u32,
-        };
+        let appinfo = vk::ApplicationInfo::builder()
+            .application_name(&name)
+            .application_version(0)
+            .engine_name(&name)
+            .api_version(ash::vk_make_version!(1, 1, 0))
+            .build();
+        let create_info = vk::InstanceCreateInfo::builder()
+            .application_info(&appinfo)
+            .enabled_layer_names(&layers_names_raw)
+            .enabled_extension_names(&extension_names_raw)
+            .build();
         let instance = unsafe { entry.create_instance(&create_info, None)? };
 
         let surface = unsafe { create_surface(entry.vk(), &instance, &window).unwrap() };
@@ -147,16 +139,14 @@ impl Instance {
                 0
             }
 
-            let create_info = vk::DebugUtilsMessengerCreateInfoEXT {
-                s_type: vk::StructureType::DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-                p_next: ptr::null(),
-                flags: vk::DebugUtilsMessengerCreateFlagsEXT::empty(),
-                message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-                message_type: vk::DebugUtilsMessageTypeFlagsEXT::all(),
-                pfn_user_callback: Some(vulkan_debug_callback),
-                p_user_data: ptr::null_mut(),
-            };
+            let create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+                .message_severity(
+                    vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                        | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                )
+                .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
+                .pfn_user_callback(Some(vulkan_debug_callback))
+                .build();
 
             let mut debug_messenger = vk::DebugUtilsMessengerEXT::null();
 

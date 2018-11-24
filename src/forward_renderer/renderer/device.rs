@@ -106,28 +106,17 @@ impl Device {
                 .map(|&(ref family, ref len)| {
                     priorities.push(vec![1.0; *len as usize]);
                     let p = priorities.last().unwrap();
-                    vk::DeviceQueueCreateInfo {
-                        s_type: vk::StructureType::DEVICE_QUEUE_CREATE_INFO,
-                        p_next: ptr::null(),
-                        flags: Default::default(),
-                        queue_family_index: *family,
-                        p_queue_priorities: p.as_ptr(),
-                        queue_count: p.len() as u32,
-                    }
+                    vk::DeviceQueueCreateInfo::builder()
+                        .queue_family_index(*family)
+                        .queue_priorities(&p)
+                        .build()
                 })
                 .collect::<Vec<_>>();
-            let device_create_info = vk::DeviceCreateInfo {
-                s_type: vk::StructureType::DEVICE_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: Default::default(),
-                queue_create_info_count: queue_infos.len() as u32,
-                p_queue_create_infos: queue_infos.as_ptr(),
-                enabled_layer_count: 0,
-                pp_enabled_layer_names: ptr::null(),
-                enabled_extension_count: device_extension_names_raw.len() as u32,
-                pp_enabled_extension_names: device_extension_names_raw.as_ptr(),
-                p_enabled_features: &features,
-            };
+            let device_create_info = vk::DeviceCreateInfo::builder()
+                .queue_create_infos(&queue_infos)
+                .enabled_extension_names(&device_extension_names_raw)
+                .enabled_features(&features)
+                .build();
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
