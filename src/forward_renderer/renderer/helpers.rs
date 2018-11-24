@@ -294,36 +294,6 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     })
 }
 
-pub fn new_renderpass(
-    device: Arc<Device>,
-    attachments: &[vk::AttachmentDescription],
-    subpass_descs: &[vk::SubpassDescription],
-    subpass_dependencies: &[vk::SubpassDependency],
-) -> Arc<RenderPass> {
-    let renderpass_create_info = vk::RenderPassCreateInfo {
-        s_type: vk::StructureType::RENDER_PASS_CREATE_INFO,
-        flags: Default::default(),
-        p_next: ptr::null(),
-        attachment_count: attachments.len() as u32,
-        p_attachments: attachments.as_ptr(),
-        subpass_count: subpass_descs.len() as u32,
-        p_subpasses: subpass_descs.as_ptr(),
-        dependency_count: subpass_dependencies.len() as u32,
-        p_dependencies: subpass_dependencies.as_ptr(),
-    };
-    let renderpass = unsafe {
-        device
-            .device
-            .create_render_pass(&renderpass_create_info, None)
-            .unwrap()
-    };
-
-    Arc::new(RenderPass {
-        handle: renderpass,
-        device,
-    })
-}
-
 pub fn setup_framebuffer(
     instance: &Instance,
     device: Arc<Device>,

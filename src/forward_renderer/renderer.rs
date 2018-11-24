@@ -9,7 +9,7 @@ mod instance;
 mod swapchain;
 
 use super::ecs::components::{GltfMesh, GltfMeshBufferIndex};
-use ash::{version::DeviceV1_0, vk};
+use ash::{prelude::*, version::DeviceV1_0, vk};
 use cgmath;
 use imgui;
 use specs::prelude::*;
@@ -89,7 +89,7 @@ impl RenderFrame {
             device.compute_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
-        let main_renderpass = RenderFrame::setup_renderpass(Arc::clone(&device), &swapchain);
+        let main_renderpass = RenderFrame::setup_renderpass(Arc::clone(&device), &swapchain).expect("Failed to create renderpass");
         let framebuffer =
             setup_framebuffer(&instance, Arc::clone(&device), &swapchain, &main_renderpass);
 
@@ -644,7 +644,7 @@ impl RenderFrame {
                 model_buffer,
                 present_semaphore: Arc::clone(&present_semaphore),
                 rendering_complete_semaphore: Arc::clone(&rendering_complete_semaphore),
-                renderpass: Arc::clone(&main_renderpass),
+                renderpass: Arc::new(main_renderpass),
                 swapchain: Arc::clone(&swapchain),
                 culled_commands_buffer: Arc::clone(&command_generation_buffer),
                 culled_index_buffer: None,
@@ -658,7 +658,7 @@ impl RenderFrame {
         )
     }
 
-    fn setup_renderpass(device: Arc<Device>, swapchain: &Swapchain) -> Arc<RenderPass> {
+    fn setup_renderpass(device: Arc<Device>, swapchain: &Swapchain) -> VkResult<RenderPass> {
         let attachment_descriptions = [
             vk::AttachmentDescription {
                 format: swapchain.surface_format.format,
@@ -738,12 +738,18 @@ impl RenderFrame {
                 dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
             },
         ];
-        new_renderpass(
-            device,
-            &attachment_descriptions,
-            &subpass_descs,
-            &subpass_dependencies,
-        )
+
+        let renderpass_create_info = vk::RenderPassCreateInfo::builder()
+            .attachments(&attachment_descriptions)
+            .subpasses(&subpass_descs)
+            .dependencies(&subpass_dependencies);
+        let renderpass = unsafe {
+            device
+                .device
+                .create_render_pass(&renderpass_create_info, None)
+        };
+
+        renderpass.map(|handle| RenderPass { handle, device })
     }
 }
 
