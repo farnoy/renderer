@@ -71,7 +71,7 @@ fn main() {
 
     let (vertex_buffer, normal_buffer, index_buffer, index_len, bounding_box) = load_gltf(
         &renderer,
-        "glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
+        "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
     );
 
     let culled_index_buffer = new_buffer(

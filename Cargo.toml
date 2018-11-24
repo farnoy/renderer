@@ -32,10 +32,3 @@ default = []
 validation = []
 renderdoc = ["validation"]
 gapid = ["renderdoc"]
-
-[profile.dev]
-lto = false
-codegen-units = 8
-
-[profile.release]
-debug = true

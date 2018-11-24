@@ -1,6 +1,5 @@
 {
   "files.exclude": {
-    "**/glTF-Sample-Models": true,
     "**/target": true,
     "vendor": true
   },
