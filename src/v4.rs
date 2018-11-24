@@ -1,6 +1,3 @@
-#![feature(tool_lints)]
-
-#[macro_use]
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;
@@ -9,7 +6,6 @@ extern crate imgui;
 extern crate parking_lot;
 extern crate rayon;
 extern crate specs;
-#[macro_use]
 extern crate specs_derive;
 extern crate time;
 #[cfg(windows)]
