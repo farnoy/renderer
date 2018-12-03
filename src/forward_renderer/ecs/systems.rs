@@ -109,7 +109,12 @@ pub struct Camera {
     pub rotation: cgmath::Quaternion<f32>,
     pub projection: cgmath::Matrix4<f32>,
     pub view: cgmath::Matrix4<f32>,
-    pub frustum_planes: [cgmath::Vector4<f32>; 6],
+    pub frustum_left: cgmath::Vector4<f32>,
+    pub frustum_right: cgmath::Vector4<f32>,
+    pub frustum_bottom: cgmath::Vector4<f32>,
+    pub frustum_top: cgmath::Vector4<f32>,
+    pub frustum_near: cgmath::Vector4<f32>,
+    pub frustum_far: cgmath::Vector4<f32>,
 }
 
 static UP_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
@@ -140,14 +145,19 @@ impl Default for Camera {
         let projection = cgmath::Matrix4::one();
         let view = cgmath::Matrix4::one();
         let rotation = cgmath::Quaternion::one();
-        let frustum_planes = [cgmath::Vector4::zero(); 6];
+        let zero = cgmath::Vector4::zero();
 
         Camera {
             position,
             rotation,
             projection,
             view,
-            frustum_planes,
+            frustum_left: zero,
+            frustum_right: zero,
+            frustum_bottom: zero,
+            frustum_top: zero,
+            frustum_near: zero,
+            frustum_far: zero,
         }
     }
 }
@@ -267,17 +277,13 @@ impl<'a> System<'a> for ProjectCamera {
         let dir = CENTER_VECTOR - camera.rotation.rotate_vector(FORWARD_VECTOR);
         let up = camera.rotation.rotate_vector(UP_VECTOR);
         camera.view = cgmath::Matrix4::look_at_dir(camera.position, dir, up);
-        /*
-        println!("Camera position is {:?}", camera.position);
-
-        let frustum_planes = [cgmath::Vector4::zero(); 6];
-        let m = camera.projection;
-        for ix in (0..4) {
-            // left
-            frustum_planes[0][ix] =
-        }
-        camera.frustum_planes = frustum_planes;
-        */
+        let m = camera.projection * camera.view;
+        camera.frustum_left = -(m.w + m.x);
+        camera.frustum_right = -(m.w - m.x);
+        camera.frustum_bottom = -(m.w + m.y);
+        camera.frustum_top = -(m.w - m.y);
+        camera.frustum_near = -(m.w + m.z);
+        camera.frustum_top = -(m.w - m.z);
     }
 }
 
@@ -309,78 +315,28 @@ impl<'a> System<'a> for CalculateFrameTiming {
     }
 }
 
-pub struct AABBCalculation;
-
-impl<'a> System<'a> for AABBCalculation {
-    type SystemData = (
-        ReadStorage<'a, Matrices>,
-        ReadStorage<'a, GltfMesh>,
-        WriteStorage<'a, AABB>,
-    );
-
-    fn run(&mut self, (matrices, mesh, mut aabb): Self::SystemData) {
-        use std::f32::{MAX, MIN};
-        let mut ix = 0;
-        for (matrices, mesh, aabb) in (&matrices, &mesh, &mut aabb).join() {
-            let ((minx, miny, minz), (maxx, maxy, maxz)) = mesh
-                .aabb_vertices()
-                .iter()
-                .map(|vertex| matrices.model * vertex.extend(1.0))
-                .fold(
-                    ((MAX, MAX, MAX), (MIN, MIN, MIN)),
-                    |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
-                        (
-                            (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
-                            (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
-                        )
-                    },
-                );
-            *aabb = AABB {
-                min: cgmath::vec3(minx, miny, minz),
-                max: cgmath::vec3(maxx, maxy, maxz),
-            };
-            if ix < 10 {
-                // println!("aabb min of {} is {:?}", ix, aabb.min);
-            }
-            ix += 1;
-        }
-    }
-}
-
 pub struct CoarseCulling;
 
 impl<'a> System<'a> for CoarseCulling {
     type SystemData = (
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, Matrices>,
+        Read<'a, Camera>,
         WriteStorage<'a, CoarseCulled>,
     );
 
-    fn run(&mut self, (mesh, matrices, mut culled): Self::SystemData) {
+    fn run(&mut self, (mesh, matrices, camera, mut culled): Self::SystemData) {
         // use cgmath::InnerSpace;
+        let mut first = false;
         for (mesh, matrices, culled) in (&mesh, &matrices, &mut culled).join() {
-            #[allow(non_snake_case)]
-            let M = matrices.mvp;
-            let _planes = [
-                (M.w + M.x), // left
-                (M.w - M.x), // right
-                (M.w + M.y), // bottom
-                (M.w - M.y), // top
-                (M.w + M.z), // near
-                (M.w - M.z), // far
-            ];
-            // what space is this in? why does it work? does it always work?
-            let _vertices = mesh
-                .aabb_vertices()
-                .iter()
-                // transform
-                .map(|vertex| {
-                    let v = matrices.mvp * vertex.extend(1.0);
-                    (v.xyz() / v.w).extend(1.0)
-                })
-                .collect::<Vec<_>>();
+            let e = mesh.aabb_h.x * camera.frustum_left.x.abs()
+                + mesh.aabb_h.y * camera.frustum_left.y.abs()
+                + mesh.aabb_h.z * camera.frustum_left.z.abs();
 
-            culled.0 = false;
+            let s = cgmath::dot(mesh.aabb_c, camera.frustum_left.xyz()) + camera.frustum_left.w;
+
+            culled.0 = !first || s - e > 0.0;
+            first = true;
 
             /*
             // check if all vertices of the bounding box are outside at least one

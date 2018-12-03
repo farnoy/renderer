@@ -17,7 +17,8 @@ pub fn load(
     Arc<Buffer>,
     Arc<Buffer>,
     u64,
-    (cgmath::Vector3<f32>, cgmath::Vector3<f32>),
+    cgmath::Vector3<f32>,
+    cgmath::Vector3<f32>,
 ) {
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded.meshes().next().unwrap();
@@ -25,10 +26,10 @@ pub fn load(
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
     let positions = reader.read_positions().unwrap();
     let bounding_box = primitive.bounding_box();
-    let bounding_box = (
-        cgmath::Vector3::from(bounding_box.min),
-        cgmath::Vector3::from(bounding_box.max),
-    );
+    let aabb_c =
+        (cgmath::Vector3::from(bounding_box.max) + cgmath::Vector3::from(bounding_box.min)) / 2.0;
+    let aabb_h =
+        (cgmath::Vector3::from(bounding_box.max) - cgmath::Vector3::from(bounding_box.min)) / 2.0;
     let normals = reader.read_normals().unwrap();
     let indices = reader.read_indices().unwrap().into_u32();
     let vertex_len = positions.len() as u64;
@@ -185,6 +186,7 @@ pub fn load(
         normal_buffer,
         index_buffer,
         index_len,
-        bounding_box,
+        aabb_c,
+        aabb_h,
     )
 }

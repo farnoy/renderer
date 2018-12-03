@@ -12,6 +12,5 @@ pub fn setup(world: &mut World) {
     world.register::<Matrices>();
     world.register::<GltfMesh>();
     world.register::<GltfMeshBufferIndex>();
-    world.register::<AABB>();
     world.register::<CoarseCulled>();
 }

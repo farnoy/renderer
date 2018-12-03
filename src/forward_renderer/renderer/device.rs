@@ -8,7 +8,7 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
-use std::{ops::Deref, ptr, sync::Arc};
+use std::{ops::Deref, sync::Arc};
 
 use super::{alloc, Instance};
 
