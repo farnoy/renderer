@@ -10,8 +10,6 @@ use std::ffi::CString;
 #[allow(unused_imports)]
 use std::mem::transmute;
 use std::ops::Deref;
-use std::os::raw::c_void;
-use std::ptr;
 use std::sync::Arc;
 use winit;
 
@@ -178,7 +176,7 @@ impl Instance {
         {
             Ok((
                 Instance {
-                    handle: instance_1_1,
+                    handle: instance,
                     window,
                     surface,
                     entry: Arc::new(entry),

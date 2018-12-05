@@ -16,14 +16,14 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, Gui, PresentFramebuffer,
-        RenderFrame, Renderer,
+        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh,
+        PresentFramebuffer, RenderFrame, Renderer,
     },
 };
 use ash::{version::DeviceV1_0, vk};
 use cgmath::{Rotation3, Zero};
 use parking_lot::Mutex;
-use specs::{Builder, ReadStorage};
+use specs::Builder;
 use std::{
     mem::{size_of, transmute},
     ptr,
@@ -68,7 +68,14 @@ fn main() {
 
     let (mut renderer, events_loop) = RenderFrame::new();
 
-    let (vertex_buffer, normal_buffer, index_buffer, index_len, aabb_c, aabb_h) = load_gltf(
+    let LoadedMesh {
+        vertex_buffer,
+        normal_buffer,
+        index_buffer,
+        index_len,
+        aabb_c,
+        aabb_h,
+    } = load_gltf(
         &renderer,
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
     );
@@ -137,7 +144,10 @@ fn main() {
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))
-        .with::<AABB>(AABB { c: cgmath::Vector3::zero(), h: cgmath::Vector3::zero() })
+        .with::<AABB>(AABB {
+            c: cgmath::Vector3::zero(),
+            h: cgmath::Vector3::zero(),
+        })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -156,7 +166,10 @@ fn main() {
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))
-        .with::<AABB>(AABB { c: cgmath::Vector3::zero(), h: cgmath::Vector3::zero() })
+        .with::<AABB>(AABB {
+            c: cgmath::Vector3::zero(),
+            h: cgmath::Vector3::zero(),
+        })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -182,7 +195,10 @@ fn main() {
             .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<CoarseCulled>(CoarseCulled(false))
-            .with::<AABB>(AABB { c: cgmath::Vector3::zero(), h: cgmath::Vector3::zero() })
+            .with::<AABB>(AABB {
+                c: cgmath::Vector3::zero(),
+                h: cgmath::Vector3::zero(),
+            })
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
@@ -222,11 +238,7 @@ fn main() {
             "mvp",
             &["steady_rotation", "project_camera"],
         )
-        .with(
-            AABBCalculation,
-            "aabb_calc",
-            &["mvp"],
-        )
+        .with(AABBCalculation, "aabb_calc", &["mvp"])
         .with(
             CoarseCulling,
             "coarse_culling",

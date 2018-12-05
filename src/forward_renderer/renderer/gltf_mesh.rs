@@ -9,17 +9,16 @@ use std::{
 
 use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
-pub fn load(
-    renderer: &RenderFrame,
-    path: &str,
-) -> (
-    Arc<Buffer>,
-    Arc<Buffer>,
-    Arc<Buffer>,
-    u64,
-    cgmath::Vector3<f32>,
-    cgmath::Vector3<f32>,
-) {
+pub struct LoadedMesh {
+    pub vertex_buffer: Arc<Buffer>,
+    pub normal_buffer: Arc<Buffer>,
+    pub index_buffer: Arc<Buffer>,
+    pub index_len: u64,
+    pub aabb_c: cgmath::Vector3<f32>,
+    pub aabb_h: cgmath::Vector3<f32>,
+}
+
+pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded.meshes().next().unwrap();
     let primitive = mesh.primitives().next().unwrap();
@@ -64,7 +63,7 @@ pub fn load(
     unsafe {
         let p = vertex_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
         for (ix, data) in positions.enumerate() {
-            *p.offset(ix as isize) = data;
+            *p.add(ix) = data;
         }
     }
     let normal_buffer = new_buffer(
@@ -94,7 +93,7 @@ pub fn load(
     unsafe {
         let p = normal_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
         for (ix, data) in normals.enumerate() {
-            *p.offset(ix as isize) = data;
+            *p.add(ix) = data;
         }
     }
     let index_len = indices.len() as u64;
@@ -128,7 +127,7 @@ pub fn load(
     unsafe {
         let p = index_upload_buffer.allocation_info.pMappedData as *mut u32;
         for (ix, data) in indices.enumerate() {
-            *p.offset(ix as isize) = data;
+            *p.add(ix) = data;
         }
     }
     let upload = commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
@@ -181,12 +180,12 @@ pub fn load(
             .expect("Wait for fence failed.");
     }
 
-    (
+    LoadedMesh {
         vertex_buffer,
         normal_buffer,
         index_buffer,
         index_len,
         aabb_c,
         aabb_h,
-    )
+    }
 }

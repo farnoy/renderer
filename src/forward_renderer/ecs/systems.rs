@@ -1,5 +1,5 @@
 use super::components::*;
-use cgmath::{self, One};
+use cgmath::{self, One, Zero};
 use parking_lot::Mutex;
 use specs::prelude::*;
 use std::{slice::from_raw_parts_mut, sync::Arc, time::Instant};
@@ -313,12 +313,11 @@ pub struct AABBCalculation;
 impl<'a> System<'a> for AABBCalculation {
     type SystemData = (
         ReadStorage<'a, Matrices>,
-        Read<'a, Camera>,
         ReadStorage<'a, GltfMesh>,
         WriteStorage<'a, AABB>,
     );
 
-    fn run(&mut self, (matrices, camera, mesh, mut aabb): Self::SystemData) {
+    fn run(&mut self, (matrices, mesh, mut aabb): Self::SystemData) {
         use std::f32::{MAX, MIN};
         for (matrices, mesh, mut aabb) in (&matrices, &mesh, &mut aabb).join() {
             let min = mesh.aabb_c - mesh.aabb_h;
@@ -369,9 +368,8 @@ impl<'a> System<'a> for CoarseCulling {
         for (aabb, culled) in (&aabb, &mut culled).join() {
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
-                let e = aabb.h.x * plane.x.abs()
-                    + aabb.h.y * plane.y.abs()
-                    + aabb.h.z * plane.z.abs();
+                let e =
+                    aabb.h.x * plane.x.abs() + aabb.h.y * plane.y.abs() + aabb.h.z * plane.z.abs();
 
                 let s = cgmath::dot(aabb.c.extend(1.0), *plane);
                 if s - e > 0.0 {
@@ -379,13 +377,15 @@ impl<'a> System<'a> for CoarseCulling {
                     break 'per_plane;
                 }
             }
-           culled.0 = outside;
+            culled.0 = outside;
             if cfg!(debug_assertions) && culled.0 {
                 count += 1
             }
         }
-        
-        if cfg!(debug_assertions) { println!("coarse culled {}", count) }
+
+        if cfg!(debug_assertions) {
+            println!("coarse culled {}", count)
+        }
     }
 }
 
@@ -497,23 +497,26 @@ impl<'a> System<'a> for FlyCamera {
         }
         let mut speed = if self.fast { 10.0 } else { 1.0 };
         speed *= frame_timing.time_delta;
+        let mut increment = cgmath::Vector3::zero();
         if self.forward {
-            camera.position += speed * camera.rotation.rotate_vector(FORWARD_VECTOR);
+            increment += speed * camera.rotation.rotate_vector(FORWARD_VECTOR)
         }
         if self.backward {
-            camera.position -= speed * camera.rotation.rotate_vector(FORWARD_VECTOR);
+            increment -= speed * camera.rotation.rotate_vector(FORWARD_VECTOR);
         }
         if self.up {
-            camera.position += speed * camera.rotation.rotate_vector(UP_VECTOR);
+            increment += speed * camera.rotation.rotate_vector(UP_VECTOR);
         }
         if self.down {
-            camera.position -= speed * camera.rotation.rotate_vector(UP_VECTOR);
+            increment -= speed * camera.rotation.rotate_vector(UP_VECTOR);
         }
         if self.right {
-            camera.position += speed * camera.rotation.rotate_vector(RIGHT_VECTOR);
+            increment += speed * camera.rotation.rotate_vector(RIGHT_VECTOR);
         }
         if self.left {
-            camera.position -= speed * camera.rotation.rotate_vector(RIGHT_VECTOR);
+            increment -= speed * camera.rotation.rotate_vector(RIGHT_VECTOR);
         }
+
+        camera.position += increment;
     }
 }

@@ -681,13 +681,9 @@ pub fn new_graphics_pipeline2(
         .map(|&(stage, ref path)| {
             let file = File::open(path).expect("Could not find shader.");
             let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
-            let shader_info = vk::ShaderModuleCreateInfo {
-                s_type: vk::StructureType::SHADER_MODULE_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: Default::default(),
-                code_size: bytes.len(),
-                p_code: bytes.as_ptr() as *const u32,
-            };
+            let (l, aligned, r) = unsafe { bytes.as_slice().align_to() };
+            assert!(l.is_empty() && r.is_empty(), "failed to realign code");
+            let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);
             let shader_module = unsafe {
                 device
                     .device
@@ -738,13 +734,9 @@ pub fn new_compute_pipeline(
     let shader_module = {
         let file = File::open(shader).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
-        let shader_info = vk::ShaderModuleCreateInfo {
-            s_type: vk::StructureType::SHADER_MODULE_CREATE_INFO,
-            p_next: ptr::null(),
-            flags: Default::default(),
-            code_size: bytes.len(),
-            p_code: bytes.as_ptr() as *const u32,
-        };
+        let (l, aligned, r) = unsafe { bytes.as_slice().align_to() };
+        assert!(l.is_empty() && r.is_empty(), "failed to realign code");
+        let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);
         unsafe {
             device
                 .device
@@ -814,8 +806,8 @@ pub unsafe fn create_surface<E: EntryV1_0>(
     instance: &AshInstance,
     window: &winit::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
-    use winit::os::windows::WindowExt;
     use std::ffi::c_void;
+    use winit::os::windows::WindowExt;
     let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
     let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const c_void;
     let win32_create_info = vk::Win32SurfaceCreateInfoKHR {

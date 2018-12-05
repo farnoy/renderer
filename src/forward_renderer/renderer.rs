@@ -32,7 +32,7 @@ use self::{
     instance::Instance,
 };
 
-pub use self::gltf_mesh::load as load_gltf;
+pub use self::gltf_mesh::{load as load_gltf, LoadedMesh};
 pub use self::helpers::{new_buffer, Buffer};
 
 // TODO: rename
@@ -977,6 +977,7 @@ impl<'a> System<'a> for CullGeometry {
 pub struct Renderer;
 
 impl<'a> System<'a> for Renderer {
+    #[allow(clippy::type_complexity)]
     type SystemData = (
         Entities<'a>,
         ReadExpect<'a, RenderFrame>,
@@ -1200,8 +1201,8 @@ impl<'a> System<'a> for Renderer {
                                     let ui = gui.imgui.frame(
                                         imgui::FrameSize {
                                             logical_size: (
-                                                instance.window_width as f64,
-                                                instance.window_height as f64,
+                                                f64::from(instance.window_width),
+                                                f64::from(instance.window_height),
                                             ),
                                             hidpi_factor: 1.0,
                                         },
