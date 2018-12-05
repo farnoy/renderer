@@ -10,6 +10,7 @@ pub fn setup(world: &mut World) {
     world.register::<Rotation>();
     world.register::<Scale>();
     world.register::<Matrices>();
+    world.register::<AABB>();
     world.register::<GltfMesh>();
     world.register::<GltfMeshBufferIndex>();
     world.register::<CoarseCulled>();

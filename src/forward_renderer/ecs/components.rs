@@ -52,6 +52,14 @@ pub struct GltfMesh {
     pub aabb_h: cgmath::Vector3<f32>,
 }
 
+// Stores the AABB after translation, rotation, scale
+#[derive(Clone, Component, Debug)]
+#[storage(VecStorage)]
+pub struct AABB {
+    pub c: cgmath::Vector3<f32>,
+    pub h: cgmath::Vector3<f32>,
+}
+
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
 #[derive(Clone, Component, Debug)]

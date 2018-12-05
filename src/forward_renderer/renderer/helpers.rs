@@ -815,14 +815,15 @@ pub unsafe fn create_surface<E: EntryV1_0>(
     window: &winit::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::os::windows::WindowExt;
+    use std::ffi::c_void;
     let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
-    let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const vk::c_void;
+    let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const c_void;
     let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
         s_type: vk::StructureType::WIN32_SURFACE_CREATE_INFO_KHR,
         p_next: ptr::null(),
         flags: Default::default(),
         hinstance,
-        hwnd: hwnd as *const vk::c_void,
+        hwnd: hwnd as *const c_void,
     };
     let win32_surface_loader = Win32Surface::new(entry, instance);
     win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)

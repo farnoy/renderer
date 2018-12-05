@@ -799,7 +799,7 @@ impl CullGeometry {
     }
 }
 
-static MAX_PARALLEL: usize = 4;
+static MAX_PARALLEL: usize = 3;
 
 impl<'a> System<'a> for CullGeometry {
     type SystemData = (

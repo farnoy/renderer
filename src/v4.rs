@@ -21,7 +21,7 @@ use crate::forward_renderer::{
     },
 };
 use ash::{version::DeviceV1_0, vk};
-use cgmath::Rotation3;
+use cgmath::{Rotation3, Zero};
 use parking_lot::Mutex;
 use specs::{Builder, ReadStorage};
 use std::{
@@ -132,11 +132,12 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(5.0, 0.0, 2.0)))
+        .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
-        .with::<Scale>(Scale(4.0))
+        .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))
+        .with::<AABB>(AABB { c: cgmath::Vector3::zero(), h: cgmath::Vector3::zero() })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -155,6 +156,7 @@ fn main() {
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))
+        .with::<AABB>(AABB { c: cgmath::Vector3::zero(), h: cgmath::Vector3::zero() })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -180,6 +182,7 @@ fn main() {
             .with::<Scale>(Scale(0.6))
             .with::<Matrices>(Matrices::one())
             .with::<CoarseCulled>(CoarseCulled(false))
+            .with::<AABB>(AABB { c: cgmath::Vector3::zero(), h: cgmath::Vector3::zero() })
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
@@ -220,9 +223,14 @@ fn main() {
             &["steady_rotation", "project_camera"],
         )
         .with(
+            AABBCalculation,
+            "aabb_calc",
+            &["mvp"],
+        )
+        .with(
             CoarseCulling,
             "coarse_culling",
-            &["project_camera"],
+            &["aabb_calc", "project_camera"],
         )
         .with(
             AssignBufferIndex,

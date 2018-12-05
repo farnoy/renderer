@@ -109,12 +109,8 @@ pub struct Camera {
     pub rotation: cgmath::Quaternion<f32>,
     pub projection: cgmath::Matrix4<f32>,
     pub view: cgmath::Matrix4<f32>,
-    pub frustum_left: cgmath::Vector4<f32>,
-    pub frustum_right: cgmath::Vector4<f32>,
-    pub frustum_bottom: cgmath::Vector4<f32>,
-    pub frustum_top: cgmath::Vector4<f32>,
-    pub frustum_near: cgmath::Vector4<f32>,
-    pub frustum_far: cgmath::Vector4<f32>,
+    // left -> right -> bottom -> top -> near -> far
+    pub frustum_planes: [cgmath::Vector4<f32>; 6],
 }
 
 static UP_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
@@ -152,12 +148,7 @@ impl Default for Camera {
             rotation,
             projection,
             view,
-            frustum_left: zero,
-            frustum_right: zero,
-            frustum_bottom: zero,
-            frustum_top: zero,
-            frustum_near: zero,
-            frustum_far: zero,
+            frustum_planes: [zero; 6],
         }
     }
 }
@@ -242,7 +233,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
-        use cgmath::{Angle, Rotation};
+        use cgmath::{Angle, Matrix, Rotation};
         // Left handed perspective projection
         let near = 0.1;
         let far = 100.0;
@@ -277,13 +268,15 @@ impl<'a> System<'a> for ProjectCamera {
         let dir = CENTER_VECTOR - camera.rotation.rotate_vector(FORWARD_VECTOR);
         let up = camera.rotation.rotate_vector(UP_VECTOR);
         camera.view = cgmath::Matrix4::look_at_dir(camera.position, dir, up);
-        let m = camera.projection * camera.view;
-        camera.frustum_left = -(m.w + m.x);
-        camera.frustum_right = -(m.w - m.x);
-        camera.frustum_bottom = -(m.w + m.y);
-        camera.frustum_top = -(m.w - m.y);
-        camera.frustum_near = -(m.w + m.z);
-        camera.frustum_top = -(m.w - m.z);
+        let m = (camera.projection * camera.view).transpose();
+        camera.frustum_planes = [
+            -(m.w + m.x),
+            -(m.w - m.x),
+            -(m.w + m.y),
+            -(m.w - m.y),
+            -(m.w + m.z),
+            -(m.w - m.z),
+        ];
     }
 }
 
@@ -315,58 +308,84 @@ impl<'a> System<'a> for CalculateFrameTiming {
     }
 }
 
+pub struct AABBCalculation;
+
+impl<'a> System<'a> for AABBCalculation {
+    type SystemData = (
+        ReadStorage<'a, Matrices>,
+        Read<'a, Camera>,
+        ReadStorage<'a, GltfMesh>,
+        WriteStorage<'a, AABB>,
+    );
+
+    fn run(&mut self, (matrices, camera, mesh, mut aabb): Self::SystemData) {
+        use std::f32::{MAX, MIN};
+        for (matrices, mesh, mut aabb) in (&matrices, &mesh, &mut aabb).join() {
+            let min = mesh.aabb_c - mesh.aabb_h;
+            let max = mesh.aabb_c + mesh.aabb_h;
+            let (min, max) = [
+                // bottom half (min y)
+                cgmath::vec3(min.x, min.y, min.z),
+                cgmath::vec3(max.x, min.y, min.z),
+                cgmath::vec3(min.x, min.y, max.z),
+                cgmath::vec3(max.x, min.y, max.z),
+                // top half (max y)
+                cgmath::vec3(min.x, max.y, min.z),
+                cgmath::vec3(max.x, max.y, min.z),
+                cgmath::vec3(min.x, max.y, max.z),
+                cgmath::vec3(max.x, max.y, max.z),
+            ]
+            .iter()
+            .map(|vertex| matrices.model * vertex.extend(1.0))
+            .map(|vertex| vertex / vertex.w)
+            .fold(
+                ((MAX, MAX, MAX), (MIN, MIN, MIN)),
+                |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
+                    (
+                        (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
+                        (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
+                    )
+                },
+            );
+            let min = cgmath::Vector3::from(min);
+            let max = cgmath::Vector3::from(max);
+            aabb.c = (max + min) / 2.0;
+            aabb.h = (max - min) / 2.0;
+        }
+    }
+}
+
 pub struct CoarseCulling;
 
 impl<'a> System<'a> for CoarseCulling {
     type SystemData = (
-        ReadStorage<'a, GltfMesh>,
-        ReadStorage<'a, Matrices>,
+        ReadStorage<'a, AABB>,
         Read<'a, Camera>,
         WriteStorage<'a, CoarseCulled>,
     );
 
-    fn run(&mut self, (mesh, matrices, camera, mut culled): Self::SystemData) {
-        // use cgmath::InnerSpace;
-        let mut first = false;
-        for (mesh, matrices, culled) in (&mesh, &matrices, &mut culled).join() {
-            let e = mesh.aabb_h.x * camera.frustum_left.x.abs()
-                + mesh.aabb_h.y * camera.frustum_left.y.abs()
-                + mesh.aabb_h.z * camera.frustum_left.z.abs();
+    fn run(&mut self, (aabb, camera, mut culled): Self::SystemData) {
+        let mut count = 0;
+        for (aabb, culled) in (&aabb, &mut culled).join() {
+            let mut outside = false;
+            'per_plane: for plane in camera.frustum_planes.iter() {
+                let e = aabb.h.x * plane.x.abs()
+                    + aabb.h.y * plane.y.abs()
+                    + aabb.h.z * plane.z.abs();
 
-            let s = cgmath::dot(mesh.aabb_c, camera.frustum_left.xyz()) + camera.frustum_left.w;
-
-            culled.0 = !first || s - e > 0.0;
-            first = true;
-
-            /*
-            // check if all vertices of the bounding box are outside at least one
-            // half-space defined by frustum planes
-            'outer: for ix in 0..6 {
-                let all_outside = vertices.iter().all(|vertex| planes[ix].dot(*vertex) < 0.0);
-                if all_outside {
-                    culled.0 = true;
-                    break 'outer;
+                let s = cgmath::dot(aabb.c.extend(1.0), *plane);
+                if s - e > 0.0 {
+                    outside = true;
+                    break 'per_plane;
                 }
             }
-            culled.0 = vertices.iter().all(|v| {
-                v.x < -1.0 || v.x > 1.0 || v.y < -1.0 || v.y > 1.0 || v.z > 1.0 || v.z < 0.0
-            });
-            */
+           culled.0 = outside;
+            if cfg!(debug_assertions) && culled.0 {
+                count += 1
+            }
         }
-
-        /*
-        println!(
-            "coarse Culled {}",
-            (&culled).join().filter(|culled| culled.0).count()
-        );
-        for ix in 0..10 {
-            println!(
-                "coarse Culled {} is {:?}",
-                ix,
-                culled.join().nth(ix)
-            );
-        }
-        */
+        
+        if cfg!(debug_assertions) { println!("coarse culled {}", count) }
     }
 }
 
