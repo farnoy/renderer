@@ -10,6 +10,8 @@ use std::ffi::CString;
 #[allow(unused_imports)]
 use std::mem::transmute;
 use std::ops::Deref;
+#[cfg(feature = "validation")]
+use std::ptr;
 use std::sync::Arc;
 use winit;
 
@@ -78,6 +80,7 @@ impl Instance {
 
         #[cfg(feature = "validation")]
         {
+            use std::ffi::c_void;
             let debug_utils = vk::ExtDebugUtilsFn::load(|name| unsafe {
                 transmute(
                     entry
