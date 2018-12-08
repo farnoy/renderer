@@ -21,5 +21,15 @@ void main() {
     vec3 specular = specular_strength * spec * light_color;
 
     o_color = vec4(diffuse + specular, 1.0);
-    // o_color = vec4(1.0);
+
+    // normal
+    o_color = vec4(norm, 1.0);
+
+    // gooch
+    const vec3 cool = {0, 0, 0.55};
+    const vec3 warm = {0.3, 0.3, 0};
+    const vec3 highlight = vec3(1.0);
+    float t = (dot(norm, light_dir) + 1.0) / 2;
+    float s = clamp(100 * dot(reflect_dir, view_dir) - 97, 0, 1);
+    o_color.xyz = mix(mix(cool, warm, t), highlight, s);
 }
