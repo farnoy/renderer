@@ -93,6 +93,14 @@ pub fn create(
                         .as_ptr(),
                 ),
             ),
+            vkCmdCopyBuffer: transmute(
+                entry.get_instance_proc_addr(
+                    instance.handle(),
+                    CStr::from_bytes_with_nul(b"vkCmdCopyBuffer\0")
+                        .unwrap()
+                        .as_ptr(),
+                ),
+            ),
             vkCreateBuffer: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
