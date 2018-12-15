@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
     u64,
 };
+use meshopt;
 
 use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
@@ -18,19 +19,40 @@ pub struct LoadedMesh {
     pub aabb_h: cgmath::Vector3<f32>,
 }
 
+#[derive(Clone, Default)]
+struct Pos(pub [f32; 3]);
+
+impl meshopt::DecodePosition for Pos {
+    fn decode_position(&self) -> [f32; 3] {
+        self.0
+    }
+}
+
 pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded.meshes().next().unwrap();
     let primitive = mesh.primitives().next().unwrap();
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-    let positions = reader.read_positions().unwrap();
+    let positions = reader.read_positions().unwrap().map(|a| Pos(a)).collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
     let aabb_c =
         (cgmath::Vector3::from(bounding_box.max) + cgmath::Vector3::from(bounding_box.min)) / 2.0;
     let aabb_h =
         (cgmath::Vector3::from(bounding_box.max) - cgmath::Vector3::from(bounding_box.min)) / 2.0;
-    let normals = reader.read_normals().unwrap();
-    let indices = reader.read_indices().unwrap().into_u32();
+    let normals = reader.read_normals().unwrap().collect::<Vec<_>>();
+    let mut indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
+    meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
+    meshopt::optimize_overdraw_in_place(&mut indices, &positions, 1.05);
+    let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
+    let indices_new = meshopt::remap_index_buffer(Some(&indices), positions.len(), &remap);
+    let positions_new = meshopt::remap_vertex_buffer(&positions, &remap);
+    let normals_new = meshopt::remap_vertex_buffer(&normals, &remap);
+
+    // shadow with optimized buffers
+    let indices = indices_new;
+    let normals = normals_new;
+    let positions = positions_new;
+
     let vertex_len = positions.len() as u64;
     let vertex_size = size_of::<f32>() as u64 * 3 * vertex_len;
     let normals_size = size_of::<f32>() as u64 * 3 * vertex_len;
@@ -62,8 +84,8 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     );
     unsafe {
         let p = vertex_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
-        for (ix, data) in positions.enumerate() {
-            *p.add(ix) = data;
+        for (ix, data) in positions.iter().enumerate() {
+            *p.add(ix) = data.0;
         }
     }
     let normal_buffer = new_buffer(
@@ -92,8 +114,8 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     );
     unsafe {
         let p = normal_upload_buffer.allocation_info.pMappedData as *mut [f32; 3];
-        for (ix, data) in normals.enumerate() {
-            *p.add(ix) = data;
+        for (ix, data) in normals.iter().enumerate() {
+            *p.add(ix) = *data;
         }
     }
     let index_len = indices.len() as u64;
@@ -126,8 +148,8 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     );
     unsafe {
         let p = index_upload_buffer.allocation_info.pMappedData as *mut u32;
-        for (ix, data) in indices.enumerate() {
-            *p.add(ix) = data;
+        for (ix, data) in indices.iter().enumerate() {
+            *p.add(ix) = *data;
         }
     }
     let upload = commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {

@@ -2,6 +2,7 @@ extern crate ash;
 extern crate cgmath;
 extern crate gltf;
 extern crate imgui;
+extern crate meshopt;
 extern crate parking_lot;
 extern crate rayon;
 extern crate specs;
