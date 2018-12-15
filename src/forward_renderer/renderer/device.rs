@@ -180,15 +180,11 @@ impl Device {
     ) {
         unsafe {
             use std::ffi::CString;
-            use std::ptr;
 
             let name = CString::new(name).unwrap();
-            let label_info = vk::DebugUtilsLabelEXT {
-                s_type: vk::StructureType::DEBUG_UTILS_LABEL_EXT,
-                p_next: ptr::null(),
-                p_label_name: name.as_ptr(),
-                color,
-            };
+            let label_info = vk::DebugUtilsLabelEXT::builder()
+                .label_name(&name)
+                .color(color);
             self.instance
                 .debug_utils()
                 .cmd_begin_debug_utils_label_ext(command_buffer, &label_info);
