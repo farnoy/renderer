@@ -8,7 +8,7 @@ use winit::{
     WindowEvent,
 };
 
-use super::super::renderer::{Buffer, RenderFrame};
+use super::super::renderer::RenderFrame;
 
 pub struct SteadyRotation;
 
@@ -48,30 +48,31 @@ impl<'a> System<'a> for MVPCalculation {
     }
 }
 
-pub struct MVPUpload {
-    pub dst_mvp: Arc<Buffer>,
-    pub dst_model: Arc<Buffer>,
-}
-
-unsafe impl Send for MVPUpload {}
+pub struct MVPUpload;
 
 impl<'a> System<'a> for MVPUpload {
-    type SystemData = (Entities<'a>, ReadStorage<'a, Matrices>);
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, Matrices>,
+        WriteExpect<'a, RenderFrame>,
+    );
 
-    fn run(&mut self, (entities, matrices): Self::SystemData) {
+    fn run(&mut self, (entities, matrices, renderer): Self::SystemData) {
         (&*entities, &matrices)
             .par_join()
             .for_each(|(entity, matrices)| {
                 // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
                 let out_mvp = unsafe {
                     from_raw_parts_mut(
-                        self.dst_mvp.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
+                        renderer.mvp_buffer.allocation_info.pMappedData
+                            as *mut cgmath::Matrix4<f32>,
                         4096,
                     )
                 };
                 let out_model = unsafe {
                     from_raw_parts_mut(
-                        self.dst_model.allocation_info.pMappedData as *mut cgmath::Matrix4<f32>,
+                        renderer.model_buffer.allocation_info.pMappedData
+                            as *mut cgmath::Matrix4<f32>,
                         4096,
                     )
                 };

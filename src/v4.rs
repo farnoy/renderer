@@ -81,6 +81,10 @@ fn main() {
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
     );
 
+    let vertex_buffer = Arc::new(vertex_buffer);
+    let normal_buffer = Arc::new(normal_buffer);
+    let index_buffer = Arc::new(index_buffer);
+
     let culled_index_buffer = new_buffer(
         Arc::clone(&renderer.device),
         vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -186,11 +190,7 @@ fn main() {
         let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
         let pos = {
             use cgmath::Rotation;
-            rot.rotate_vector(cgmath::vec3(
-                0.0,
-                -2.0,
-                5.0 + (ix / 10) as f32,
-            ))
+            rot.rotate_vector(cgmath::vec3(0.0, -2.0, 5.0 + (ix / 10) as f32))
         };
         world
             .create_entity()
@@ -216,9 +216,6 @@ fn main() {
             .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .build();
     }
-
-    let dst_mvp = Arc::clone(&renderer.ubo_buffer);
-    let dst_model = Arc::clone(&renderer.model_buffer);
 
     let gui = Gui::new(&renderer);
 
@@ -255,7 +252,7 @@ fn main() {
             "assign_buffer_index",
             &["coarse_culling"],
         )
-        .with(MVPUpload { dst_mvp, dst_model }, "mvp_upload", &["mvp"])
+        .with(MVPUpload, "mvp_upload", &["mvp"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
             CullGeometry::new(&world.read_resource::<RenderFrame>().device),

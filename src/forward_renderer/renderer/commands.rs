@@ -21,36 +21,31 @@ pub fn record_one_time<F: FnOnce(vk::CommandBuffer)>(
     command_pool: Arc<CommandPool>,
     f: F,
 ) -> CommandBuffer {
-    let command_buffer = {
-        let mut pool_lock = command_pool.handle.lock();
-        let command_buffer = command_pool
-            .allocate_command_buffers(1, &mut *pool_lock)
-            .remove(0);
+    let mut pool_lock = command_pool.handle.lock();
+    let command_buffer = command_pool
+        .allocate_command_buffers(1, &mut *pool_lock)
+        .remove(0);
 
-        let begin_info = vk::CommandBufferBeginInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
-            p_next: ptr::null(),
-            p_inheritance_info: ptr::null(),
-            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-        };
-        unsafe {
-            command_pool
-                .device
-                .begin_command_buffer(command_buffer, &begin_info)
-                .unwrap();
-        }
+    let begin_info =
+        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-        f(command_buffer);
+    unsafe {
+        command_pool
+            .device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .unwrap();
+    }
 
-        unsafe {
-            command_pool
-                .device
-                .end_command_buffer(command_buffer)
-                .unwrap();
-        }
+    f(command_buffer);
 
-        command_buffer
-    };
+    unsafe {
+        command_pool
+            .device
+            .end_command_buffer(command_buffer)
+            .unwrap();
+    }
+
+    drop(pool_lock);
 
     CommandBuffer {
         pool: command_pool,
@@ -63,13 +58,10 @@ impl CommandPool {
         device: Arc<Device>,
         queue_family: u32,
         flags: vk::CommandPoolCreateFlags,
-    ) -> Arc<CommandPool> {
-        let pool_create_info = vk::CommandPoolCreateInfo {
-            s_type: vk::StructureType::COMMAND_POOL_CREATE_INFO,
-            p_next: ptr::null(),
-            flags,
-            queue_family_index: queue_family,
-        };
+    ) -> CommandPool {
+        let pool_create_info = vk::CommandPoolCreateInfo::builder()
+            .flags(flags)
+            .queue_family_index(queue_family);
         let pool = unsafe {
             device
                 .device
@@ -77,11 +69,10 @@ impl CommandPool {
                 .unwrap()
         };
 
-        let cp = CommandPool {
+        CommandPool {
             handle: Mutex::new(pool),
             device,
-        };
-        Arc::new(cp)
+        }
     }
 
     fn allocate_command_buffers(

@@ -1,19 +1,19 @@
 use ash::{version::DeviceV1_0, vk};
 use cgmath;
 use gltf;
+use meshopt;
 use std::{
     mem::{size_of, transmute},
     sync::Arc,
     u64,
 };
-use meshopt;
 
 use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
 pub struct LoadedMesh {
-    pub vertex_buffer: Arc<Buffer>,
-    pub normal_buffer: Arc<Buffer>,
-    pub index_buffer: Arc<Buffer>,
+    pub vertex_buffer: Buffer,
+    pub normal_buffer: Buffer,
+    pub index_buffer: Buffer,
     pub index_len: u64,
     pub aabb_c: cgmath::Vector3<f32>,
     pub aabb_h: cgmath::Vector3<f32>,
@@ -33,14 +33,22 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let mesh = loaded.meshes().next().unwrap();
     let primitive = mesh.primitives().next().unwrap();
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-    let positions = reader.read_positions().unwrap().map(|a| Pos(a)).collect::<Vec<_>>();
+    let positions = reader
+        .read_positions()
+        .unwrap()
+        .map(Pos)
+        .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
     let aabb_c =
         (cgmath::Vector3::from(bounding_box.max) + cgmath::Vector3::from(bounding_box.min)) / 2.0;
     let aabb_h =
         (cgmath::Vector3::from(bounding_box.max) - cgmath::Vector3::from(bounding_box.min)) / 2.0;
     let normals = reader.read_normals().unwrap().collect::<Vec<_>>();
-    let mut indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
+    let mut indices = reader
+        .read_indices()
+        .unwrap()
+        .into_u32()
+        .collect::<Vec<_>>();
     meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
     meshopt::optimize_overdraw_in_place(&mut indices, &positions, 1.05);
     let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
@@ -153,13 +161,13 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         }
     }
     let upload = commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
-        let vertex_buffer = Arc::clone(&vertex_buffer);
-        let vertex_upload_buffer = Arc::clone(&vertex_upload_buffer);
-        let normal_buffer = Arc::clone(&normal_buffer);
-        let normal_upload_buffer = Arc::clone(&normal_upload_buffer);
-        let index_buffer = Arc::clone(&index_buffer);
-        let index_upload_buffer = Arc::clone(&index_upload_buffer);
-        let device = Arc::clone(&renderer.device);
+        let vertex_buffer = &vertex_buffer;
+        let vertex_upload_buffer = &vertex_upload_buffer;
+        let normal_buffer = &normal_buffer;
+        let normal_upload_buffer = &normal_upload_buffer;
+        let index_buffer = &index_buffer;
+        let index_upload_buffer = &index_upload_buffer;
+        let device = &renderer.device;
         move |command_buffer| unsafe {
             device.device.cmd_copy_buffer(
                 command_buffer,

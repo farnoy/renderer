@@ -9,7 +9,7 @@ use ash::{
     vk, Instance as AshInstance,
 };
 use std::{
-    default::Default, ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
+    ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
     sync::Arc, u32, u64,
 };
 #[cfg(windows)]
@@ -197,7 +197,7 @@ impl Drop for Pipeline {
     }
 }
 
-pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
+pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
     let Instance {
         ref entry,
         surface,
@@ -281,10 +281,10 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Arc<Swapchain> {
     );
 
     let swapchain = swapchain::Swapchain::new(swapchain_loader, swapchain);
-    Arc::new(Swapchain {
+    Swapchain {
         handle: swapchain,
         surface_format,
-    })
+    }
 }
 
 pub fn setup_framebuffer(
@@ -292,7 +292,7 @@ pub fn setup_framebuffer(
     device: Arc<Device>,
     swapchain: &Swapchain,
     renderpass: &RenderPass,
-) -> Arc<Framebuffer> {
+) -> Framebuffer {
     let Swapchain {
         handle: ref swapchain,
         ref surface_format,
@@ -418,38 +418,28 @@ pub fn setup_framebuffer(
         })
         .collect::<Vec<_>>();
 
-    let framebuffer = Framebuffer {
+    Framebuffer {
         _images: images,
         image_views,
         depth_images,
         depth_image_views,
         handles,
         device,
-    };
-
-    Arc::new(framebuffer)
+    }
 }
 
-pub fn new_semaphore(device: Arc<Device>) -> Arc<Semaphore> {
-    let create_info = vk::SemaphoreCreateInfo {
-        s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: vk::SemaphoreCreateFlags::empty(),
-    };
+pub fn new_semaphore(device: Arc<Device>) -> Semaphore {
+    let create_info = vk::SemaphoreCreateInfo::builder();
     let semaphore = unsafe { device.device.create_semaphore(&create_info, None).unwrap() };
 
-    Arc::new(Semaphore {
+    Semaphore {
         handle: semaphore,
         device,
-    })
+    }
 }
 
 pub fn new_fence(device: Arc<Device>) -> Fence {
-    let create_info = vk::FenceCreateInfo {
-        s_type: vk::StructureType::FENCE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: vk::FenceCreateFlags::empty(),
-    };
+    let create_info = vk::FenceCreateInfo::builder();
     let fence = unsafe {
         device
             .device
@@ -468,18 +458,13 @@ pub fn new_buffer(
     allocation_flags: alloc::VmaAllocationCreateFlagBits,
     allocation_usage: alloc::VmaMemoryUsage,
     size: vk::DeviceSize,
-) -> Arc<Buffer> {
-    let queue_families = [device.graphics_queue_family, device.compute_queue_family];
-    let buffer_create_info = vk::BufferCreateInfo {
-        s_type: vk::StructureType::BUFFER_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        size,
-        usage: buffer_usage,
-        sharing_mode: vk::SharingMode::CONCURRENT,
-        queue_family_index_count: queue_families.len() as u32,
-        p_queue_family_indices: &queue_families as *const _,
-    };
+) -> Buffer {
+    let queue_family_indices = &[device.graphics_queue_family, device.compute_queue_family];
+    let buffer_create_info = vk::BufferCreateInfo::builder()
+        .size(size)
+        .usage(buffer_usage)
+        .sharing_mode(vk::SharingMode::CONCURRENT)
+        .queue_family_indices(queue_family_indices);
 
     let allocation_create_info = alloc::VmaAllocationCreateInfo {
         flags: allocation_flags,
@@ -498,12 +483,12 @@ pub fn new_buffer(
     )
     .unwrap();
 
-    Arc::new(Buffer {
+    Buffer {
         handle,
         allocation,
         allocation_info,
         device,
-    })
+    }
 }
 
 pub fn new_image(
@@ -515,22 +500,19 @@ pub fn new_image(
     allocation_flags: alloc::VmaAllocationCreateFlagBits,
     allocation_usage: alloc::VmaMemoryUsage,
 ) -> Image {
-    let queue_families = [device.graphics_queue_family, device.compute_queue_family];
-    let image_create_info = vk::ImageCreateInfo {
-        format,
-        extent,
-        samples,
-        usage,
-        mip_levels: 1,
-        array_layers: 1,
-        image_type: vk::ImageType::TYPE_2D,
-        tiling: vk::ImageTiling::LINEAR,
-        initial_layout: vk::ImageLayout::PREINITIALIZED,
-        sharing_mode: vk::SharingMode::CONCURRENT,
-        queue_family_index_count: queue_families.len() as u32,
-        p_queue_family_indices: &queue_families as *const _,
-        ..Default::default()
-    };
+    let queue_family_indices = &[device.graphics_queue_family, device.compute_queue_family];
+    let image_create_info = vk::ImageCreateInfo::builder()
+        .format(format)
+        .extent(extent)
+        .samples(samples)
+        .usage(usage)
+        .mip_levels(1)
+        .array_layers(1)
+        .image_type(vk::ImageType::TYPE_2D)
+        .tiling(vk::ImageTiling::LINEAR)
+        .initial_layout(vk::ImageLayout::PREINITIALIZED)
+        .sharing_mode(vk::SharingMode::CONCURRENT)
+        .queue_family_indices(queue_family_indices);
 
     let allocation_create_info = alloc::VmaAllocationCreateInfo {
         flags: allocation_flags,
@@ -557,7 +539,7 @@ pub fn new_image(
     }
 }
 
-pub fn new_sampler(device: Arc<Device>, info: &vk::SamplerCreateInfo) -> Sampler {
+pub fn new_sampler(device: Arc<Device>, info: &vk::SamplerCreateInfoBuilder<'_>) -> Sampler {
     let sampler = unsafe {
         device
             .create_sampler(info, None)
@@ -574,13 +556,8 @@ pub fn new_descriptor_set_layout(
     device: Arc<Device>,
     bindings: &[vk::DescriptorSetLayoutBinding],
 ) -> DescriptorSetLayout {
-    let create_info = vk::DescriptorSetLayoutCreateInfo {
-        s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        binding_count: bindings.len() as u32,
-        p_bindings: bindings.as_ptr(),
-    };
+    let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
     let handle = unsafe {
         device
             .device
@@ -595,15 +572,11 @@ pub fn new_descriptor_pool(
     device: Arc<Device>,
     max_sets: u32,
     pool_sizes: &[vk::DescriptorPoolSize],
-) -> Arc<DescriptorPool> {
-    let create_info = vk::DescriptorPoolCreateInfo {
-        s_type: vk::StructureType::DESCRIPTOR_POOL_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
-        max_sets,
-        pool_size_count: pool_sizes.len() as u32,
-        p_pool_sizes: pool_sizes.as_ptr(),
-    };
+) -> DescriptorPool {
+    let create_info = vk::DescriptorPoolCreateInfo::builder()
+        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+        .max_sets(max_sets)
+        .pool_sizes(pool_sizes);
 
     let handle = unsafe {
         device
@@ -612,7 +585,7 @@ pub fn new_descriptor_pool(
             .unwrap()
     };
 
-    Arc::new(DescriptorPool { handle, device })
+    DescriptorPool { handle, device }
 }
 
 pub fn new_descriptor_set(
@@ -621,13 +594,10 @@ pub fn new_descriptor_set(
     layout: &DescriptorSetLayout,
 ) -> DescriptorSet {
     let layouts = &[layout.handle];
-    let desc_alloc_info = vk::DescriptorSetAllocateInfo {
-        s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
-        p_next: ptr::null(),
-        descriptor_pool: pool.handle,
-        descriptor_set_count: layouts.len() as u32,
-        p_set_layouts: layouts.as_ptr(),
-    };
+    let desc_alloc_info = vk::DescriptorSetAllocateInfo::builder()
+        .descriptor_pool(pool.handle)
+        .set_layouts(layouts);
+
     let mut new_descriptor_sets = unsafe {
         device
             .device
@@ -648,15 +618,9 @@ pub fn new_pipeline_layout(
     descriptor_set_layouts: &[vk::DescriptorSetLayout],
     push_constant_ranges: &[vk::PushConstantRange],
 ) -> PipelineLayout {
-    let create_info = vk::PipelineLayoutCreateInfo {
-        s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        set_layout_count: descriptor_set_layouts.len() as u32,
-        p_set_layouts: descriptor_set_layouts.as_ptr(),
-        push_constant_range_count: push_constant_ranges.len() as u32,
-        p_push_constant_ranges: push_constant_ranges.as_ptr(),
-    };
+    let create_info = vk::PipelineLayoutCreateInfo::builder()
+        .set_layouts(descriptor_set_layouts)
+        .push_constant_ranges(push_constant_ranges);
 
     let pipeline_layout = unsafe {
         device
@@ -696,14 +660,12 @@ pub fn new_graphics_pipeline2(
     let shader_entry_name = CString::new("main").unwrap();
     let shader_stage_create_infos = shader_modules
         .iter()
-        .map(|&(module, stage)| vk::PipelineShaderStageCreateInfo {
-            s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-            p_next: ptr::null(),
-            flags: Default::default(),
-            module,
-            p_name: shader_entry_name.as_ptr(),
-            p_specialization_info: ptr::null(),
-            stage,
+        .map(|&(module, stage)| {
+            vk::PipelineShaderStageCreateInfo::builder()
+                .module(module)
+                .name(&shader_entry_name)
+                .stage(stage)
+                .build()
         })
         .collect::<Vec<_>>();
     create_info.stage_count = shader_stage_create_infos.len() as u32;
@@ -745,24 +707,15 @@ pub fn new_compute_pipeline(
         }
     };
     let shader_entry_name = CString::new("main").unwrap();
-    let shader_stage = vk::PipelineShaderStageCreateInfo {
-        s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        module: shader_module,
-        p_name: shader_entry_name.as_ptr(),
-        p_specialization_info: ptr::null(),
-        stage: vk::ShaderStageFlags::COMPUTE,
-    };
-    let create_info = vk::ComputePipelineCreateInfo {
-        s_type: vk::StructureType::COMPUTE_PIPELINE_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: vk::PipelineCreateFlags::empty(),
-        stage: shader_stage,
-        layout: pipeline_layout.handle,
-        base_pipeline_handle: vk::Pipeline::null(),
-        base_pipeline_index: 0,
-    };
+    let shader_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .module(shader_module)
+        .name(&shader_entry_name)
+        .stage(vk::ShaderStageFlags::COMPUTE)
+        .build();
+    let create_info = vk::ComputePipelineCreateInfo::builder()
+        .stage(shader_stage)
+        .layout(pipeline_layout.handle)
+        .build();
 
     let pipelines = unsafe {
         device
@@ -790,16 +743,13 @@ pub unsafe fn create_surface<E: EntryV1_0>(
     use winit::os::unix::WindowExt;
     let x11_display = window.get_xlib_display().unwrap();
     let x11_window = window.get_xlib_window().unwrap();
-    let x11_create_info = vk::XlibSurfaceCreateInfoKHR {
-        s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        window: x11_window as vk::Window,
-        dpy: x11_display as *mut vk::Display,
-    };
+    let x11_create_info = vk::XlibSurfaceCreateInfoKHR::builder()
+        .window(x11_window as vk::Window)
+        .dpy(x11_display as *mut vk::Display);
     let xlib_surface_loader = XlibSurface::new(entry, instance);
     xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
 }
+
 #[cfg(windows)]
 pub unsafe fn create_surface<E: EntryV1_0>(
     entry: &E,
@@ -810,13 +760,9 @@ pub unsafe fn create_surface<E: EntryV1_0>(
     use winit::os::windows::WindowExt;
     let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
     let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const c_void;
-    let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
-        s_type: vk::StructureType::WIN32_SURFACE_CREATE_INFO_KHR,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        hinstance,
-        hwnd: hwnd as *const c_void,
-    };
+    let win32_create_info = vk::Win32SurfaceCreateInfoKHR::builder()
+        .hinstance(hinstance)
+        .hwnd(hwnd as *const c_void);
     let win32_surface_loader = Win32Surface::new(entry, instance);
     win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)
 }
