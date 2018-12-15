@@ -182,13 +182,18 @@ fn main() {
         .build();
 
     for ix in 0..2398 {
+        let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
+        let pos = {
+            use cgmath::Rotation;
+            rot.rotate_vector(cgmath::vec3(
+                0.0,
+                -2.0,
+                5.0 + (ix / 10) as f32,
+            ))
+        };
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(
-                ((ix % 3) * 2 - 2) as f32,
-                0.0,
-                2.0 + ix as f32,
-            )))
+            .with::<Position>(Position(pos))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
                 (ix * 20) as f32,
             ))))

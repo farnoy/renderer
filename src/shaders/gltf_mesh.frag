@@ -6,6 +6,7 @@ layout (location = 0) out vec4 o_color;
 
 void main() {
     const vec3 light_pos = {0.0, 3.0, 0.0};
+    const vec3 light_cone_dir = {0.0, -1.0, 0.0};
     const vec3 view_pos = {0.0, 1.0, -2.0};
     const float specular_strength = 2.0;
     const vec3 light_color = vec3(1.0);
@@ -32,4 +33,7 @@ void main() {
     float t = (dot(norm, light_dir) + 1.0) / 2;
     float s = clamp(100 * dot(reflect_dir, view_dir) - 97, 0, 1);
     o_color.xyz = mix(mix(cool, warm, t), highlight, s);
+
+    if (dot(normalize(world_pos - light_pos), light_cone_dir) >= 0.6)
+        o_color.xyz = vec3(240,230,60) / 255;
 }
