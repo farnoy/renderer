@@ -9,8 +9,7 @@ use ash::{
     vk, Instance as AshInstance,
 };
 use std::{
-    ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr,
-    sync::Arc, u32, u64,
+    ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr, sync::Arc, u32, u64,
 };
 #[cfg(windows)]
 use winapi;

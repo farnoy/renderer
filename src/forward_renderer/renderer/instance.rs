@@ -1,4 +1,5 @@
 use ash;
+use ash::extensions::DebugUtils;
 use ash::extensions::Surface;
 #[cfg(windows)]
 use ash::extensions::Win32Surface;
@@ -10,8 +11,6 @@ use std::ffi::CString;
 #[allow(unused_imports)]
 use std::mem::transmute;
 use std::ops::Deref;
-#[cfg(feature = "validation")]
-use std::ptr;
 use std::sync::Arc;
 use winit;
 
@@ -32,7 +31,7 @@ pub struct Instance {
 
 #[cfg(feature = "validation")]
 struct Debug {
-    utils: vk::ExtDebugUtilsFn,
+    utils: DebugUtils,
     messenger: vk::DebugUtilsMessengerEXT,
 }
 
@@ -81,6 +80,8 @@ impl Instance {
         #[cfg(feature = "validation")]
         {
             use std::ffi::c_void;
+            let debug_utils = DebugUtils::new(entry.vk(), &instance);
+            /*
             let debug_utils = vk::ExtDebugUtilsFn::load(|name| unsafe {
                 transmute(
                     entry
@@ -88,6 +89,7 @@ impl Instance {
                         .get_instance_proc_addr(instance.handle(), name.as_ptr()),
                 )
             });
+            */
 
             unsafe extern "system" fn vulkan_debug_callback(
                 severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -146,17 +148,11 @@ impl Instance {
                 .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
-            let mut debug_messenger = vk::DebugUtilsMessengerEXT::null();
-
-            let res = unsafe {
-                debug_utils.create_debug_utils_messenger_ext(
-                    instance.handle(),
-                    &*create_info,
-                    ptr::null(),
-                    &mut debug_messenger,
-                )
+            let debug_messenger = unsafe {
+                debug_utils
+                    .create_debug_utils_messenger_ext(&*create_info, None)
+                    .expect("failed to create debug utils messenger")
             };
-            assert_eq!(res, vk::Result::SUCCESS);
 
             Ok((
                 Instance {
@@ -197,7 +193,7 @@ impl Instance {
     }
 
     #[cfg(feature = "validation")]
-    pub fn debug_utils(&self) -> &vk::ExtDebugUtilsFn {
+    pub fn debug_utils(&self) -> &DebugUtils {
         &self.debug.utils
     }
 }
@@ -214,11 +210,9 @@ impl Drop for Instance {
     fn drop(&mut self) {
         #[cfg(feature = "validation")]
         unsafe {
-            self.debug.utils.destroy_debug_utils_messenger_ext(
-                self.handle.handle(),
-                self.debug.messenger,
-                ptr::null(),
-            );
+            self.debug
+                .utils
+                .destroy_debug_utils_messenger_ext(self.debug.messenger, None);
         }
 
         unsafe {
@@ -227,14 +221,12 @@ impl Drop for Instance {
     }
 }
 
-static DEBUG_UTILS: &'static str = "VK_EXT_debug_utils\0";
-
 #[cfg(all(unix, not(target_os = "android")))]
 fn extension_names() -> Vec<*const i8> {
     vec![
         Surface::name().as_ptr(),
         XlibSurface::name().as_ptr(),
-        DEBUG_UTILS.as_ptr() as *const i8,
+        DebugUtils::name().as_ptr(),
     ]
 }
 
@@ -243,6 +235,6 @@ fn extension_names() -> Vec<*const i8> {
     vec![
         Surface::name().as_ptr(),
         Win32Surface::name().as_ptr(),
-        DEBUG_UTILS.as_ptr() as *const i8,
+        DebugUtils::name().as_ptr(),
     ]
 }

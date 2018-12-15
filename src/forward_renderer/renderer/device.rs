@@ -160,11 +160,10 @@ impl Device {
                 object_handle: object,
                 p_object_name: name.as_ptr(),
             };
-            let res = self
-                .instance
+            self.instance
                 .debug_utils()
-                .set_debug_utils_object_name_ext(self.device.handle(), &name_info);
-            assert_eq!(res, vk::Result::SUCCESS);
+                .debug_utils_set_object_name_ext(self.device.handle(), &name_info)
+                .expect("failed to set object name");
         };
     }
 
