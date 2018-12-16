@@ -13,11 +13,12 @@ use super::super::renderer::RenderFrame;
 pub struct SteadyRotation;
 
 impl<'a> System<'a> for SteadyRotation {
-    type SystemData = (WriteStorage<'a, Rotation>);
+    type SystemData = (WriteStorage<'a, Rotation>, Read<'a, FrameTiming>);
 
-    fn run(&mut self, mut rotations: Self::SystemData) {
+    fn run(&mut self, (mut rotations, frame_timing): Self::SystemData) {
         use cgmath::Rotation3;
-        let incremental = cgmath::Quaternion::from_angle_y(cgmath::Deg(1.0));
+        let incremental =
+            cgmath::Quaternion::from_angle_y(cgmath::Deg(60.0) * frame_timing.time_delta);
         for rot in (&mut rotations).join() {
             *rot = Rotation(incremental * rot.0);
         }
