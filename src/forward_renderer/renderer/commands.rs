@@ -1,6 +1,6 @@
 use ash::{version::DeviceV1_0, vk};
 use parking_lot::Mutex;
-use std::{mem::transmute, ops::Deref, ptr, sync::Arc};
+use std::{mem::transmute, ops::Deref, sync::Arc};
 
 use super::{
     device::Device,
@@ -80,13 +80,11 @@ impl CommandPool {
         count: u32,
         lock: &mut vk::CommandPool,
     ) -> Vec<vk::CommandBuffer> {
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
-            p_next: ptr::null(),
-            command_buffer_count: count,
-            command_pool: *lock,
-            level: vk::CommandBufferLevel::PRIMARY,
-        };
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
+            .command_buffer_count(count)
+            .command_pool(*lock)
+            .level(vk::CommandBufferLevel::PRIMARY);
+
         unsafe {
             self.device
                 .allocate_command_buffers(&command_buffer_allocate_info)
@@ -105,17 +103,10 @@ impl CommandBuffer {
         );
 
         unsafe {
-            let submits = [vk::SubmitInfo {
-                s_type: vk::StructureType::SUBMIT_INFO,
-                p_next: ptr::null(),
-                wait_semaphore_count: 0,
-                p_wait_semaphores: ptr::null(),
-                p_wait_dst_stage_mask: ptr::null(),
-                command_buffer_count: 1,
-                p_command_buffers: &self.handle,
-                signal_semaphore_count: 0,
-                p_signal_semaphores: ptr::null(),
-            }];
+            let command_buffers = &[self.handle];
+            let submits = [vk::SubmitInfo::builder()
+                .command_buffers(command_buffers)
+                .build()];
 
             self.pool
                 .device

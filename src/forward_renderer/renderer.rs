@@ -490,18 +490,12 @@ impl RenderFrame {
             }];
             unsafe {
                 device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet {
-                        s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                        p_next: ptr::null(),
-                        dst_set: mvp_set.handle,
-                        dst_binding: 0,
-                        dst_array_element: 0,
-                        descriptor_count: 1,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        p_image_info: ptr::null(),
-                        p_buffer_info: buffer_updates.as_ptr(),
-                        p_texel_buffer_view: ptr::null(),
-                    }],
+                    &[vk::WriteDescriptorSet::builder()
+                        .dst_set(mvp_set.handle)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(buffer_updates)
+                        .build()],
                     &[],
                 );
             }
@@ -531,18 +525,12 @@ impl RenderFrame {
             }];
             unsafe {
                 device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet {
-                        s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                        p_next: ptr::null(),
-                        dst_set: model_view_set.handle,
-                        dst_binding: 0,
-                        dst_array_element: 0,
-                        descriptor_count: 1,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        p_image_info: ptr::null(),
-                        p_buffer_info: buffer_updates.as_ptr(),
-                        p_texel_buffer_view: ptr::null(),
-                    }],
+                    &[vk::WriteDescriptorSet::builder()
+                        .dst_set(model_view_set.handle)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(buffer_updates)
+                        .build()],
                     &[],
                 );
             }
@@ -573,18 +561,12 @@ impl RenderFrame {
             }];
             unsafe {
                 device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet {
-                        s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                        p_next: ptr::null(),
-                        dst_set: model_set.handle,
-                        dst_binding: 0,
-                        dst_array_element: 0,
-                        descriptor_count: 1,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        p_image_info: ptr::null(),
-                        p_buffer_info: buffer_updates.as_ptr(),
-                        p_texel_buffer_view: ptr::null(),
-                    }],
+                    &[vk::WriteDescriptorSet::builder()
+                        .dst_set(model_set.handle)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(buffer_updates)
+                        .build()],
                     &[],
                 );
             }
@@ -845,17 +827,13 @@ impl<'a> System<'a> for CullGeometry {
                 [renderer.cull_complete_semaphore.handle]
             };
             let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-            let submits = [vk::SubmitInfo {
-                s_type: vk::StructureType::SUBMIT_INFO,
-                p_next: ptr::null(),
-                wait_semaphore_count: wait_semaphores.len() as u32,
-                p_wait_semaphores: wait_semaphores.as_ptr(),
-                p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                command_buffer_count: 1,
-                p_command_buffers: &*cull_cb,
-                signal_semaphore_count: signal_semaphores.len() as u32,
-                p_signal_semaphores: signal_semaphores.as_ptr(),
-            }];
+            let command_buffers = &[*cull_cb];
+            let submit = vk::SubmitInfo::builder()
+                .wait_semaphores(wait_semaphores)
+                .wait_dst_stage_mask(&dst_stage_masks)
+                .command_buffers(command_buffers)
+                .signal_semaphores(&signal_semaphores)
+                .build();
             let submit_fence = new_fence(Arc::clone(&renderer.device));
             renderer.device.set_object_name(
                 vk::ObjectType::FENCE,
@@ -868,7 +846,7 @@ impl<'a> System<'a> for CullGeometry {
             unsafe {
                 renderer
                     .device
-                    .queue_submit(*queue, &submits, submit_fence.handle)
+                    .queue_submit(*queue, &[submit], submit_fence.handle)
                     .unwrap();
             }
 
@@ -896,17 +874,13 @@ impl<'a> System<'a> for CullGeometry {
                 .collect::<Vec<_>>();
             let signal_semaphores = &[renderer.cull_complete_semaphore.handle];
             let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-            let submits = [vk::SubmitInfo {
-                s_type: vk::StructureType::SUBMIT_INFO,
-                p_next: ptr::null(),
-                wait_semaphore_count: wait_semaphores.len() as u32,
-                p_wait_semaphores: wait_semaphores.as_ptr(),
-                p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                command_buffer_count: 1,
-                p_command_buffers: &*cull_cb_integrate,
-                signal_semaphore_count: signal_semaphores.len() as u32,
-                p_signal_semaphores: signal_semaphores.as_ptr(),
-            }];
+            let command_buffers = &[*cull_cb_integrate];
+            let submit = vk::SubmitInfo::builder()
+                .wait_semaphores(&wait_semaphores)
+                .wait_dst_stage_mask(&dst_stage_masks)
+                .command_buffers(command_buffers)
+                .signal_semaphores(signal_semaphores)
+                .build();
             let submit_fence = new_fence(Arc::clone(&renderer.device));
             renderer.device.set_object_name(
                 vk::ObjectType::FENCE,
@@ -919,7 +893,7 @@ impl<'a> System<'a> for CullGeometry {
             unsafe {
                 renderer
                     .device
-                    .queue_submit(*queue, &submits, submit_fence.handle)
+                    .queue_submit(*queue, &[submit], submit_fence.handle)
                     .unwrap();
             }
 
@@ -980,21 +954,20 @@ impl<'a> System<'a> for Renderer {
                             Default::default(),
                             &[],
                             &[],
-                            &[vk::ImageMemoryBarrier {
-                                image: gui.texture.handle,
-                                subresource_range: vk::ImageSubresourceRange {
+                            &[vk::ImageMemoryBarrier::builder()
+                                .image(gui.texture.handle)
+                                .subresource_range(vk::ImageSubresourceRange {
                                     aspect_mask: vk::ImageAspectFlags::COLOR,
                                     base_mip_level: 0,
                                     level_count: 1,
                                     base_array_layer: 0,
                                     layer_count: 1,
-                                },
-                                old_layout: vk::ImageLayout::PREINITIALIZED,
-                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                ..Default::default()
-                            }],
+                                })
+                                .old_layout(vk::ImageLayout::PREINITIALIZED)
+                                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .build()],
                         );
                     }
                     gui.transitioned = true;
@@ -1009,21 +982,17 @@ impl<'a> System<'a> for Renderer {
                             },
                         },
                     ];
-                    let begin_info = vk::RenderPassBeginInfo {
-                        s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
-                        p_next: ptr::null(),
-                        render_pass: main_renderpass.handle,
-                        framebuffer: framebuffer.handles[image_index as usize],
-                        render_area: vk::Rect2D {
+                    let begin_info = vk::RenderPassBeginInfo::builder()
+                        .render_pass(main_renderpass.handle)
+                        .framebuffer(framebuffer.handles[image_index as usize])
+                        .render_area(vk::Rect2D {
                             offset: vk::Offset2D { x: 0, y: 0 },
                             extent: vk::Extent2D {
                                 width: instance.window_width,
                                 height: instance.window_height,
                             },
-                        },
-                        clear_value_count: clear_values.len() as u32,
-                        p_clear_values: clear_values.as_ptr(),
-                    };
+                        })
+                        .clear_values(clear_values);
 
                     device.debug_marker_around(
                         command_buffer,
@@ -1238,17 +1207,13 @@ impl<'a> System<'a> for Renderer {
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
             ];
-            let submits = [vk::SubmitInfo {
-                s_type: vk::StructureType::SUBMIT_INFO,
-                p_next: ptr::null(),
-                wait_semaphore_count: wait_semaphores.len() as u32,
-                p_wait_semaphores: wait_semaphores.as_ptr(),
-                p_wait_dst_stage_mask: dst_stage_masks.as_ptr(),
-                command_buffer_count: 1,
-                p_command_buffers: &*command_buffer,
-                signal_semaphore_count: signal_semaphores.len() as u32,
-                p_signal_semaphores: signal_semaphores.as_ptr(),
-            }];
+            let command_buffers = &[*command_buffer];
+            let submit = vk::SubmitInfo::builder()
+                .wait_semaphores(wait_semaphores)
+                .wait_dst_stage_mask(dst_stage_masks)
+                .command_buffers(command_buffers)
+                .signal_semaphores(signal_semaphores)
+                .build();
             let queue = renderer.device.graphics_queue.lock();
 
             let submit_fence = new_fence(Arc::clone(&renderer.device));
@@ -1260,7 +1225,7 @@ impl<'a> System<'a> for Renderer {
 
             renderer
                 .device
-                .queue_submit(*queue, &submits, submit_fence.handle)
+                .queue_submit(*queue, &[submit], submit_fence.handle)
                 .unwrap();
 
             present_data.render_command_buffer = Some(command_buffer);
@@ -1291,16 +1256,12 @@ impl<'a> System<'a> for PresentFramebuffer {
     fn run(&mut self, renderer: Self::SystemData) {
         {
             let wait_semaphores = &[renderer.rendering_complete_semaphore.handle];
-            let present_info = vk::PresentInfoKHR {
-                s_type: vk::StructureType::PRESENT_INFO_KHR,
-                p_next: ptr::null(),
-                wait_semaphore_count: wait_semaphores.len() as u32,
-                p_wait_semaphores: wait_semaphores.as_ptr(),
-                swapchain_count: 1,
-                p_swapchains: &renderer.swapchain.handle.swapchain,
-                p_image_indices: &renderer.image_index,
-                p_results: ptr::null_mut(),
-            };
+            let swapchains = &[renderer.swapchain.handle.swapchain];
+            let image_indices = &[renderer.image_index];
+            let present_info = vk::PresentInfoKHR::builder()
+                .wait_semaphores(wait_semaphores)
+                .swapchains(swapchains)
+                .image_indices(image_indices);
 
             let queue = renderer.device.graphics_queue.lock();
             unsafe {

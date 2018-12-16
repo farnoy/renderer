@@ -27,7 +27,6 @@ use parking_lot::Mutex;
 use specs::Builder;
 use std::{
     mem::{size_of, transmute},
-    ptr,
     sync::Arc,
 };
 
@@ -123,18 +122,12 @@ fn main() {
         ];
         unsafe {
             renderer.device.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet {
-                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                    p_next: ptr::null(),
-                    dst_set: renderer.cull_set.handle,
-                    dst_binding: 0,
-                    dst_array_element: 0,
-                    descriptor_count: buffer_updates.len() as u32,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    p_image_info: ptr::null(),
-                    p_buffer_info: buffer_updates.as_ptr(),
-                    p_texel_buffer_view: ptr::null(),
-                }],
+                &[vk::WriteDescriptorSet::builder()
+                    .dst_set(renderer.cull_set.handle)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(buffer_updates)
+                    .build()],
                 &[],
             );
         }

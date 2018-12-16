@@ -150,16 +150,12 @@ impl Device {
     pub fn set_object_name(&self, object_type: vk::ObjectType, object: u64, name: &str) {
         unsafe {
             use std::ffi::CString;
-            use std::ptr;
 
             let name = CString::new(name).unwrap();
-            let name_info = vk::DebugUtilsObjectNameInfoEXT {
-                s_type: vk::StructureType::DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-                p_next: ptr::null(),
-                object_type,
-                object_handle: object,
-                p_object_name: name.as_ptr(),
-            };
+            let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_type(object_type)
+                .object_handle(object)
+                .object_name(&name);
             self.instance
                 .debug_utils()
                 .debug_utils_set_object_name_ext(self.device.handle(), &name_info)
