@@ -458,12 +458,23 @@ pub fn new_buffer(
     allocation_usage: alloc::VmaMemoryUsage,
     size: vk::DeviceSize,
 ) -> Buffer {
-    let queue_family_indices = &[device.graphics_queue_family, device.compute_queue_family];
+    let (queue_family_indices, sharing_mode) =
+        if device.compute_queue_family != device.graphics_queue_family {
+            (
+                vec![device.graphics_queue_family, device.compute_queue_family],
+                vk::SharingMode::CONCURRENT,
+            )
+        } else {
+            (
+                vec![device.graphics_queue_family],
+                vk::SharingMode::EXCLUSIVE,
+            )
+        };
     let buffer_create_info = vk::BufferCreateInfo::builder()
         .size(size)
         .usage(buffer_usage)
-        .sharing_mode(vk::SharingMode::CONCURRENT)
-        .queue_family_indices(queue_family_indices);
+        .sharing_mode(sharing_mode)
+        .queue_family_indices(&queue_family_indices);
 
     let allocation_create_info = alloc::VmaAllocationCreateInfo {
         flags: allocation_flags,
@@ -499,7 +510,18 @@ pub fn new_image(
     allocation_flags: alloc::VmaAllocationCreateFlagBits,
     allocation_usage: alloc::VmaMemoryUsage,
 ) -> Image {
-    let queue_family_indices = &[device.graphics_queue_family, device.compute_queue_family];
+    let (queue_family_indices, sharing_mode) =
+        if device.compute_queue_family != device.graphics_queue_family {
+            (
+                vec![device.graphics_queue_family, device.compute_queue_family],
+                vk::SharingMode::CONCURRENT,
+            )
+        } else {
+            (
+                vec![device.graphics_queue_family],
+                vk::SharingMode::EXCLUSIVE,
+            )
+        };
     let image_create_info = vk::ImageCreateInfo::builder()
         .format(format)
         .extent(extent)
@@ -510,8 +532,8 @@ pub fn new_image(
         .image_type(vk::ImageType::TYPE_2D)
         .tiling(vk::ImageTiling::LINEAR)
         .initial_layout(vk::ImageLayout::PREINITIALIZED)
-        .sharing_mode(vk::SharingMode::CONCURRENT)
-        .queue_family_indices(queue_family_indices);
+        .sharing_mode(sharing_mode)
+        .queue_family_indices(&queue_family_indices);
 
     let allocation_create_info = alloc::VmaAllocationCreateInfo {
         flags: allocation_flags,
