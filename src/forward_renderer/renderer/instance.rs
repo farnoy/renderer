@@ -128,13 +128,14 @@ impl Instance {
                         .expect("Weird validation layer message")
                 );
                 for ix in 0..((*data).object_count) {
-                    let name = (*data).p_objects.offset(ix as isize).read();
+                    let object = (*data).p_objects.offset(ix as isize).read();
+                    let name = match object.p_object_name {
+                        x if x.is_null() => "Unknown name",
+                        x => CStr::from_ptr(x).to_str().unwrap(),
+                    };
                     println!(
                         "    Object[{}] - Type {:?}, Value 0x{:x?}, Name \"{}\"",
-                        ix,
-                        name.object_type,
-                        name.object_handle,
-                        CStr::from_ptr(name.p_object_name).to_str().unwrap(),
+                        ix, object.object_type, object.object_handle, name
                     );
                 }
                 0
