@@ -66,7 +66,7 @@ impl Device {
                 .next()
                 .unwrap()
         };
-        let (compute_queue_family, compute_queue_len) = {
+        let compute_queues_spec = {
             queue_families
                 .iter()
                 .enumerate()
@@ -80,12 +80,14 @@ impl Device {
                     }
                 })
                 .next()
-                .expect("no suitable compute queue")
         };
-        let queues = vec![
-            (graphics_queue_family, 1),
-            (compute_queue_family, compute_queue_len),
-        ];
+        let queues = match compute_queues_spec {
+            Some((compute_queue_family, compute_queue_len)) => vec![
+                (graphics_queue_family, 1),
+                (compute_queue_family, compute_queue_len),
+            ],
+            None => vec![(graphics_queue_family, 1)],
+        };
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
             let device_extension_names_raw = vec![Swapchain::name().as_ptr()];
@@ -121,14 +123,21 @@ impl Device {
 
         let allocator =
             alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
-        let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
-        let compute_queues = (0..compute_queue_len)
-            .map(|ix| unsafe {
-                Arc::new(Mutex::new(
-                    device.get_device_queue(compute_queue_family, ix),
-                ))
-            })
-            .collect::<Vec<_>>();
+        let graphics_queue = unsafe {
+            Arc::new(Mutex::new(
+                device.get_device_queue(graphics_queue_family, 0),
+            ))
+        };
+        let compute_queues = match compute_queues_spec {
+            Some((compute_queue_family, len)) => (0..len)
+                .map(|ix| unsafe {
+                    Arc::new(Mutex::new(
+                        device.get_device_queue(compute_queue_family, ix),
+                    ))
+                })
+                .collect::<Vec<_>>(),
+            None => vec![Arc::clone(&graphics_queue)],
+        };
 
         Ok(Device {
             device,
@@ -136,8 +145,10 @@ impl Device {
             physical_device,
             allocator,
             graphics_queue_family,
-            compute_queue_family,
-            graphics_queue: Arc::new(Mutex::new(graphics_queue)),
+            compute_queue_family: compute_queues_spec
+                .map(|a| a.1)
+                .unwrap_or(graphics_queue_family),
+            graphics_queue,
             compute_queues,
         })
     }
