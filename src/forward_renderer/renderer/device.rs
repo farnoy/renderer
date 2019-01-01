@@ -146,7 +146,7 @@ impl Device {
             allocator,
             graphics_queue_family,
             compute_queue_family: compute_queues_spec
-                .map(|a| a.1)
+                .map(|a| a.0)
                 .unwrap_or(graphics_queue_family),
             graphics_queue,
             compute_queues,
