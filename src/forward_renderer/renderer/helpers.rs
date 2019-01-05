@@ -60,6 +60,11 @@ pub struct Image {
     pub device: Arc<Device>,
 }
 
+pub struct ImageView {
+    pub handle: vk::ImageView,
+    pub device: Arc<Device>,
+}
+
 pub struct Sampler {
     pub handle: vk::Sampler,
     pub device: Arc<Device>,
@@ -139,6 +144,14 @@ impl Drop for Buffer {
 impl Drop for Image {
     fn drop(&mut self) {
         alloc::destroy_image(self.device.allocator, self.handle, self.allocation)
+    }
+}
+
+impl Drop for ImageView {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_image_view(self.handle, None);
+        }
     }
 }
 
@@ -558,6 +571,12 @@ pub fn new_image(
         allocation_info,
         device,
     }
+}
+
+pub fn new_image_view(device: Arc<Device>, create_info: &vk::ImageViewCreateInfo) -> ImageView {
+    let handle = unsafe { device.create_image_view(&create_info, None).unwrap() };
+
+    ImageView { handle, device }
 }
 
 pub fn new_sampler(device: Arc<Device>, info: &vk::SamplerCreateInfoBuilder<'_>) -> Sampler {

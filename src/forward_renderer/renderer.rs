@@ -1281,6 +1281,7 @@ pub struct Gui {
     pub vertex_buffer: Buffer,
     pub index_buffer: Buffer,
     pub texture: Image,
+    pub texture_view: ImageView,
     pub sampler: Sampler,
     pub descriptor_set_layout: DescriptorSetLayout,
     pub descriptor_set: DescriptorSet,
@@ -1478,29 +1479,26 @@ impl Gui {
             "GUI Pipeline",
         );
 
-        let create_view_info = vk::ImageViewCreateInfo::builder()
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
-            .components(vk::ComponentMapping {
-                r: vk::ComponentSwizzle::IDENTITY,
-                g: vk::ComponentSwizzle::IDENTITY,
-                b: vk::ComponentSwizzle::IDENTITY,
-                a: vk::ComponentSwizzle::IDENTITY,
-            })
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .image(texture.handle);
-        let image_view = unsafe {
-            renderer
-                .device
-                .create_image_view(&create_view_info, None)
-                .unwrap()
-        };
+        let texture_view = new_image_view(
+            Arc::clone(&renderer.device),
+            &vk::ImageViewCreateInfo::builder()
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .components(vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                })
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image(texture.handle),
+        );
 
         unsafe {
             renderer.device.update_descriptor_sets(
@@ -1511,7 +1509,7 @@ impl Gui {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&[vk::DescriptorImageInfo::builder()
                         .sampler(sampler.handle)
-                        .image_view(image_view)
+                        .image_view(texture_view.handle)
                         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                         .build()])
                     .build()],
@@ -1524,6 +1522,7 @@ impl Gui {
             vertex_buffer,
             index_buffer,
             texture,
+            texture_view,
             sampler,
             descriptor_set_layout,
             descriptor_set,
