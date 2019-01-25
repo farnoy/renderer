@@ -1,9 +1,9 @@
-use ash::extensions::Swapchain;
+use ash::extensions::khr::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
 use ash::{
     self,
-    extensions::Surface,
+    extensions::khr::Surface,
     version::{DeviceV1_0, InstanceV1_0},
     vk,
 };
@@ -52,7 +52,7 @@ impl Device {
                 .filter_map(|(ix, info)| unsafe {
                     let supports_graphic_and_surface =
                         info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                            && surface_loader.get_physical_device_surface_support_khr(
+                            && surface_loader.get_physical_device_surface_support(
                                 physical_device,
                                 ix as u32,
                                 surface,
@@ -169,7 +169,7 @@ impl Device {
                 .object_name(&name);
             self.instance
                 .debug_utils()
-                .debug_utils_set_object_name_ext(self.device.handle(), &name_info)
+                .debug_utils_set_object_name(self.device.handle(), &name_info)
                 .expect("failed to set object name");
         };
     }
@@ -194,11 +194,11 @@ impl Device {
                 .color(color);
             self.instance
                 .debug_utils()
-                .cmd_begin_debug_utils_label_ext(command_buffer, &label_info);
+                .cmd_begin_debug_utils_label(command_buffer, &label_info);
             f();
             self.instance
                 .debug_utils()
-                .cmd_end_debug_utils_label_ext(command_buffer);
+                .cmd_end_debug_utils_label(command_buffer);
         };
     }
 

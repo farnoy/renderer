@@ -53,8 +53,8 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     meshopt::optimize_overdraw_in_place(&mut indices, &positions, 1.05);
     let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
     let indices_new = meshopt::remap_index_buffer(Some(&indices), positions.len(), &remap);
-    let positions_new = meshopt::remap_vertex_buffer(&positions, &remap);
-    let normals_new = meshopt::remap_vertex_buffer(&normals, &remap);
+    let positions_new = meshopt::remap_vertex_buffer(&positions, positions.len(), &remap);
+    let normals_new = meshopt::remap_vertex_buffer(&normals, positions.len(), &remap);
 
     // shadow with optimized buffers
     let indices = indices_new;

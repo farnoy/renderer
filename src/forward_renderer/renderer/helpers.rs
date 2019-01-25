@@ -1,8 +1,8 @@
 use super::{alloc, swapchain};
 #[cfg(windows)]
-use ash::extensions::Win32Surface;
+use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
-use ash::extensions::XlibSurface;
+use ash::extensions::khr::XlibSurface;
 use ash::{
     extensions,
     version::{DeviceV1_0, EntryV1_0},
@@ -221,11 +221,11 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
         physical_device, ..
     } = *device;
 
-    let surface_loader = extensions::Surface::new(entry.vk(), instance.vk());
+    let surface_loader = extensions::khr::Surface::new(entry.vk(), instance.vk());
     let present_mode = vk::PresentModeKHR::FIFO;
     let surface_formats = unsafe {
         surface_loader
-            .get_physical_device_surface_formats_khr(physical_device, surface)
+            .get_physical_device_surface_formats(physical_device, surface)
             .unwrap()
     };
     let surface_format = surface_formats
@@ -241,7 +241,7 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
         .expect("Unable to find suitable surface format.");
     let surface_capabilities = unsafe {
         surface_loader
-            .get_physical_device_surface_capabilities_khr(physical_device, surface)
+            .get_physical_device_surface_capabilities(physical_device, surface)
             .unwrap()
     };
     let mut desired_image_count = surface_capabilities.min_image_count + 1;
@@ -266,7 +266,7 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
         surface_capabilities.current_transform
     };
 
-    let swapchain_loader = extensions::Swapchain::new(instance.vk(), device.vk());
+    let swapchain_loader = extensions::khr::Swapchain::new(instance.vk(), device.vk());
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
         .surface(surface)
         .min_image_count(desired_image_count)
@@ -282,7 +282,7 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
         .image_array_layers(1);
     let swapchain = unsafe {
         swapchain_loader
-            .create_swapchain_khr(&swapchain_create_info, None)
+            .create_swapchain(&swapchain_create_info, None)
             .unwrap()
     };
 
@@ -319,7 +319,7 @@ pub fn setup_framebuffer(
     let images = unsafe {
         swapchain
             .ext
-            .get_swapchain_images_khr(swapchain.swapchain)
+            .get_swapchain_images(swapchain.swapchain)
             .unwrap()
     };
     println!("swapchain images len {}", images.len());
@@ -787,7 +787,7 @@ pub unsafe fn create_surface<E: EntryV1_0>(
         .window(x11_window as vk::Window)
         .dpy(x11_display as *mut vk::Display);
     let xlib_surface_loader = XlibSurface::new(entry, instance);
-    xlib_surface_loader.create_xlib_surface_khr(&x11_create_info, None)
+    xlib_surface_loader.create_xlib_surface(&x11_create_info, None)
 }
 
 #[cfg(windows)]
@@ -804,5 +804,5 @@ pub unsafe fn create_surface<E: EntryV1_0>(
         .hinstance(hinstance)
         .hwnd(hwnd as *const c_void);
     let win32_surface_loader = Win32Surface::new(entry, instance);
-    win32_surface_loader.create_win32_surface_khr(&win32_create_info, None)
+    win32_surface_loader.create_win32_surface(&win32_create_info, None)
 }

@@ -1,10 +1,10 @@
 use ash;
-use ash::extensions::DebugUtils;
-use ash::extensions::Surface;
+use ash::extensions::ext::DebugUtils;
+use ash::extensions::khr::Surface;
 #[cfg(windows)]
-use ash::extensions::Win32Surface;
+use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
-use ash::extensions::XlibSurface;
+use ash::extensions::khr::XlibSurface;
 use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
 use std::ffi::CString;
@@ -151,7 +151,7 @@ impl Instance {
 
             let debug_messenger = unsafe {
                 debug_utils
-                    .create_debug_utils_messenger_ext(&*create_info, None)
+                    .create_debug_utils_messenger(&*create_info, None)
                     .expect("failed to create debug utils messenger")
             };
 
@@ -213,7 +213,7 @@ impl Drop for Instance {
         unsafe {
             self.debug
                 .utils
-                .destroy_debug_utils_messenger_ext(self.debug.messenger, None);
+                .destroy_debug_utils_messenger(self.debug.messenger, None);
         }
 
         unsafe {

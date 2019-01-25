@@ -719,7 +719,7 @@ impl<'a> System<'a> for AcquireFramebuffer {
                 .swapchain
                 .handle
                 .ext
-                .acquire_next_image_khr(
+                .acquire_next_image(
                     renderer.swapchain.handle.swapchain,
                     u64::MAX,
                     renderer.present_semaphore.handle,
@@ -1269,7 +1269,7 @@ impl<'a> System<'a> for PresentFramebuffer {
                     .swapchain
                     .handle
                     .ext
-                    .queue_present_khr(*queue, &present_info)
+                    .queue_present(*queue, &present_info)
                     .unwrap();
             }
         }
