@@ -38,32 +38,6 @@ fn main() {
             .build()
             .unwrap(),
     );
-    /*
-    multithreading example
-    threadpool.run(lazy(move |_| {
-        println!("start parent");
-        let lhs =
-            spawn_with_handle(lazy(move |_| {
-                println!("start lhs");
-                std::thread::sleep_ms(5000);
-                println!("end rhs");
-                future::ok::<u32, Never>(10)
-            }));
-        let rhs =
-            spawn_with_handle(lazy(move |_| {
-                println!("start lhs");
-                std::thread::sleep_ms(5000);
-                println!("end rhs");
-                future::ok::<u32, Never>(10)
-            }));
-        lhs.join(rhs).and_then(|(lhs, rhs)| {
-            lhs.join(rhs).and_then(|(l, r)| {
-                println!("end parent, results are ({}, {})", l, r);
-                future::ok::<u32, Never>(5)
-            })
-        })
-    })).unwrap();
-    */
 
     let (mut renderer, events_loop) = RenderFrame::new();
 
