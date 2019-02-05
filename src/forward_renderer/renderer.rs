@@ -1,6 +1,5 @@
 // TODO: pub(crate) should disappear?
 pub mod alloc;
-mod commands;
 mod device;
 mod entry;
 mod gltf_mesh;
@@ -26,8 +25,8 @@ use std::{
 use winit;
 
 use self::{
-    commands::{CommandBuffer, CommandPool},
     device::{
+        commands::{CommandBuffer, CommandPool},
         descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
         Device,
     },
@@ -78,13 +77,11 @@ impl RenderFrame {
         let present_semaphore = new_semaphore(Arc::clone(&device));
         let cull_complete_semaphore = new_semaphore(Arc::clone(&device));
         let rendering_complete_semaphore = new_semaphore(Arc::clone(&device));
-        let graphics_command_pool = CommandPool::new(
-            Arc::clone(&device),
+        let graphics_command_pool = device.new_command_pool(
             device.graphics_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
-        let compute_command_pool = CommandPool::new(
-            Arc::clone(&device),
+        let compute_command_pool = device.new_command_pool(
             device.compute_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
@@ -697,7 +694,7 @@ impl<'a> System<'a> for CullGeometry {
         let total = mesh_indices.join().count();
         let parallel = max(1, min(total / 600, MAX_PARALLEL));
         for ix in 0..parallel {
-            let cull_cb = commands::record_one_time(Arc::clone(&renderer.compute_command_pool), {
+            let cull_cb = renderer.compute_command_pool.record_one_time({
                 |command_buffer| unsafe {
                     renderer.device.debug_marker_around(
                         command_buffer,
@@ -799,8 +796,7 @@ impl<'a> System<'a> for CullGeometry {
 
         // When async cull was sharded between queues, define a sync point
         if parallel > 1 {
-            let cull_cb_integrate =
-                commands::record_one_time(Arc::clone(&renderer.compute_command_pool), { |_| {} });
+            let cull_cb_integrate = renderer.compute_command_pool.record_one_time({ |_| {} });
             let wait_semaphores = self
                 .semaphores
                 .iter()
@@ -864,273 +860,271 @@ impl<'a> System<'a> for Renderer {
         (entities, renderer, mut gui, meshes, coarse_culled, mut present_data): Self::SystemData,
     ) {
         let total = coarse_culled.join().count() as u32;
-        let command_buffer =
-            commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
-                let image_index = renderer.image_index;
-                let main_renderpass = &renderer.renderpass;
-                let framebuffer = &renderer.framebuffer;
-                let instance = Arc::clone(&renderer.instance);
-                let device = Arc::clone(&renderer.device);
-                let mvp_set = &renderer.mvp_set;
-                let model_set = &renderer.model_set;
-                let depth_pipeline = &renderer.depth_pipeline;
-                let depth_pipeline_layout = &renderer.depth_pipeline_layout;
-                let gltf_pipeline = &renderer.gltf_pipeline;
-                let gltf_pipeline_layout = &renderer.gltf_pipeline_layout;
-                let culled_index_buffer = renderer.culled_index_buffer.as_ref().unwrap();
-                let culled_commands_buffer = &renderer.culled_commands_buffer;
-                move |command_buffer| unsafe {
-                    if !gui.transitioned {
-                        device.cmd_pipeline_barrier(
-                            command_buffer,
-                            vk::PipelineStageFlags::TOP_OF_PIPE,
-                            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                            Default::default(),
-                            &[],
-                            &[],
-                            &[vk::ImageMemoryBarrier::builder()
-                                .image(gui.texture.handle)
-                                .subresource_range(vk::ImageSubresourceRange {
-                                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                                    base_mip_level: 0,
-                                    level_count: 1,
-                                    base_array_layer: 0,
-                                    layer_count: 1,
-                                })
-                                .old_layout(vk::ImageLayout::PREINITIALIZED)
-                                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .build()],
-                        );
-                    }
-                    gui.transitioned = true;
-                    let clear_values = &[
-                        vk::ClearValue {
-                            color: vk::ClearColorValue { float32: [0.0; 4] },
-                        },
-                        vk::ClearValue {
-                            depth_stencil: vk::ClearDepthStencilValue {
-                                depth: 1.0,
-                                stencil: 0,
-                            },
-                        },
-                    ];
-                    let begin_info = vk::RenderPassBeginInfo::builder()
-                        .render_pass(main_renderpass.handle)
-                        .framebuffer(framebuffer.handles[image_index as usize])
-                        .render_area(vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: instance.window_width,
-                                height: instance.window_height,
-                            },
-                        })
-                        .clear_values(clear_values);
-
-                    device.debug_marker_around(
+        let command_buffer = renderer.graphics_command_pool.record_one_time({
+            let image_index = renderer.image_index;
+            let main_renderpass = &renderer.renderpass;
+            let framebuffer = &renderer.framebuffer;
+            let instance = Arc::clone(&renderer.instance);
+            let device = Arc::clone(&renderer.device);
+            let mvp_set = &renderer.mvp_set;
+            let model_set = &renderer.model_set;
+            let depth_pipeline = &renderer.depth_pipeline;
+            let depth_pipeline_layout = &renderer.depth_pipeline_layout;
+            let gltf_pipeline = &renderer.gltf_pipeline;
+            let gltf_pipeline_layout = &renderer.gltf_pipeline_layout;
+            let culled_index_buffer = renderer.culled_index_buffer.as_ref().unwrap();
+            let culled_commands_buffer = &renderer.culled_commands_buffer;
+            move |command_buffer| unsafe {
+                if !gui.transitioned {
+                    device.cmd_pipeline_barrier(
                         command_buffer,
-                        "main renderpass",
-                        [0.0, 0.0, 1.0, 1.0],
-                        || {
-                            device.device.cmd_begin_render_pass(
-                                command_buffer,
-                                &begin_info,
-                                vk::SubpassContents::INLINE,
-                            );
-                            device.debug_marker_around(
-                                command_buffer,
-                                "depth prepass",
-                                [0.3, 0.3, 0.3, 1.0],
-                                || {
-                                    device.device.cmd_bind_pipeline(
-                                        command_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        depth_pipeline.handle,
-                                    );
-                                    device.device.cmd_bind_descriptor_sets(
-                                        command_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        depth_pipeline_layout.handle,
-                                        0,
-                                        &[mvp_set.handle],
-                                        &[],
-                                    );
-                                    device.device.cmd_bind_index_buffer(
-                                        command_buffer,
-                                        culled_index_buffer.handle,
-                                        0,
-                                        vk::IndexType::UINT32,
-                                    );
-                                    let mesh = (&*entities, &meshes).join().next().unwrap().1;
-                                    device.device.cmd_bind_vertex_buffers(
-                                        command_buffer,
-                                        0,
-                                        &[mesh.vertex_buffer.handle],
-                                        &[0],
-                                    );
-                                    device.device.cmd_draw_indexed_indirect(
-                                        command_buffer,
-                                        culled_commands_buffer.handle,
-                                        0,
-                                        total,
-                                        size_of::<u32>() as u32 * 5,
-                                    );
-                                    device.device.cmd_next_subpass(
-                                        command_buffer,
-                                        vk::SubpassContents::INLINE,
-                                    );
-                                },
-                            );
-                            device.debug_marker_around(
-                                command_buffer,
-                                "gltf meshes",
-                                [1.0, 0.0, 0.0, 1.0],
-                                || {
-                                    // gltf mesh
-                                    device.device.cmd_bind_pipeline(
-                                        command_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        gltf_pipeline.handle,
-                                    );
-                                    device.device.cmd_bind_descriptor_sets(
-                                        command_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        gltf_pipeline_layout.handle,
-                                        0,
-                                        &[mvp_set.handle, model_set.handle],
-                                        &[],
-                                    );
-                                    device.device.cmd_bind_index_buffer(
-                                        command_buffer,
-                                        culled_index_buffer.handle,
-                                        0,
-                                        vk::IndexType::UINT32,
-                                    );
-                                    let mesh = (&*entities, &meshes).join().next().unwrap().1;
-                                    device.device.cmd_bind_vertex_buffers(
-                                        command_buffer,
-                                        0,
-                                        &[mesh.vertex_buffer.handle, mesh.normal_buffer.handle],
-                                        &[0, 0],
-                                    );
-                                    device.device.cmd_draw_indexed_indirect(
-                                        command_buffer,
-                                        culled_commands_buffer.handle,
-                                        0,
-                                        total,
-                                        size_of::<u32>() as u32 * 5,
-                                    );
-                                },
-                            );
-                            device.debug_marker_around(
-                                command_buffer,
-                                "GUI",
-                                [1.0, 1.0, 0.0, 1.0],
-                                || {
-                                    let vertex_slice = from_raw_parts_mut(
-                                        gui.vertex_buffer.allocation_info.pMappedData
-                                            as *mut imgui::ImDrawVert,
-                                        4096,
-                                    );
-                                    let index_slice = from_raw_parts_mut(
-                                        gui.index_buffer.allocation_info.pMappedData
-                                            as *mut imgui::ImDrawIdx,
-                                        4096,
-                                    );
-                                    let pipeline_layout = gui.pipeline_layout.handle;
-                                    device.cmd_bind_descriptor_sets(
-                                        command_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        pipeline_layout,
-                                        0,
-                                        &[gui.descriptor_set.handle],
-                                        &[],
-                                    );
-                                    device.cmd_bind_pipeline(
-                                        command_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        gui.pipeline.handle,
-                                    );
-                                    device.cmd_bind_vertex_buffers(
-                                        command_buffer,
-                                        0,
-                                        &[gui.vertex_buffer.handle],
-                                        &[0],
-                                    );
-                                    device.device.cmd_bind_index_buffer(
-                                        command_buffer,
-                                        gui.index_buffer.handle,
-                                        0,
-                                        vk::IndexType::UINT16,
-                                    );
-                                    let ui = gui.imgui.frame(
-                                        imgui::FrameSize {
-                                            logical_size: (
-                                                f64::from(instance.window_width),
-                                                f64::from(instance.window_height),
-                                            ),
-                                            hidpi_factor: 1.0,
-                                        },
-                                        1.0,
-                                    );
-                                    let alloc_stats = alloc::stats(device.allocator);
-                                    let s = format!("Alloc stats {:?}", alloc_stats.total);
-                                    ui.window(im_str!("Renderer"))
-                                        .size((500.0, 300.0), imgui::ImGuiCond::Always)
-                                        .build(|| {
-                                            ui.text_wrapped(im_str!("{}", s));
-                                        });
-                                    ui.render(|ui, draw_data| {
-                                        let (x, y) = ui.imgui().display_size();
-                                        let constants = [2.0 / x, 2.0 / y, -1.0, -1.0];
-
-                                        let casted: &[u8] = {
-                                            from_raw_parts(
-                                                constants.as_ptr() as *const u8,
-                                                constants.len() * 4,
-                                            )
-                                        };
-                                        device.cmd_push_constants(
-                                            command_buffer,
-                                            pipeline_layout,
-                                            vk::ShaderStageFlags::VERTEX,
-                                            0,
-                                            casted,
-                                        );
-                                        let mut vertex_offset = 0;
-                                        let mut index_offset = 0;
-                                        for draw_list in draw_data.into_iter() {
-                                            index_slice[0..draw_list.idx_buffer.len()]
-                                                .copy_from_slice(draw_list.idx_buffer);
-                                            vertex_slice[0..draw_list.vtx_buffer.len()]
-                                                .copy_from_slice(draw_list.vtx_buffer);
-                                            for draw_cmd in draw_list.cmd_buffer {
-                                                device.cmd_draw_indexed(
-                                                    command_buffer,
-                                                    draw_cmd.elem_count,
-                                                    1,
-                                                    index_offset,
-                                                    vertex_offset,
-                                                    0,
-                                                );
-                                                index_offset += draw_cmd.elem_count as u32;
-                                            }
-                                            vertex_offset += draw_list.vtx_buffer.len() as i32;
-                                        }
-                                        if false {
-                                            return Err(3i8);
-                                        }
-                                        Ok(())
-                                    })
-                                    .expect("failed rendering ui");
-                                },
-                            );
-                            device.device.cmd_end_render_pass(command_buffer);
-                        },
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                        Default::default(),
+                        &[],
+                        &[],
+                        &[vk::ImageMemoryBarrier::builder()
+                            .image(gui.texture.handle)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .old_layout(vk::ImageLayout::PREINITIALIZED)
+                            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .build()],
                     );
                 }
-            });
+                gui.transitioned = true;
+                let clear_values = &[
+                    vk::ClearValue {
+                        color: vk::ClearColorValue { float32: [0.0; 4] },
+                    },
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
+                        },
+                    },
+                ];
+                let begin_info = vk::RenderPassBeginInfo::builder()
+                    .render_pass(main_renderpass.handle)
+                    .framebuffer(framebuffer.handles[image_index as usize])
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                            width: instance.window_width,
+                            height: instance.window_height,
+                        },
+                    })
+                    .clear_values(clear_values);
+
+                device.debug_marker_around(
+                    command_buffer,
+                    "main renderpass",
+                    [0.0, 0.0, 1.0, 1.0],
+                    || {
+                        device.device.cmd_begin_render_pass(
+                            command_buffer,
+                            &begin_info,
+                            vk::SubpassContents::INLINE,
+                        );
+                        device.debug_marker_around(
+                            command_buffer,
+                            "depth prepass",
+                            [0.3, 0.3, 0.3, 1.0],
+                            || {
+                                device.device.cmd_bind_pipeline(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    depth_pipeline.handle,
+                                );
+                                device.device.cmd_bind_descriptor_sets(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    depth_pipeline_layout.handle,
+                                    0,
+                                    &[mvp_set.handle],
+                                    &[],
+                                );
+                                device.device.cmd_bind_index_buffer(
+                                    command_buffer,
+                                    culled_index_buffer.handle,
+                                    0,
+                                    vk::IndexType::UINT32,
+                                );
+                                let mesh = (&*entities, &meshes).join().next().unwrap().1;
+                                device.device.cmd_bind_vertex_buffers(
+                                    command_buffer,
+                                    0,
+                                    &[mesh.vertex_buffer.handle],
+                                    &[0],
+                                );
+                                device.device.cmd_draw_indexed_indirect(
+                                    command_buffer,
+                                    culled_commands_buffer.handle,
+                                    0,
+                                    total,
+                                    size_of::<u32>() as u32 * 5,
+                                );
+                                device
+                                    .device
+                                    .cmd_next_subpass(command_buffer, vk::SubpassContents::INLINE);
+                            },
+                        );
+                        device.debug_marker_around(
+                            command_buffer,
+                            "gltf meshes",
+                            [1.0, 0.0, 0.0, 1.0],
+                            || {
+                                // gltf mesh
+                                device.device.cmd_bind_pipeline(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    gltf_pipeline.handle,
+                                );
+                                device.device.cmd_bind_descriptor_sets(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    gltf_pipeline_layout.handle,
+                                    0,
+                                    &[mvp_set.handle, model_set.handle],
+                                    &[],
+                                );
+                                device.device.cmd_bind_index_buffer(
+                                    command_buffer,
+                                    culled_index_buffer.handle,
+                                    0,
+                                    vk::IndexType::UINT32,
+                                );
+                                let mesh = (&*entities, &meshes).join().next().unwrap().1;
+                                device.device.cmd_bind_vertex_buffers(
+                                    command_buffer,
+                                    0,
+                                    &[mesh.vertex_buffer.handle, mesh.normal_buffer.handle],
+                                    &[0, 0],
+                                );
+                                device.device.cmd_draw_indexed_indirect(
+                                    command_buffer,
+                                    culled_commands_buffer.handle,
+                                    0,
+                                    total,
+                                    size_of::<u32>() as u32 * 5,
+                                );
+                            },
+                        );
+                        device.debug_marker_around(
+                            command_buffer,
+                            "GUI",
+                            [1.0, 1.0, 0.0, 1.0],
+                            || {
+                                let vertex_slice = from_raw_parts_mut(
+                                    gui.vertex_buffer.allocation_info.pMappedData
+                                        as *mut imgui::ImDrawVert,
+                                    4096,
+                                );
+                                let index_slice = from_raw_parts_mut(
+                                    gui.index_buffer.allocation_info.pMappedData
+                                        as *mut imgui::ImDrawIdx,
+                                    4096,
+                                );
+                                let pipeline_layout = gui.pipeline_layout.handle;
+                                device.cmd_bind_descriptor_sets(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    pipeline_layout,
+                                    0,
+                                    &[gui.descriptor_set.handle],
+                                    &[],
+                                );
+                                device.cmd_bind_pipeline(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    gui.pipeline.handle,
+                                );
+                                device.cmd_bind_vertex_buffers(
+                                    command_buffer,
+                                    0,
+                                    &[gui.vertex_buffer.handle],
+                                    &[0],
+                                );
+                                device.device.cmd_bind_index_buffer(
+                                    command_buffer,
+                                    gui.index_buffer.handle,
+                                    0,
+                                    vk::IndexType::UINT16,
+                                );
+                                let ui = gui.imgui.frame(
+                                    imgui::FrameSize {
+                                        logical_size: (
+                                            f64::from(instance.window_width),
+                                            f64::from(instance.window_height),
+                                        ),
+                                        hidpi_factor: 1.0,
+                                    },
+                                    1.0,
+                                );
+                                let alloc_stats = alloc::stats(device.allocator);
+                                let s = format!("Alloc stats {:?}", alloc_stats.total);
+                                ui.window(im_str!("Renderer"))
+                                    .size((500.0, 300.0), imgui::ImGuiCond::Always)
+                                    .build(|| {
+                                        ui.text_wrapped(im_str!("{}", s));
+                                    });
+                                ui.render(|ui, draw_data| {
+                                    let (x, y) = ui.imgui().display_size();
+                                    let constants = [2.0 / x, 2.0 / y, -1.0, -1.0];
+
+                                    let casted: &[u8] = {
+                                        from_raw_parts(
+                                            constants.as_ptr() as *const u8,
+                                            constants.len() * 4,
+                                        )
+                                    };
+                                    device.cmd_push_constants(
+                                        command_buffer,
+                                        pipeline_layout,
+                                        vk::ShaderStageFlags::VERTEX,
+                                        0,
+                                        casted,
+                                    );
+                                    let mut vertex_offset = 0;
+                                    let mut index_offset = 0;
+                                    for draw_list in draw_data.into_iter() {
+                                        index_slice[0..draw_list.idx_buffer.len()]
+                                            .copy_from_slice(draw_list.idx_buffer);
+                                        vertex_slice[0..draw_list.vtx_buffer.len()]
+                                            .copy_from_slice(draw_list.vtx_buffer);
+                                        for draw_cmd in draw_list.cmd_buffer {
+                                            device.cmd_draw_indexed(
+                                                command_buffer,
+                                                draw_cmd.elem_count,
+                                                1,
+                                                index_offset,
+                                                vertex_offset,
+                                                0,
+                                            );
+                                            index_offset += draw_cmd.elem_count as u32;
+                                        }
+                                        vertex_offset += draw_list.vtx_buffer.len() as i32;
+                                    }
+                                    if false {
+                                        return Err(3i8);
+                                    }
+                                    Ok(())
+                                })
+                                .expect("failed rendering ui");
+                            },
+                        );
+                        device.device.cmd_end_render_pass(command_buffer);
+                    },
+                );
+            }
+        });
         let wait_semaphores = &[
             renderer.present_semaphore.handle,
             renderer.cull_complete_semaphore.handle,

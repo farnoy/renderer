@@ -11,9 +11,11 @@ use ash::{
 use parking_lot::Mutex;
 use std::{ops::Deref, sync::Arc};
 
+pub mod commands;
 pub mod descriptors;
 
-use super::{alloc, device::descriptors::DescriptorSetLayout, Instance};
+use self::{commands::CommandPool, descriptors::DescriptorSetLayout};
+use super::{alloc, Instance};
 
 pub type AshDevice = ash::Device;
 
@@ -199,6 +201,14 @@ impl Device {
         bindings: &[vk::DescriptorSetLayoutBinding],
     ) -> DescriptorSetLayout {
         DescriptorSetLayout::new(self, bindings)
+    }
+
+    pub fn new_command_pool(
+        self: &Arc<Self>,
+        queue_family: u32,
+        flags: vk::CommandPoolCreateFlags,
+    ) -> CommandPool {
+        CommandPool::new(self, queue_family, flags)
     }
 
     pub fn vk(&self) -> &AshDevice {

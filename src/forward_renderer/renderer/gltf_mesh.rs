@@ -4,7 +4,7 @@ use gltf;
 use meshopt;
 use std::{mem::size_of, sync::Arc, u64};
 
-use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
+use super::{alloc, new_buffer, Buffer, RenderFrame};
 
 pub struct LoadedMesh {
     pub vertex_buffer: Buffer,
@@ -146,7 +146,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             *p.add(ix) = *data;
         }
     }
-    let upload = commands::record_one_time(Arc::clone(&renderer.graphics_command_pool), {
+    let upload = renderer.graphics_command_pool.record_one_time({
         let vertex_buffer = &vertex_buffer;
         let vertex_upload_buffer = &vertex_upload_buffer;
         let normal_buffer = &normal_buffer;

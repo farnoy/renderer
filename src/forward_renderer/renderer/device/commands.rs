@@ -3,8 +3,8 @@ use parking_lot::Mutex;
 use std::{ops::Deref, sync::Arc};
 
 use super::{
-    device::Device,
-    helpers::{new_fence, Fence},
+    super::helpers::{new_fence, Fence},
+    Device,
 };
 
 pub struct CommandPool {
@@ -17,45 +17,9 @@ pub struct CommandBuffer {
     pool: Arc<CommandPool>,
 }
 
-pub fn record_one_time<F: FnOnce(vk::CommandBuffer)>(
-    command_pool: Arc<CommandPool>,
-    f: F,
-) -> CommandBuffer {
-    let mut pool_lock = command_pool.handle.lock();
-    let command_buffer = command_pool
-        .allocate_command_buffers(1, &mut *pool_lock)
-        .remove(0);
-
-    let begin_info =
-        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-    unsafe {
-        command_pool
-            .device
-            .begin_command_buffer(command_buffer, &begin_info)
-            .unwrap();
-    }
-
-    f(command_buffer);
-
-    unsafe {
-        command_pool
-            .device
-            .end_command_buffer(command_buffer)
-            .unwrap();
-    }
-
-    drop(pool_lock);
-
-    CommandBuffer {
-        pool: command_pool,
-        handle: command_buffer,
-    }
-}
-
 impl CommandPool {
-    pub fn new(
-        device: Arc<Device>,
+    pub(super) fn new(
+        device: &Arc<Device>,
         queue_family: u32,
         flags: vk::CommandPoolCreateFlags,
     ) -> CommandPool {
@@ -71,7 +35,7 @@ impl CommandPool {
 
         CommandPool {
             handle: Mutex::new(pool),
-            device,
+            device: Arc::clone(device),
         }
     }
 
@@ -89,6 +53,36 @@ impl CommandPool {
             self.device
                 .allocate_command_buffers(&command_buffer_allocate_info)
                 .unwrap()
+        }
+    }
+
+    pub fn record_one_time<F: FnOnce(vk::CommandBuffer)>(
+        self: &Arc<CommandPool>,
+        f: F,
+    ) -> CommandBuffer {
+        let mut pool_lock = self.handle.lock();
+        let command_buffer = self.allocate_command_buffers(1, &mut *pool_lock).remove(0);
+
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)
+                .unwrap();
+        }
+
+        f(command_buffer);
+
+        unsafe {
+            self.device.end_command_buffer(command_buffer).unwrap();
+        }
+
+        drop(pool_lock);
+
+        CommandBuffer {
+            pool: Arc::clone(self),
+            handle: command_buffer,
         }
     }
 }
