@@ -1,6 +1,6 @@
 use ash::{version::DeviceV1_0, vk};
 use parking_lot::Mutex;
-use std::{mem::transmute, ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc};
 
 use super::{
     device::Device,
@@ -96,11 +96,9 @@ impl CommandPool {
 impl CommandBuffer {
     pub fn submit_once(&self, queue: &mut vk::Queue, fence_name: &str) -> Fence {
         let submit_fence = new_fence(Arc::clone(&self.pool.device));
-        self.pool.device.set_object_name(
-            vk::ObjectType::FENCE,
-            unsafe { transmute::<_, u64>(submit_fence.handle) },
-            fence_name,
-        );
+        self.pool
+            .device
+            .set_object_name(submit_fence.handle, fence_name);
 
         unsafe {
             let command_buffers = &[self.handle];

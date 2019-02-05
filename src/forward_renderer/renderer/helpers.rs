@@ -8,9 +8,7 @@ use ash::{
     version::{DeviceV1_0, EntryV1_0},
     vk, Instance as AshInstance,
 };
-use std::{
-    ffi::CString, fs::File, io::Read, mem::transmute, path::PathBuf, ptr, sync::Arc, u32, u64,
-};
+use std::{ffi::CString, fs::File, io::Read, path::PathBuf, ptr, sync::Arc, u32};
 #[cfg(windows)]
 use winapi;
 use winit;
@@ -286,11 +284,7 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
             .unwrap()
     };
 
-    device.set_object_name(
-        vk::ObjectType::SURFACE_KHR,
-        unsafe { transmute::<_, u64>(swapchain) },
-        "Window surface",
-    );
+    device.set_object_name(swapchain, "Window surface");
 
     let swapchain = swapchain::Swapchain::new(swapchain_loader, swapchain);
     Swapchain {

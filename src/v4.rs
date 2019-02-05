@@ -24,10 +24,7 @@ use ash::{version::DeviceV1_0, vk};
 use cgmath::{Rotation3, Zero};
 use parking_lot::Mutex;
 use specs::Builder;
-use std::{
-    mem::{size_of, transmute},
-    sync::Arc,
-};
+use std::{mem::size_of, sync::Arc};
 
 fn main() {
     let mut world = specs::World::new();
@@ -64,11 +61,9 @@ fn main() {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<u32>() as vk::DeviceSize * index_len * 2400,
     );
-    renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(culled_index_buffer.handle) },
-        "culled index buffer",
-    );
+    renderer
+        .device
+        .set_object_name(culled_index_buffer.handle, "culled index buffer");
 
     {
         let buffer_updates = &[

@@ -15,7 +15,7 @@ use imgui::{self, im_str};
 use specs::prelude::*;
 use std::{
     cmp::min,
-    mem::{size_of, transmute},
+    mem::size_of,
     os::raw::c_uchar,
     path::PathBuf,
     ptr,
@@ -70,11 +70,7 @@ impl RenderFrame {
         let (instance, events_loop) = Instance::new(1920, 1080).expect("Failed to create instance");
         let instance = Arc::new(instance);
         let device = Arc::new(Device::new(&instance).expect("Failed to create device"));
-        device.set_object_name(
-            vk::ObjectType::DEVICE,
-            unsafe { transmute(device.handle()) },
-            "Device",
-        );
+        device.set_object_name(device.handle(), "Device");
         let swapchain = new_swapchain(&instance, &device);
         let present_semaphore = new_semaphore(Arc::clone(&device));
         let cull_complete_semaphore = new_semaphore(Arc::clone(&device));
@@ -147,8 +143,7 @@ impl RenderFrame {
             ],
         );
         device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
-            unsafe { transmute::<_, u64>(command_generation_descriptor_set_layout.handle) },
+            command_generation_descriptor_set_layout.handle,
             "Command Generation Descriptor Set Layout",
         );
         let ubo_set_layout = new_descriptor_set_layout(
@@ -161,11 +156,7 @@ impl RenderFrame {
                 p_immutable_samplers: ptr::null(),
             }],
         );
-        device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
-            unsafe { transmute::<_, u64>(ubo_set_layout.handle) },
-            "UBO Set Layout",
-        );
+        device.set_object_name(ubo_set_layout.handle, "UBO Set Layout");
         let model_view_set_layout = new_descriptor_set_layout(
             Arc::clone(&device),
             &[vk::DescriptorSetLayoutBinding {
@@ -176,11 +167,7 @@ impl RenderFrame {
                 p_immutable_samplers: ptr::null(),
             }],
         );
-        device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
-            unsafe { transmute::<_, u64>(model_view_set_layout.handle) },
-            "Model View Set Layout",
-        );
+        device.set_object_name(model_view_set_layout.handle, "Model View Set Layout");
 
         let model_set_layout = new_descriptor_set_layout(
             Arc::clone(&device),
@@ -226,8 +213,7 @@ impl RenderFrame {
             &command_generation_descriptor_set_layout,
         );
         device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET,
-            unsafe { transmute::<_, u64>(command_generation_descriptor_set.handle) },
+            command_generation_descriptor_set.handle,
             "Command Generation Descriptor Set",
         );
         let command_generation_buffer = new_buffer(
@@ -240,8 +226,7 @@ impl RenderFrame {
             size_of::<u32>() as vk::DeviceSize * 5 * 2400,
         );
         device.set_object_name(
-            vk::ObjectType::BUFFER,
-            unsafe { transmute::<_, u64>(command_generation_buffer.handle) },
+            command_generation_buffer.handle,
             "indirect draw commands buffer",
         );
 
@@ -250,11 +235,7 @@ impl RenderFrame {
             &[ubo_set_layout.handle, model_set_layout.handle],
             &[],
         );
-        device.set_object_name(
-            vk::ObjectType::PIPELINE_LAYOUT,
-            unsafe { transmute::<_, u64>(gltf_pipeline_layout.handle) },
-            "GLTF Pipeline Layout",
-        );
+        device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
         let gltf_pipeline = new_graphics_pipeline2(
             Arc::clone(&device),
             &[
@@ -363,11 +344,7 @@ impl RenderFrame {
                 .subpass(1)
                 .build(),
         );
-        device.set_object_name(
-            vk::ObjectType::PIPELINE,
-            unsafe { transmute::<_, u64>(gltf_pipeline.handle) },
-            "GLTF Pipeline",
-        );
+        device.set_object_name(gltf_pipeline.handle, "GLTF Pipeline");
         let depth_pipeline_layout =
             new_pipeline_layout(Arc::clone(&device), &[ubo_set_layout.handle], &[]);
         let depth_pipeline = new_graphics_pipeline2(
@@ -459,22 +436,14 @@ impl RenderFrame {
                 .build(),
         );
 
-        device.set_object_name(
-            vk::ObjectType::PIPELINE,
-            unsafe { transmute::<_, u64>(depth_pipeline.handle) },
-            "Depth Pipeline",
-        );
+        device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
 
         let mvp_set = new_descriptor_set(
             Arc::clone(&device),
             Arc::clone(&descriptor_pool),
             &ubo_set_layout,
         );
-        device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET,
-            unsafe { transmute::<_, u64>(mvp_set.handle) },
-            "UBO Set",
-        );
+        device.set_object_name(mvp_set.handle, "UBO Set");
         let mvp_buffer = new_buffer(
             Arc::clone(&device),
             vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -505,11 +474,7 @@ impl RenderFrame {
             Arc::clone(&descriptor_pool),
             &model_view_set_layout,
         );
-        device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET,
-            unsafe { transmute::<_, u64>(model_view_set.handle) },
-            "Model View Set",
-        );
+        device.set_object_name(model_view_set.handle, "Model View Set");
         let model_view_buffer = new_buffer(
             Arc::clone(&device),
             vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -541,11 +506,7 @@ impl RenderFrame {
             Arc::clone(&descriptor_pool),
             &model_set_layout,
         );
-        device.set_object_name(
-            vk::ObjectType::DESCRIPTOR_SET,
-            unsafe { transmute::<_, u64>(model_set.handle) },
-            "Model Set",
-        );
+        device.set_object_name(model_set.handle, "Model Set");
         let model_buffer = new_buffer(
             Arc::clone(&device),
             vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -836,8 +797,7 @@ impl<'a> System<'a> for CullGeometry {
                 .build();
             let submit_fence = new_fence(Arc::clone(&renderer.device));
             renderer.device.set_object_name(
-                vk::ObjectType::FENCE,
-                unsafe { transmute::<_, u64>(submit_fence.handle) },
+                submit_fence.handle,
                 &format!("cull async compute phase {} submit fence", ix),
             );
 
@@ -883,8 +843,7 @@ impl<'a> System<'a> for CullGeometry {
                 .build();
             let submit_fence = new_fence(Arc::clone(&renderer.device));
             renderer.device.set_object_name(
-                vk::ObjectType::FENCE,
-                unsafe { transmute::<_, u64>(submit_fence.handle) },
+                submit_fence.handle,
                 "cull async compute integration phase submit fence",
             );
 
@@ -1197,31 +1156,29 @@ impl<'a> System<'a> for Renderer {
                     );
                 }
             });
-        unsafe {
-            let wait_semaphores = &[
-                renderer.present_semaphore.handle,
-                renderer.cull_complete_semaphore.handle,
-            ];
-            let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
-            let dst_stage_masks = &[
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-            ];
-            let command_buffers = &[*command_buffer];
-            let submit = vk::SubmitInfo::builder()
-                .wait_semaphores(wait_semaphores)
-                .wait_dst_stage_mask(dst_stage_masks)
-                .command_buffers(command_buffers)
-                .signal_semaphores(signal_semaphores)
-                .build();
-            let queue = renderer.device.graphics_queue.lock();
+        let wait_semaphores = &[
+            renderer.present_semaphore.handle,
+            renderer.cull_complete_semaphore.handle,
+        ];
+        let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
+        let dst_stage_masks = &[
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+        ];
+        let command_buffers = &[*command_buffer];
+        let submit = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(dst_stage_masks)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores)
+            .build();
+        let queue = renderer.device.graphics_queue.lock();
 
-            let submit_fence = new_fence(Arc::clone(&renderer.device));
-            renderer.device.set_object_name(
-                vk::ObjectType::FENCE,
-                transmute::<_, u64>(submit_fence.handle),
-                "frame submit fence",
-            );
+        let submit_fence = new_fence(Arc::clone(&renderer.device));
+        unsafe {
+            renderer
+                .device
+                .set_object_name(submit_fence.handle, "frame submit fence");
 
             renderer
                 .device
@@ -1473,11 +1430,9 @@ impl Gui {
                 .subpass(1)
                 .build(),
         );
-        renderer.device.set_object_name(
-            vk::ObjectType::PIPELINE,
-            unsafe { transmute::<_, u64>(pipeline.handle) },
-            "GUI Pipeline",
-        );
+        renderer
+            .device
+            .set_object_name(pipeline.handle, "GUI Pipeline");
 
         let texture_view = new_image_view(
             Arc::clone(&renderer.device),

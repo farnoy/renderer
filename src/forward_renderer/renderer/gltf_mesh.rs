@@ -2,11 +2,7 @@ use ash::{version::DeviceV1_0, vk};
 use cgmath;
 use gltf;
 use meshopt;
-use std::{
-    mem::{size_of, transmute},
-    sync::Arc,
-    u64,
-};
+use std::{mem::size_of, sync::Arc, u64};
 
 use super::{alloc, commands, new_buffer, Buffer, RenderFrame};
 
@@ -73,11 +69,9 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         vertex_size,
     );
-    renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(vertex_buffer.handle) },
-        "Gltf mesh Vertex buffer",
-    );
+    renderer
+        .device
+        .set_object_name(vertex_buffer.handle, "Gltf mesh Vertex buffer");
     let vertex_upload_buffer = new_buffer(
         Arc::clone(&renderer.device),
         vk::BufferUsageFlags::TRANSFER_SRC,
@@ -86,8 +80,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         vertex_size,
     );
     renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(vertex_upload_buffer.handle) },
+        vertex_upload_buffer.handle,
         "Gltf mesh Vertex upload buffer",
     );
     unsafe {
@@ -103,11 +96,9 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         normals_size,
     );
-    renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(normal_buffer.handle) },
-        "Gltf mesh Normal buffer",
-    );
+    renderer
+        .device
+        .set_object_name(normal_buffer.handle, "Gltf mesh Normal buffer");
     let normal_upload_buffer = new_buffer(
         Arc::clone(&renderer.device),
         vk::BufferUsageFlags::TRANSFER_SRC,
@@ -116,8 +107,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         normals_size,
     );
     renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(normal_upload_buffer.handle) },
+        normal_upload_buffer.handle,
         "Gltf mesh Normal upload buffer",
     );
     unsafe {
@@ -137,11 +127,9 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         index_size,
     );
-    renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(index_buffer.handle) },
-        "Gltf mesh index buffer",
-    );
+    renderer
+        .device
+        .set_object_name(index_buffer.handle, "Gltf mesh index buffer");
     let index_upload_buffer = new_buffer(
         Arc::clone(&renderer.device),
         vk::BufferUsageFlags::TRANSFER_SRC,
@@ -149,11 +137,9 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         index_size,
     );
-    renderer.device.set_object_name(
-        vk::ObjectType::BUFFER,
-        unsafe { transmute::<_, u64>(index_upload_buffer.handle) },
-        "Gltf mesh index upload buffer",
-    );
+    renderer
+        .device
+        .set_object_name(index_upload_buffer.handle, "Gltf mesh index upload buffer");
     unsafe {
         let p = index_upload_buffer.allocation_info.pMappedData as *mut u32;
         for (ix, data) in indices.iter().enumerate() {

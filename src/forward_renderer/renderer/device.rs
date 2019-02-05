@@ -158,14 +158,14 @@ impl Device {
     }
 
     #[cfg(feature = "validation")]
-    pub fn set_object_name(&self, object_type: vk::ObjectType, object: u64, name: &str) {
+    pub fn set_object_name<T: vk::Handle>(&self, handle: T, name: &str) {
         unsafe {
             use std::ffi::CString;
 
             let name = CString::new(name).unwrap();
             let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
-                .object_type(object_type)
-                .object_handle(object)
+                .object_type(T::TYPE)
+                .object_handle(handle.as_raw())
                 .object_name(&name);
             self.instance
                 .debug_utils()
@@ -175,7 +175,7 @@ impl Device {
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn set_object_name(&self, _object_type: vk::ObjectType, _object: u64, _name: &str) {}
+    pub fn set_object_name<T: vk::Handle>(&self, handle: T, _name: &str) {}
 
     #[cfg(feature = "validation")]
     pub fn debug_marker_around<F: FnOnce()>(
