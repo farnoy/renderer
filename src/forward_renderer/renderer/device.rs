@@ -1,3 +1,4 @@
+use ash::extensions::ext::DebugMarker;
 use ash::extensions::khr::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
@@ -24,7 +25,17 @@ pub struct Device {
     pub graphics_queue: Arc<Mutex<vk::Queue>>,
     pub compute_queues: Vec<Arc<Mutex<vk::Queue>>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
+    #[allow(dead_code)]
+    debug: Debug,
 }
+
+#[cfg(feature = "radeon-profiler")]
+struct Debug {
+    marker: DebugMarker,
+}
+
+#[cfg(not(feature = "radeon-profiler"))]
+struct Debug;
 
 impl Device {
     pub fn new(instance: &Arc<Instance>) -> Result<Device, vk::Result> {
@@ -90,7 +101,11 @@ impl Device {
         };
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
-            let device_extension_names_raw = vec![Swapchain::name().as_ptr()];
+            let device_extension_names_raw = if cfg!(feature = "radeon-profiler") {
+                vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
+            } else {
+                vec![Swapchain::name().as_ptr()]
+            };
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
@@ -139,34 +154,59 @@ impl Device {
             None => vec![Arc::clone(&graphics_queue)],
         };
 
-        Ok(Device {
-            device,
-            instance: Arc::clone(instance),
-            physical_device,
-            allocator,
-            graphics_queue_family,
-            compute_queue_family: compute_queues_spec
-                .map(|a| a.0)
-                .unwrap_or(graphics_queue_family),
-            graphics_queue,
-            compute_queues,
-        })
+        #[cfg(feature = "radeon-profiler")]
+        {
+            let debug = Debug {
+                marker: DebugMarker::new(instance.vk(), &device),
+            };
+            Ok(Device {
+                device,
+                instance: Arc::clone(instance),
+                physical_device,
+                allocator,
+                graphics_queue_family,
+                compute_queue_family: compute_queues_spec
+                    .map(|a| a.0)
+                    .unwrap_or(graphics_queue_family),
+                graphics_queue,
+                compute_queues,
+                debug,
+            })
+        }
+
+        #[cfg(not(feature = "radeon-profiler"))]
+        {
+            Ok(Device {
+                device,
+                instance: Arc::clone(instance),
+                physical_device,
+                allocator,
+                graphics_queue_family,
+                compute_queue_family: compute_queues_spec
+                    .map(|a| a.0)
+                    .unwrap_or(graphics_queue_family),
+                graphics_queue,
+                compute_queues,
+                debug: Debug,
+            })
+        }
     }
 
     pub fn vk(&self) -> &AshDevice {
         &self.device
     }
 
-    #[cfg(feature = "validation")]
+    #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
     pub fn set_object_name<T: vk::Handle>(&self, handle: T, name: &str) {
-        unsafe {
-            use std::ffi::CString;
+        use std::ffi::CString;
 
-            let name = CString::new(name).unwrap();
-            let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
-                .object_type(T::TYPE)
-                .object_handle(handle.as_raw())
-                .object_name(&name);
+        let name = CString::new(name).unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+            .object_type(T::TYPE)
+            .object_handle(handle.as_raw())
+            .object_name(&name);
+
+        unsafe {
             self.instance
                 .debug_utils()
                 .debug_utils_set_object_name(self.device.handle(), &name_info)
@@ -174,7 +214,7 @@ impl Device {
         };
     }
 
-    #[cfg(not(feature = "validation"))]
+    #[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
     pub fn set_object_name<T: vk::Handle>(&self, handle: T, _name: &str) {}
 
     #[cfg(feature = "validation")]
@@ -189,16 +229,35 @@ impl Device {
             use std::ffi::CString;
 
             let name = CString::new(name).unwrap();
-            let label_info = vk::DebugUtilsLabelEXT::builder()
-                .label_name(&name)
-                .color(color);
-            self.instance
-                .debug_utils()
-                .cmd_begin_debug_utils_label(command_buffer, &label_info);
+            #[cfg(not(feature = "radeon-profiler"))]
+            {
+                self.instance.debug_utils().cmd_begin_debug_utils_label(
+                    command_buffer,
+                    &vk::DebugUtilsLabelEXT::builder()
+                        .label_name(&name)
+                        .color(color),
+                );
+            }
+            #[cfg(feature = "radeon-profiler")]
+            {
+                self.debug.marker.cmd_debug_marker_begin(
+                    command_buffer,
+                    &vk::DebugMarkerMarkerInfoEXT::builder()
+                        .color(color)
+                        .marker_name(&name),
+                );
+            }
             f();
-            self.instance
-                .debug_utils()
-                .cmd_end_debug_utils_label(command_buffer);
+            #[cfg(feature = "radeon-profiler")]
+            {
+                self.debug.marker.cmd_debug_marker_end(command_buffer);
+            }
+            #[cfg(not(feature = "radeon-profiler"))]
+            {
+                self.instance
+                    .debug_utils()
+                    .cmd_end_debug_utils_label(command_buffer);
+            }
         };
     }
 

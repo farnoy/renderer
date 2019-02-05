@@ -1,10 +1,6 @@
 use ash;
-use ash::extensions::ext::DebugUtils;
+use ash::extensions::ext::{DebugReport, DebugUtils};
 use ash::extensions::khr::Surface;
-#[cfg(windows)]
-use ash::extensions::khr::Win32Surface;
-#[cfg(all(unix, not(target_os = "android")))]
-use ash::extensions::khr::XlibSurface;
 use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
 use std::ffi::CString;
@@ -29,13 +25,13 @@ pub struct Instance {
     debug: Debug,
 }
 
-#[cfg(feature = "validation")]
+#[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
 struct Debug {
     utils: DebugUtils,
     messenger: vk::DebugUtilsMessengerEXT,
 }
 
-#[cfg(not(feature = "validation"))]
+#[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
 struct Debug;
 
 impl Instance {
@@ -77,7 +73,7 @@ impl Instance {
 
         let surface = unsafe { create_surface(entry.vk(), &instance, &window).unwrap() };
 
-        #[cfg(feature = "validation")]
+        #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
         {
             use std::ffi::c_void;
             let debug_utils = DebugUtils::new(entry.vk(), &instance);
@@ -172,7 +168,7 @@ impl Instance {
             ))
         }
 
-        #[cfg(not(feature = "validation"))]
+        #[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
         {
             Ok((
                 Instance {
@@ -193,7 +189,7 @@ impl Instance {
         &self.handle
     }
 
-    #[cfg(feature = "validation")]
+    #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
     pub fn debug_utils(&self) -> &DebugUtils {
         &self.debug.utils
     }
@@ -209,7 +205,7 @@ impl Deref for Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        #[cfg(feature = "validation")]
+        #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
         unsafe {
             self.debug
                 .utils
@@ -222,20 +218,24 @@ impl Drop for Instance {
     }
 }
 
-#[cfg(all(unix, not(target_os = "android")))]
 fn extension_names() -> Vec<*const i8> {
-    vec![
-        Surface::name().as_ptr(),
-        XlibSurface::name().as_ptr(),
-        DebugUtils::name().as_ptr(),
-    ]
-}
+    let mut base = vec![Surface::name().as_ptr()];
+    if cfg!(all(unix, not(target_os = "android"))) {
+        use ash::extensions::khr::XlibSurface;
+        base.push(XlibSurface::name().as_ptr());
+    }
+    if cfg!(windows) {
+        use ash::extensions::khr::Win32Surface;
+        base.push(Win32Surface::name().as_ptr());
+    }
 
-#[cfg(all(windows))]
-fn extension_names() -> Vec<*const i8> {
-    vec![
-        Surface::name().as_ptr(),
-        Win32Surface::name().as_ptr(),
-        DebugUtils::name().as_ptr(),
-    ]
+    if cfg!(not(feature = "radeon-profiler")) {
+        // for validation layers, use the new, consolidated extension for debugging
+        base.push(DebugUtils::name().as_ptr());
+    } else if cfg!(feature = "radeon-profiler") {
+        // for profiling, Radeon GPU profiler only understand the old extension for debug markers
+        base.push(DebugReport::name().as_ptr());
+    }
+
+    base
 }

@@ -29,5 +29,4 @@ winapi = "0.3.5"
 [features]
 default = []
 validation = []
-renderdoc = ["validation"]
-gapid = ["renderdoc"]
+radeon-profiler = ["validation"]
