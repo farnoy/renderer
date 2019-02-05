@@ -1,3 +1,5 @@
+#![feature(arbitrary_self_types)]
+
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;

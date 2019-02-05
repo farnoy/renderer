@@ -27,7 +27,10 @@ use winit;
 
 use self::{
     commands::{CommandBuffer, CommandPool},
-    device::Device,
+    device::{
+        descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
+        Device,
+    },
     helpers::*,
     instance::Instance,
 };
@@ -90,7 +93,7 @@ impl RenderFrame {
         let framebuffer =
             setup_framebuffer(&instance, Arc::clone(&device), &swapchain, &main_renderpass);
 
-        let descriptor_pool = Arc::new(new_descriptor_pool(
+        let descriptor_pool = Arc::new(DescriptorPool::new(
             Arc::clone(&device),
             30,
             &[
@@ -109,76 +112,66 @@ impl RenderFrame {
             ],
         ));
 
-        let command_generation_descriptor_set_layout = new_descriptor_set_layout(
-            Arc::clone(&device),
-            &[
-                vk::DescriptorSetLayoutBinding {
-                    binding: 0,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::COMPUTE,
-                    p_immutable_samplers: ptr::null(),
-                },
-                vk::DescriptorSetLayoutBinding {
-                    binding: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::COMPUTE,
-                    p_immutable_samplers: ptr::null(),
-                },
-                vk::DescriptorSetLayoutBinding {
-                    binding: 2,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::COMPUTE,
-                    p_immutable_samplers: ptr::null(),
-                },
-                vk::DescriptorSetLayoutBinding {
-                    binding: 3,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::COMPUTE,
-                    p_immutable_samplers: ptr::null(),
-                },
-            ],
-        );
+        let command_generation_descriptor_set_layout = device.new_descriptor_set_layout(&[
+            vk::DescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 1,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 2,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 3,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
+        ]);
         device.set_object_name(
             command_generation_descriptor_set_layout.handle,
             "Command Generation Descriptor Set Layout",
         );
-        let ubo_set_layout = new_descriptor_set_layout(
-            Arc::clone(&device),
-            &[vk::DescriptorSetLayoutBinding {
-                binding: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
-                p_immutable_samplers: ptr::null(),
-            }],
-        );
+        let ubo_set_layout = device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
+            p_immutable_samplers: ptr::null(),
+        }]);
         device.set_object_name(ubo_set_layout.handle, "UBO Set Layout");
-        let model_view_set_layout = new_descriptor_set_layout(
-            Arc::clone(&device),
-            &[vk::DescriptorSetLayoutBinding {
+        let model_view_set_layout =
+            device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
                 binding: 0,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 1,
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 p_immutable_samplers: ptr::null(),
-            }],
-        );
+            }]);
         device.set_object_name(model_view_set_layout.handle, "Model View Set Layout");
 
-        let model_set_layout = new_descriptor_set_layout(
-            Arc::clone(&device),
-            &[vk::DescriptorSetLayoutBinding {
+        let model_set_layout =
+            device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
                 binding: 0,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 1,
                 stage_flags: vk::ShaderStageFlags::VERTEX,
                 p_immutable_samplers: ptr::null(),
-            }],
-        );
+            }]);
 
         #[repr(C)]
         struct MeshData {
@@ -191,10 +184,7 @@ impl RenderFrame {
 
         let command_generation_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[
-                ubo_set_layout.handle,
-                command_generation_descriptor_set_layout.handle,
-            ],
+            &[&ubo_set_layout, &command_generation_descriptor_set_layout],
             &[vk::PushConstantRange {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 offset: 0,
@@ -207,11 +197,8 @@ impl RenderFrame {
             &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
         );
 
-        let command_generation_descriptor_set = new_descriptor_set(
-            Arc::clone(&device),
-            Arc::clone(&descriptor_pool),
-            &command_generation_descriptor_set_layout,
-        );
+        let command_generation_descriptor_set =
+            descriptor_pool.allocate_set(&command_generation_descriptor_set_layout);
         device.set_object_name(
             command_generation_descriptor_set.handle,
             "Command Generation Descriptor Set",
@@ -232,7 +219,7 @@ impl RenderFrame {
 
         let gltf_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[ubo_set_layout.handle, model_set_layout.handle],
+            &[&ubo_set_layout, &model_set_layout],
             &[],
         );
         device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
@@ -346,7 +333,7 @@ impl RenderFrame {
         );
         device.set_object_name(gltf_pipeline.handle, "GLTF Pipeline");
         let depth_pipeline_layout =
-            new_pipeline_layout(Arc::clone(&device), &[ubo_set_layout.handle], &[]);
+            new_pipeline_layout(Arc::clone(&device), &[&ubo_set_layout], &[]);
         let depth_pipeline = new_graphics_pipeline2(
             Arc::clone(&device),
             &[(
@@ -438,11 +425,7 @@ impl RenderFrame {
 
         device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
 
-        let mvp_set = new_descriptor_set(
-            Arc::clone(&device),
-            Arc::clone(&descriptor_pool),
-            &ubo_set_layout,
-        );
+        let mvp_set = descriptor_pool.allocate_set(&ubo_set_layout);
         device.set_object_name(mvp_set.handle, "UBO Set");
         let mvp_buffer = new_buffer(
             Arc::clone(&device),
@@ -469,11 +452,7 @@ impl RenderFrame {
                 );
             }
         }
-        let model_view_set = new_descriptor_set(
-            Arc::clone(&device),
-            Arc::clone(&descriptor_pool),
-            &model_view_set_layout,
-        );
+        let model_view_set = descriptor_pool.allocate_set(&model_view_set_layout);
         device.set_object_name(model_view_set.handle, "Model View Set");
         let model_view_buffer = new_buffer(
             Arc::clone(&device),
@@ -501,11 +480,7 @@ impl RenderFrame {
             }
         }
 
-        let model_set = new_descriptor_set(
-            Arc::clone(&device),
-            Arc::clone(&descriptor_pool),
-            &model_set_layout,
-        );
+        let model_set = descriptor_pool.allocate_set(&model_set_layout);
         device.set_object_name(model_set.handle, "Model Set");
         let model_buffer = new_buffer(
             Arc::clone(&device),
@@ -1305,26 +1280,24 @@ impl Gui {
                 .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
         );
 
-        let descriptor_set_layout = new_descriptor_set_layout(
-            renderer.device.clone(),
-            &[vk::DescriptorSetLayoutBinding {
-                binding: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                p_immutable_samplers: ptr::null(),
-            }],
-        );
+        let descriptor_set_layout =
+            renderer
+                .device
+                .new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+                    binding: 0,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 1,
+                    stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                    p_immutable_samplers: ptr::null(),
+                }]);
 
-        let descriptor_set = new_descriptor_set(
-            renderer.device.clone(),
-            renderer.descriptor_pool.clone(),
-            &descriptor_set_layout,
-        );
+        let descriptor_set = renderer
+            .descriptor_pool
+            .allocate_set(&descriptor_set_layout);
 
         let pipeline_layout = new_pipeline_layout(
             renderer.device.clone(),
-            &[descriptor_set_layout.handle],
+            &[&descriptor_set_layout],
             &[vk::PushConstantRange {
                 offset: 0,
                 size: 4 * size_of::<f32>() as u32,

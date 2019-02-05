@@ -11,7 +11,9 @@ use ash::{
 use parking_lot::Mutex;
 use std::{ops::Deref, sync::Arc};
 
-use super::{alloc, Instance};
+pub mod descriptors;
+
+use super::{alloc, device::descriptors::DescriptorSetLayout, Instance};
 
 pub type AshDevice = ash::Device;
 
@@ -190,6 +192,13 @@ impl Device {
                 debug: Debug,
             })
         }
+    }
+
+    pub fn new_descriptor_set_layout(
+        self: &Arc<Self>,
+        bindings: &[vk::DescriptorSetLayoutBinding],
+    ) -> DescriptorSetLayout {
+        DescriptorSetLayout::new(self, bindings)
     }
 
     pub fn vk(&self) -> &AshDevice {

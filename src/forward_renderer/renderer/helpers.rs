@@ -1,4 +1,4 @@
-use super::{alloc, swapchain};
+use super::{alloc, device::descriptors::DescriptorSetLayout, swapchain};
 #[cfg(windows)]
 use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
@@ -65,22 +65,6 @@ pub struct ImageView {
 
 pub struct Sampler {
     pub handle: vk::Sampler,
-    pub device: Arc<Device>,
-}
-
-pub struct DescriptorPool {
-    pub handle: vk::DescriptorPool,
-    pub device: Arc<Device>,
-}
-
-pub struct DescriptorSetLayout {
-    pub handle: vk::DescriptorSetLayout,
-    pub device: Arc<Device>,
-}
-
-pub struct DescriptorSet {
-    pub handle: vk::DescriptorSet,
-    pub pool: Arc<DescriptorPool>,
     pub device: Arc<Device>,
 }
 
@@ -157,36 +141,6 @@ impl Drop for Sampler {
     fn drop(&mut self) {
         unsafe {
             self.device.device.destroy_sampler(self.handle, None);
-        }
-    }
-}
-
-impl Drop for DescriptorSetLayout {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .device
-                .destroy_descriptor_set_layout(self.handle, None)
-        }
-    }
-}
-
-impl Drop for DescriptorPool {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .device
-                .destroy_descriptor_pool(self.handle, None)
-        }
-    }
-}
-
-impl Drop for DescriptorSet {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .device
-                .free_descriptor_sets(self.pool.handle, &[self.handle])
         }
     }
 }
@@ -586,74 +540,17 @@ pub fn new_sampler(device: Arc<Device>, info: &vk::SamplerCreateInfoBuilder<'_>)
     }
 }
 
-pub fn new_descriptor_set_layout(
-    device: Arc<Device>,
-    bindings: &[vk::DescriptorSetLayoutBinding],
-) -> DescriptorSetLayout {
-    let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
-
-    let handle = unsafe {
-        device
-            .device
-            .create_descriptor_set_layout(&create_info, None)
-            .unwrap()
-    };
-
-    DescriptorSetLayout { handle, device }
-}
-
-pub fn new_descriptor_pool(
-    device: Arc<Device>,
-    max_sets: u32,
-    pool_sizes: &[vk::DescriptorPoolSize],
-) -> DescriptorPool {
-    let create_info = vk::DescriptorPoolCreateInfo::builder()
-        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-        .max_sets(max_sets)
-        .pool_sizes(pool_sizes);
-
-    let handle = unsafe {
-        device
-            .device
-            .create_descriptor_pool(&create_info, None)
-            .unwrap()
-    };
-
-    DescriptorPool { handle, device }
-}
-
-pub fn new_descriptor_set(
-    device: Arc<Device>,
-    pool: Arc<DescriptorPool>,
-    layout: &DescriptorSetLayout,
-) -> DescriptorSet {
-    let layouts = &[layout.handle];
-    let desc_alloc_info = vk::DescriptorSetAllocateInfo::builder()
-        .descriptor_pool(pool.handle)
-        .set_layouts(layouts);
-
-    let mut new_descriptor_sets = unsafe {
-        device
-            .device
-            .allocate_descriptor_sets(&desc_alloc_info)
-            .unwrap()
-    };
-    let handle = new_descriptor_sets.remove(0);
-
-    DescriptorSet {
-        handle,
-        pool,
-        device,
-    }
-}
-
 pub fn new_pipeline_layout(
     device: Arc<Device>,
-    descriptor_set_layouts: &[vk::DescriptorSetLayout],
+    descriptor_set_layouts: &[&DescriptorSetLayout],
     push_constant_ranges: &[vk::PushConstantRange],
 ) -> PipelineLayout {
+    let descriptor_set_layout_handles = descriptor_set_layouts
+        .iter()
+        .map(|l| l.handle)
+        .collect::<Vec<_>>();
     let create_info = vk::PipelineLayoutCreateInfo::builder()
-        .set_layouts(descriptor_set_layouts)
+        .set_layouts(&descriptor_set_layout_handles)
         .push_constant_ranges(push_constant_ranges);
 
     let pipeline_layout = unsafe {
