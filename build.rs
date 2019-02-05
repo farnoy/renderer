@@ -52,7 +52,7 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.1.92.1\\Include"
+            "-IC:\\VulkanSDK\\1.1.97.0\\Include"
         } else {
             ""
         })
