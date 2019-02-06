@@ -28,6 +28,7 @@ use self::{
     device::{
         commands::{CommandBuffer, CommandPool},
         descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
+        sync::{Fence, Semaphore},
         Device,
     },
     helpers::*,
@@ -74,9 +75,9 @@ impl RenderFrame {
         let device = Arc::new(Device::new(&instance).expect("Failed to create device"));
         device.set_object_name(device.handle(), "Device");
         let swapchain = new_swapchain(&instance, &device);
-        let present_semaphore = new_semaphore(Arc::clone(&device));
-        let cull_complete_semaphore = new_semaphore(Arc::clone(&device));
-        let rendering_complete_semaphore = new_semaphore(Arc::clone(&device));
+        let present_semaphore = device.new_semaphore();
+        let cull_complete_semaphore = device.new_semaphore();
+        let rendering_complete_semaphore = device.new_semaphore();
         let graphics_command_pool = device.new_command_pool(
             device.graphics_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
@@ -671,9 +672,7 @@ pub struct CullGeometry {
 impl CullGeometry {
     pub fn new(device: &Arc<Device>) -> CullGeometry {
         CullGeometry {
-            semaphores: (0..MAX_PARALLEL)
-                .map(|_| new_semaphore(device.clone()))
-                .collect(),
+            semaphores: (0..MAX_PARALLEL).map(|_| device.new_semaphore()).collect(),
         }
     }
 }
@@ -767,7 +766,7 @@ impl<'a> System<'a> for CullGeometry {
                 .command_buffers(command_buffers)
                 .signal_semaphores(&signal_semaphores)
                 .build();
-            let submit_fence = new_fence(Arc::clone(&renderer.device));
+            let submit_fence = renderer.device.new_fence();
             renderer.device.set_object_name(
                 submit_fence.handle,
                 &format!("cull async compute phase {} submit fence", ix),
@@ -812,7 +811,7 @@ impl<'a> System<'a> for CullGeometry {
                 .command_buffers(command_buffers)
                 .signal_semaphores(signal_semaphores)
                 .build();
-            let submit_fence = new_fence(Arc::clone(&renderer.device));
+            let submit_fence = renderer.device.new_fence();
             renderer.device.set_object_name(
                 submit_fence.handle,
                 "cull async compute integration phase submit fence",
@@ -1143,12 +1142,11 @@ impl<'a> System<'a> for Renderer {
             .build();
         let queue = renderer.device.graphics_queue.lock();
 
-        let submit_fence = new_fence(Arc::clone(&renderer.device));
+        let submit_fence = renderer.device.new_fence();
+        renderer
+            .device
+            .set_object_name(submit_fence.handle, "frame submit fence");
         unsafe {
-            renderer
-                .device
-                .set_object_name(submit_fence.handle, "frame submit fence");
-
             renderer
                 .device
                 .queue_submit(*queue, &[submit], submit_fence.handle)

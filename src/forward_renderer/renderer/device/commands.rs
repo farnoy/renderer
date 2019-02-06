@@ -2,10 +2,7 @@ use ash::{version::DeviceV1_0, vk};
 use parking_lot::Mutex;
 use std::{ops::Deref, sync::Arc};
 
-use super::{
-    super::helpers::{new_fence, Fence},
-    Device,
-};
+use super::{sync::Fence, Device};
 
 pub struct CommandPool {
     handle: Mutex<vk::CommandPool>,
@@ -89,7 +86,7 @@ impl CommandPool {
 
 impl CommandBuffer {
     pub fn submit_once(&self, queue: &mut vk::Queue, fence_name: &str) -> Fence {
-        let submit_fence = new_fence(Arc::clone(&self.pool.device));
+        let submit_fence = self.pool.device.new_fence();
         self.pool
             .device
             .set_object_name(submit_fence.handle, fence_name);

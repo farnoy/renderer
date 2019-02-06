@@ -13,8 +13,13 @@ use std::{ops::Deref, sync::Arc};
 
 pub mod commands;
 pub mod descriptors;
+pub mod sync;
 
-use self::{commands::CommandPool, descriptors::DescriptorSetLayout};
+use self::{
+    commands::CommandPool,
+    descriptors::DescriptorSetLayout,
+    sync::{Fence, Semaphore},
+};
 use super::{alloc, Instance};
 
 pub type AshDevice = ash::Device;
@@ -209,6 +214,14 @@ impl Device {
         flags: vk::CommandPoolCreateFlags,
     ) -> CommandPool {
         CommandPool::new(self, queue_family, flags)
+    }
+
+    pub fn new_semaphore(self: &Arc<Self>) -> Semaphore {
+        Semaphore::new(self)
+    }
+
+    pub fn new_fence(self: &Arc<Self>) -> Fence {
+        Fence::new(self)
     }
 
     pub fn vk(&self) -> &AshDevice {
