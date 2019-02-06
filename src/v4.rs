@@ -19,8 +19,8 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        alloc, load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh, PresentFramebuffer,
-        RenderFrame, Renderer,
+        alloc, helpers, load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh,
+        PresentFramebuffer, RenderFrame, Renderer,
     },
 };
 use ash::{version::DeviceV1_0, vk};
@@ -44,11 +44,12 @@ fn main() {
     let LoadedMesh {
         vertex_buffer,
         normal_buffer,
+        uv_buffer,
         index_buffer,
         index_len,
         aabb_c,
         aabb_h,
-        base_color: _base_color,
+        base_color,
     } = load_gltf(
         &renderer,
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
@@ -56,6 +57,7 @@ fn main() {
 
     let vertex_buffer = Arc::new(vertex_buffer);
     let normal_buffer = Arc::new(normal_buffer);
+    let uv_buffer = Arc::new(uv_buffer);
     let index_buffer = Arc::new(index_buffer);
 
     let culled_index_buffer = renderer.device.new_buffer(
@@ -66,6 +68,36 @@ fn main() {
     renderer
         .device
         .set_object_name(culled_index_buffer.handle, "culled index buffer");
+
+    let image_view = helpers::new_image_view(
+        renderer.device.clone(),
+        &vk::ImageViewCreateInfo::builder()
+            .components(
+                vk::ComponentMapping::builder()
+                    .r(vk::ComponentSwizzle::IDENTITY)
+                    .g(vk::ComponentSwizzle::IDENTITY)
+                    .b(vk::ComponentSwizzle::IDENTITY)
+                    .a(vk::ComponentSwizzle::IDENTITY)
+                    .build(),
+            )
+            .image(base_color.handle)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            }),
+    );
+    let sampler = helpers::new_sampler(
+        renderer.device.clone(),
+        &vk::SamplerCreateInfo::builder()
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+    );
 
     {
         let buffer_updates = &[
@@ -90,14 +122,27 @@ fn main() {
                 range: vk::WHOLE_SIZE,
             },
         ];
+        let sampler_updates = &[vk::DescriptorImageInfo::builder()
+            .image_view(image_view.handle)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .sampler(sampler.handle)
+            .build()];
         unsafe {
             renderer.device.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::builder()
-                    .dst_set(renderer.cull_set.handle)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(buffer_updates)
-                    .build()],
+                &[
+                    vk::WriteDescriptorSet::builder()
+                        .dst_set(renderer.cull_set.handle)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(buffer_updates)
+                        .build(),
+                    vk::WriteDescriptorSet::builder()
+                        .dst_set(renderer.base_color_descriptor_set.handle)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(sampler_updates)
+                        .build(),
+                ],
                 &[],
             );
         }
@@ -119,6 +164,7 @@ fn main() {
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
             index_buffer: Arc::clone(&index_buffer),
             index_len,
             aabb_c,
@@ -141,6 +187,7 @@ fn main() {
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
             index_buffer: Arc::clone(&index_buffer),
             index_len,
             aabb_c,
@@ -171,6 +218,7 @@ fn main() {
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
+                uv_buffer: Arc::clone(&uv_buffer),
                 index_buffer: Arc::clone(&index_buffer),
                 index_len,
                 aabb_c,

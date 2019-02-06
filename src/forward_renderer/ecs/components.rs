@@ -46,6 +46,7 @@ impl Matrices {
 pub struct GltfMesh {
     pub vertex_buffer: Arc<Buffer>,
     pub normal_buffer: Arc<Buffer>,
+    pub uv_buffer: Arc<Buffer>,
     pub index_buffer: Arc<Buffer>,
     pub index_len: u64,
     pub aabb_c: cgmath::Vector3<f32>,

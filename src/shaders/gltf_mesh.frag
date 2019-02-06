@@ -1,7 +1,10 @@
 #version 450
 
+layout(set = 2, binding = 0) uniform sampler2D base_color;
+
 layout (location = 0) in vec3 normal;
 layout (location = 1) in vec3 world_pos;
+layout (location = 2) in vec2 uv;
 layout (location = 0) out vec4 o_color;
 
 void main() {
@@ -36,4 +39,10 @@ void main() {
 
     if (dot(normalize(world_pos - light_pos), light_cone_dir) >= 0.6)
         o_color.xyz = vec3(240,230,60) / 255;
+
+    // debug UVs
+    o_color.xy = uv;
+    o_color.zw = vec2(0.0, 1.0);
+
+    o_color = texture(base_color, uv);    
 }

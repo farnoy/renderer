@@ -14,6 +14,7 @@ use super::{
 pub struct LoadedMesh {
     pub vertex_buffer: Buffer,
     pub normal_buffer: Buffer,
+    pub uv_buffer: Buffer,
     pub index_buffer: Buffer,
     pub index_len: u64,
     pub aabb_c: cgmath::Vector3<f32>,
@@ -39,6 +40,11 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .read_positions()
         .unwrap()
         .map(Pos)
+        .collect::<Vec<_>>();
+    let uvs = reader
+        .read_tex_coords(0)
+        .unwrap()
+        .into_f32()
         .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
     let aabb_c =
@@ -107,16 +113,19 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
     let indices_new = meshopt::remap_index_buffer(Some(&indices), positions.len(), &remap);
     let positions_new = meshopt::remap_vertex_buffer(&positions, positions.len(), &remap);
+    let uvs_new = meshopt::remap_vertex_buffer(&uvs, positions.len(), &remap);
     let normals_new = meshopt::remap_vertex_buffer(&normals, positions.len(), &remap);
 
     // shadow with optimized buffers
     let indices = indices_new;
     let normals = normals_new;
+    let uvs = uvs_new;
     let positions = positions_new;
 
     let vertex_len = positions.len() as u64;
     let vertex_size = size_of::<f32>() as u64 * 3 * vertex_len;
     let normals_size = size_of::<f32>() as u64 * 3 * vertex_len;
+    let uvs_size = size_of::<f32>() as u64 * 2 * vertex_len;
     let vertex_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::VERTEX_BUFFER
             | vk::BufferUsageFlags::TRANSFER_DST
@@ -169,6 +178,30 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             mapped[ix] = *data;
         }
     }
+    let uv_buffer = renderer.device.new_buffer(
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        uvs_size,
+    );
+    renderer
+        .device
+        .set_object_name(uv_buffer.handle, "Gltf mesh UV buffer");
+    let uv_upload_buffer = renderer.device.new_buffer(
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        uvs_size,
+    );
+    renderer
+        .device
+        .set_object_name(uv_upload_buffer.handle, "Gltf mesh UV upload buffer");
+    {
+        let mut mapped = uv_upload_buffer
+            .map::<[f32; 2]>()
+            .expect("Failed to map UV upload buffer");
+        for (ix, data) in uvs.iter().enumerate() {
+            mapped[ix] = *data;
+        }
+    }
     let index_len = indices.len() as u64;
     let index_size = size_of::<u32>() as u64 * index_len;
     let index_buffer = renderer.device.new_buffer(
@@ -200,6 +233,8 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         let vertex_upload_buffer = &vertex_upload_buffer;
         let normal_buffer = &normal_buffer;
         let normal_upload_buffer = &normal_upload_buffer;
+        let uv_buffer = &uv_buffer;
+        let uv_upload_buffer = &uv_upload_buffer;
         let index_buffer = &index_buffer;
         let index_upload_buffer = &index_upload_buffer;
         let base_color_upload_buffer = &base_color_upload_buffer;
@@ -224,6 +259,16 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                     src_offset: 0,
                     dst_offset: 0,
                     size: normal_upload_buffer.size(),
+                }],
+            );
+            device.device.cmd_copy_buffer(
+                command_buffer,
+                uv_upload_buffer.handle,
+                uv_buffer.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: uv_upload_buffer.size(),
                 }],
             );
             device.device.cmd_copy_buffer(
@@ -317,6 +362,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     LoadedMesh {
         vertex_buffer,
         normal_buffer,
+        uv_buffer,
         index_buffer,
         index_len,
         aabb_c,

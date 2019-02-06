@@ -3,7 +3,7 @@ pub mod alloc;
 pub mod device;
 mod entry;
 mod gltf_mesh;
-mod helpers;
+pub mod helpers;
 mod instance;
 mod swapchain;
 
@@ -13,13 +13,7 @@ use cgmath;
 use imgui::{self, im_str};
 use specs::prelude::*;
 use std::{
-    cmp::min,
-    mem::size_of,
-    os::raw::c_uchar,
-    path::PathBuf,
-    ptr,
-    slice::{from_raw_parts},
-    sync::Arc,
+    cmp::min, mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc,
     thread, u64,
 };
 use winit;
@@ -67,6 +61,8 @@ pub struct RenderFrame {
     pub cull_set_layout: DescriptorSetLayout,
     pub cull_set: DescriptorSet,
     pub cull_complete_semaphore: Semaphore,
+    pub base_color_descriptor_set_layout: DescriptorSetLayout,
+    pub base_color_descriptor_set: DescriptorSet,
 }
 
 impl RenderFrame {
@@ -214,9 +210,26 @@ impl RenderFrame {
             "indirect draw commands buffer",
         );
 
+        let base_color_descriptor_set_layout =
+            device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                p_immutable_samplers: ptr::null(),
+            }]);
+
+        let base_color_descriptor_set =
+            descriptor_pool.allocate_set(&base_color_descriptor_set_layout);
+        device.set_object_name(base_color_descriptor_set.handle, "Base Color Descriptor Set");
+
         let gltf_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[&ubo_set_layout, &model_set_layout],
+            &[
+                &ubo_set_layout,
+                &model_set_layout,
+                &base_color_descriptor_set_layout,
+            ],
             &[],
         );
         device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
@@ -248,6 +261,12 @@ impl RenderFrame {
                                 format: vk::Format::R32G32B32_SFLOAT,
                                 offset: 0,
                             },
+                            vk::VertexInputAttributeDescription {
+                                location: 2,
+                                binding: 2,
+                                format: vk::Format::R32G32_SFLOAT,
+                                offset: 0,
+                            },
                         ])
                         .vertex_binding_descriptions(&[
                             vk::VertexInputBindingDescription {
@@ -258,6 +277,11 @@ impl RenderFrame {
                             vk::VertexInputBindingDescription {
                                 binding: 1,
                                 stride: size_of::<f32>() as u32 * 3,
+                                input_rate: vk::VertexInputRate::VERTEX,
+                            },
+                            vk::VertexInputBindingDescription {
+                                binding: 2,
+                                stride: size_of::<f32>() as u32 * 2,
                                 input_rate: vk::VertexInputRate::VERTEX,
                             },
                         ])
@@ -527,6 +551,8 @@ impl RenderFrame {
                 cull_set_layout: command_generation_descriptor_set_layout,
                 cull_set: command_generation_descriptor_set,
                 cull_complete_semaphore,
+                base_color_descriptor_set_layout,
+                base_color_descriptor_set,
             },
             events_loop,
         )
@@ -860,6 +886,7 @@ impl<'a> System<'a> for Renderer {
             let device = Arc::clone(&renderer.device);
             let mvp_set = &renderer.mvp_set;
             let model_set = &renderer.model_set;
+            let base_color_descriptor_set = &renderer.base_color_descriptor_set;
             let depth_pipeline = &renderer.depth_pipeline;
             let depth_pipeline_layout = &renderer.depth_pipeline_layout;
             let gltf_pipeline = &renderer.gltf_pipeline;
@@ -986,7 +1013,11 @@ impl<'a> System<'a> for Renderer {
                                     vk::PipelineBindPoint::GRAPHICS,
                                     gltf_pipeline_layout.handle,
                                     0,
-                                    &[mvp_set.handle, model_set.handle],
+                                    &[
+                                        mvp_set.handle,
+                                        model_set.handle,
+                                        base_color_descriptor_set.handle,
+                                    ],
                                     &[],
                                 );
                                 device.device.cmd_bind_index_buffer(
@@ -999,8 +1030,12 @@ impl<'a> System<'a> for Renderer {
                                 device.device.cmd_bind_vertex_buffers(
                                     command_buffer,
                                     0,
-                                    &[mesh.vertex_buffer.handle, mesh.normal_buffer.handle],
-                                    &[0, 0],
+                                    &[
+                                        mesh.vertex_buffer.handle,
+                                        mesh.normal_buffer.handle,
+                                        mesh.uv_buffer.handle,
+                                    ],
+                                    &[0, 0, 0],
                                 );
                                 device.device.cmd_draw_indexed_indirect(
                                     command_buffer,
@@ -1086,12 +1121,10 @@ impl<'a> System<'a> for Renderer {
                                     let mut vertex_offset = 0;
                                     let mut index_offset = 0;
                                     {
-                                        let mut vertex_slice = 
-                                            vertex_buffer
+                                        let mut vertex_slice = vertex_buffer
                                             .map::<imgui::ImDrawVert>()
                                             .expect("Failed to map gui vertex buffer");
-                                        let mut index_slice = 
-                                            index_buffer
+                                        let mut index_slice = index_buffer
                                             .map::<imgui::ImDrawIdx>()
                                             .expect("Failed to map gui index buffer");
                                         for draw_list in draw_data.into_iter() {

@@ -1,8 +1,5 @@
 use ash::vk;
-use std::{
-    ptr,
-    sync::Arc,
-};
+use std::{ptr, sync::Arc};
 
 use super::{super::alloc, mapping::MappedBuffer, Device};
 
