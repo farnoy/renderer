@@ -229,12 +229,14 @@ fn extension_names() -> Vec<*const i8> {
         base.push(Win32Surface::name().as_ptr());
     }
 
-    if cfg!(not(feature = "radeon-profiler")) {
-        // for validation layers, use the new, consolidated extension for debugging
-        base.push(DebugUtils::name().as_ptr());
-    } else if cfg!(feature = "radeon-profiler") {
-        // for profiling, Radeon GPU profiler only understand the old extension for debug markers
-        base.push(DebugReport::name().as_ptr());
+    if cfg!(feature = "validation") {
+        if cfg!(not(feature = "radeon-profiler")) {
+            // for validation layers, use the new, consolidated extension for debugging
+            base.push(DebugUtils::name().as_ptr());
+        } else if cfg!(feature = "radeon-profiler") {
+            // for profiling, Radeon GPU profiler only understand the old extension for debug markers
+            base.push(DebugReport::name().as_ptr());
+        }
     }
 
     base
