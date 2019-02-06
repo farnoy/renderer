@@ -34,20 +34,6 @@ pub struct Framebuffer {
     pub device: Arc<Device>,
 }
 
-pub struct Buffer {
-    pub handle: vk::Buffer,
-    pub allocation: alloc::VmaAllocation,
-    pub allocation_info: alloc::VmaAllocationInfo,
-    pub device: Arc<Device>,
-}
-
-pub struct Image {
-    pub handle: vk::Image,
-    pub allocation: alloc::VmaAllocation,
-    pub allocation_info: alloc::VmaAllocationInfo,
-    pub device: Arc<Device>,
-}
-
 pub struct ImageView {
     pub handle: vk::ImageView,
     pub device: Arc<Device>,
@@ -88,18 +74,6 @@ impl Drop for Framebuffer {
                 self.device.device.destroy_framebuffer(*handle, None);
             }
         }
-    }
-}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        alloc::destroy_buffer(self.device.allocator, self.handle, self.allocation)
-    }
-}
-
-impl Drop for Image {
-    fn drop(&mut self) {
-        alloc::destroy_image(self.device.allocator, self.handle, self.allocation)
     }
 }
 
@@ -358,115 +332,6 @@ pub fn setup_framebuffer(
         depth_images,
         depth_image_views,
         handles,
-        device,
-    }
-}
-
-pub fn new_buffer(
-    device: Arc<Device>,
-    buffer_usage: vk::BufferUsageFlags,
-    allocation_flags: alloc::VmaAllocationCreateFlagBits,
-    allocation_usage: alloc::VmaMemoryUsage,
-    size: vk::DeviceSize,
-) -> Buffer {
-    let (queue_family_indices, sharing_mode) =
-        if device.compute_queue_family != device.graphics_queue_family {
-            (
-                vec![device.graphics_queue_family, device.compute_queue_family],
-                vk::SharingMode::CONCURRENT,
-            )
-        } else {
-            (
-                vec![device.graphics_queue_family],
-                vk::SharingMode::EXCLUSIVE,
-            )
-        };
-    let buffer_create_info = vk::BufferCreateInfo::builder()
-        .size(size)
-        .usage(buffer_usage)
-        .sharing_mode(sharing_mode)
-        .queue_family_indices(&queue_family_indices);
-
-    let allocation_create_info = alloc::VmaAllocationCreateInfo {
-        flags: allocation_flags,
-        memoryTypeBits: 0,
-        pUserData: ptr::null_mut(),
-        pool: ptr::null_mut(),
-        preferredFlags: 0,
-        requiredFlags: 0,
-        usage: allocation_usage,
-    };
-
-    let (handle, allocation, allocation_info) = alloc::create_buffer(
-        device.allocator,
-        &buffer_create_info,
-        &allocation_create_info,
-    )
-    .unwrap();
-
-    Buffer {
-        handle,
-        allocation,
-        allocation_info,
-        device,
-    }
-}
-
-pub fn new_image(
-    device: Arc<Device>,
-    format: vk::Format,
-    extent: vk::Extent3D,
-    samples: vk::SampleCountFlags,
-    usage: vk::ImageUsageFlags,
-    allocation_flags: alloc::VmaAllocationCreateFlagBits,
-    allocation_usage: alloc::VmaMemoryUsage,
-) -> Image {
-    let (queue_family_indices, sharing_mode) =
-        if device.compute_queue_family != device.graphics_queue_family {
-            (
-                vec![device.graphics_queue_family, device.compute_queue_family],
-                vk::SharingMode::CONCURRENT,
-            )
-        } else {
-            (
-                vec![device.graphics_queue_family],
-                vk::SharingMode::EXCLUSIVE,
-            )
-        };
-    let image_create_info = vk::ImageCreateInfo::builder()
-        .format(format)
-        .extent(extent)
-        .samples(samples)
-        .usage(usage)
-        .mip_levels(1)
-        .array_layers(1)
-        .image_type(vk::ImageType::TYPE_2D)
-        .tiling(vk::ImageTiling::LINEAR)
-        .initial_layout(vk::ImageLayout::PREINITIALIZED)
-        .sharing_mode(sharing_mode)
-        .queue_family_indices(&queue_family_indices);
-
-    let allocation_create_info = alloc::VmaAllocationCreateInfo {
-        flags: allocation_flags,
-        memoryTypeBits: 0,
-        pUserData: ptr::null_mut(),
-        pool: ptr::null_mut(),
-        preferredFlags: 0,
-        requiredFlags: 0,
-        usage: allocation_usage,
-    };
-
-    let (handle, allocation, allocation_info) = alloc::create_image(
-        device.allocator,
-        &image_create_info,
-        &allocation_create_info,
-    )
-    .unwrap();
-
-    Image {
-        handle,
-        allocation,
-        allocation_info,
         device,
     }
 }

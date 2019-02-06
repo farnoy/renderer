@@ -1,6 +1,6 @@
 // TODO: pub(crate) should disappear?
 pub mod alloc;
-mod device;
+pub mod device;
 mod entry;
 mod gltf_mesh;
 mod helpers;
@@ -18,7 +18,7 @@ use std::{
     os::raw::c_uchar,
     path::PathBuf,
     ptr,
-    slice::{from_raw_parts, from_raw_parts_mut},
+    slice::{from_raw_parts},
     sync::Arc,
     thread, u64,
 };
@@ -26,8 +26,10 @@ use winit;
 
 use self::{
     device::{
+        buffer::Buffer,
         commands::{CommandBuffer, CommandPool},
         descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
+        image::Image,
         sync::{Fence, Semaphore},
         Device,
     },
@@ -36,7 +38,6 @@ use self::{
 };
 
 pub use self::gltf_mesh::{load as load_gltf, LoadedMesh};
-pub use self::helpers::{new_buffer, Buffer};
 
 // TODO: rename
 pub struct RenderFrame {
@@ -201,12 +202,10 @@ impl RenderFrame {
             command_generation_descriptor_set.handle,
             "Command Generation Descriptor Set",
         );
-        let command_generation_buffer = new_buffer(
-            Arc::clone(&device),
+        let command_generation_buffer = device.new_buffer(
             vk::BufferUsageFlags::INDIRECT_BUFFER
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST,
-            alloc::VmaAllocationCreateFlagBits(0),
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             size_of::<u32>() as vk::DeviceSize * 5 * 2400,
         );
@@ -425,10 +424,8 @@ impl RenderFrame {
 
         let mvp_set = descriptor_pool.allocate_set(&ubo_set_layout);
         device.set_object_name(mvp_set.handle, "UBO Set");
-        let mvp_buffer = new_buffer(
-            Arc::clone(&device),
+        let mvp_buffer = device.new_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             4 * 4 * 4 * 4096,
         );
@@ -452,10 +449,8 @@ impl RenderFrame {
         }
         let model_view_set = descriptor_pool.allocate_set(&model_view_set_layout);
         device.set_object_name(model_view_set.handle, "Model View Set");
-        let model_view_buffer = new_buffer(
-            Arc::clone(&device),
+        let model_view_buffer = device.new_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             4 * 4 * 4 * 4096,
         );
@@ -480,10 +475,8 @@ impl RenderFrame {
 
         let model_set = descriptor_pool.allocate_set(&model_set_layout);
         device.set_object_name(model_set.handle, "Model Set");
-        let model_buffer = new_buffer(
-            Arc::clone(&device),
+        let model_buffer = device.new_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             4 * 4 * 4 * 4096,
         );
@@ -877,8 +870,8 @@ impl<'a> System<'a> for Renderer {
                 if !gui.transitioned {
                     device.cmd_pipeline_barrier(
                         command_buffer,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                        vk::PipelineStageFlags::HOST,
+                        vk::PipelineStageFlags::HOST,
                         Default::default(),
                         &[],
                         &[],
@@ -892,7 +885,9 @@ impl<'a> System<'a> for Renderer {
                                 layer_count: 1,
                             })
                             .old_layout(vk::ImageLayout::PREINITIALIZED)
-                            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .new_layout(vk::ImageLayout::GENERAL)
+                            .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                            .dst_access_mask(vk::AccessFlags::HOST_WRITE)
                             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                             .build()],
@@ -1021,16 +1016,6 @@ impl<'a> System<'a> for Renderer {
                             "GUI",
                             [1.0, 1.0, 0.0, 1.0],
                             || {
-                                let vertex_slice = from_raw_parts_mut(
-                                    gui.vertex_buffer.allocation_info.pMappedData
-                                        as *mut imgui::ImDrawVert,
-                                    4096,
-                                );
-                                let index_slice = from_raw_parts_mut(
-                                    gui.index_buffer.allocation_info.pMappedData
-                                        as *mut imgui::ImDrawIdx,
-                                    4096,
-                                );
                                 let pipeline_layout = gui.pipeline_layout.handle;
                                 device.cmd_bind_descriptor_sets(
                                     command_buffer,
@@ -1057,7 +1042,14 @@ impl<'a> System<'a> for Renderer {
                                     0,
                                     vk::IndexType::UINT16,
                                 );
-                                let ui = gui.imgui.frame(
+                                // Split t
+                                let Gui {
+                                    ref mut imgui,
+                                    ref vertex_buffer,
+                                    ref index_buffer,
+                                    ..
+                                } = *gui;
+                                let ui = imgui.frame(
                                     imgui::FrameSize {
                                         logical_size: (
                                             f64::from(instance.window_width),
@@ -1093,23 +1085,33 @@ impl<'a> System<'a> for Renderer {
                                     );
                                     let mut vertex_offset = 0;
                                     let mut index_offset = 0;
-                                    for draw_list in draw_data.into_iter() {
-                                        index_slice[0..draw_list.idx_buffer.len()]
-                                            .copy_from_slice(draw_list.idx_buffer);
-                                        vertex_slice[0..draw_list.vtx_buffer.len()]
-                                            .copy_from_slice(draw_list.vtx_buffer);
-                                        for draw_cmd in draw_list.cmd_buffer {
-                                            device.cmd_draw_indexed(
-                                                command_buffer,
-                                                draw_cmd.elem_count,
-                                                1,
-                                                index_offset,
-                                                vertex_offset,
-                                                0,
-                                            );
-                                            index_offset += draw_cmd.elem_count as u32;
+                                    {
+                                        let mut vertex_slice = 
+                                            vertex_buffer
+                                            .map::<imgui::ImDrawVert>()
+                                            .expect("Failed to map gui vertex buffer");
+                                        let mut index_slice = 
+                                            index_buffer
+                                            .map::<imgui::ImDrawIdx>()
+                                            .expect("Failed to map gui index buffer");
+                                        for draw_list in draw_data.into_iter() {
+                                            index_slice[0..draw_list.idx_buffer.len()]
+                                                .copy_from_slice(draw_list.idx_buffer);
+                                            vertex_slice[0..draw_list.vtx_buffer.len()]
+                                                .copy_from_slice(draw_list.vtx_buffer);
+                                            for draw_cmd in draw_list.cmd_buffer {
+                                                device.cmd_draw_indexed(
+                                                    command_buffer,
+                                                    draw_cmd.elem_count,
+                                                    1,
+                                                    index_offset,
+                                                    vertex_offset,
+                                                    0,
+                                                );
+                                                index_offset += draw_cmd.elem_count as u32;
+                                            }
+                                            vertex_offset += draw_list.vtx_buffer.len() as i32;
                                         }
-                                        vertex_offset += draw_list.vtx_buffer.len() as i32;
                                     }
                                     if false {
                                         return Err(3i8);
@@ -1217,23 +1219,18 @@ pub struct Gui {
 impl Gui {
     pub fn new(renderer: &RenderFrame) -> Gui {
         let mut imgui = imgui::ImGui::init();
-        let vertex_buffer = new_buffer(
-            renderer.device.clone(),
+        let vertex_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             4096 * size_of::<imgui::ImDrawVert>() as vk::DeviceSize,
         );
-        let index_buffer = new_buffer(
-            renderer.device.clone(),
+        let index_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::INDEX_BUFFER,
-            alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             4096 * size_of::<imgui::ImDrawIdx>() as vk::DeviceSize,
         );
         let texture = imgui.prepare_texture(|handle| {
-            let mut texture = new_image(
-                renderer.device.clone(),
+            let texture = renderer.device.new_image(
                 vk::Format::R8G8B8A8_UNORM,
                 vk::Extent3D {
                     width: handle.width,
@@ -1242,26 +1239,14 @@ impl Gui {
                 },
                 vk::SampleCountFlags::TYPE_1,
                 vk::ImageUsageFlags::SAMPLED,
-                alloc::VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_MAPPED_BIT,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
-            let texture_data = unsafe {
-                from_raw_parts_mut(
-                    texture.allocation_info.pMappedData as *mut c_uchar,
-                    texture.allocation_info.size as usize,
-                )
-            };
-            texture_data[0..handle.pixels.len()].copy_from_slice(handle.pixels);
-            unsafe {
-                alloc::vmaFlushAllocation(
-                    renderer.device.allocator,
-                    texture.allocation,
-                    0,
-                    vk::WHOLE_SIZE,
-                );
-                alloc::vmaUnmapMemory(renderer.device.allocator, texture.allocation);
+            {
+                let mut texture_data = texture
+                    .map::<c_uchar>()
+                    .expect("failed to map imgui texture");
+                texture_data[0..handle.pixels.len()].copy_from_slice(handle.pixels);
             }
-            texture.allocation_info.pMappedData = ptr::null_mut();
             texture
         });
         let sampler = new_sampler(
@@ -1430,7 +1415,7 @@ impl Gui {
                     .image_info(&[vk::DescriptorImageInfo::builder()
                         .sampler(sampler.handle)
                         .image_view(texture_view.handle)
-                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .image_layout(vk::ImageLayout::GENERAL)
                         .build()])
                     .build()],
                 &[],

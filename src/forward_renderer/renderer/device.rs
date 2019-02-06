@@ -11,13 +11,18 @@ use ash::{
 use parking_lot::Mutex;
 use std::{ops::Deref, sync::Arc};
 
+pub mod buffer;
 pub mod commands;
 pub mod descriptors;
+pub mod image;
+mod mapping;
 pub mod sync;
 
 use self::{
+    buffer::Buffer,
     commands::CommandPool,
     descriptors::DescriptorSetLayout,
+    image::Image,
     sync::{Fence, Semaphore},
 };
 use super::{alloc, Instance};
@@ -224,6 +229,26 @@ impl Device {
         Fence::new(self)
     }
 
+    pub fn new_buffer(
+        self: &Arc<Self>,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+        size: vk::DeviceSize,
+    ) -> Buffer {
+        Buffer::new(self, buffer_usage, allocation_usage, size)
+    }
+
+    pub fn new_image(
+        self: &Arc<Self>,
+        format: vk::Format,
+        extent: vk::Extent3D,
+        samples: vk::SampleCountFlags,
+        usage: vk::ImageUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+    ) -> Image {
+        Image::new(self, format, extent, samples, usage, allocation_usage)
+    }
+
     pub fn vk(&self) -> &AshDevice {
         &self.device
     }
@@ -247,7 +272,7 @@ impl Device {
     }
 
     #[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
-    pub fn set_object_name<T: vk::Handle>(&self, handle: T, _name: &str) {}
+    pub fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
 
     #[cfg(feature = "validation")]
     pub fn debug_marker_around<F: FnOnce()>(

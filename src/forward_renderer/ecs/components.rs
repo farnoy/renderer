@@ -1,4 +1,4 @@
-use super::super::renderer::Buffer;
+use super::super::renderer::device::buffer::Buffer;
 use cgmath;
 use specs::*;
 use specs_derive::Component;

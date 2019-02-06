@@ -2,7 +2,7 @@ use super::components::*;
 use cgmath::{self, One, Zero};
 use parking_lot::Mutex;
 use specs::prelude::*;
-use std::{slice::from_raw_parts_mut, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use winit::{
     self, dpi::LogicalSize, DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode,
     WindowEvent,
@@ -59,27 +59,18 @@ impl<'a> System<'a> for MVPUpload {
     );
 
     fn run(&mut self, (entities, matrices, renderer): Self::SystemData) {
-        (&*entities, &matrices)
-            .par_join()
-            .for_each(|(entity, matrices)| {
-                // println!("Writing at {:?} contents {:?}", entity.id(), matrices.mvp);
-                let out_mvp = unsafe {
-                    from_raw_parts_mut(
-                        renderer.mvp_buffer.allocation_info.pMappedData
-                            as *mut cgmath::Matrix4<f32>,
-                        4096,
-                    )
-                };
-                let out_model = unsafe {
-                    from_raw_parts_mut(
-                        renderer.model_buffer.allocation_info.pMappedData
-                            as *mut cgmath::Matrix4<f32>,
-                        4096,
-                    )
-                };
-                out_mvp[entity.id() as usize] = matrices.mvp;
-                out_model[entity.id() as usize] = matrices.model;
-            });
+        let mut mvp_mapped = renderer
+            .mvp_buffer
+            .map::<cgmath::Matrix4<f32>>()
+            .expect("failed to map MVP buffer");
+        let mut model_mapped = renderer
+            .model_buffer
+            .map::<cgmath::Matrix4<f32>>()
+            .expect("failed to map Model buffer");
+        for (entity, matrices) in (&*entities, &matrices).join() {
+            mvp_mapped[entity.id() as usize] = matrices.mvp;
+            model_mapped[entity.id() as usize] = matrices.model;
+        }
     }
 }
 

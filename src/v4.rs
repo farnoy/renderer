@@ -3,6 +3,7 @@
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;
+extern crate image;
 extern crate imgui;
 extern crate meshopt;
 extern crate parking_lot;
@@ -18,8 +19,8 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        alloc, load_gltf, new_buffer, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh,
-        PresentFramebuffer, RenderFrame, Renderer,
+        alloc, load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh, PresentFramebuffer,
+        RenderFrame, Renderer,
     },
 };
 use ash::{version::DeviceV1_0, vk};
@@ -47,6 +48,7 @@ fn main() {
         index_len,
         aabb_c,
         aabb_h,
+        base_color: _base_color,
     } = load_gltf(
         &renderer,
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
@@ -56,10 +58,8 @@ fn main() {
     let normal_buffer = Arc::new(normal_buffer);
     let index_buffer = Arc::new(index_buffer);
 
-    let culled_index_buffer = new_buffer(
-        Arc::clone(&renderer.device),
+    let culled_index_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-        alloc::VmaAllocationCreateFlagBits(0),
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         size_of::<u32>() as vk::DeviceSize * index_len * 2400,
     );
@@ -231,7 +231,7 @@ fn main() {
         .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
 
     // print stages of execution
-    println!("{:?}", dispatcher_builder);
+    // println!("{:?}", dispatcher_builder);
 
     let mut dispatcher = dispatcher_builder.build();
 
