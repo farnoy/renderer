@@ -110,6 +110,17 @@ void main() {
     if (!cull)
         cull = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw)) > 0;
 
+    // degenerate triangle culling, this is a bad algorithm but even while being
+    // conservative here, it discards a lot of stuff
+    if (!cull) {
+        float a = distance(ndc0, ndc1);
+        float b = distance(ndc0, ndc2);
+        float c = distance(ndc1, ndc2);
+        float s = (a + b + c) / 2.0;
+        float area = sqrt(s * (s - a) * (s - b) * (s - c));
+        cull = area < 0.0000005; // magic constant
+    }
+
     uvec4 ballot = subgroupBallot(!cull);
     uint count = subgroupBallotBitCount(ballot);
     uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
