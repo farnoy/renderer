@@ -6,6 +6,7 @@ mod gltf_mesh;
 pub mod helpers;
 mod instance;
 mod swapchain;
+mod systems;
 
 use super::ecs::components::{GltfMesh, GltfMeshBufferIndex, GltfMeshCullDescriptorSet};
 use ash::{prelude::*, version::DeviceV1_0, vk};
@@ -20,14 +21,18 @@ use winit;
 
 use self::{
     device::{
-        Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout,
-        Device, Fence, Image, Semaphore,
+        Buffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout,
+        Device, Image, Semaphore,
     },
     helpers::*,
     instance::Instance,
+    systems::present::PresentData,
 };
 
-pub use self::gltf_mesh::{load as load_gltf, LoadedMesh};
+pub use self::{
+    gltf_mesh::{load as load_gltf, LoadedMesh},
+    systems::present::{AcquireFramebuffer, PresentFramebuffer},
+};
 
 // TODO: rename
 pub struct RenderFrame {
@@ -602,37 +607,6 @@ impl RenderFrame {
     }
 }
 
-pub struct AcquireFramebuffer;
-
-impl<'a> System<'a> for AcquireFramebuffer {
-    type SystemData = (WriteExpect<'a, RenderFrame>, Read<'a, PresentData>);
-
-    fn run(&mut self, (mut renderer, present_data): Self::SystemData) {
-        if let Some(ref fence) = present_data.render_complete_fence {
-            unsafe {
-                renderer
-                    .device
-                    .wait_for_fences(&[fence.handle], true, u64::MAX)
-                    .expect("Wait for fence failed.");
-            }
-        }
-        renderer.image_index = unsafe {
-            renderer
-                .swapchain
-                .handle
-                .ext
-                .acquire_next_image(
-                    renderer.swapchain.handle.swapchain,
-                    u64::MAX,
-                    renderer.present_semaphore.handle,
-                    vk::Fence::null(),
-                )
-                .unwrap()
-                .0 // TODO: 2nd argument is boolean describing surface optimality
-        };
-    }
-}
-
 pub struct UpdateCullDescriptorsForMeshes;
 
 impl<'a> System<'a> for UpdateCullDescriptorsForMeshes {
@@ -1191,48 +1165,6 @@ impl<'a> System<'a> for Renderer {
 
             present_data.render_command_buffer = Some(command_buffer);
             present_data.render_complete_fence = Some(submit_fence);
-        }
-    }
-}
-
-pub struct PresentData {
-    render_command_buffer: Option<CommandBuffer>,
-    render_complete_fence: Option<Fence>,
-}
-
-impl Default for PresentData {
-    fn default() -> PresentData {
-        PresentData {
-            render_command_buffer: None,
-            render_complete_fence: None,
-        }
-    }
-}
-
-pub struct PresentFramebuffer;
-
-impl<'a> System<'a> for PresentFramebuffer {
-    type SystemData = ReadExpect<'a, RenderFrame>;
-
-    fn run(&mut self, renderer: Self::SystemData) {
-        {
-            let wait_semaphores = &[renderer.rendering_complete_semaphore.handle];
-            let swapchains = &[renderer.swapchain.handle.swapchain];
-            let image_indices = &[renderer.image_index];
-            let present_info = vk::PresentInfoKHR::builder()
-                .wait_semaphores(wait_semaphores)
-                .swapchains(swapchains)
-                .image_indices(image_indices);
-
-            let queue = renderer.device.graphics_queue.lock();
-            unsafe {
-                renderer
-                    .swapchain
-                    .handle
-                    .ext
-                    .queue_present(*queue, &present_info)
-                    .unwrap();
-            }
         }
     }
 }
