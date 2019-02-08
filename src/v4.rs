@@ -19,15 +19,15 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        alloc, helpers, load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh,
-        PresentFramebuffer, RenderFrame, Renderer,
+        helpers, load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh, PresentFramebuffer,
+        RenderFrame, Renderer, UpdateCullDescriptorsForMeshes,
     },
 };
 use ash::{version::DeviceV1_0, vk};
 use cgmath::{Rotation3, Zero};
 use parking_lot::Mutex;
 use specs::Builder;
-use std::{mem::size_of, sync::Arc};
+use std::sync::Arc;
 
 fn main() {
     let mut world = specs::World::new();
@@ -39,7 +39,7 @@ fn main() {
             .unwrap(),
     );
 
-    let (mut renderer, events_loop) = RenderFrame::new();
+    let (renderer, events_loop) = RenderFrame::new();
 
     let LoadedMesh {
         vertex_buffer,
@@ -59,15 +59,6 @@ fn main() {
     let normal_buffer = Arc::new(normal_buffer);
     let uv_buffer = Arc::new(uv_buffer);
     let index_buffer = Arc::new(index_buffer);
-
-    let culled_index_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        size_of::<u32>() as vk::DeviceSize * index_len * 2400,
-    );
-    renderer
-        .device
-        .set_object_name(culled_index_buffer.handle, "culled index buffer");
 
     let image_view = helpers::new_image_view(
         renderer.device.clone(),
@@ -100,28 +91,6 @@ fn main() {
     );
 
     {
-        let buffer_updates = &[
-            vk::DescriptorBufferInfo {
-                buffer: renderer.culled_commands_buffer.handle,
-                offset: 0,
-                range: vk::WHOLE_SIZE,
-            },
-            vk::DescriptorBufferInfo {
-                buffer: index_buffer.handle,
-                offset: 0,
-                range: vk::WHOLE_SIZE,
-            },
-            vk::DescriptorBufferInfo {
-                buffer: vertex_buffer.handle,
-                offset: 0,
-                range: vk::WHOLE_SIZE,
-            },
-            vk::DescriptorBufferInfo {
-                buffer: culled_index_buffer.handle,
-                offset: 0,
-                range: vk::WHOLE_SIZE,
-            },
-        ];
         let sampler_updates = &[vk::DescriptorImageInfo::builder()
             .image_view(image_view.handle)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -129,26 +98,16 @@ fn main() {
             .build()];
         unsafe {
             renderer.device.device.update_descriptor_sets(
-                &[
-                    vk::WriteDescriptorSet::builder()
-                        .dst_set(renderer.cull_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(buffer_updates)
-                        .build(),
-                    vk::WriteDescriptorSet::builder()
-                        .dst_set(renderer.base_color_descriptor_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(sampler_updates)
-                        .build(),
-                ],
+                &[vk::WriteDescriptorSet::builder()
+                    .dst_set(renderer.base_color_descriptor_set.handle)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(sampler_updates)
+                    .build()],
                 &[],
             );
         }
     }
-
-    renderer.culled_index_buffer = Some(culled_index_buffer);
 
     world
         .create_entity()
@@ -259,6 +218,11 @@ fn main() {
             &["aabb_calc", "project_camera"],
         )
         .with(
+            UpdateCullDescriptorsForMeshes,
+            "update_cull_descriptors",
+            &[],
+        )
+        .with(
             AssignBufferIndex,
             "assign_buffer_index",
             &["coarse_culling"],
@@ -273,6 +237,7 @@ fn main() {
                 "assign_buffer_index",
                 "mvp_upload",
                 "coarse_culling",
+                "update_cull_descriptors",
             ],
         )
         .with(Renderer, "render_frame", &["cull_geometry"])

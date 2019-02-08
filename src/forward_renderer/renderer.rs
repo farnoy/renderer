@@ -7,7 +7,7 @@ pub mod helpers;
 mod instance;
 mod swapchain;
 
-use super::ecs::components::{GltfMesh, GltfMeshBufferIndex};
+use super::ecs::components::{GltfMesh, GltfMeshBufferIndex, GltfMeshCullDescriptorSet};
 use ash::{prelude::*, version::DeviceV1_0, vk};
 use cgmath;
 use imgui::{self, im_str};
@@ -49,11 +49,12 @@ pub struct RenderFrame {
     pub mvp_set: DescriptorSet,
     pub mvp_buffer: Buffer,
     pub culled_commands_buffer: Buffer,
-    pub culled_index_buffer: Option<Buffer>,
+    pub culled_index_buffer: Buffer,
     pub cull_pipeline: Pipeline,
     pub cull_pipeline_layout: PipelineLayout,
     pub cull_set_layout: DescriptorSetLayout,
     pub cull_set: DescriptorSet,
+    pub mesh_assembly_set_layout: DescriptorSetLayout,
     pub cull_complete_semaphore: Semaphore,
     pub base_color_descriptor_set_layout: DescriptorSetLayout,
     pub base_color_descriptor_set: DescriptorSet,
@@ -84,7 +85,7 @@ impl RenderFrame {
 
         let descriptor_pool = Arc::new(DescriptorPool::new(
             Arc::clone(&device),
-            30,
+            3_000,
             &[
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -92,7 +93,7 @@ impl RenderFrame {
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 4096,
+                    descriptor_count: 16384,
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -101,7 +102,7 @@ impl RenderFrame {
             ],
         ));
 
-        let command_generation_descriptor_set_layout = device.new_descriptor_set_layout(&[
+        let cull_set_layout = device.new_descriptor_set_layout(&[
             vk::DescriptorSetLayoutBinding {
                 binding: 0,
                 descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
@@ -116,42 +117,35 @@ impl RenderFrame {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 p_immutable_samplers: ptr::null(),
             },
-            vk::DescriptorSetLayoutBinding {
-                binding: 2,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::COMPUTE,
-                p_immutable_samplers: ptr::null(),
-            },
-            vk::DescriptorSetLayoutBinding {
-                binding: 3,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::COMPUTE,
-                p_immutable_samplers: ptr::null(),
-            },
         ]);
-        device.set_object_name(
-            command_generation_descriptor_set_layout.handle,
-            "Command Generation Descriptor Set Layout",
-        );
-        let ubo_set_layout = device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+        device.set_object_name(cull_set_layout.handle, "Cull Descriptor Set Layout");
+
+        let mvp_set_layout = device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
             binding: 0,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
             p_immutable_samplers: ptr::null(),
         }]);
-        device.set_object_name(ubo_set_layout.handle, "UBO Set Layout");
-        let model_view_set_layout =
-            device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+        device.set_object_name(mvp_set_layout.handle, "MVP Set Layout");
+
+        let mesh_assembly_set_layout = device.new_descriptor_set_layout(&[
+            vk::DescriptorSetLayoutBinding {
                 binding: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
                 descriptor_count: 1,
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 p_immutable_samplers: ptr::null(),
-            }]);
-        device.set_object_name(model_view_set_layout.handle, "Model View Set Layout");
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 1,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
+        ]);
+        device.set_object_name(mesh_assembly_set_layout.handle, "Mesh Assembly Layout");
 
         #[repr(C)]
         struct MeshData {
@@ -159,36 +153,32 @@ impl RenderFrame {
             gltf_id: u32,
             index_count: u32,
             index_offset: u32,
-            vertex_offset: u32,
+            vertex_offset: i32,
         }
 
-        let command_generation_pipeline_layout = new_pipeline_layout(
+        let cull_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[&ubo_set_layout, &command_generation_descriptor_set_layout],
+            &[&mvp_set_layout, &cull_set_layout, &mesh_assembly_set_layout],
             &[vk::PushConstantRange {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 offset: 0,
                 size: size_of::<MeshData>() as u32,
             }],
         );
-        let command_generation_pipeline = new_compute_pipeline(
+        let cull_pipeline = new_compute_pipeline(
             Arc::clone(&device),
-            &command_generation_pipeline_layout,
+            &cull_pipeline_layout,
             &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
         );
 
-        let command_generation_descriptor_set =
-            descriptor_pool.allocate_set(&command_generation_descriptor_set_layout);
-        device.set_object_name(
-            command_generation_descriptor_set.handle,
-            "Command Generation Descriptor Set",
-        );
+        let cull_set = descriptor_pool.allocate_set(&cull_set_layout);
+        device.set_object_name(cull_set.handle, "Cull Descriptor Set");
         let command_generation_buffer = device.new_buffer(
             vk::BufferUsageFlags::INDIRECT_BUFFER
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<u32>() as vk::DeviceSize * 5 * 2400,
+            size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize * 2400,
         );
         device.set_object_name(
             command_generation_buffer.handle,
@@ -213,7 +203,7 @@ impl RenderFrame {
 
         let gltf_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[&ubo_set_layout, &base_color_descriptor_set_layout],
+            &[&mvp_set_layout, &base_color_descriptor_set_layout],
             &[],
         );
         device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
@@ -338,7 +328,7 @@ impl RenderFrame {
         );
         device.set_object_name(gltf_pipeline.handle, "GLTF Pipeline");
         let depth_pipeline_layout =
-            new_pipeline_layout(Arc::clone(&device), &[&ubo_set_layout], &[]);
+            new_pipeline_layout(Arc::clone(&device), &[&mvp_set_layout], &[]);
         let depth_pipeline = new_graphics_pipeline2(
             Arc::clone(&device),
             &[(
@@ -430,27 +420,55 @@ impl RenderFrame {
 
         device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
 
-        let mvp_set = descriptor_pool.allocate_set(&ubo_set_layout);
+        let mvp_set = descriptor_pool.allocate_set(&mvp_set_layout);
         device.set_object_name(mvp_set.handle, "UBO Set");
         let mvp_buffer = device.new_buffer(
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             4 * 4 * 4 * 4096,
         );
+
+        let culled_index_buffer = device.new_buffer(
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            size_of::<u32>() as vk::DeviceSize * 300_000_000,
+        );
+        device.set_object_name(culled_index_buffer.handle, "Global culled index buffer");
+
         {
-            let buffer_updates = &[vk::DescriptorBufferInfo {
+            let mvp_updates = &[vk::DescriptorBufferInfo {
                 buffer: mvp_buffer.handle,
                 offset: 0,
                 range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
             }];
+            let cull_updates = &[
+                vk::DescriptorBufferInfo {
+                    buffer: command_generation_buffer.handle,
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                },
+                vk::DescriptorBufferInfo {
+                    buffer: culled_index_buffer.handle,
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                },
+            ];
             unsafe {
-                device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(mvp_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(buffer_updates)
-                        .build()],
+                device.update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet::builder()
+                            .dst_set(mvp_set.handle)
+                            .dst_binding(0)
+                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                            .buffer_info(mvp_updates)
+                            .build(),
+                        vk::WriteDescriptorSet::builder()
+                            .dst_set(cull_set.handle)
+                            .dst_binding(0)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(cull_updates)
+                            .build(),
+                    ],
                     &[],
                 );
             }
@@ -476,11 +494,12 @@ impl RenderFrame {
                 renderpass: main_renderpass,
                 swapchain,
                 culled_commands_buffer: command_generation_buffer,
-                culled_index_buffer: None,
-                cull_pipeline: command_generation_pipeline,
-                cull_pipeline_layout: command_generation_pipeline_layout,
-                cull_set_layout: command_generation_descriptor_set_layout,
-                cull_set: command_generation_descriptor_set,
+                culled_index_buffer,
+                cull_pipeline,
+                cull_pipeline_layout,
+                cull_set_layout,
+                cull_set,
+                mesh_assembly_set_layout,
                 cull_complete_semaphore,
                 base_color_descriptor_set_layout,
                 base_color_descriptor_set,
@@ -615,6 +634,55 @@ impl<'a> System<'a> for AcquireFramebuffer {
     }
 }
 
+pub struct UpdateCullDescriptorsForMeshes;
+
+impl<'a> System<'a> for UpdateCullDescriptorsForMeshes {
+    type SystemData = (
+        Entities<'a>,
+        ReadExpect<'a, RenderFrame>,
+        ReadStorage<'a, GltfMesh>,
+        WriteStorage<'a, GltfMeshCullDescriptorSet>,
+    );
+
+    fn run(&mut self, (entities, renderer, meshes, mut mesh_descriptor_sets): Self::SystemData) {
+        let mut entities_to_update = specs::BitSet::new();
+        for (entity, _, ()) in (&*entities, &meshes, !&mesh_descriptor_sets).join() {
+            entities_to_update.add(entity.id());
+        }
+
+        for (entity, _, mesh) in (&*entities, &entities_to_update, &meshes).join() {
+            let descriptor_set = renderer
+                .descriptor_pool
+                .allocate_set(&renderer.mesh_assembly_set_layout);
+            let updates = &[
+                vk::DescriptorBufferInfo::builder()
+                    .buffer(mesh.index_buffer.handle)
+                    .range(vk::WHOLE_SIZE)
+                    .build(),
+                vk::DescriptorBufferInfo::builder()
+                    .buffer(mesh.vertex_buffer.handle)
+                    .range(vk::WHOLE_SIZE)
+                    .build(),
+            ];
+            unsafe {
+                renderer.device.device.update_descriptor_sets(
+                    &[vk::WriteDescriptorSet::builder()
+                        .dst_set(descriptor_set.handle)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(updates)
+                        .build()],
+                    &[],
+                );
+            }
+            let res = mesh_descriptor_sets
+                .insert(entity, GltfMeshCullDescriptorSet(descriptor_set))
+                .expect("Failed to insert GltfMeshCullDescriptorSet");
+            assert!(res.is_none()); // double check that there was nothing there
+        }
+    }
+}
+
 pub struct CullGeometry {
     semaphores: Vec<Semaphore>,
 }
@@ -635,9 +703,13 @@ impl<'a> System<'a> for CullGeometry {
         ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
+        ReadStorage<'a, GltfMeshCullDescriptorSet>,
     );
 
-    fn run(&mut self, (entities, renderer, meshes, mesh_indices): Self::SystemData) {
+    fn run(
+        &mut self,
+        (entities, renderer, meshes, mesh_indices, mesh_assembly_sets): Self::SystemData,
+    ) {
         use std::cmp::max;
         let mut index_offset = 0;
         let total = mesh_indices.join().count();
@@ -650,24 +722,29 @@ impl<'a> System<'a> for CullGeometry {
                         "cull pass",
                         [0.0, 1.0, 0.0, 1.0],
                         || {
-                            renderer.device.cmd_bind_descriptor_sets(
-                                command_buffer,
-                                vk::PipelineBindPoint::COMPUTE,
-                                renderer.cull_pipeline_layout.handle,
-                                0,
-                                &[renderer.mvp_set.handle, renderer.cull_set.handle],
-                                &[],
-                            );
                             renderer.device.cmd_bind_pipeline(
                                 command_buffer,
                                 vk::PipelineBindPoint::COMPUTE,
                                 renderer.cull_pipeline.handle,
                             );
-                            for (entity, mesh, mesh_index) in (&*entities, &meshes, &mesh_indices)
-                                .join()
-                                .skip(total / parallel * ix)
-                                .take(total / parallel)
+                            for (entity, mesh, mesh_index, mesh_assembly_set) in
+                                (&*entities, &meshes, &mesh_indices, &mesh_assembly_sets)
+                                    .join()
+                                    .skip(total / parallel * ix)
+                                    .take(total / parallel)
                             {
+                                renderer.device.cmd_bind_descriptor_sets(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::COMPUTE,
+                                    renderer.cull_pipeline_layout.handle,
+                                    0,
+                                    &[
+                                        renderer.mvp_set.handle,
+                                        renderer.cull_set.handle,
+                                        mesh_assembly_set.0.handle,
+                                    ],
+                                    &[],
+                                );
                                 let constants = [
                                     entity.id() as u32,
                                     mesh_index.0,
@@ -821,7 +898,7 @@ impl<'a> System<'a> for Renderer {
             let depth_pipeline_layout = &renderer.depth_pipeline_layout;
             let gltf_pipeline = &renderer.gltf_pipeline;
             let gltf_pipeline_layout = &renderer.gltf_pipeline_layout;
-            let culled_index_buffer = renderer.culled_index_buffer.as_ref().unwrap();
+            let culled_index_buffer = &renderer.culled_index_buffer;
             let culled_commands_buffer = &renderer.culled_commands_buffer;
             move |command_buffer| unsafe {
                 if !gui.transitioned {

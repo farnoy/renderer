@@ -7,7 +7,7 @@ struct VkDrawIndexedIndirectCommand {
     uint indexCount;
     uint instanceCount;
     uint firstIndex;
-    uint vertexOffset;
+    int vertexOffset;
     uint firstInstance;
 };
 
@@ -16,10 +16,10 @@ layout(push_constant) uniform PushConstants {
     uint gltfIndex;
     uint indexCount;
     uint indexOffset; 
-    uint vertexOffset; 
+    int vertexOffset; 
 };
 
-layout(set = 0, binding = 0) uniform UBO {
+layout(set = 0, binding = 0) uniform MVP {
     mat4 mvp[4096];
 };
 
@@ -27,16 +27,16 @@ layout(set = 1, binding = 0) buffer IndirectCommands {
     VkDrawIndexedIndirectCommand indirect_commands[];
 };
 
-layout(set = 1, binding = 1) buffer readonly IndexBuffer {
+layout(set = 1, binding = 1) buffer OutIndexBuffer {
+    uint out_index_buffer[][3];
+};
+
+layout(set = 2, binding = 0) buffer readonly IndexBuffer {
     uint index_buffer[][3];
 };
 
-layout(set = 1, binding = 2) buffer readonly VertexBuffer {
+layout(set = 2, binding = 1) buffer readonly VertexBuffer {
     float vertex_buffer[][3];
-};
-
-layout(set = 1, binding = 3) buffer OutIndexBuffer {
-    uint out_index_buffer[][3];
 };
 
 layout (local_size_x = 512) in;
