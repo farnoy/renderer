@@ -7,7 +7,7 @@ pub struct Buffer {
     pub handle: vk::Buffer,
     allocation: alloc::VmaAllocation,
     allocation_info: alloc::VmaAllocationInfo,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 impl Buffer {

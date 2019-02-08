@@ -7,7 +7,7 @@ use std::{mem::size_of, path::Path, u64};
 
 use super::{
     alloc,
-    device::{buffer::Buffer, image::Image},
+    device::{Buffer, Image},
     RenderFrame,
 };
 

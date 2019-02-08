@@ -1,4 +1,4 @@
-use super::{alloc, device::descriptors::DescriptorSetLayout, swapchain};
+use super::{alloc, device::DescriptorSetLayout, swapchain};
 #[cfg(windows)]
 use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]

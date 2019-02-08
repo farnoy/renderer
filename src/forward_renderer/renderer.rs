@@ -20,12 +20,8 @@ use winit;
 
 use self::{
     device::{
-        buffer::Buffer,
-        commands::{CommandBuffer, CommandPool},
-        descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
-        image::Image,
-        sync::{Fence, Semaphore},
-        Device,
+        Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout,
+        Device, Fence, Image, Semaphore,
     },
     helpers::*,
     instance::Instance,
@@ -210,14 +206,14 @@ impl RenderFrame {
 
         let base_color_descriptor_set =
             descriptor_pool.allocate_set(&base_color_descriptor_set_layout);
-        device.set_object_name(base_color_descriptor_set.handle, "Base Color Descriptor Set");
+        device.set_object_name(
+            base_color_descriptor_set.handle,
+            "Base Color Descriptor Set",
+        );
 
         let gltf_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[
-                &ubo_set_layout,
-                &base_color_descriptor_set_layout,
-            ],
+            &[&ubo_set_layout, &base_color_descriptor_set_layout],
             &[],
         );
         device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
@@ -947,10 +943,7 @@ impl<'a> System<'a> for Renderer {
                                     vk::PipelineBindPoint::GRAPHICS,
                                     gltf_pipeline_layout.handle,
                                     0,
-                                    &[
-                                        mvp_set.handle,
-                                        base_color_descriptor_set.handle,
-                                    ],
+                                    &[mvp_set.handle, base_color_descriptor_set.handle],
                                     &[],
                                 );
                                 device.device.cmd_bind_index_buffer(

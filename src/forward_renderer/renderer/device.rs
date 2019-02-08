@@ -11,23 +11,24 @@ use ash::{
 use parking_lot::Mutex;
 use std::{ops::Deref, sync::Arc};
 
-pub mod buffer;
-pub mod commands;
-pub mod descriptors;
-pub mod image;
+mod buffer;
+mod commands;
+mod descriptors;
+mod image;
 mod mapping;
-pub mod sync;
+mod sync;
 
-use self::{
+use super::{alloc, Instance};
+
+pub use self::{
     buffer::Buffer,
-    commands::CommandPool,
-    descriptors::DescriptorSetLayout,
+    commands::{CommandBuffer, CommandPool},
+    descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
     image::Image,
     sync::{Fence, Semaphore},
 };
-use super::{alloc, Instance};
 
-pub type AshDevice = ash::Device;
+type AshDevice = ash::Device;
 
 pub struct Device {
     pub device: AshDevice,

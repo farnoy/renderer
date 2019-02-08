@@ -1,7 +1,7 @@
 use ash;
 use std::ops::Deref;
 
-pub type AshEntry = ash::Entry;
+type AshEntry = ash::Entry;
 
 pub struct Entry {
     handle: AshEntry,
