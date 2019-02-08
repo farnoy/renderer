@@ -26,7 +26,6 @@ pub struct Light {
 #[storage(VecStorage)]
 pub struct Matrices {
     pub mvp: cgmath::Matrix4<f32>,
-    pub mv: cgmath::Matrix4<f32>,
     pub model: cgmath::Matrix4<f32>,
 }
 
@@ -35,7 +34,6 @@ impl Matrices {
         use cgmath::One;
         Matrices {
             mvp: cgmath::Matrix4::one(),
-            mv: cgmath::Matrix4::one(),
             model: cgmath::Matrix4::one(),
         }
     }

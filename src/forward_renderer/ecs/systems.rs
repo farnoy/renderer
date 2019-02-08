@@ -44,7 +44,6 @@ impl<'a> System<'a> for MVPCalculation {
                 * cgmath::Matrix4::from_scale(scale.0);
 
             mvp.mvp = camera.projection * camera.view * mvp.model;
-            mvp.mv = camera.view * mvp.model;
         }
     }
 }
@@ -63,13 +62,8 @@ impl<'a> System<'a> for MVPUpload {
             .mvp_buffer
             .map::<cgmath::Matrix4<f32>>()
             .expect("failed to map MVP buffer");
-        let mut model_mapped = renderer
-            .model_buffer
-            .map::<cgmath::Matrix4<f32>>()
-            .expect("failed to map Model buffer");
         for (entity, matrices) in (&*entities, &matrices).join() {
             mvp_mapped[entity.id() as usize] = matrices.mvp;
-            model_mapped[entity.id() as usize] = matrices.model;
         }
     }
 }

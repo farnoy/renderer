@@ -52,8 +52,6 @@ pub struct RenderFrame {
     pub gltf_pipeline_layout: PipelineLayout,
     pub mvp_set: DescriptorSet,
     pub mvp_buffer: Buffer,
-    pub model_set: DescriptorSet,
-    pub model_buffer: Buffer,
     pub culled_commands_buffer: Buffer,
     pub culled_index_buffer: Option<Buffer>,
     pub cull_pipeline: Pipeline,
@@ -159,15 +157,6 @@ impl RenderFrame {
             }]);
         device.set_object_name(model_view_set_layout.handle, "Model View Set Layout");
 
-        let model_set_layout =
-            device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                binding: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::VERTEX,
-                p_immutable_samplers: ptr::null(),
-            }]);
-
         #[repr(C)]
         struct MeshData {
             entity_id: u32,
@@ -227,7 +216,6 @@ impl RenderFrame {
             Arc::clone(&device),
             &[
                 &ubo_set_layout,
-                &model_set_layout,
                 &base_color_descriptor_set_layout,
             ],
             &[],
@@ -471,57 +459,6 @@ impl RenderFrame {
                 );
             }
         }
-        let model_view_set = descriptor_pool.allocate_set(&model_view_set_layout);
-        device.set_object_name(model_view_set.handle, "Model View Set");
-        let model_view_buffer = device.new_buffer(
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4 * 4 * 4 * 4096,
-        );
-        {
-            let buffer_updates = &[vk::DescriptorBufferInfo {
-                buffer: model_view_buffer.handle,
-                offset: 0,
-                range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
-            }];
-            unsafe {
-                device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(model_view_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(buffer_updates)
-                        .build()],
-                    &[],
-                );
-            }
-        }
-
-        let model_set = descriptor_pool.allocate_set(&model_set_layout);
-        device.set_object_name(model_set.handle, "Model Set");
-        let model_buffer = device.new_buffer(
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4 * 4 * 4 * 4096,
-        );
-        {
-            let buffer_updates = &[vk::DescriptorBufferInfo {
-                buffer: model_buffer.handle,
-                offset: 0,
-                range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
-            }];
-            unsafe {
-                device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(model_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(buffer_updates)
-                        .build()],
-                    &[],
-                );
-            }
-        }
 
         (
             RenderFrame {
@@ -538,8 +475,6 @@ impl RenderFrame {
                 descriptor_pool,
                 mvp_set,
                 mvp_buffer,
-                model_set,
-                model_buffer,
                 present_semaphore,
                 rendering_complete_semaphore,
                 renderpass: main_renderpass,
@@ -885,7 +820,6 @@ impl<'a> System<'a> for Renderer {
             let instance = Arc::clone(&renderer.instance);
             let device = Arc::clone(&renderer.device);
             let mvp_set = &renderer.mvp_set;
-            let model_set = &renderer.model_set;
             let base_color_descriptor_set = &renderer.base_color_descriptor_set;
             let depth_pipeline = &renderer.depth_pipeline;
             let depth_pipeline_layout = &renderer.depth_pipeline_layout;
@@ -1015,7 +949,6 @@ impl<'a> System<'a> for Renderer {
                                     0,
                                     &[
                                         mvp_set.handle,
-                                        model_set.handle,
                                         base_color_descriptor_set.handle,
                                     ],
                                     &[],
