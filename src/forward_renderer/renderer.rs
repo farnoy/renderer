@@ -83,8 +83,7 @@ impl RenderFrame {
         let framebuffer =
             setup_framebuffer(&instance, Arc::clone(&device), &swapchain, &main_renderpass);
 
-        let descriptor_pool = Arc::new(DescriptorPool::new(
-            Arc::clone(&device),
+        let descriptor_pool = Arc::new(device.new_descriptor_pool(
             3_000,
             &[
                 vk::DescriptorPoolSize {

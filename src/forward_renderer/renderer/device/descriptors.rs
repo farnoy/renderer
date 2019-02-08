@@ -18,8 +18,8 @@ pub struct DescriptorSet {
 }
 
 impl DescriptorPool {
-    pub fn new(
-        device: Arc<Device>,
+    pub(super) fn new(
+        device: &Arc<Device>,
         max_sets: u32,
         pool_sizes: &[vk::DescriptorPoolSize],
     ) -> DescriptorPool {
@@ -35,7 +35,10 @@ impl DescriptorPool {
                 .unwrap()
         };
 
-        DescriptorPool { handle, device }
+        DescriptorPool {
+            handle,
+            device: Arc::clone(device),
+        }
     }
 
     pub fn allocate_set(self: &Arc<Self>, layout: &DescriptorSetLayout) -> DescriptorSet {

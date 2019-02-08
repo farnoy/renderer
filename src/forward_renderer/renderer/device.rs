@@ -207,6 +207,14 @@ impl Device {
         }
     }
 
+    pub fn new_descriptor_pool(
+        self: &Arc<Self>,
+        max_sets: u32,
+        pool_sizes: &[vk::DescriptorPoolSize],
+    ) -> DescriptorPool {
+        DescriptorPool::new(self, max_sets, pool_sizes)
+    }
+
     pub fn new_descriptor_set_layout(
         self: &Arc<Self>,
         bindings: &[vk::DescriptorSetLayoutBinding],
