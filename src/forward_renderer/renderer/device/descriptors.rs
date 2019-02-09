@@ -80,6 +80,23 @@ impl DescriptorSetLayout {
             device: Arc::clone(device),
         }
     }
+
+    pub(super) fn new2(
+        device: &Arc<Device>,
+        create_info: &vk::DescriptorSetLayoutCreateInfo,
+    ) -> DescriptorSetLayout {
+        let handle = unsafe {
+            device
+                .device
+                .create_descriptor_set_layout(create_info, None)
+                .unwrap()
+        };
+
+        DescriptorSetLayout {
+            handle,
+            device: Arc::clone(device),
+        }
+    }
 }
 
 impl Drop for DescriptorPool {

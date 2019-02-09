@@ -3,7 +3,7 @@ pub mod alloc;
 pub mod device;
 mod entry;
 mod gltf_mesh;
-pub mod helpers;
+mod helpers;
 mod instance;
 mod swapchain;
 mod systems;
@@ -21,17 +21,20 @@ use winit;
 
 use self::{
     device::{
-        Buffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout,
-        Device, Image, Semaphore,
+        Buffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, Image,
+        Semaphore,
     },
     helpers::*,
     instance::Instance,
-    systems::present::PresentData,
+    systems::{present::PresentData, textures::BaseColorDescriptorSet},
 };
 
 pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
-    systems::present::{AcquireFramebuffer, PresentFramebuffer},
+    systems::{
+        present::{AcquireFramebuffer, PresentFramebuffer},
+        textures::{SynchronizeBaseColorTextures, VisitedMarker as BaseColorVisitedMarker},
+    },
 };
 
 // TODO: rename
@@ -62,7 +65,6 @@ pub struct RenderFrame {
     pub mesh_assembly_set_layout: DescriptorSetLayout,
     pub cull_complete_semaphore: Semaphore,
     pub base_color_descriptor_set_layout: DescriptorSetLayout,
-    pub base_color_descriptor_set: DescriptorSet,
 }
 
 impl RenderFrame {
@@ -101,7 +103,7 @@ impl RenderFrame {
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 512,
+                    descriptor_count: 4096,
                 },
             ],
         ));
@@ -153,7 +155,6 @@ impl RenderFrame {
 
         #[repr(C)]
         struct MeshData {
-            entity_id: u32,
             gltf_id: u32,
             index_count: u32,
             index_offset: u32,
@@ -189,20 +190,25 @@ impl RenderFrame {
             "indirect draw commands buffer",
         );
 
-        let base_color_descriptor_set_layout =
-            device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                binding: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                p_immutable_samplers: ptr::null(),
-            }]);
+        let base_color_descriptor_set_layout = {
+            let binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
+                .binding_flags(&[vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
+            let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+                .bindings(&[vk::DescriptorSetLayoutBinding {
+                    binding: 0,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 3072,
+                    stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                    p_immutable_samplers: ptr::null(),
+                }])
+                .next(&*binding_flags);
 
-        let base_color_descriptor_set =
-            descriptor_pool.allocate_set(&base_color_descriptor_set_layout);
+            device.new_descriptor_set_layout2(&create_info)
+        };
+
         device.set_object_name(
-            base_color_descriptor_set.handle,
-            "Base Color Descriptor Set",
+            base_color_descriptor_set_layout.handle,
+            "Base Color Consolidated Descriptor Set Layout",
         );
 
         let gltf_pipeline_layout = new_pipeline_layout(
@@ -506,7 +512,6 @@ impl RenderFrame {
                 mesh_assembly_set_layout,
                 cull_complete_semaphore,
                 base_color_descriptor_set_layout,
-                base_color_descriptor_set,
             },
             events_loop,
         )
@@ -672,17 +677,13 @@ static MAX_PARALLEL: usize = 3;
 
 impl<'a> System<'a> for CullGeometry {
     type SystemData = (
-        Entities<'a>,
         ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadStorage<'a, GltfMeshCullDescriptorSet>,
     );
 
-    fn run(
-        &mut self,
-        (entities, renderer, meshes, mesh_indices, mesh_assembly_sets): Self::SystemData,
-    ) {
+    fn run(&mut self, (renderer, meshes, mesh_indices, mesh_assembly_sets): Self::SystemData) {
         use std::cmp::max;
         let mut index_offset = 0;
         let total = mesh_indices.join().count();
@@ -700,8 +701,8 @@ impl<'a> System<'a> for CullGeometry {
                                 vk::PipelineBindPoint::COMPUTE,
                                 renderer.cull_pipeline.handle,
                             );
-                            for (entity, mesh, mesh_index, mesh_assembly_set) in
-                                (&*entities, &meshes, &mesh_indices, &mesh_assembly_sets)
+                            for (mesh, mesh_index, mesh_assembly_set) in
+                                (&meshes, &mesh_indices, &mesh_assembly_sets)
                                     .join()
                                     .skip(total / parallel * ix)
                                     .take(total / parallel)
@@ -718,13 +719,8 @@ impl<'a> System<'a> for CullGeometry {
                                     ],
                                     &[],
                                 );
-                                let constants = [
-                                    entity.id() as u32,
-                                    mesh_index.0,
-                                    mesh.index_len as u32,
-                                    index_offset,
-                                    0,
-                                ];
+                                let constants =
+                                    [mesh_index.0, mesh.index_len as u32, index_offset, 0];
                                 index_offset += mesh.index_len as u32;
 
                                 let casted: &[u8] = {
@@ -851,12 +847,21 @@ impl<'a> System<'a> for Renderer {
         WriteExpect<'a, Gui>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
+        ReadExpect<'a, BaseColorDescriptorSet>,
         Write<'a, PresentData>,
     );
 
     fn run(
         &mut self,
-        (entities, renderer, mut gui, meshes, coarse_culled, mut present_data): Self::SystemData,
+        (
+            entities,
+            renderer,
+            mut gui,
+            meshes,
+            coarse_culled,
+            base_color_descriptor_set,
+            mut present_data,
+        ): Self::SystemData,
     ) {
         let total = coarse_culled.join().count() as u32;
         let command_buffer = renderer.graphics_command_pool.record_one_time({
@@ -866,7 +871,6 @@ impl<'a> System<'a> for Renderer {
             let instance = Arc::clone(&renderer.instance);
             let device = Arc::clone(&renderer.device);
             let mvp_set = &renderer.mvp_set;
-            let base_color_descriptor_set = &renderer.base_color_descriptor_set;
             let depth_pipeline = &renderer.depth_pipeline;
             let depth_pipeline_layout = &renderer.depth_pipeline_layout;
             let gltf_pipeline = &renderer.gltf_pipeline;
@@ -993,7 +997,7 @@ impl<'a> System<'a> for Renderer {
                                     vk::PipelineBindPoint::GRAPHICS,
                                     gltf_pipeline_layout.handle,
                                     0,
-                                    &[mvp_set.handle, base_color_descriptor_set.handle],
+                                    &[mvp_set.handle, base_color_descriptor_set.set.handle],
                                     &[],
                                 );
                                 device.device.cmd_bind_index_buffer(
@@ -1018,7 +1022,7 @@ impl<'a> System<'a> for Renderer {
                                     culled_commands_buffer.handle,
                                     0,
                                     total,
-                                    size_of::<u32>() as u32 * 5,
+                                    size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                                 );
                             },
                         );

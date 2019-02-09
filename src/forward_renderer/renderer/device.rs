@@ -130,6 +130,7 @@ impl Device {
                 vertex_pipeline_stores_and_atomics: 1,
                 robust_buffer_access: 1,
                 fill_mode_non_solid: 0,
+                draw_indirect_first_instance: 1,
                 ..Default::default()
             };
             let mut priorities = vec![];
@@ -144,10 +145,16 @@ impl Device {
                         .build()
                 })
                 .collect::<Vec<_>>();
+            let descriptor_indexing_features =
+                vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
+                    .runtime_descriptor_array(true)
+                    .descriptor_binding_partially_bound(true);
+
             let device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
-                .enabled_features(&features);
+                .enabled_features(&features)
+                .next(&*descriptor_indexing_features);
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
@@ -220,6 +227,13 @@ impl Device {
         bindings: &[vk::DescriptorSetLayoutBinding],
     ) -> DescriptorSetLayout {
         DescriptorSetLayout::new(self, bindings)
+    }
+
+    pub fn new_descriptor_set_layout2(
+        self: &Arc<Self>,
+        create_info: &vk::DescriptorSetLayoutCreateInfo,
+    ) -> DescriptorSetLayout {
+        DescriptorSetLayout::new2(self, create_info)
     }
 
     pub fn new_command_pool(

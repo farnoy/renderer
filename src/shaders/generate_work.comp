@@ -12,7 +12,6 @@ struct VkDrawIndexedIndirectCommand {
 };
 
 layout(push_constant) uniform PushConstants {
-    uint entityIndex;
     uint gltfIndex;
     uint indexCount;
     uint indexOffset; 
@@ -48,7 +47,7 @@ void main() {
     if (gl_GlobalInvocationID.x == 0) {
         indirect_commands[gltfIndex].indexCount = 0;
         indirect_commands[gltfIndex].instanceCount = 1;
-        indirect_commands[gltfIndex].firstInstance = entityIndex;
+        indirect_commands[gltfIndex].firstInstance = gltfIndex;
         indirect_commands[gltfIndex].firstIndex = indexOffset;
         indirect_commands[gltfIndex].vertexOffset = vertexOffset;
     }
@@ -83,9 +82,9 @@ void main() {
         vertex_buffer[vertexOffset + ix2][2],
         1.0
     );
-    vec4 vertex0 = mvp[entityIndex] * input0;
-    vec4 vertex1 = mvp[entityIndex] * input1;
-    vec4 vertex2 = mvp[entityIndex] * input2;
+    vec4 vertex0 = mvp[gltfIndex] * input0;
+    vec4 vertex1 = mvp[gltfIndex] * input1;
+    vec4 vertex2 = mvp[gltfIndex] * input2;
 
     bool cull = false;
     vec3 ndc0 = vertex0.xyz / vertex0.w;

@@ -1,4 +1,4 @@
-use super::super::renderer::device::{Buffer, DescriptorSet};
+use super::super::renderer::device::{Buffer, DescriptorSet, Image};
 use cgmath;
 use specs::*;
 use specs_derive::Component;
@@ -75,6 +75,12 @@ pub struct GltfMeshBufferIndex(pub u32);
 #[derive(Component)]
 #[storage(VecStorage)]
 pub struct GltfMeshCullDescriptorSet(pub DescriptorSet);
+
+// Holds the base color texture that will be mapped into a single,
+// shared Descriptor Set
+#[derive(Component)]
+#[storage(VecStorage)]
+pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
 
 /*
 #[derive(Clone, Copy, Component, Debug)]

@@ -52,18 +52,18 @@ pub struct MVPUpload;
 
 impl<'a> System<'a> for MVPUpload {
     type SystemData = (
-        Entities<'a>,
         ReadStorage<'a, Matrices>,
+        ReadStorage<'a, GltfMeshBufferIndex>,
         WriteExpect<'a, RenderFrame>,
     );
 
-    fn run(&mut self, (entities, matrices, renderer): Self::SystemData) {
+    fn run(&mut self, (matrices, indices, renderer): Self::SystemData) {
         let mut mvp_mapped = renderer
             .mvp_buffer
             .map::<cgmath::Matrix4<f32>>()
             .expect("failed to map MVP buffer");
-        for (entity, matrices) in (&*entities, &matrices).join() {
-            mvp_mapped[entity.id() as usize] = matrices.mvp;
+        for (index, matrices) in (&indices, &matrices).join() {
+            mvp_mapped[index.0 as usize] = matrices.mvp;
         }
     }
 }
@@ -79,13 +79,13 @@ impl<'a> System<'a> for AssignBufferIndex {
     );
 
     fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
-        for (ix, (entity, _mesh, coarse_culled)) in
-            (&*entities, &meshes, &coarse_culled).join().enumerate()
-        {
+        let mut ix = 0;
+        for (entity, _mesh, coarse_culled) in (&*entities, &meshes, &coarse_culled).join() {
             if coarse_culled.0 {
                 indices.remove(entity);
             } else {
                 drop(indices.insert(entity, GltfMeshBufferIndex(ix as u32)));
+                ix += 1;
             }
         }
     }

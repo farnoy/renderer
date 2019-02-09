@@ -19,11 +19,11 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        helpers, load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh, PresentFramebuffer,
-        RenderFrame, Renderer, UpdateCullDescriptorsForMeshes,
+        load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh, PresentFramebuffer,
+        RenderFrame, Renderer, SynchronizeBaseColorTextures, UpdateCullDescriptorsForMeshes,
     },
 };
-use ash::{version::DeviceV1_0, vk};
+use ash::version::DeviceV1_0;
 use cgmath::{Rotation3, Zero};
 use parking_lot::Mutex;
 use specs::Builder;
@@ -59,55 +59,7 @@ fn main() {
     let normal_buffer = Arc::new(normal_buffer);
     let uv_buffer = Arc::new(uv_buffer);
     let index_buffer = Arc::new(index_buffer);
-
-    let image_view = helpers::new_image_view(
-        renderer.device.clone(),
-        &vk::ImageViewCreateInfo::builder()
-            .components(
-                vk::ComponentMapping::builder()
-                    .r(vk::ComponentSwizzle::IDENTITY)
-                    .g(vk::ComponentSwizzle::IDENTITY)
-                    .b(vk::ComponentSwizzle::IDENTITY)
-                    .a(vk::ComponentSwizzle::IDENTITY)
-                    .build(),
-            )
-            .image(base_color.handle)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            }),
-    );
-    let sampler = helpers::new_sampler(
-        renderer.device.clone(),
-        &vk::SamplerCreateInfo::builder()
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-    );
-
-    {
-        let sampler_updates = &[vk::DescriptorImageInfo::builder()
-            .image_view(image_view.handle)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .sampler(sampler.handle)
-            .build()];
-        unsafe {
-            renderer.device.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::builder()
-                    .dst_set(renderer.base_color_descriptor_set.handle)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(sampler_updates)
-                    .build()],
-                &[],
-            );
-        }
-    }
+    let base_color = Arc::new(base_color);
 
     world
         .create_entity()
@@ -130,30 +82,54 @@ fn main() {
             aabb_h,
         })
         .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
         .build();
 
-    world
-        .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(-5.0, 3.0, 2.0)))
-        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
-        .with::<Scale>(Scale(1.0))
-        .with::<Matrices>(Matrices::one())
-        .with::<CoarseCulled>(CoarseCulled(false))
-        .with::<AABB>(AABB {
-            c: cgmath::Vector3::zero(),
-            h: cgmath::Vector3::zero(),
-        })
-        .with::<GltfMesh>(GltfMesh {
-            vertex_buffer: Arc::clone(&vertex_buffer),
-            normal_buffer: Arc::clone(&normal_buffer),
-            uv_buffer: Arc::clone(&uv_buffer),
-            index_buffer: Arc::clone(&index_buffer),
+    {
+        let LoadedMesh {
+            vertex_buffer,
+            normal_buffer,
+            uv_buffer,
+            index_buffer,
             index_len,
             aabb_c,
             aabb_h,
-        })
-        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
-        .build();
+            base_color,
+        } = load_gltf(
+            &renderer,
+            "vendor/glTF-Sample-Models/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf",
+        );
+
+        let vertex_buffer = Arc::new(vertex_buffer);
+        let normal_buffer = Arc::new(normal_buffer);
+        let uv_buffer = Arc::new(uv_buffer);
+        let index_buffer = Arc::new(index_buffer);
+        let base_color = Arc::new(base_color);
+
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(-5.0, 3.0, 2.0)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
+            .with::<Scale>(Scale(1.0))
+            .with::<Matrices>(Matrices::one())
+            .with::<CoarseCulled>(CoarseCulled(false))
+            .with::<AABB>(AABB {
+                c: cgmath::Vector3::zero(),
+                h: cgmath::Vector3::zero(),
+            })
+            .with::<GltfMesh>(GltfMesh {
+                vertex_buffer: Arc::clone(&vertex_buffer),
+                normal_buffer: Arc::clone(&normal_buffer),
+                uv_buffer: Arc::clone(&uv_buffer),
+                index_buffer: Arc::clone(&index_buffer),
+                index_len,
+                aabb_c,
+                aabb_h,
+            })
+            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+            .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
+            .build();
+    }
 
     for ix in 0..2398 {
         let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
@@ -183,7 +159,7 @@ fn main() {
                 aabb_c,
                 aabb_h,
             })
-            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+            .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
             .build();
     }
 
@@ -227,7 +203,12 @@ fn main() {
             "assign_buffer_index",
             &["coarse_culling"],
         )
-        .with(MVPUpload, "mvp_upload", &["mvp"])
+        .with(
+            SynchronizeBaseColorTextures,
+            "synchronize_base_color_textures",
+            &["assign_buffer_index"],
+        )
+        .with(MVPUpload, "mvp_upload", &["mvp", "assign_buffer_index"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
             CullGeometry::new(&world.read_resource::<RenderFrame>().device),
@@ -240,7 +221,11 @@ fn main() {
                 "update_cull_descriptors",
             ],
         )
-        .with(Renderer, "render_frame", &["cull_geometry"])
+        .with(
+            Renderer,
+            "render_frame",
+            &["cull_geometry", "synchronize_base_color_textures"],
+        )
         .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
 
     // print stages of execution

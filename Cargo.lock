@@ -13,6 +13,7 @@ dependencies = [
  "meshopt 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "shred 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "specs 0.14.3 (git+https://github.com/farnoy/specs)",
  "specs-derive 0.4.0 (git+https://github.com/farnoy/specs)",
  "winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",

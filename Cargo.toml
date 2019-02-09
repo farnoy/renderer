@@ -16,6 +16,7 @@ winit = "0.18.0"
 rayon = "1.0"
 specs = { git = "https://github.com/farnoy/specs" }
 specs-derive = { git = "https://github.com/farnoy/specs" }
+shred = "0.7.1"
 
 [[bin]]
 name = "v4"
