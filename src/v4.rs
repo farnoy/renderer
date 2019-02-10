@@ -67,7 +67,7 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
+        .with::<Position>(Position(cgmath::Vector3::new(0.0, 1.0, 0.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
@@ -103,7 +103,7 @@ fn main() {
             base_color,
         } = load_gltf(
             &renderer,
-            "vendor/glTF-Sample-Models/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf",
+            "vendor/glTF-Sample-Models/2.0/TwoSidedPlane/glTF/TwoSidedPlane.gltf",
         );
 
         let vertex_buffer = Arc::new(vertex_buffer);
@@ -114,9 +114,9 @@ fn main() {
 
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(-5.0, 3.0, 2.0)))
+            .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
-            .with::<Scale>(Scale(1.0))
+            .with::<Scale>(Scale(50.0))
             .with::<Matrices>(Matrices::one())
             .with::<CoarseCulled>(CoarseCulled(false))
             .with::<AABB>(AABB {
@@ -190,7 +190,7 @@ fn main() {
         let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
         let pos = {
             use cgmath::Rotation;
-            rot.rotate_vector(cgmath::vec3(0.0, -2.0, 5.0 + (ix / 10) as f32))
+            rot.rotate_vector(cgmath::vec3(0.0, 2.0, 5.0 + (ix / 10) as f32))
         };
         world
             .create_entity()
@@ -235,13 +235,12 @@ fn main() {
         })
         .with(CalculateFrameTiming, "calculate_frame_timing", &[])
         .with_barrier()
-        .with(SteadyRotation, "steady_rotation", &[])
         .with(FlyCamera::default(), "fly_camera", &[])
         .with(ProjectCamera, "project_camera", &["fly_camera"])
         .with(
             MVPCalculation,
             "mvp",
-            &["steady_rotation", "project_camera"],
+            &["project_camera"],
         )
         .with(AABBCalculation, "aabb_calc", &["mvp"])
         .with(ConsolidateVertexBuffers, "consolidate_vertex_buffers", &[])
