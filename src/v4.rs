@@ -3,9 +3,11 @@
 extern crate ash;
 extern crate cgmath;
 extern crate gltf;
+extern crate hashbrown;
 extern crate image;
 extern crate imgui;
 extern crate meshopt;
+extern crate num_traits;
 extern crate parking_lot;
 extern crate rayon;
 extern crate specs;
@@ -19,8 +21,9 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        load_gltf, AcquireFramebuffer, CullGeometry, Gui, LoadedMesh, PresentFramebuffer,
-        RenderFrame, Renderer, SynchronizeBaseColorTextures, UpdateCullDescriptorsForMeshes,
+        load_gltf, AcquireFramebuffer, ConsolidateVertexBuffers, CullGeometry, Gui, LoadedMesh,
+        PresentFramebuffer, RenderFrame, Renderer, SynchronizeBaseColorTextures,
+        UpdateCullDescriptorsForMeshes,
     },
 };
 use ash::version::DeviceV1_0;
@@ -46,6 +49,7 @@ fn main() {
         normal_buffer,
         uv_buffer,
         index_buffer,
+        vertex_len,
         index_len,
         aabb_c,
         aabb_h,
@@ -77,6 +81,7 @@ fn main() {
             normal_buffer: Arc::clone(&normal_buffer),
             uv_buffer: Arc::clone(&uv_buffer),
             index_buffer: Arc::clone(&index_buffer),
+            vertex_len,
             index_len,
             aabb_c,
             aabb_h,
@@ -91,6 +96,7 @@ fn main() {
             normal_buffer,
             uv_buffer,
             index_buffer,
+            vertex_len,
             index_len,
             aabb_c,
             aabb_h,
@@ -122,6 +128,55 @@ fn main() {
                 normal_buffer: Arc::clone(&normal_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
                 index_buffer: Arc::clone(&index_buffer),
+                vertex_len,
+                index_len,
+                aabb_c,
+                aabb_h,
+            })
+            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+            .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
+            .build();
+    }
+
+    {
+        let LoadedMesh {
+            vertex_buffer,
+            normal_buffer,
+            uv_buffer,
+            index_buffer,
+            vertex_len,
+            index_len,
+            aabb_c,
+            aabb_h,
+            base_color,
+        } = load_gltf(
+            &renderer,
+            "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+        );
+
+        let vertex_buffer = Arc::new(vertex_buffer);
+        let normal_buffer = Arc::new(normal_buffer);
+        let uv_buffer = Arc::new(uv_buffer);
+        let index_buffer = Arc::new(index_buffer);
+        let base_color = Arc::new(base_color);
+
+        world
+            .create_entity()
+            .with::<Position>(Position(cgmath::Vector3::new(5.0, 3.0, 2.0)))
+            .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
+            .with::<Scale>(Scale(1.0))
+            .with::<Matrices>(Matrices::one())
+            .with::<CoarseCulled>(CoarseCulled(false))
+            .with::<AABB>(AABB {
+                c: cgmath::Vector3::zero(),
+                h: cgmath::Vector3::zero(),
+            })
+            .with::<GltfMesh>(GltfMesh {
+                vertex_buffer: Arc::clone(&vertex_buffer),
+                normal_buffer: Arc::clone(&normal_buffer),
+                uv_buffer: Arc::clone(&uv_buffer),
+                index_buffer: Arc::clone(&index_buffer),
+                vertex_len,
                 index_len,
                 aabb_c,
                 aabb_h,
@@ -155,6 +210,7 @@ fn main() {
                 normal_buffer: Arc::clone(&normal_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
                 index_buffer: Arc::clone(&index_buffer),
+                vertex_len,
                 index_len,
                 aabb_c,
                 aabb_h,
@@ -188,6 +244,7 @@ fn main() {
             &["steady_rotation", "project_camera"],
         )
         .with(AABBCalculation, "aabb_calc", &["mvp"])
+        .with(ConsolidateVertexBuffers, "consolidate_vertex_buffers", &[])
         .with(
             CoarseCulling,
             "coarse_culling",
@@ -219,6 +276,7 @@ fn main() {
                 "mvp_upload",
                 "coarse_culling",
                 "update_cull_descriptors",
+                "consolidate_vertex_buffers",
             ],
         )
         .with(

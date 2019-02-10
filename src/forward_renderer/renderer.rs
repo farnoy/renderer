@@ -9,9 +9,14 @@ mod swapchain;
 mod systems;
 
 use super::ecs::components::{GltfMesh, GltfMeshBufferIndex, GltfMeshCullDescriptorSet};
-use ash::{prelude::*, version::DeviceV1_0, vk};
+use ash::{
+    prelude::*,
+    version::DeviceV1_0,
+    vk::{self, Handle},
+};
 use cgmath;
 use imgui::{self, im_str};
+use num_traits::ToPrimitive;
 use specs::prelude::*;
 use std::{
     cmp::min, mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc,
@@ -26,12 +31,16 @@ use self::{
     },
     helpers::*,
     instance::Instance,
-    systems::{present::PresentData, textures::BaseColorDescriptorSet},
+    systems::{
+        consolidate_vertex_buffers::ConsolidatedVertexBuffers, present::PresentData,
+        textures::BaseColorDescriptorSet,
+    },
 };
 
 pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
+        consolidate_vertex_buffers::ConsolidateVertexBuffers,
         present::{AcquireFramebuffer, PresentFramebuffer},
         textures::{SynchronizeBaseColorTextures, VisitedMarker as BaseColorVisitedMarker},
     },
@@ -676,14 +685,19 @@ impl CullGeometry {
 static MAX_PARALLEL: usize = 3;
 
 impl<'a> System<'a> for CullGeometry {
+    #[allow(clippy::type_complexity)]
     type SystemData = (
         ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadStorage<'a, GltfMeshCullDescriptorSet>,
+        ReadExpect<'a, ConsolidatedVertexBuffers>,
     );
 
-    fn run(&mut self, (renderer, meshes, mesh_indices, mesh_assembly_sets): Self::SystemData) {
+    fn run(
+        &mut self,
+        (renderer, meshes, mesh_indices, mesh_assembly_sets, consolidated_vertex_buffers): Self::SystemData,
+    ) {
         use std::cmp::max;
         let mut index_offset = 0;
         let total = mesh_indices.join().count();
@@ -719,9 +733,17 @@ impl<'a> System<'a> for CullGeometry {
                                     ],
                                     &[],
                                 );
-                                let constants =
-                                    [mesh_index.0, mesh.index_len as u32, index_offset, 0];
-                                index_offset += mesh.index_len as u32;
+                                let vertex_offset = consolidated_vertex_buffers
+                                    .offsets
+                                    .get(&mesh.vertex_buffer.handle.as_raw())
+                                    .expect("Vertex buffer not consolidated");
+                                let constants = [
+                                    mesh_index.0,
+                                    mesh.index_len as u32,
+                                    index_offset,
+                                    vertex_offset.to_u32().unwrap(),
+                                ];
+                                index_offset += mesh.index_len.to_u32().unwrap();
 
                                 let casted: &[u8] = {
                                     from_raw_parts(
@@ -842,24 +864,22 @@ pub struct Renderer;
 impl<'a> System<'a> for Renderer {
     #[allow(clippy::type_complexity)]
     type SystemData = (
-        Entities<'a>,
         ReadExpect<'a, RenderFrame>,
         WriteExpect<'a, Gui>,
-        ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadExpect<'a, BaseColorDescriptorSet>,
+        ReadExpect<'a, ConsolidatedVertexBuffers>,
         Write<'a, PresentData>,
     );
 
     fn run(
         &mut self,
         (
-            entities,
             renderer,
             mut gui,
-            meshes,
             coarse_culled,
             base_color_descriptor_set,
+            consolidated_vertex_buffers,
             mut present_data,
         ): Self::SystemData,
     ) {
@@ -877,6 +897,7 @@ impl<'a> System<'a> for Renderer {
             let gltf_pipeline_layout = &renderer.gltf_pipeline_layout;
             let culled_index_buffer = &renderer.culled_index_buffer;
             let culled_commands_buffer = &renderer.culled_commands_buffer;
+            let consolidated_vertex_buffers = &consolidated_vertex_buffers;
             move |command_buffer| unsafe {
                 if !gui.transitioned {
                     device.cmd_pipeline_barrier(
@@ -962,11 +983,10 @@ impl<'a> System<'a> for Renderer {
                                     0,
                                     vk::IndexType::UINT32,
                                 );
-                                let mesh = (&*entities, &meshes).join().next().unwrap().1;
                                 device.device.cmd_bind_vertex_buffers(
                                     command_buffer,
                                     0,
-                                    &[mesh.vertex_buffer.handle],
+                                    &[consolidated_vertex_buffers.position_buffer.handle],
                                     &[0],
                                 );
                                 device.device.cmd_draw_indexed_indirect(
@@ -1006,14 +1026,13 @@ impl<'a> System<'a> for Renderer {
                                     0,
                                     vk::IndexType::UINT32,
                                 );
-                                let mesh = (&*entities, &meshes).join().next().unwrap().1;
                                 device.device.cmd_bind_vertex_buffers(
                                     command_buffer,
                                     0,
                                     &[
-                                        mesh.vertex_buffer.handle,
-                                        mesh.normal_buffer.handle,
-                                        mesh.uv_buffer.handle,
+                                        consolidated_vertex_buffers.position_buffer.handle,
+                                        consolidated_vertex_buffers.normal_buffer.handle,
+                                        consolidated_vertex_buffers.uv_buffer.handle,
                                     ],
                                     &[0, 0, 0],
                                 );
@@ -1139,10 +1158,13 @@ impl<'a> System<'a> for Renderer {
                 );
             }
         });
-        let wait_semaphores = &[
+        let mut wait_semaphores = vec![
             renderer.present_semaphore.handle,
             renderer.cull_complete_semaphore.handle,
         ];
+        if let Some(ref semaphore) = consolidated_vertex_buffers.sync_point {
+            wait_semaphores.push(semaphore.handle);
+        }
         let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
         let dst_stage_masks = &[
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -1150,7 +1172,7 @@ impl<'a> System<'a> for Renderer {
         ];
         let command_buffers = &[*command_buffer];
         let submit = vk::SubmitInfo::builder()
-            .wait_semaphores(wait_semaphores)
+            .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(dst_stage_masks)
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores)

@@ -15,10 +15,4 @@ void main() {
     o_color.zw = vec2(0.0, 1.0);
 
     o_color = texture(base_color[entity_id], uv);    
-    /*
-    o_color.rgb = vec3(0.0);
-    if (entity_id > 314)
-        o_color.r = 1.0;
-    o_color.a = 1.0;
-    */
 }

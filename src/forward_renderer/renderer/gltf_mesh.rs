@@ -16,6 +16,7 @@ pub struct LoadedMesh {
     pub normal_buffer: Buffer,
     pub uv_buffer: Buffer,
     pub index_buffer: Buffer,
+    pub vertex_len: u64,
     pub index_len: u64,
     pub aabb_c: cgmath::Vector3<f32>,
     pub aabb_h: cgmath::Vector3<f32>,
@@ -33,17 +34,23 @@ impl meshopt::DecodePosition for Pos {
 
 pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
-    let mesh = loaded.meshes().next().unwrap();
-    let primitive = mesh.primitives().next().unwrap();
+    let mesh = loaded
+        .meshes()
+        .next()
+        .expect("failed to get first mesh from gltf");
+    let primitive = mesh
+        .primitives()
+        .next()
+        .expect("failed to get first primitive from gltf");
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
     let positions = reader
         .read_positions()
-        .unwrap()
+        .expect("failed to load positions")
         .map(Pos)
         .collect::<Vec<_>>();
     let uvs = reader
         .read_tex_coords(0)
-        .unwrap()
+        .expect("failed to load uvs")
         .into_f32()
         .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
@@ -51,17 +58,20 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         (cgmath::Vector3::from(bounding_box.max) + cgmath::Vector3::from(bounding_box.min)) / 2.0;
     let aabb_h =
         (cgmath::Vector3::from(bounding_box.max) - cgmath::Vector3::from(bounding_box.min)) / 2.0;
-    let normals = reader.read_normals().unwrap().collect::<Vec<_>>();
+    let normals = reader
+        .read_normals()
+        .expect("failed to load normals")
+        .collect::<Vec<_>>();
     let mut indices = reader
         .read_indices()
-        .unwrap()
+        .expect("failed to load indices")
         .into_u32()
         .collect::<Vec<_>>();
     let base_color_source = primitive
         .material()
         .pbr_metallic_roughness()
         .base_color_texture()
-        .unwrap()
+        .expect("failed to load base color")
         .texture()
         .source()
         .source();
@@ -129,6 +139,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let vertex_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::VERTEX_BUFFER
             | vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::TRANSFER_SRC
             | vk::BufferUsageFlags::STORAGE_BUFFER,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         vertex_size,
@@ -154,7 +165,9 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         }
     }
     let normal_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::BufferUsageFlags::VERTEX_BUFFER
+            | vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::TRANSFER_SRC,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         normals_size,
     );
@@ -179,7 +192,9 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         }
     }
     let uv_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::BufferUsageFlags::VERTEX_BUFFER
+            | vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::TRANSFER_SRC,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         uvs_size,
     );
@@ -207,6 +222,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let index_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::INDEX_BUFFER
             | vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::TRANSFER_SRC
             | vk::BufferUsageFlags::STORAGE_BUFFER,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         index_size,
@@ -364,6 +380,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         normal_buffer,
         uv_buffer,
         index_buffer,
+        vertex_len,
         index_len,
         aabb_c,
         aabb_h,

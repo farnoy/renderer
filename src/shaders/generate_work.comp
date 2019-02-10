@@ -65,21 +65,21 @@ void main() {
     uint ix1 = index_buffer[gl_GlobalInvocationID.x][1];
     uint ix2 = index_buffer[gl_GlobalInvocationID.x][2];
     vec4 input0 = vec4(
-        vertex_buffer[vertexOffset + ix0][0],
-        vertex_buffer[vertexOffset + ix0][1],
-        vertex_buffer[vertexOffset + ix0][2],
+        vertex_buffer[ix0][0],
+        vertex_buffer[ix0][1],
+        vertex_buffer[ix0][2],
         1.0
     );
     vec4 input1 = vec4(
-        vertex_buffer[vertexOffset + ix1][0],
-        vertex_buffer[vertexOffset + ix1][1],
-        vertex_buffer[vertexOffset + ix1][2],
+        vertex_buffer[ix1][0],
+        vertex_buffer[ix1][1],
+        vertex_buffer[ix1][2],
         1.0
     );
     vec4 input2 = vec4(
-        vertex_buffer[vertexOffset + ix2][0],
-        vertex_buffer[vertexOffset + ix2][1],
-        vertex_buffer[vertexOffset + ix2][2],
+        vertex_buffer[ix2][0],
+        vertex_buffer[ix2][1],
+        vertex_buffer[ix2][2],
         1.0
     );
     vec4 vertex0 = mvp[gltfIndex] * input0;
