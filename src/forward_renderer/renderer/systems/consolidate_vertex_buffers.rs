@@ -1,7 +1,7 @@
 use super::super::{
     super::ecs::components::GltfMesh,
     alloc,
-    device::{Buffer, Semaphore},
+    device::{Buffer, CommandBuffer, Fence, Semaphore},
     RenderFrame,
 };
 use ash::{
@@ -10,7 +10,7 @@ use ash::{
 };
 use hashbrown::{hash_map::Entry, HashMap};
 use specs::prelude::*;
-use std::{mem::size_of, sync::Arc, thread, u64};
+use std::{mem::size_of, u64};
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
 pub struct ConsolidatedVertexBuffers {
@@ -28,6 +28,10 @@ pub struct ConsolidatedVertexBuffers {
     /// If this semaphore is present, a modification to the consolidated buffer has happened
     /// and the user must synchronize with it
     pub sync_point: Option<Semaphore>,
+    /// Holds the command buffer executed in the previous frame, to clean it up safely in the following frame
+    previous_run_command_buffer: Option<CommandBuffer>,
+    /// Holds the fence used to synchronize the transfer that occured in previous frame.
+    sync_point_fence: Fence,
 }
 
 /// Identifies distinct GLTF meshes in components and copies them to a shared buffer
@@ -56,6 +60,11 @@ impl shred::SetupHandler<ConsolidatedVertexBuffers> for ConsolidatedVertexBuffer
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             size_of::<[f32; 2]>() as vk::DeviceSize * 10 /* distinct meshes */ * 30_000 /* unique vertices */
         );
+        let sync_point_fence = renderer.device.new_fence();
+        renderer.device.set_object_name(
+            sync_point_fence.handle,
+            "Consolidate vertex buffers sync point fence",
+        );
         drop(renderer);
 
         res.insert(ConsolidatedVertexBuffers {
@@ -65,6 +74,8 @@ impl shred::SetupHandler<ConsolidatedVertexBuffers> for ConsolidatedVertexBuffer
             normal_buffer,
             uv_buffer,
             sync_point: None,
+            previous_run_command_buffer: None,
+            sync_point_fence,
         });
     }
 }
@@ -78,6 +89,28 @@ impl<'a> System<'a> for ConsolidateVertexBuffers {
     );
 
     fn run(&mut self, (renderer, meshes, mut consolidate_vertex_buffers): Self::SystemData) {
+        if consolidate_vertex_buffers
+            .previous_run_command_buffer
+            .is_some()
+        {
+            unsafe {
+                renderer
+                    .device
+                    .wait_for_fences(
+                        &[consolidate_vertex_buffers.sync_point_fence.handle],
+                        true,
+                        u64::MAX,
+                    )
+                    .expect("Wait for fence failed.");
+            }
+        }
+        unsafe {
+            renderer
+                .device
+                .reset_fences(&[consolidate_vertex_buffers.sync_point_fence.handle])
+                .expect("failed to reset consolidate vertex buffers sync point fence");
+        }
+
         let mut needs_transfer = false;
         let command_buffer = renderer
             .graphics_command_pool
@@ -150,36 +183,24 @@ impl<'a> System<'a> for ConsolidateVertexBuffers {
                 .signal_semaphores(signal_semaphores)
                 .build();
 
-            let submit_fence = renderer.device.new_fence();
-            renderer.device.set_object_name(
-                submit_fence.handle,
-                "Consolidate Vertex buffers submit fence",
-            );
-
             consolidate_vertex_buffers.sync_point = Some(semaphore);
+            consolidate_vertex_buffers.previous_run_command_buffer = Some(command_buffer); // potentially destroys the previous one
 
             let queue = renderer.device.graphics_queue.lock();
 
             unsafe {
                 renderer
                     .device
-                    .queue_submit(*queue, &[submit], submit_fence.handle)
+                    .queue_submit(
+                        *queue,
+                        &[submit],
+                        consolidate_vertex_buffers.sync_point_fence.handle,
+                    )
                     .unwrap();
-            }
-
-            // to destroy the command buffer when it's finished
-            {
-                let device = Arc::clone(&renderer.device);
-                thread::spawn(move || unsafe {
-                    device
-                        .wait_for_fences(&[submit_fence.handle], true, u64::MAX)
-                        .expect("Wait for fence failed.");
-                    drop(command_buffer);
-                    drop(submit_fence);
-                });
             }
         } else {
             consolidate_vertex_buffers.sync_point = None;
+            consolidate_vertex_buffers.previous_run_command_buffer = None; // potentially destroys the previous one
         }
     }
 }
