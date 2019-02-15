@@ -9,8 +9,10 @@ use std::u64;
 // Shared resource
 pub struct PresentData {
     pub(in super::super) render_complete_semaphore: Semaphore,
+    pub(in super::super) present_semaphore: Semaphore,
     pub(in super::super) render_command_buffer: Option<CommandBuffer>,
     pub(in super::super) render_complete_fence: Fence,
+    pub(in super::super) image_index: u32,
 }
 
 // Acquire swapchain image and store the index
@@ -29,6 +31,11 @@ impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
             "Render complete semaphore",
         );
 
+        let present_semaphore = renderer.device.new_semaphore();
+        renderer
+            .device
+            .set_object_name(present_semaphore.handle, "Present semaphore");
+
         let render_complete_fence = renderer.device.new_fence();
         renderer
             .device
@@ -38,19 +45,21 @@ impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
 
         res.insert(PresentData {
             render_complete_semaphore,
+            present_semaphore,
             render_command_buffer: None,
             render_complete_fence,
+            image_index: 0,
         });
     }
 }
 
 impl<'a> System<'a> for AcquireFramebuffer {
     type SystemData = (
-        WriteExpect<'a, RenderFrame>,
-        Read<'a, PresentData, PresentDataSetupHandler>,
+        ReadExpect<'a, RenderFrame>,
+        Write<'a, PresentData, PresentDataSetupHandler>,
     );
 
-    fn run(&mut self, (mut renderer, present_data): Self::SystemData) {
+    fn run(&mut self, (renderer, mut present_data): Self::SystemData) {
         if present_data.render_command_buffer.is_some() {
             unsafe {
                 renderer
@@ -65,7 +74,7 @@ impl<'a> System<'a> for AcquireFramebuffer {
                 .reset_fences(&[present_data.render_complete_fence.handle])
                 .expect("failed to reset render complete fence");
         }
-        renderer.image_index = unsafe {
+        present_data.image_index = unsafe {
             renderer
                 .swapchain
                 .handle
@@ -73,7 +82,7 @@ impl<'a> System<'a> for AcquireFramebuffer {
                 .acquire_next_image(
                     renderer.swapchain.handle.swapchain,
                     u64::MAX,
-                    renderer.present_semaphore.handle,
+                    present_data.present_semaphore.handle,
                     vk::Fence::null(),
                 )
                 .unwrap()
@@ -89,7 +98,7 @@ impl<'a> System<'a> for PresentFramebuffer {
         {
             let wait_semaphores = &[present_data.render_complete_semaphore.handle];
             let swapchains = &[renderer.swapchain.handle.swapchain];
-            let image_indices = &[renderer.image_index];
+            let image_indices = &[present_data.image_index];
             let present_info = vk::PresentInfoKHR::builder()
                 .wait_semaphores(wait_semaphores)
                 .swapchains(swapchains)

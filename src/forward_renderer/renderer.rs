@@ -58,8 +58,6 @@ pub struct RenderFrame {
     pub device: Arc<Device>,
     pub swapchain: Swapchain,
     pub framebuffer: Framebuffer,
-    pub image_index: u32,
-    pub present_semaphore: Semaphore,
     pub graphics_command_pool: Arc<CommandPool>,
     pub compute_command_pool: Arc<CommandPool>,
     pub descriptor_pool: Arc<DescriptorPool>,
@@ -88,7 +86,6 @@ impl RenderFrame {
         let device = Arc::new(Device::new(&instance).expect("Failed to create device"));
         device.set_object_name(device.handle(), "Device");
         let swapchain = new_swapchain(&instance, &device);
-        let present_semaphore = device.new_semaphore();
         let cull_complete_semaphore = device.new_semaphore();
         let graphics_command_pool = device.new_command_pool(
             device.graphics_queue_family,
@@ -502,7 +499,6 @@ impl RenderFrame {
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
                 framebuffer,
-                image_index: 0,
                 depth_pipeline,
                 depth_pipeline_layout,
                 gltf_pipeline,
@@ -512,7 +508,6 @@ impl RenderFrame {
                 descriptor_pool,
                 mvp_set,
                 mvp_buffer,
-                present_semaphore,
                 renderpass: main_renderpass,
                 swapchain,
                 culled_commands_buffer: command_generation_buffer,
@@ -889,6 +884,7 @@ impl<'a> System<'a> for Renderer {
         let command_buffer = renderer.graphics_command_pool.record_one_time({
             let renderer = &renderer;
             let consolidated_vertex_buffers = &consolidated_vertex_buffers;
+            let present_data = &present_data;
             move |command_buffer| unsafe {
                 if !gui.transitioned {
                     renderer.device.cmd_pipeline_barrier(
@@ -930,7 +926,7 @@ impl<'a> System<'a> for Renderer {
                 ];
                 let begin_info = vk::RenderPassBeginInfo::builder()
                     .render_pass(renderer.renderpass.handle)
-                    .framebuffer(renderer.framebuffer.handles[renderer.image_index as usize])
+                    .framebuffer(renderer.framebuffer.handles[present_data.image_index as usize])
                     .render_area(vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
                         extent: vk::Extent2D {
@@ -1153,7 +1149,7 @@ impl<'a> System<'a> for Renderer {
             }
         });
         let mut wait_semaphores = vec![
-            renderer.present_semaphore.handle,
+            present_data.present_semaphore.handle,
             renderer.cull_complete_semaphore.handle,
         ];
         if let Some(ref semaphore) = consolidated_vertex_buffers.sync_point {
