@@ -237,11 +237,7 @@ fn main() {
         .with_barrier()
         .with(FlyCamera::default(), "fly_camera", &[])
         .with(ProjectCamera, "project_camera", &["fly_camera"])
-        .with(
-            MVPCalculation,
-            "mvp",
-            &["project_camera"],
-        )
+        .with(MVPCalculation, "mvp", &["project_camera"])
         .with(AABBCalculation, "aabb_calc", &["mvp"])
         .with(ConsolidateVertexBuffers, "consolidate_vertex_buffers", &[])
         .with(
