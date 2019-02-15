@@ -336,7 +336,6 @@ impl<'a> System<'a> for CoarseCulling {
     );
 
     fn run(&mut self, (aabb, camera, mut culled): Self::SystemData) {
-        let mut count = 0;
         for (aabb, culled) in (&aabb, &mut culled).join() {
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
@@ -350,9 +349,6 @@ impl<'a> System<'a> for CoarseCulling {
                 }
             }
             culled.0 = outside;
-            if cfg!(debug_assertions) && culled.0 {
-                count += 1
-            }
         }
     }
 }
