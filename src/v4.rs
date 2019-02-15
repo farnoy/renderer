@@ -21,9 +21,8 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        load_gltf, AcquireFramebuffer, ConsolidateVertexBuffers, CullPass, Gui, LoadedMesh,
+        load_gltf, AcquireFramebuffer, ConsolidateMeshBuffers, CullPass, Gui, LoadedMesh,
         PresentFramebuffer, RenderFrame, Renderer, SynchronizeBaseColorTextures,
-        UpdateCullDescriptorsForMeshes,
     },
 };
 use ash::version::DeviceV1_0;
@@ -239,16 +238,11 @@ fn main() {
         .with(ProjectCamera, "project_camera", &["fly_camera"])
         .with(MVPCalculation, "mvp", &["project_camera"])
         .with(AABBCalculation, "aabb_calc", &["mvp"])
-        .with(ConsolidateVertexBuffers, "consolidate_vertex_buffers", &[])
+        .with(ConsolidateMeshBuffers, "consolidate_vertex_buffers", &[])
         .with(
             CoarseCulling,
             "coarse_culling",
             &["aabb_calc", "project_camera"],
-        )
-        .with(
-            UpdateCullDescriptorsForMeshes,
-            "update_cull_descriptors",
-            &[],
         )
         .with(
             AssignBufferIndex,
@@ -270,7 +264,6 @@ fn main() {
                 "assign_buffer_index",
                 "mvp_upload",
                 "coarse_culling",
-                "update_cull_descriptors",
                 "consolidate_vertex_buffers",
             ],
         )

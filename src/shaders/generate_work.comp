@@ -15,6 +15,7 @@ layout(push_constant) uniform PushConstants {
     uint gltfIndex;
     uint indexCount;
     uint indexOffset; 
+    uint indexOffsetInOutput; 
     int vertexOffset; 
 };
 
@@ -30,12 +31,12 @@ layout(set = 1, binding = 1) buffer OutIndexBuffer {
     uint out_index_buffer[][3];
 };
 
-layout(set = 2, binding = 0) buffer readonly IndexBuffer {
-    uint index_buffer[][3];
+layout(set = 1, binding = 2) buffer readonly VertexBuffer {
+    float vertex_buffer[][3];
 };
 
-layout(set = 2, binding = 1) buffer readonly VertexBuffer {
-    float vertex_buffer[][3];
+layout(set = 1, binding = 3) buffer readonly IndexBuffer {
+    uint index_buffer[][3];
 };
 
 layout (local_size_x = 512) in;
@@ -48,7 +49,7 @@ void main() {
         indirect_commands[gltfIndex].indexCount = 0;
         indirect_commands[gltfIndex].instanceCount = 1;
         indirect_commands[gltfIndex].firstInstance = gltfIndex;
-        indirect_commands[gltfIndex].firstIndex = indexOffset;
+        indirect_commands[gltfIndex].firstIndex = indexOffsetInOutput;
         indirect_commands[gltfIndex].vertexOffset = vertexOffset;
     }
     if (gl_LocalInvocationID.x == 0) {
@@ -60,26 +61,25 @@ void main() {
         return;
     }
 
-    // TODO: no dynamic indexOffset here, won't work with different meshes
-    uint ix0 = index_buffer[gl_GlobalInvocationID.x][0];
-    uint ix1 = index_buffer[gl_GlobalInvocationID.x][1];
-    uint ix2 = index_buffer[gl_GlobalInvocationID.x][2];
+    uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
+    uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
+    uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
     vec4 input0 = vec4(
-        vertex_buffer[ix0][0],
-        vertex_buffer[ix0][1],
-        vertex_buffer[ix0][2],
+        vertex_buffer[vertexOffset + ix0][0],
+        vertex_buffer[vertexOffset + ix0][1],
+        vertex_buffer[vertexOffset + ix0][2],
         1.0
     );
     vec4 input1 = vec4(
-        vertex_buffer[ix1][0],
-        vertex_buffer[ix1][1],
-        vertex_buffer[ix1][2],
+        vertex_buffer[vertexOffset + ix1][0],
+        vertex_buffer[vertexOffset + ix1][1],
+        vertex_buffer[vertexOffset + ix1][2],
         1.0
     );
     vec4 input2 = vec4(
-        vertex_buffer[ix2][0],
-        vertex_buffer[ix2][1],
-        vertex_buffer[ix2][2],
+        vertex_buffer[vertexOffset + ix2][0],
+        vertex_buffer[vertexOffset + ix2][1],
+        vertex_buffer[vertexOffset + ix2][2],
         1.0
     );
     vec4 vertex0 = mvp[gltfIndex] * input0;
@@ -134,7 +134,7 @@ void main() {
 
     if (gl_LocalInvocationID.x == 0) {
         globalOffset = atomicAdd(indirect_commands[gltfIndex].indexCount, localOffset * 3);
-        globalOffset += indexOffset; // to resume where previous mesh ended
+        globalOffset += indexOffsetInOutput; // to resume where previous mesh ended
         globalOffset /= 3;
     }
 

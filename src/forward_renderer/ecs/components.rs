@@ -1,4 +1,4 @@
-use super::super::renderer::device::{Buffer, DescriptorSet, Image};
+use super::super::renderer::device::{Buffer, Image};
 use cgmath;
 use specs::*;
 use specs_derive::Component;
@@ -71,11 +71,6 @@ pub struct CoarseCulled(pub bool);
 #[derive(Clone, Component)]
 #[storage(VecStorage)]
 pub struct GltfMeshBufferIndex(pub u32);
-
-// Holds index and vertex buffer bindings for culling
-#[derive(Component)]
-#[storage(VecStorage)]
-pub struct GltfMeshCullDescriptorSet(pub DescriptorSet);
 
 // Holds the base color texture that will be mapped into a single,
 // shared Descriptor Set

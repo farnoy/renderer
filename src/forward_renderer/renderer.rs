@@ -24,7 +24,7 @@ use self::{
     helpers::*,
     instance::Instance,
     systems::{
-        consolidate_vertex_buffers::ConsolidatedVertexBuffers, cull_pipeline::CullPassData,
+        consolidate_mesh_buffers::ConsolidatedMeshBuffers, cull_pipeline::CullPassData,
         textures::BaseColorDescriptorSet,
     },
 };
@@ -32,8 +32,8 @@ use self::{
 pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
-        consolidate_vertex_buffers::ConsolidateVertexBuffers,
-        cull_pipeline::{CullPass, UpdateCullDescriptorsForMeshes},
+        consolidate_mesh_buffers::ConsolidateMeshBuffers,
+        cull_pipeline::CullPass,
         present::{AcquireFramebuffer, PresentData, PresentFramebuffer},
         textures::SynchronizeBaseColorTextures,
     },
@@ -539,7 +539,7 @@ impl<'a> System<'a> for Renderer {
         WriteExpect<'a, Gui>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadExpect<'a, BaseColorDescriptorSet>,
-        ReadExpect<'a, ConsolidatedVertexBuffers>,
+        ReadExpect<'a, ConsolidatedMeshBuffers>,
         ReadExpect<'a, CullPassData>,
         WriteExpect<'a, PresentData>,
     );
@@ -551,7 +551,7 @@ impl<'a> System<'a> for Renderer {
             mut gui,
             coarse_culled,
             base_color_descriptor_set,
-            consolidated_vertex_buffers,
+            consolidated_mesh_buffers,
             cull_pass_data,
             mut present_data,
         ): Self::SystemData,
@@ -559,7 +559,7 @@ impl<'a> System<'a> for Renderer {
         let total = coarse_culled.join().count() as u32;
         let command_buffer = renderer.graphics_command_pool.record_one_time({
             let renderer = &renderer;
-            let consolidated_vertex_buffers = &consolidated_vertex_buffers;
+            let consolidated_mesh_buffers = &consolidated_mesh_buffers;
             let present_data = &present_data;
             let cull_pass_data = &cull_pass_data;
             move |command_buffer| unsafe {
@@ -653,7 +653,7 @@ impl<'a> System<'a> for Renderer {
                                 renderer.device.cmd_bind_vertex_buffers(
                                     command_buffer,
                                     0,
-                                    &[consolidated_vertex_buffers.position_buffer.handle],
+                                    &[consolidated_mesh_buffers.position_buffer.handle],
                                     &[0],
                                 );
                                 renderer.device.cmd_draw_indexed_indirect(
@@ -710,9 +710,9 @@ impl<'a> System<'a> for Renderer {
                                     command_buffer,
                                     0,
                                     &[
-                                        consolidated_vertex_buffers.position_buffer.handle,
-                                        consolidated_vertex_buffers.normal_buffer.handle,
-                                        consolidated_vertex_buffers.uv_buffer.handle,
+                                        consolidated_mesh_buffers.position_buffer.handle,
+                                        consolidated_mesh_buffers.normal_buffer.handle,
+                                        consolidated_mesh_buffers.uv_buffer.handle,
                                     ],
                                     &[0, 0, 0],
                                 );
@@ -848,7 +848,7 @@ impl<'a> System<'a> for Renderer {
                 .current(present_data.image_index)
                 .handle,
         ];
-        if let Some(ref semaphore) = consolidated_vertex_buffers.sync_point {
+        if let Some(ref semaphore) = consolidated_mesh_buffers.sync_point {
             wait_semaphores.push(semaphore.handle);
         }
         let signal_semaphores = &[present_data.render_complete_semaphore.handle];

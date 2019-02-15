@@ -15,7 +15,6 @@ pub fn setup(world: &mut World) {
     world.register::<AABB>();
     world.register::<GltfMesh>();
     world.register::<GltfMeshBufferIndex>();
-    world.register::<GltfMeshCullDescriptorSet>();
     world.register::<GltfMeshBaseColorTexture>();
     #[cfg(not(feature = "renderdoc"))]
     world.register::<BaseColorVisitedMarker>();

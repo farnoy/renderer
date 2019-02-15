@@ -1,6 +1,6 @@
 use super::{
     super::{
-        super::ecs::components::{GltfMesh, GltfMeshBufferIndex, GltfMeshCullDescriptorSet},
+        super::ecs::components::{GltfMesh, GltfMeshBufferIndex},
         alloc,
         device::{
             Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, DoubleBuffered, Fence,
@@ -9,7 +9,7 @@ use super::{
         helpers::{self, Pipeline, PipelineLayout},
         RenderFrame,
     },
-    consolidate_vertex_buffers::ConsolidatedVertexBuffers,
+    consolidate_mesh_buffers::ConsolidatedMeshBuffers,
     present::PresentData,
 };
 use ash::{
@@ -22,9 +22,6 @@ use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, syn
 
 // Cull geometry in compute pass
 pub struct CullPass;
-
-// Updates the descriptor set that holds vertex & index buffers for compute shader to read
-pub struct UpdateCullDescriptorsForMeshes;
 
 pub struct CullPassData {
     pub culled_commands_buffer: DoubleBuffered<Buffer>,
@@ -60,6 +57,20 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 p_immutable_samplers: ptr::null(),
             },
+            vk::DescriptorSetLayoutBinding {
+                binding: 2,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
+            vk::DescriptorSetLayoutBinding {
+                binding: 3,
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                p_immutable_samplers: ptr::null(),
+            },
         ]);
         device.set_object_name(cull_set_layout.handle, "Cull Descriptor Set Layout");
 
@@ -68,16 +79,13 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             gltf_id: u32,
             index_count: u32,
             index_offset: u32,
+            index_offset_in_output: u32,
             vertex_offset: i32,
         }
 
         let cull_pipeline_layout = helpers::new_pipeline_layout(
             Arc::clone(&device),
-            &[
-                &renderer.mvp_set_layout,
-                &cull_set_layout,
-                &renderer.mesh_assembly_set_layout,
-            ],
+            &[&renderer.mvp_set_layout, &cull_set_layout],
             &[vk::PushConstantRange {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 offset: 0,
@@ -184,9 +192,8 @@ impl<'a> System<'a> for CullPass {
         Write<'a, CullPassData, CullPassDataSetupHandler>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
-        ReadStorage<'a, GltfMeshCullDescriptorSet>,
         ReadExpect<'a, PresentData>,
-        ReadExpect<'a, ConsolidatedVertexBuffers>,
+        ReadExpect<'a, ConsolidatedMeshBuffers>,
     );
 
     fn run(
@@ -196,9 +203,8 @@ impl<'a> System<'a> for CullPass {
             mut cull_pass_data,
             meshes,
             mesh_indices,
-            mesh_assembly_sets,
             present_data,
-            consolidated_vertex_buffers,
+            consolidate_mesh_buffers,
         ): Self::SystemData,
     ) {
         if cull_pass_data
@@ -230,7 +236,38 @@ impl<'a> System<'a> for CullPass {
                 .expect("failed to reset cull complete fence");
         }
 
-        let mut index_offset = 0;
+        {
+            let cull_updates = &[
+                vk::DescriptorBufferInfo {
+                    buffer: consolidate_mesh_buffers.position_buffer.handle,
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                },
+                vk::DescriptorBufferInfo {
+                    buffer: consolidate_mesh_buffers.index_buffer.handle,
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                },
+            ];
+            unsafe {
+                renderer.device.update_descriptor_sets(
+                    &[vk::WriteDescriptorSet::builder()
+                        .dst_set(
+                            cull_pass_data
+                                .cull_set
+                                .current(present_data.image_index)
+                                .handle,
+                        )
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(cull_updates)
+                        .build()],
+                    &[],
+                );
+            }
+        }
+
+        let mut index_offset_in_output = 0;
 
         let cull_cb = renderer
             .compute_command_pool
@@ -245,35 +282,38 @@ impl<'a> System<'a> for CullPass {
                             vk::PipelineBindPoint::COMPUTE,
                             cull_pass_data.cull_pipeline.handle,
                         );
-                        for (mesh, mesh_index, mesh_assembly_set) in
-                            (&meshes, &mesh_indices, &mesh_assembly_sets).join()
-                        {
-                            renderer.device.cmd_bind_descriptor_sets(
-                                command_buffer,
-                                vk::PipelineBindPoint::COMPUTE,
-                                cull_pass_data.cull_pipeline_layout.handle,
-                                0,
-                                &[
-                                    renderer.mvp_set.current(present_data.image_index).handle,
-                                    cull_pass_data
-                                        .cull_set
-                                        .current(present_data.image_index)
-                                        .handle,
-                                    mesh_assembly_set.0.handle,
-                                ],
-                                &[],
-                            );
-                            let vertex_offset = consolidated_vertex_buffers
-                                .offsets
+                        renderer.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::COMPUTE,
+                            cull_pass_data.cull_pipeline_layout.handle,
+                            0,
+                            &[
+                                renderer.mvp_set.current(present_data.image_index).handle,
+                                cull_pass_data
+                                    .cull_set
+                                    .current(present_data.image_index)
+                                    .handle,
+                            ],
+                            &[],
+                        );
+                        for (mesh, mesh_index) in (&meshes, &mesh_indices).join() {
+                            let vertex_offset = consolidate_mesh_buffers
+                                .vertex_offsets
                                 .get(&mesh.vertex_buffer.handle.as_raw())
                                 .expect("Vertex buffer not consolidated");
+                            let index_offset = consolidate_mesh_buffers
+                                .index_offsets
+                                .get(&mesh.index_buffer.handle.as_raw())
+                                .expect("Index buffer not consolidated");
                             let constants = [
                                 mesh_index.0,
-                                mesh.index_len as u32,
-                                index_offset,
-                                vertex_offset.to_u32().unwrap(),
+                                mesh.index_len.to_u32().unwrap(),
+                                index_offset.to_u32().unwrap(),
+                                index_offset_in_output,
+                                vertex_offset.to_i32().unwrap() as u32,
                             ];
-                            index_offset += mesh.index_len.to_u32().unwrap();
+
+                            index_offset_in_output += mesh.index_len.to_u32().unwrap();
 
                             let casted: &[u8] = {
                                 from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
@@ -328,52 +368,5 @@ impl<'a> System<'a> for CullPass {
 
         let ix = present_data.image_index;
         *cull_pass_data.previous_run_command_buffer.current_mut(ix) = Some(cull_cb); // also destroys the previous one
-    }
-}
-
-impl<'a> System<'a> for UpdateCullDescriptorsForMeshes {
-    type SystemData = (
-        Entities<'a>,
-        ReadExpect<'a, RenderFrame>,
-        ReadStorage<'a, GltfMesh>,
-        WriteStorage<'a, GltfMeshCullDescriptorSet>,
-    );
-
-    fn run(&mut self, (entities, renderer, meshes, mut mesh_descriptor_sets): Self::SystemData) {
-        let mut entities_to_update = specs::BitSet::new();
-        for (entity, _, ()) in (&*entities, &meshes, !&mesh_descriptor_sets).join() {
-            entities_to_update.add(entity.id());
-        }
-
-        for (entity, _, mesh) in (&*entities, &entities_to_update, &meshes).join() {
-            let descriptor_set = renderer
-                .descriptor_pool
-                .allocate_set(&renderer.mesh_assembly_set_layout);
-            let updates = &[
-                vk::DescriptorBufferInfo::builder()
-                    .buffer(mesh.index_buffer.handle)
-                    .range(vk::WHOLE_SIZE)
-                    .build(),
-                vk::DescriptorBufferInfo::builder()
-                    .buffer(mesh.vertex_buffer.handle)
-                    .range(vk::WHOLE_SIZE)
-                    .build(),
-            ];
-            unsafe {
-                renderer.device.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(descriptor_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(updates)
-                        .build()],
-                    &[],
-                );
-            }
-            let res = mesh_descriptor_sets
-                .insert(entity, GltfMeshCullDescriptorSet(descriptor_set))
-                .expect("Failed to insert GltfMeshCullDescriptorSet");
-            assert!(res.is_none()); // double check that there was nothing there
-        }
     }
 }
