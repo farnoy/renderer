@@ -19,7 +19,13 @@ use imgui::{self, im_str};
 use num_traits::ToPrimitive;
 use specs::prelude::*;
 use std::{
-    cmp::{max, min}, mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc,
+    cmp::{max, min},
+    mem::size_of,
+    os::raw::c_uchar,
+    path::PathBuf,
+    ptr,
+    slice::from_raw_parts,
+    sync::Arc,
     thread, u64,
 };
 use winit;
@@ -54,7 +60,6 @@ pub struct RenderFrame {
     pub framebuffer: Framebuffer,
     pub image_index: u32,
     pub present_semaphore: Semaphore,
-    pub rendering_complete_semaphore: Semaphore,
     pub graphics_command_pool: Arc<CommandPool>,
     pub compute_command_pool: Arc<CommandPool>,
     pub descriptor_pool: Arc<DescriptorPool>,
@@ -85,7 +90,6 @@ impl RenderFrame {
         let swapchain = new_swapchain(&instance, &device);
         let present_semaphore = device.new_semaphore();
         let cull_complete_semaphore = device.new_semaphore();
-        let rendering_complete_semaphore = device.new_semaphore();
         let graphics_command_pool = device.new_command_pool(
             device.graphics_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
@@ -509,7 +513,6 @@ impl RenderFrame {
                 mvp_set,
                 mvp_buffer,
                 present_semaphore,
-                rendering_complete_semaphore,
                 renderpass: main_renderpass,
                 swapchain,
                 culled_commands_buffer: command_generation_buffer,
@@ -868,7 +871,7 @@ impl<'a> System<'a> for Renderer {
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadExpect<'a, BaseColorDescriptorSet>,
         ReadExpect<'a, ConsolidatedVertexBuffers>,
-        Write<'a, PresentData>,
+        WriteExpect<'a, PresentData>,
     );
 
     fn run(
@@ -1156,7 +1159,7 @@ impl<'a> System<'a> for Renderer {
         if let Some(ref semaphore) = consolidated_vertex_buffers.sync_point {
             wait_semaphores.push(semaphore.handle);
         }
-        let signal_semaphores = &[renderer.rendering_complete_semaphore.handle];
+        let signal_semaphores = &[present_data.render_complete_semaphore.handle];
         let dst_stage_masks = &[
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1170,19 +1173,14 @@ impl<'a> System<'a> for Renderer {
             .build();
         let queue = renderer.device.graphics_queue.lock();
 
-        let submit_fence = renderer.device.new_fence();
-        renderer
-            .device
-            .set_object_name(submit_fence.handle, "frame submit fence");
         unsafe {
             renderer
                 .device
-                .queue_submit(*queue, &[submit], submit_fence.handle)
+                .queue_submit(*queue, &[submit], present_data.render_complete_fence.handle)
                 .unwrap();
-
-            present_data.render_command_buffer = Some(command_buffer);
-            present_data.render_complete_fence = Some(submit_fence);
         }
+
+        present_data.render_command_buffer = Some(command_buffer);
     }
 }
 
