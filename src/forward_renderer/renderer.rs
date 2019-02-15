@@ -34,9 +34,12 @@ pub use self::{
         consolidate_vertex_buffers::ConsolidateVertexBuffers,
         cull_pipeline::{CullPass, UpdateCullDescriptorsForMeshes},
         present::{AcquireFramebuffer, PresentFramebuffer},
-        textures::{SynchronizeBaseColorTextures, VisitedMarker as BaseColorVisitedMarker},
+        textures::SynchronizeBaseColorTextures,
     },
 };
+
+#[cfg(not(feature = "renderdoc"))]
+pub use self::systems::textures::VisitedMarker as BaseColorVisitedMarker;
 
 // TODO: rename
 pub struct RenderFrame {
@@ -126,7 +129,8 @@ impl RenderFrame {
 
         let base_color_descriptor_set_layout = {
             let binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
-                .binding_flags(&[vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
+                .binding_flags(&[#[cfg(not(feature = "renderdoc"))]
+                vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
             let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
                 .bindings(&[vk::DescriptorSetLayoutBinding {
                     binding: 0,
@@ -147,7 +151,14 @@ impl RenderFrame {
 
         let gltf_pipeline_layout = new_pipeline_layout(
             Arc::clone(&device),
-            &[&mvp_set_layout, &base_color_descriptor_set_layout],
+            #[cfg(feature = "renderdoc")]
+            {
+                &[&mvp_set_layout]
+            },
+            #[cfg(not(feature = "renderdoc"))]
+            {
+                &[&mvp_set_layout, &base_color_descriptor_set_layout]
+            },
             &[],
         );
         device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
@@ -663,6 +674,7 @@ impl<'a> System<'a> for Renderer {
                                     0,
                                     &[
                                         renderer.mvp_set.handle,
+                                        #[cfg(not(feature = "renderdoc"))]
                                         base_color_descriptor_set.set.handle,
                                     ],
                                     &[],

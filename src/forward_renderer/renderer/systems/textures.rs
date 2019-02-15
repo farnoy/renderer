@@ -1,22 +1,28 @@
+#[cfg(not(feature = "renderdoc"))]
 use super::super::{
     super::ecs::components::{GltfMeshBaseColorTexture, GltfMeshBufferIndex},
     device::DescriptorSet,
     helpers, RenderFrame,
 };
+#[cfg(not(feature = "renderdoc"))]
 use ash::{version::DeviceV1_0, vk};
 use specs::prelude::*;
+#[cfg(not(feature = "renderdoc"))]
 use specs_derive::Component;
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
 pub struct SynchronizeBaseColorTextures;
 
 pub struct BaseColorDescriptorSet {
+    #[cfg(not(feature = "renderdoc"))]
     pub(in super::super) set: DescriptorSet,
+    #[cfg(not(feature = "renderdoc"))]
     sampler: helpers::Sampler,
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
+#[cfg(not(feature = "renderdoc"))]
 pub struct VisitedMarker {
     image_view: helpers::ImageView,
 }
@@ -24,6 +30,7 @@ pub struct VisitedMarker {
 pub struct BaseColorSetupHandler;
 
 impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
+    #[cfg(not(feature = "renderdoc"))]
     fn setup(res: &mut Resources) {
         let renderer = res.fetch::<RenderFrame>();
         let set = renderer
@@ -44,8 +51,14 @@ impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
 
         res.insert(BaseColorDescriptorSet { set, sampler });
     }
+
+    #[cfg(feature = "renderdoc")]
+    fn setup(res: &mut Resources) {
+        res.insert(BaseColorDescriptorSet {});
+    }
 }
 
+#[cfg(not(feature = "renderdoc"))]
 impl<'a> System<'a> for SynchronizeBaseColorTextures {
     #[allow(clippy::type_complexity)]
     type SystemData = (
@@ -124,4 +137,12 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             }
         }
     }
+}
+
+#[cfg(feature = "renderdoc")]
+impl<'a> System<'a> for SynchronizeBaseColorTextures {
+    type SystemData = (Write<'a, BaseColorDescriptorSet, BaseColorSetupHandler>,);
+
+    #[allow(unused_variables)]
+    fn run(&mut self, base_color_descriptor_set: Self::SystemData) {}
 }

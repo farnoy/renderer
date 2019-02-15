@@ -1,8 +1,10 @@
 #version 450
 
+#ifndef RENDERDOC
 #extension GL_EXT_nonuniform_qualifier: require
 
 layout(set = 1, binding = 0) uniform sampler2D base_color[];
+#endif
 
 layout (location = 0) in vec3 normal;
 layout (location = 1) in vec2 uv;
@@ -11,8 +13,10 @@ layout (location = 0) out vec4 o_color;
 
 void main() {
     // debug UVs
+    #ifdef RENDERDOC
     o_color.xy = uv;
     o_color.zw = vec2(0.0, 1.0);
-
+    #else
     o_color = texture(base_color[entity_id], uv);    
+    #endif
 }

@@ -18,16 +18,22 @@ fn main() {
     ];
     for shader in shaders.iter() {
         println!("cargo:rerun-if-changed=src/shaders/{}", shader);
-        let output_path = &dest.join(format!("{}.spv", shader));
+        let output_path = dest.join(format!("{}.spv", shader));
         let result = Command::new("glslangValidator")
-            .arg("-C")
-            .arg("-V")
-            .arg("-g")
-            .arg("--target-env")
-            .arg("vulkan1.1")
-            .arg("-o")
-            .arg(output_path)
-            .arg(format!("{}/src/shaders/{}", src, shader))
+            .args(&[
+                "-C",
+                "-V",
+                "-g",
+                "--target-env",
+                "vulkan1.1",
+                #[cfg(feature = "renderdoc")]
+                "-DRENDERDOC",
+                #[cfg(feature = "radeon-profiler")]
+                "-DRADEON_PROFILER",
+                "-o",
+                output_path.to_str().unwrap(),
+                format!("{}/src/shaders/{}", src, shader).as_str(),
+            ])
             .spawn()
             .unwrap()
             .wait()

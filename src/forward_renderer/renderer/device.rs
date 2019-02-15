@@ -150,11 +150,14 @@ impl Device {
                     .runtime_descriptor_array(true)
                     .descriptor_binding_partially_bound(true);
 
-            let device_create_info = vk::DeviceCreateInfo::builder()
+            let mut device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
-                .enabled_features(&features)
-                .next(&*descriptor_indexing_features);
+                .enabled_features(&features);
+
+            if cfg!(not(feature = "renderdoc")) {
+                device_create_info = device_create_info.next(&*descriptor_indexing_features);
+            }
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 

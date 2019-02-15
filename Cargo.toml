@@ -34,3 +34,4 @@ winapi = "0.3.5"
 default = []
 validation = []
 radeon-profiler = ["validation"]
+renderdoc = ["validation"]
