@@ -49,7 +49,10 @@ impl Instance {
 
         let entry = Entry::new().unwrap();
 
-        let layer_names = if cfg!(all(feature = "validation")) {
+        let layer_names = if cfg!(all(
+            feature = "validation",
+            not(feature = "radeon-profiler")
+        )) {
             vec![CString::new("VK_LAYER_LUNARG_standard_validation").unwrap()]
         } else {
             vec![]

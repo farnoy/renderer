@@ -18,13 +18,14 @@ use winit;
 
 use self::{
     device::{
-        Buffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, Image,
+        Buffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device,
+        DoubleBuffered, Image,
     },
     helpers::*,
     instance::Instance,
     systems::{
         consolidate_vertex_buffers::ConsolidatedVertexBuffers, cull_pipeline::CullPassData,
-        present::PresentData, textures::BaseColorDescriptorSet,
+        textures::BaseColorDescriptorSet,
     },
 };
 
@@ -33,7 +34,7 @@ pub use self::{
     systems::{
         consolidate_vertex_buffers::ConsolidateVertexBuffers,
         cull_pipeline::{CullPass, UpdateCullDescriptorsForMeshes},
-        present::{AcquireFramebuffer, PresentFramebuffer},
+        present::{AcquireFramebuffer, PresentData, PresentFramebuffer},
         textures::SynchronizeBaseColorTextures,
     },
 };
@@ -56,8 +57,8 @@ pub struct RenderFrame {
     pub gltf_pipeline: Pipeline,
     pub gltf_pipeline_layout: PipelineLayout,
     pub mvp_set_layout: DescriptorSetLayout,
-    pub mvp_set: DescriptorSet,
-    pub mvp_buffer: Buffer,
+    pub mvp_set: DoubleBuffered<DescriptorSet>,
+    pub mvp_buffer: DoubleBuffered<Buffer>,
     pub mesh_assembly_set_layout: DescriptorSetLayout,
     pub base_color_descriptor_set_layout: DescriptorSetLayout,
 }
@@ -375,32 +376,40 @@ impl RenderFrame {
 
         device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
 
-        let mvp_set = descriptor_pool.allocate_set(&mvp_set_layout);
-        device.set_object_name(mvp_set.handle, "UBO Set");
-        let mvp_buffer = device.new_buffer(
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4 * 4 * 4 * 4096,
-        );
+        let mvp_buffer = DoubleBuffered::new(|ix| {
+            let b = device.new_buffer(
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                4 * 4 * 4 * 4096,
+            );
+            device.set_object_name(b.handle, &format!("MVP Buffer - {}", ix));
+            b
+        });
+        let mvp_set = DoubleBuffered::new(|ix| {
+            let s = descriptor_pool.allocate_set(&mvp_set_layout);
+            device.set_object_name(s.handle, &format!("MVP Set - {}", ix));
 
-        {
-            let mvp_updates = &[vk::DescriptorBufferInfo {
-                buffer: mvp_buffer.handle,
-                offset: 0,
-                range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
-            }];
-            unsafe {
-                device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(mvp_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(mvp_updates)
-                        .build()],
-                    &[],
-                );
+            {
+                let mvp_updates = &[vk::DescriptorBufferInfo {
+                    buffer: mvp_buffer.current(ix).handle,
+                    offset: 0,
+                    range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                }];
+                unsafe {
+                    device.update_descriptor_sets(
+                        &[vk::WriteDescriptorSet::builder()
+                            .dst_set(s.handle)
+                            .dst_binding(0)
+                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                            .buffer_info(mvp_updates)
+                            .build()],
+                        &[],
+                    );
+                }
             }
-        }
+
+            s
+        });
 
         (
             RenderFrame {
@@ -629,12 +638,15 @@ impl<'a> System<'a> for Renderer {
                                     vk::PipelineBindPoint::GRAPHICS,
                                     renderer.depth_pipeline_layout.handle,
                                     0,
-                                    &[renderer.mvp_set.handle],
+                                    &[renderer.mvp_set.current(present_data.image_index).handle],
                                     &[],
                                 );
                                 renderer.device.cmd_bind_index_buffer(
                                     command_buffer,
-                                    cull_pass_data.culled_index_buffer.handle,
+                                    cull_pass_data
+                                        .culled_index_buffer
+                                        .current(present_data.image_index)
+                                        .handle,
                                     0,
                                     vk::IndexType::UINT32,
                                 );
@@ -646,7 +658,10 @@ impl<'a> System<'a> for Renderer {
                                 );
                                 renderer.device.cmd_draw_indexed_indirect(
                                     command_buffer,
-                                    cull_pass_data.culled_commands_buffer.handle,
+                                    cull_pass_data
+                                        .culled_commands_buffer
+                                        .current(present_data.image_index)
+                                        .handle,
                                     0,
                                     total,
                                     size_of::<u32>() as u32 * 5,
@@ -673,15 +688,21 @@ impl<'a> System<'a> for Renderer {
                                     renderer.gltf_pipeline_layout.handle,
                                     0,
                                     &[
-                                        renderer.mvp_set.handle,
+                                        renderer.mvp_set.current(present_data.image_index).handle,
                                         #[cfg(not(feature = "renderdoc"))]
-                                        base_color_descriptor_set.set.handle,
+                                        base_color_descriptor_set
+                                            .set
+                                            .current(present_data.image_index)
+                                            .handle,
                                     ],
                                     &[],
                                 );
                                 renderer.device.cmd_bind_index_buffer(
                                     command_buffer,
-                                    cull_pass_data.culled_index_buffer.handle,
+                                    cull_pass_data
+                                        .culled_index_buffer
+                                        .current(present_data.image_index)
+                                        .handle,
                                     0,
                                     vk::IndexType::UINT32,
                                 );
@@ -697,7 +718,10 @@ impl<'a> System<'a> for Renderer {
                                 );
                                 renderer.device.cmd_draw_indexed_indirect(
                                     command_buffer,
-                                    cull_pass_data.culled_commands_buffer.handle,
+                                    cull_pass_data
+                                        .culled_commands_buffer
+                                        .current(present_data.image_index)
+                                        .handle,
                                     0,
                                     total,
                                     size_of::<vk::DrawIndexedIndirectCommand>() as u32,
@@ -819,7 +843,10 @@ impl<'a> System<'a> for Renderer {
         });
         let mut wait_semaphores = vec![
             present_data.present_semaphore.handle,
-            cull_pass_data.cull_complete_semaphore.handle,
+            cull_pass_data
+                .cull_complete_semaphore
+                .current(present_data.image_index)
+                .handle,
         ];
         if let Some(ref semaphore) = consolidated_vertex_buffers.sync_point {
             wait_semaphores.push(semaphore.handle);
@@ -841,11 +868,19 @@ impl<'a> System<'a> for Renderer {
         unsafe {
             renderer
                 .device
-                .queue_submit(*queue, &[submit], present_data.render_complete_fence.handle)
+                .queue_submit(
+                    *queue,
+                    &[submit],
+                    present_data
+                        .render_complete_fence
+                        .current(present_data.image_index)
+                        .handle,
+                )
                 .unwrap();
         }
 
-        present_data.render_command_buffer = Some(command_buffer);
+        let ix = present_data.image_index;
+        *present_data.render_command_buffer.current_mut(ix) = Some(command_buffer);
     }
 }
 

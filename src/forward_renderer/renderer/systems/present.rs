@@ -1,5 +1,5 @@
 use super::super::{
-    device::{CommandBuffer, Fence, Semaphore},
+    device::{CommandBuffer, DoubleBuffered, Fence, Semaphore},
     RenderFrame,
 };
 use ash::{version::DeviceV1_0, vk};
@@ -10,9 +10,9 @@ use std::u64;
 pub struct PresentData {
     pub(in super::super) render_complete_semaphore: Semaphore,
     pub(in super::super) present_semaphore: Semaphore,
-    pub(in super::super) render_command_buffer: Option<CommandBuffer>,
-    pub(in super::super) render_complete_fence: Fence,
-    pub(in super::super) image_index: u32,
+    pub(in super::super) render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
+    pub(in super::super) render_complete_fence: DoubleBuffered<Fence>,
+    pub image_index: u32,
 }
 
 // Acquire swapchain image and store the index
@@ -36,17 +36,20 @@ impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
             .device
             .set_object_name(present_semaphore.handle, "Present semaphore");
 
-        let render_complete_fence = renderer.device.new_fence();
-        renderer
-            .device
-            .set_object_name(render_complete_fence.handle, "Render complete fence");
+        let render_complete_fence = DoubleBuffered::new(|ix| {
+            let f = renderer.device.new_fence();
+            renderer
+                .device
+                .set_object_name(f.handle, &format!("Render complete fence - {}", ix));
+            f
+        });
 
         drop(renderer);
 
         res.insert(PresentData {
             render_complete_semaphore,
             present_semaphore,
-            render_command_buffer: None,
+            render_command_buffer: DoubleBuffered::new(|_| None),
             render_complete_fence,
             image_index: 0,
         });
@@ -60,18 +63,32 @@ impl<'a> System<'a> for AcquireFramebuffer {
     );
 
     fn run(&mut self, (renderer, mut present_data): Self::SystemData) {
-        if present_data.render_command_buffer.is_some() {
+        if present_data
+            .render_command_buffer
+            .current(present_data.image_index + 1)
+            .is_some()
+        {
             unsafe {
                 renderer
                     .device
-                    .wait_for_fences(&[present_data.render_complete_fence.handle], true, u64::MAX)
+                    .wait_for_fences(
+                        &[present_data
+                            .render_complete_fence
+                            .current(present_data.image_index + 1)
+                            .handle],
+                        true,
+                        u64::MAX,
+                    )
                     .expect("Wait for fence failed.");
             }
         }
         unsafe {
             renderer
                 .device
-                .reset_fences(&[present_data.render_complete_fence.handle])
+                .reset_fences(&[present_data
+                    .render_complete_fence
+                    .current(present_data.image_index + 1)
+                    .handle])
                 .expect("failed to reset render complete fence");
         }
         present_data.image_index = unsafe {

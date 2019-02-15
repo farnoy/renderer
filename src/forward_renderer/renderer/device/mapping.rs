@@ -21,6 +21,7 @@ impl<'a, T> MappedBuffer<'a, T> {
         allocation: alloc::VmaAllocation,
         allocation_info: &alloc::VmaAllocationInfo,
     ) -> ash::prelude::VkResult<Self> {
+        assert!(allocation_info.size as usize / mem::size_of::<T>() > 0);
         unsafe {
             let mut ptr: *mut c_void = ptr::null_mut();
             match alloc::vmaMapMemory(allocator, allocation, &mut ptr) {

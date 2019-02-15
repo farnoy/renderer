@@ -2,11 +2,15 @@ use super::{
     super::{
         super::ecs::components::{GltfMesh, GltfMeshBufferIndex, GltfMeshCullDescriptorSet},
         alloc,
-        device::{Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, Fence, Semaphore},
+        device::{
+            Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, DoubleBuffered, Fence,
+            Semaphore,
+        },
         helpers::{self, Pipeline, PipelineLayout},
         RenderFrame,
     },
     consolidate_vertex_buffers::ConsolidatedVertexBuffers,
+    present::PresentData,
 };
 use ash::{
     version::DeviceV1_0,
@@ -23,15 +27,15 @@ pub struct CullPass;
 pub struct UpdateCullDescriptorsForMeshes;
 
 pub struct CullPassData {
-    pub culled_commands_buffer: Buffer,
-    pub culled_index_buffer: Buffer,
+    pub culled_commands_buffer: DoubleBuffered<Buffer>,
+    pub culled_index_buffer: DoubleBuffered<Buffer>,
     pub cull_pipeline_layout: PipelineLayout,
     pub cull_pipeline: Pipeline,
     pub cull_set_layout: DescriptorSetLayout,
-    pub cull_set: DescriptorSet,
-    pub cull_complete_semaphore: Semaphore,
-    pub previous_run_command_buffer: Option<CommandBuffer>, // to clean it up
-    pub cull_complete_fence: Fence,
+    pub cull_set: DoubleBuffered<DescriptorSet>,
+    pub cull_complete_semaphore: DoubleBuffered<Semaphore>,
+    pub previous_run_command_buffer: DoubleBuffered<Option<CommandBuffer>>, // to clean it up
+    pub cull_complete_fence: DoubleBuffered<Fence>,
 }
 
 pub struct CullPassDataSetupHandler;
@@ -86,63 +90,76 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
         );
 
-        let cull_set = renderer.descriptor_pool.allocate_set(&cull_set_layout);
-        device.set_object_name(cull_set.handle, "Cull Descriptor Set");
-        let culled_commands_buffer = device.new_buffer(
-            vk::BufferUsageFlags::INDIRECT_BUFFER
-                | vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize * 2400,
-        );
-        device.set_object_name(
-            culled_commands_buffer.handle,
-            "indirect draw commands buffer",
-        );
+        let culled_index_buffer = DoubleBuffered::new(|ix| {
+            let b = device.new_buffer(
+                vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                size_of::<u32>() as vk::DeviceSize * 300_000_000,
+            );
+            device.set_object_name(b.handle, &format!("Global culled index buffer - {}", ix));
+            b
+        });
 
-        let culled_index_buffer = device.new_buffer(
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<u32>() as vk::DeviceSize * 300_000_000,
-        );
-        device.set_object_name(culled_index_buffer.handle, "Global culled index buffer");
+        let cull_complete_semaphore = DoubleBuffered::new(|ix| {
+            let s = renderer.device.new_semaphore();
+            renderer
+                .device
+                .set_object_name(s.handle, &format!("Cull pass complete semaphore - {}", ix));
+            s
+        });
 
-        let cull_complete_semaphore = renderer.device.new_semaphore();
-        renderer.device.set_object_name(
-            cull_complete_semaphore.handle,
-            "Cull pass complete semaphore",
-        );
+        let culled_commands_buffer = DoubleBuffered::new(|ix| {
+            let b = device.new_buffer(
+                vk::BufferUsageFlags::INDIRECT_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize * 2400,
+            );
+            device.set_object_name(b.handle, &format!("indirect draw commands buffer - {}", ix));
+            b
+        });
 
-        {
-            let cull_updates = &[
-                vk::DescriptorBufferInfo {
-                    buffer: culled_commands_buffer.handle,
-                    offset: 0,
-                    range: vk::WHOLE_SIZE,
-                },
-                vk::DescriptorBufferInfo {
-                    buffer: culled_index_buffer.handle,
-                    offset: 0,
-                    range: vk::WHOLE_SIZE,
-                },
-            ];
-            unsafe {
-                device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(cull_set.handle)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(cull_updates)
-                        .build()],
-                    &[],
-                );
+        let cull_set = DoubleBuffered::new(|ix| {
+            let s = renderer.descriptor_pool.allocate_set(&cull_set_layout);
+            device.set_object_name(s.handle, &format!("Cull Descriptor Set - {}", ix));
+
+            {
+                let cull_updates = &[
+                    vk::DescriptorBufferInfo {
+                        buffer: culled_commands_buffer.current(ix).handle,
+                        offset: 0,
+                        range: vk::WHOLE_SIZE,
+                    },
+                    vk::DescriptorBufferInfo {
+                        buffer: culled_index_buffer.current(ix).handle,
+                        offset: 0,
+                        range: vk::WHOLE_SIZE,
+                    },
+                ];
+                unsafe {
+                    device.update_descriptor_sets(
+                        &[vk::WriteDescriptorSet::builder()
+                            .dst_set(s.handle)
+                            .dst_binding(0)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(cull_updates)
+                            .build()],
+                        &[],
+                    );
+                }
             }
-        }
 
-        let cull_complete_fence = renderer.device.new_fence();
-        renderer
-            .device
-            .set_object_name(cull_complete_fence.handle, "Cull complete fence");
+            s
+        });
+
+        let cull_complete_fence = DoubleBuffered::new(|ix| {
+            let f = renderer.device.new_fence();
+            renderer
+                .device
+                .set_object_name(f.handle, &format!("Cull complete fence - {}", ix));
+            f
+        });
 
         drop(renderer);
 
@@ -154,7 +171,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             cull_set_layout,
             cull_set,
             cull_complete_semaphore,
-            previous_run_command_buffer: None,
+            previous_run_command_buffer: DoubleBuffered::new(|_| None),
             cull_complete_fence,
         });
     }
@@ -168,6 +185,7 @@ impl<'a> System<'a> for CullPass {
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadStorage<'a, GltfMeshCullDescriptorSet>,
+        ReadExpect<'a, PresentData>,
         ReadExpect<'a, ConsolidatedVertexBuffers>,
     );
 
@@ -179,21 +197,36 @@ impl<'a> System<'a> for CullPass {
             meshes,
             mesh_indices,
             mesh_assembly_sets,
+            present_data,
             consolidated_vertex_buffers,
         ): Self::SystemData,
     ) {
-        if cull_pass_data.previous_run_command_buffer.is_some() {
+        if cull_pass_data
+            .previous_run_command_buffer
+            .current(present_data.image_index)
+            .is_some()
+        {
             unsafe {
                 renderer
                     .device
-                    .wait_for_fences(&[cull_pass_data.cull_complete_fence.handle], true, u64::MAX)
+                    .wait_for_fences(
+                        &[cull_pass_data
+                            .cull_complete_fence
+                            .current(present_data.image_index)
+                            .handle],
+                        true,
+                        u64::MAX,
+                    )
                     .expect("Wait for fence failed.");
             }
         }
         unsafe {
             renderer
                 .device
-                .reset_fences(&[cull_pass_data.cull_complete_fence.handle])
+                .reset_fences(&[cull_pass_data
+                    .cull_complete_fence
+                    .current(present_data.image_index)
+                    .handle])
                 .expect("failed to reset cull complete fence");
         }
 
@@ -221,8 +254,11 @@ impl<'a> System<'a> for CullPass {
                                 cull_pass_data.cull_pipeline_layout.handle,
                                 0,
                                 &[
-                                    renderer.mvp_set.handle,
-                                    cull_pass_data.cull_set.handle,
+                                    renderer.mvp_set.current(present_data.image_index).handle,
+                                    cull_pass_data
+                                        .cull_set
+                                        .current(present_data.image_index)
+                                        .handle,
                                     mesh_assembly_set.0.handle,
                                 ],
                                 &[],
@@ -261,7 +297,10 @@ impl<'a> System<'a> for CullPass {
                 );
             });
         let wait_semaphores = &[];
-        let signal_semaphores = [cull_pass_data.cull_complete_semaphore.handle];
+        let signal_semaphores = [cull_pass_data
+            .cull_complete_semaphore
+            .current(present_data.image_index)
+            .handle];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let command_buffers = &[*cull_cb];
         let submit = vk::SubmitInfo::builder()
@@ -276,11 +315,19 @@ impl<'a> System<'a> for CullPass {
         unsafe {
             renderer
                 .device
-                .queue_submit(*queue, &[submit], cull_pass_data.cull_complete_fence.handle)
+                .queue_submit(
+                    *queue,
+                    &[submit],
+                    cull_pass_data
+                        .cull_complete_fence
+                        .current(present_data.image_index)
+                        .handle,
+                )
                 .unwrap();
         }
 
-        cull_pass_data.previous_run_command_buffer = Some(cull_cb); // also destroys the previous one
+        let ix = present_data.image_index;
+        *cull_pass_data.previous_run_command_buffer.current_mut(ix) = Some(cull_cb); // also destroys the previous one
     }
 }
 

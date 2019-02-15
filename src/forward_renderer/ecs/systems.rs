@@ -8,7 +8,7 @@ use winit::{
     WindowEvent,
 };
 
-use super::super::renderer::RenderFrame;
+use super::super::renderer::{PresentData, RenderFrame};
 
 pub struct MVPCalculation;
 
@@ -23,13 +23,15 @@ impl<'a> System<'a> for MVPCalculation {
     );
 
     fn run(&mut self, (positions, rotations, scales, mut mvps, camera): Self::SystemData) {
-        for (pos, rot, scale, mvp) in (&positions, &rotations, &scales, &mut mvps).join() {
-            mvp.model = cgmath::Matrix4::from_translation(pos.0)
-                * cgmath::Matrix4::from(rot.0)
-                * cgmath::Matrix4::from_scale(scale.0);
+        (&positions, &rotations, &scales, &mut mvps)
+            .par_join()
+            .for_each(|(pos, rot, scale, mvp)| {
+                mvp.model = cgmath::Matrix4::from_translation(pos.0)
+                    * cgmath::Matrix4::from(rot.0)
+                    * cgmath::Matrix4::from_scale(scale.0);
 
-            mvp.mvp = camera.projection * camera.view * mvp.model;
-        }
+                mvp.mvp = camera.projection * camera.view * mvp.model;
+            });
     }
 }
 
@@ -39,12 +41,14 @@ impl<'a> System<'a> for MVPUpload {
     type SystemData = (
         ReadStorage<'a, Matrices>,
         ReadStorage<'a, GltfMeshBufferIndex>,
+        ReadExpect<'a, PresentData>,
         WriteExpect<'a, RenderFrame>,
     );
 
-    fn run(&mut self, (matrices, indices, renderer): Self::SystemData) {
+    fn run(&mut self, (matrices, indices, present_data, mut renderer): Self::SystemData) {
         let mut mvp_mapped = renderer
             .mvp_buffer
+            .current_mut(present_data.image_index)
             .map::<cgmath::Matrix4<f32>>()
             .expect("failed to map MVP buffer");
         for (index, matrices) in (&indices, &matrices).join() {

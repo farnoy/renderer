@@ -1,8 +1,11 @@
 #[cfg(not(feature = "renderdoc"))]
-use super::super::{
-    super::ecs::components::{GltfMeshBaseColorTexture, GltfMeshBufferIndex},
-    device::DescriptorSet,
-    helpers, RenderFrame,
+use super::{
+    super::{
+        super::ecs::components::{GltfMeshBaseColorTexture, GltfMeshBufferIndex},
+        device::{DescriptorSet, DoubleBuffered},
+        helpers, RenderFrame,
+    },
+    present::PresentData,
 };
 #[cfg(not(feature = "renderdoc"))]
 use ash::{version::DeviceV1_0, vk};
@@ -15,7 +18,7 @@ pub struct SynchronizeBaseColorTextures;
 
 pub struct BaseColorDescriptorSet {
     #[cfg(not(feature = "renderdoc"))]
-    pub(in super::super) set: DescriptorSet,
+    pub(in super::super) set: DoubleBuffered<DescriptorSet>,
     #[cfg(not(feature = "renderdoc"))]
     sampler: helpers::Sampler,
 }
@@ -33,12 +36,16 @@ impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
     #[cfg(not(feature = "renderdoc"))]
     fn setup(res: &mut Resources) {
         let renderer = res.fetch::<RenderFrame>();
-        let set = renderer
-            .descriptor_pool
-            .allocate_set(&renderer.base_color_descriptor_set_layout);
-        renderer
-            .device
-            .set_object_name(set.handle, "Base Color Consolidated descriptor set");
+        let set = DoubleBuffered::new(|ix| {
+            let s = renderer
+                .descriptor_pool
+                .allocate_set(&renderer.base_color_descriptor_set_layout);
+            renderer.device.set_object_name(
+                s.handle,
+                &format!("Base Color Consolidated descriptor set - {}", ix),
+            );
+            s
+        });
 
         let sampler = helpers::new_sampler(
             renderer.device.clone(),
@@ -67,6 +74,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
         Write<'a, BaseColorDescriptorSet, BaseColorSetupHandler>,
         ReadStorage<'a, GltfMeshBaseColorTexture>,
         ReadStorage<'a, GltfMeshBufferIndex>,
+        ReadExpect<'a, PresentData>,
         WriteStorage<'a, VisitedMarker>,
     );
 
@@ -78,6 +86,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             base_color_descriptor_set,
             base_color_textures,
             buffer_indices,
+            present_data,
             mut visited_markers,
         ): Self::SystemData,
     ) {
@@ -126,7 +135,12 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             unsafe {
                 renderer.device.device.update_descriptor_sets(
                     &[vk::WriteDescriptorSet::builder()
-                        .dst_set(base_color_descriptor_set.set.handle)
+                        .dst_set(
+                            base_color_descriptor_set
+                                .set
+                                .current(present_data.image_index)
+                                .handle,
+                        )
                         .dst_binding(0)
                         .dst_array_element(buffer_index.0)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)

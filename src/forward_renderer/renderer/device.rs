@@ -14,6 +14,7 @@ use std::{ops::Deref, sync::Arc};
 mod buffer;
 mod commands;
 mod descriptors;
+mod double_buffered;
 mod image;
 mod mapping;
 mod sync;
@@ -24,6 +25,7 @@ pub use self::{
     buffer::Buffer,
     commands::{CommandBuffer, CommandPool},
     descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
+    double_buffered::DoubleBuffered,
     image::Image,
     sync::{Fence, Semaphore},
 };
