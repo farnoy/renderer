@@ -21,7 +21,7 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        load_gltf, AcquireFramebuffer, ConsolidateVertexBuffers, CullGeometry, Gui, LoadedMesh,
+        load_gltf, AcquireFramebuffer, ConsolidateVertexBuffers, CullPass, Gui, LoadedMesh,
         PresentFramebuffer, RenderFrame, Renderer, SynchronizeBaseColorTextures,
         UpdateCullDescriptorsForMeshes,
     },
@@ -263,8 +263,8 @@ fn main() {
         .with(MVPUpload, "mvp_upload", &["mvp", "assign_buffer_index"])
         .with(AcquireFramebuffer, "acquire_framebuffer", &[])
         .with(
-            CullGeometry::new(&world.read_resource::<RenderFrame>().device),
-            "cull_geometry",
+            CullPass,
+            "cull_pass",
             &[
                 "acquire_framebuffer",
                 "assign_buffer_index",
@@ -277,7 +277,7 @@ fn main() {
         .with(
             Renderer,
             "render_frame",
-            &["cull_geometry", "synchronize_base_color_textures"],
+            &["cull_pass", "synchronize_base_color_textures"],
         )
         .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
 
