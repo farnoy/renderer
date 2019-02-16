@@ -66,8 +66,58 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(0.0, 1.0, 0.0)))
+        .with::<Position>(Position(cgmath::Vector3::new(0.0, 5.0, 0.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
+        .with::<Scale>(Scale(1.0))
+        .with::<Matrices>(Matrices::one())
+        .with::<CoarseCulled>(CoarseCulled(false))
+        .with::<AABB>(AABB {
+            c: cgmath::Vector3::zero(),
+            h: cgmath::Vector3::zero(),
+        })
+        .with::<GltfMesh>(GltfMesh {
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
+            index_buffer: Arc::clone(&index_buffer),
+            vertex_len,
+            index_len,
+            aabb_c,
+            aabb_h,
+        })
+        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
+        .build();
+
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Vector3::new(0.0, 5.0, 5.0)))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(90.0))))
+        .with::<Scale>(Scale(1.0))
+        .with::<Matrices>(Matrices::one())
+        .with::<CoarseCulled>(CoarseCulled(false))
+        .with::<AABB>(AABB {
+            c: cgmath::Vector3::zero(),
+            h: cgmath::Vector3::zero(),
+        })
+        .with::<GltfMesh>(GltfMesh {
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
+            index_buffer: Arc::clone(&index_buffer),
+            vertex_len,
+            index_len,
+            aabb_c,
+            aabb_h,
+        })
+        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
+        .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
+        .build();
+
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Vector3::new(-5.0, 5.0, 0.0)))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_z(cgmath::Deg(60.0))))
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))

@@ -244,7 +244,7 @@ impl RenderFrame {
                 .rasterization_state(
                     &vk::PipelineRasterizationStateCreateInfo::builder()
                         .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::CLOCKWISE)
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                         .line_width(1.0)
                         .polygon_mode(vk::PolygonMode::FILL)
                         .build(),
@@ -334,7 +334,7 @@ impl RenderFrame {
                 .rasterization_state(
                     &vk::PipelineRasterizationStateCreateInfo::builder()
                         .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::CLOCKWISE)
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                         .line_width(1.0)
                         .polygon_mode(vk::PolygonMode::FILL)
                         .build(),

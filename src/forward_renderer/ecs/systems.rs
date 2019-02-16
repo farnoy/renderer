@@ -99,13 +99,10 @@ static FORWARD_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
     y: 0.0,
     z: 1.0,
 };
+// Not sure why but the right vector points in negative X, which bothers me.
+// Consequence of right-handed projection matrix?
 static RIGHT_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
-    x: 1.0,
-    y: 0.0,
-    z: 0.0,
-};
-static CENTER_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
-    x: 0.0,
+    x: -1.0,
     y: 0.0,
     z: 0.0,
 };
@@ -191,7 +188,7 @@ impl<'a> System<'a> for InputHandler {
                 camera.rotation =
                     camera.rotation * cgmath::Quaternion::from_angle_x(cgmath::Deg(y as f32));
                 camera.rotation =
-                    cgmath::Quaternion::from_angle_y(cgmath::Deg(x as f32)) * camera.rotation;
+                    cgmath::Quaternion::from_angle_y(cgmath::Deg(-x as f32)) * camera.rotation;
             }
             _ => (),
         });
@@ -210,38 +207,20 @@ impl<'a> System<'a> for ProjectCamera {
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
         use cgmath::{Angle, Matrix, Rotation};
-        // Left handed perspective projection
+        // Right handed perspective projection, depth between [0,1]
         let near = 0.1;
         let far = 100.0;
         let aspect = renderer.instance.window_width as f32 / renderer.instance.window_height as f32;
-        let f = cgmath::Rad::cot(cgmath::Rad::from(cgmath::Deg(60.0)) / 2.0);
+        let fovy = cgmath::Deg(70.0);
+        let tan_half_fovy = cgmath::Rad::tan(cgmath::Rad::from(fovy) / 2.0);
 
-        let c0r0 = f / aspect;
-        let c0r1 = 0.0;
-        let c0r2 = 0.0;
-        let c0r3 = 0.0;
-
-        let c1r0 = 0.0;
-        let c1r1 = f;
-        let c1r2 = 0.0;
-        let c1r3 = 0.0;
-
-        let c2r0 = 0.0;
-        let c2r1 = 0.0;
-        let c2r2 = (far + near) / (far - near);
-        let c2r3 = 1.0;
-
-        let c3r0 = 0.0;
-        let c3r1 = 0.0;
-        let c3r2 = (2.0 * far * near) / (near - far);
-        let c3r3 = 0.0;
-
-        // #[cfg_attr(rustfmt, rustfmt_skip)]
-        camera.projection = cgmath::Matrix4::new(
-            c0r0, c0r1, c0r2, c0r3, c1r0, c1r1, c1r2, c1r3, c2r0, c2r1, c2r2, c2r3, c3r0, c3r1,
-            c3r2, c3r3,
-        );
-        let dir = CENTER_VECTOR - camera.rotation.rotate_vector(FORWARD_VECTOR);
+        camera.projection = cgmath::Matrix4::zero();
+        camera.projection[0][0] = 1.0 / (aspect * tan_half_fovy);
+        camera.projection[1][1] = 1.0 / tan_half_fovy;
+        camera.projection[2][3] = -1.0;
+        camera.projection[2][2] = far / (near - far);
+        camera.projection[3][2] = -(far * near) / (far - near);
+        let dir = camera.rotation.rotate_vector(FORWARD_VECTOR);
         let up = camera.rotation.rotate_vector(UP_VECTOR);
         camera.view = cgmath::Matrix4::look_at_dir(camera.position, dir, up);
         let m = (camera.projection * camera.view).transpose();
