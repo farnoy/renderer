@@ -1,17 +1,22 @@
+use super::{
+    super::{
+        device::{Image},
+    }
+};
 #[cfg(not(feature = "renderdoc"))]
 use super::{
     super::{
-        super::ecs::components::{GltfMeshBaseColorTexture, GltfMeshBufferIndex},
         device::{DescriptorSet, DoubleBuffered},
         helpers, RenderFrame,
     },
+    cull_pipeline::GltfMeshBufferIndex,
     present::PresentData,
 };
 #[cfg(not(feature = "renderdoc"))]
 use ash::{version::DeviceV1_0, vk};
 use specs::prelude::*;
-#[cfg(not(feature = "renderdoc"))]
 use specs_derive::Component;
+use std::sync::Arc;
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
 pub struct SynchronizeBaseColorTextures;
@@ -29,6 +34,12 @@ pub struct BaseColorDescriptorSet {
 pub struct VisitedMarker {
     image_view: helpers::ImageView,
 }
+
+// Holds the base color texture that will be mapped into a single,
+// shared Descriptor Set
+#[derive(Component)]
+#[storage(VecStorage)]
+pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
 
 pub struct BaseColorSetupHandler;
 

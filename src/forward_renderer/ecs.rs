@@ -4,8 +4,7 @@ pub mod systems;
 use specs::World;
 
 use self::components::*;
-#[cfg(not(feature = "renderdoc"))]
-use super::renderer::BaseColorVisitedMarker;
+use super::renderer::setup_ecs as renderer_setup;
 
 pub fn setup(world: &mut World) {
     world.register::<Position>();
@@ -14,9 +13,6 @@ pub fn setup(world: &mut World) {
     world.register::<Matrices>();
     world.register::<AABB>();
     world.register::<GltfMesh>();
-    world.register::<GltfMeshBufferIndex>();
-    world.register::<GltfMeshBaseColorTexture>();
-    #[cfg(not(feature = "renderdoc"))]
-    world.register::<BaseColorVisitedMarker>();
-    world.register::<CoarseCulled>();
+
+    renderer_setup(world);
 }

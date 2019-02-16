@@ -8,7 +8,7 @@ use winit::{
     WindowEvent,
 };
 
-use super::super::renderer::{PresentData, RenderFrame};
+use super::super::renderer::{RenderFrame};
 
 pub struct MVPCalculation;
 
@@ -32,51 +32,6 @@ impl<'a> System<'a> for MVPCalculation {
 
                 mvp.mvp = camera.projection * camera.view * mvp.model;
             });
-    }
-}
-
-pub struct MVPUpload;
-
-impl<'a> System<'a> for MVPUpload {
-    type SystemData = (
-        ReadStorage<'a, Matrices>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
-        ReadExpect<'a, PresentData>,
-        WriteExpect<'a, RenderFrame>,
-    );
-
-    fn run(&mut self, (matrices, indices, present_data, mut renderer): Self::SystemData) {
-        let mut mvp_mapped = renderer
-            .mvp_buffer
-            .current_mut(present_data.image_index)
-            .map::<cgmath::Matrix4<f32>>()
-            .expect("failed to map MVP buffer");
-        for (index, matrices) in (&indices, &matrices).join() {
-            mvp_mapped[index.0 as usize] = matrices.mvp;
-        }
-    }
-}
-
-pub struct AssignBufferIndex;
-
-impl<'a> System<'a> for AssignBufferIndex {
-    type SystemData = (
-        Entities<'a>,
-        ReadStorage<'a, GltfMesh>,
-        ReadStorage<'a, CoarseCulled>,
-        WriteStorage<'a, GltfMeshBufferIndex>,
-    );
-
-    fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
-        let mut ix = 0;
-        for (entity, _mesh, coarse_culled) in (&*entities, &meshes, &coarse_culled).join() {
-            if coarse_culled.0 {
-                indices.remove(entity);
-            } else {
-                drop(indices.insert(entity, GltfMeshBufferIndex(ix as u32)));
-                ix += 1;
-            }
-        }
     }
 }
 
@@ -316,33 +271,6 @@ impl<'a> System<'a> for AABBCalculation {
             let max = cgmath::Vector3::from(max);
             aabb.c = (max + min) / 2.0;
             aabb.h = (max - min) / 2.0;
-        }
-    }
-}
-
-pub struct CoarseCulling;
-
-impl<'a> System<'a> for CoarseCulling {
-    type SystemData = (
-        ReadStorage<'a, AABB>,
-        Read<'a, Camera>,
-        WriteStorage<'a, CoarseCulled>,
-    );
-
-    fn run(&mut self, (aabb, camera, mut culled): Self::SystemData) {
-        for (aabb, culled) in (&aabb, &mut culled).join() {
-            let mut outside = false;
-            'per_plane: for plane in camera.frustum_planes.iter() {
-                let e =
-                    aabb.h.x * plane.x.abs() + aabb.h.y * plane.y.abs() + aabb.h.z * plane.z.abs();
-
-                let s = cgmath::dot(aabb.c.extend(1.0), *plane);
-                if s - e > 0.0 {
-                    outside = true;
-                    break 'per_plane;
-                }
-            }
-            culled.0 = outside;
         }
     }
 }

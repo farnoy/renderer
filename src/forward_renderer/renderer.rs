@@ -8,7 +8,7 @@ mod instance;
 mod swapchain;
 mod systems;
 
-use super::ecs::components::GltfMeshBufferIndex;
+use super::ecs::components::Matrices;
 use ash::{prelude::*, version::DeviceV1_0, vk};
 use cgmath;
 use imgui::{self, im_str};
@@ -25,7 +25,7 @@ use self::{
     instance::Instance,
     systems::{
         consolidate_mesh_buffers::ConsolidatedMeshBuffers, cull_pipeline::CullPassData,
-        textures::BaseColorDescriptorSet,
+        textures::{BaseColorDescriptorSet},
     },
 };
 
@@ -33,9 +33,9 @@ pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
         consolidate_mesh_buffers::ConsolidateMeshBuffers,
-        cull_pipeline::CullPass,
+        cull_pipeline::{CullPass, CoarseCulled, CoarseCulling, AssignBufferIndex, GltfMeshBufferIndex},
         present::{AcquireFramebuffer, PresentData, PresentFramebuffer},
-        textures::SynchronizeBaseColorTextures,
+        textures::{SynchronizeBaseColorTextures, GltfMeshBaseColorTexture},
     },
 };
 
@@ -1118,4 +1118,35 @@ impl Gui {
             transitioned: false,
         }
     }
+}
+
+
+pub struct MVPUpload;
+
+impl<'a> System<'a> for MVPUpload {
+    type SystemData = (
+        ReadStorage<'a, Matrices>,
+        ReadStorage<'a, GltfMeshBufferIndex>,
+        ReadExpect<'a, PresentData>,
+        WriteExpect<'a, RenderFrame>,
+    );
+
+    fn run(&mut self, (matrices, indices, present_data, mut renderer): Self::SystemData) {
+        let mut mvp_mapped = renderer
+            .mvp_buffer
+            .current_mut(present_data.image_index)
+            .map::<cgmath::Matrix4<f32>>()
+            .expect("failed to map MVP buffer");
+        for (index, matrices) in (&indices, &matrices).join() {
+            mvp_mapped[index.0 as usize] = matrices.mvp;
+        }
+    }
+}
+
+pub fn setup_ecs(world: &mut World) {
+    world.register::<GltfMeshBufferIndex>();
+    world.register::<GltfMeshBaseColorTexture>();
+    #[cfg(not(feature = "renderdoc"))]
+    world.register::<BaseColorVisitedMarker>();
+    world.register::<CoarseCulled>();
 }

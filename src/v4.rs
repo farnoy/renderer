@@ -23,6 +23,7 @@ use crate::forward_renderer::{
     renderer::{
         load_gltf, AcquireFramebuffer, ConsolidateMeshBuffers, CullPass, Gui, LoadedMesh,
         PresentFramebuffer, RenderFrame, Renderer, SynchronizeBaseColorTextures,
+        CoarseCulled, GltfMeshBaseColorTexture, GltfMeshBufferIndex, AssignBufferIndex, MVPUpload, CoarseCulling
     },
 };
 use ash::version::DeviceV1_0;
@@ -325,7 +326,7 @@ fn main() {
         .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
 
     // print stages of execution
-    // println!("{:?}", dispatcher_builder);
+    println!("{:?}", dispatcher_builder);
 
     let mut dispatcher = dispatcher_builder.build();
 

@@ -1,4 +1,4 @@
-use super::super::renderer::device::{Buffer, Image};
+use super::super::renderer::device::{Buffer};
 use cgmath;
 use specs::*;
 use specs_derive::Component;
@@ -59,24 +59,6 @@ pub struct AABB {
     pub c: cgmath::Vector3<f32>,
     pub h: cgmath::Vector3<f32>,
 }
-
-// Should this entity be discarded when rendering
-// Coarse and based on AABB being fully out of the frustum
-#[derive(Clone, Component, Debug)]
-#[storage(VecStorage)]
-pub struct CoarseCulled(pub bool);
-
-// Index in device generated indirect commands
-// Can be absent if culled
-#[derive(Clone, Component)]
-#[storage(VecStorage)]
-pub struct GltfMeshBufferIndex(pub u32);
-
-// Holds the base color texture that will be mapped into a single,
-// shared Descriptor Set
-#[derive(Component)]
-#[storage(VecStorage)]
-pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
 
 /*
 #[derive(Clone, Copy, Component, Debug)]

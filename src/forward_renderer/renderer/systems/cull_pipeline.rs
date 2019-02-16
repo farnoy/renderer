@@ -1,6 +1,6 @@
 use super::{
     super::{
-        super::ecs::components::{GltfMesh, GltfMeshBufferIndex},
+        super::ecs::{systems::Camera, components::{AABB, GltfMesh}},
         alloc,
         device::{
             Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, DoubleBuffered, Fence,
@@ -18,10 +18,27 @@ use ash::{
 };
 use num_traits::ToPrimitive;
 use specs::prelude::*;
+use specs_derive::Component;
 use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc, u64};
 
 // Cull geometry in compute pass
 pub struct CullPass;
+
+// Should this entity be discarded when rendering
+// Coarse and based on AABB being fully out of the frustum
+#[derive(Clone, Component, Debug)]
+#[storage(VecStorage)]
+pub struct CoarseCulled(pub bool);
+
+// Index in device generated indirect commands
+// Can be absent if culled
+#[derive(Clone, Component)]
+#[storage(VecStorage)]
+pub struct GltfMeshBufferIndex(pub u32);
+
+pub struct AssignBufferIndex;
+
+pub struct CoarseCulling;
 
 pub struct CullPassData {
     pub culled_commands_buffer: DoubleBuffered<Buffer>,
@@ -36,6 +53,54 @@ pub struct CullPassData {
 }
 
 pub struct CullPassDataSetupHandler;
+
+impl<'a> System<'a> for AssignBufferIndex {
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, CoarseCulled>,
+        WriteStorage<'a, GltfMeshBufferIndex>,
+    );
+
+    fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
+        let mut ix = 0;
+        for (entity, _mesh, coarse_culled) in (&*entities, &meshes, &coarse_culled).join() {
+            if coarse_culled.0 {
+                indices.remove(entity);
+            } else {
+                drop(indices.insert(entity, GltfMeshBufferIndex(ix as u32)));
+                ix += 1;
+            }
+        }
+    }
+}
+
+impl<'a> System<'a> for CoarseCulling {
+    type SystemData = (
+        ReadStorage<'a, AABB>,
+        Read<'a, Camera>,
+        WriteStorage<'a, CoarseCulled>,
+    );
+
+    fn run(&mut self, (aabb, camera, mut culled): Self::SystemData) {
+        for (aabb, culled) in (&aabb, &mut culled).join() {
+            let mut outside = false;
+            'per_plane: for plane in camera.frustum_planes.iter() {
+                let e =
+                    aabb.h.x * plane.x.abs() + aabb.h.y * plane.y.abs() + aabb.h.z * plane.z.abs();
+
+                let s = cgmath::dot(aabb.c.extend(1.0), *plane);
+                if s - e > 0.0 {
+                    outside = true;
+                    break 'per_plane;
+                }
+            }
+            culled.0 = outside;
+        }
+    }
+}
+
+
 
 impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
     fn setup(res: &mut Resources) {
