@@ -206,7 +206,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
-        use cgmath::{Angle, Matrix, Rotation};
+        use cgmath::{Angle, Matrix, InnerSpace, EuclideanSpace, Rotation};
         // Right handed perspective projection, depth between [0,1]
         let near = 0.1;
         let far = 100.0;
@@ -220,9 +220,20 @@ impl<'a> System<'a> for ProjectCamera {
         camera.projection[2][3] = -1.0;
         camera.projection[2][2] = far / (near - far);
         camera.projection[3][2] = -(far * near) / (far - near);
+
         let dir = camera.rotation.rotate_vector(FORWARD_VECTOR);
         let up = camera.rotation.rotate_vector(UP_VECTOR);
-        camera.view = cgmath::Matrix4::look_at_dir(camera.position, dir, up);
+        let f = dir.normalize();
+        let s = f.cross(up).normalize();
+        let u = s.cross(f);
+
+        camera.view = cgmath::Matrix4::new(
+            s.x, u.x, -f.x, 0.0,
+            s.y, u.y, -f.y, 0.0,
+            s.z, u.z, -f.z, 0.0,
+            -camera.position.dot(s), -camera.position.dot(u), camera.position.dot(f), 1.0,
+        );
+
         let m = (camera.projection * camera.view).transpose();
         camera.frustum_planes = [
             -(m.w + m.x),
