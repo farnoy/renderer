@@ -86,24 +86,18 @@ void main() {
     vec4 vertex1 = mvp[gltfIndex] * input1;
     vec4 vertex2 = mvp[gltfIndex] * input2;
 
-    bool cull = false;
     vec3 ndc0 = vertex0.xyz / vertex0.w;
     vec3 ndc1 = vertex1.xyz / vertex1.w;
     vec3 ndc2 = vertex2.xyz / vertex2.w;
 
-    // frustum culling
-    if (!cull && ndc0.z > 1.0 && ndc1.z > 1.0 && ndc2.z > 1.0)
-        cull = true;
-    if (!cull && ndc0.z < 0.0 && ndc1.z < 0.0 && ndc2.z < 0.0)
-        cull = true;
-    if (!cull && ndc0.x < -1.0 && ndc1.x < -1.0 && ndc2.x < -1.0)
-        cull = true;
-    if (!cull && ndc0.x > 1.0 && ndc1.x > 1.0 && ndc2.x > 1.0)
-        cull = true;
-    if (!cull && ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0)
-        cull = true;
-    if (!cull && ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0)
-        cull = true;
+    bool cull =
+        // frustum culling
+        (ndc0.z > 1.0 && ndc1.z > 1.0 && ndc2.z > 1.0) ||
+        (ndc0.z < 0.0 && ndc1.z < 0.0 && ndc2.z < 0.0) ||
+        (ndc0.x < -1.0 && ndc1.x < -1.0 && ndc2.x < -1.0) ||
+        (ndc0.x > 1.0 && ndc1.x > 1.0 && ndc2.x > 1.0) ||
+        (ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0) ||
+        (ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0);
 
     // backface culling
     if (!cull)
@@ -118,6 +112,7 @@ void main() {
         float s = (a + b + c) / 2.0;
         float area = sqrt(s * (s - a) * (s - b) * (s - c));
         cull = area < 0.0000005; // magic constant
+        cull = false; // disable for now
     }
 
     uvec4 ballot = subgroupBallot(!cull);
