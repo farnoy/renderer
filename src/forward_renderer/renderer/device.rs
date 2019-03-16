@@ -147,7 +147,7 @@ impl Device {
                         .build()
                 })
                 .collect::<Vec<_>>();
-            let descriptor_indexing_features =
+            let mut descriptor_indexing_features =
                 vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
                     .runtime_descriptor_array(true)
                     .descriptor_binding_partially_bound(true);
@@ -158,7 +158,7 @@ impl Device {
                 .enabled_features(&features);
 
             if cfg!(not(feature = "renderdoc")) {
-                device_create_info = device_create_info.next(&*descriptor_indexing_features);
+                device_create_info = device_create_info.push_next(&mut descriptor_indexing_features);
             }
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };

@@ -131,7 +131,7 @@ impl RenderFrame {
         device.set_object_name(mesh_assembly_set_layout.handle, "Mesh Assembly Layout");
 
         let base_color_descriptor_set_layout = {
-            let binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
+            let mut binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
                 .binding_flags(&[#[cfg(not(feature = "renderdoc"))]
                 vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
             let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
@@ -142,7 +142,7 @@ impl RenderFrame {
                     stage_flags: vk::ShaderStageFlags::FRAGMENT,
                     p_immutable_samplers: ptr::null(),
                 }])
-                .next(&*binding_flags);
+                .push_next(&mut binding_flags);
 
             device.new_descriptor_set_layout2(&create_info)
         };
