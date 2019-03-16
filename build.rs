@@ -28,8 +28,6 @@ fn main() {
                 "vulkan1.1",
                 #[cfg(feature = "renderdoc")]
                 "-DRENDERDOC",
-                #[cfg(feature = "radeon-profiler")]
-                "-DRADEON_PROFILER",
                 "-o",
                 output_path.to_str().unwrap(),
                 format!("{}/src/shaders/{}", src, shader).as_str(),

@@ -1,4 +1,3 @@
-use ash::extensions::ext::DebugMarker;
 use ash::extensions::khr::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
@@ -42,17 +41,7 @@ pub struct Device {
     pub graphics_queue: Arc<Mutex<vk::Queue>>,
     pub compute_queues: Vec<Arc<Mutex<vk::Queue>>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
-    #[allow(dead_code)]
-    debug: Debug,
 }
-
-#[cfg(feature = "radeon-profiler")]
-struct Debug {
-    marker: DebugMarker,
-}
-
-#[cfg(not(feature = "radeon-profiler"))]
-struct Debug;
 
 impl Device {
     pub fn new(instance: &Arc<Instance>) -> Result<Device, vk::Result> {
@@ -118,11 +107,7 @@ impl Device {
         };
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
-            let device_extension_names_raw = if cfg!(feature = "radeon-profiler") {
-                vec![Swapchain::name().as_ptr(), DebugMarker::name().as_ptr()]
-            } else {
-                vec![Swapchain::name().as_ptr()]
-            };
+            let device_extension_names_raw = [Swapchain::name().as_ptr()];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
@@ -158,7 +143,8 @@ impl Device {
                 .enabled_features(&features);
 
             if cfg!(not(feature = "renderdoc")) {
-                device_create_info = device_create_info.push_next(&mut descriptor_indexing_features);
+                device_create_info =
+                    device_create_info.push_next(&mut descriptor_indexing_features);
             }
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
@@ -181,27 +167,6 @@ impl Device {
             None => vec![Arc::clone(&graphics_queue)],
         };
 
-        #[cfg(feature = "radeon-profiler")]
-        {
-            let debug = Debug {
-                marker: DebugMarker::new(instance.vk(), &device),
-            };
-            Ok(Device {
-                device,
-                instance: Arc::clone(instance),
-                physical_device,
-                allocator,
-                graphics_queue_family,
-                compute_queue_family: compute_queues_spec
-                    .map(|a| a.0)
-                    .unwrap_or(graphics_queue_family),
-                graphics_queue,
-                compute_queues,
-                debug,
-            })
-        }
-
-        #[cfg(not(feature = "radeon-profiler"))]
         {
             Ok(Device {
                 device,
@@ -214,7 +179,6 @@ impl Device {
                     .unwrap_or(graphics_queue_family),
                 graphics_queue,
                 compute_queues,
-                debug: Debug,
             })
         }
     }
@@ -281,7 +245,7 @@ impl Device {
         &self.device
     }
 
-    #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
+    #[cfg(feature = "validation")]
     pub fn set_object_name<T: vk::Handle>(&self, handle: T, name: &str) {
         use std::ffi::CString;
 
@@ -299,7 +263,7 @@ impl Device {
         };
     }
 
-    #[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
+    #[cfg(not(feature = "validation"))]
     pub fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
 
     #[cfg(feature = "validation")]
@@ -314,7 +278,6 @@ impl Device {
             use std::ffi::CString;
 
             let name = CString::new(name).unwrap();
-            #[cfg(not(feature = "radeon-profiler"))]
             {
                 self.instance.debug_utils().cmd_begin_debug_utils_label(
                     command_buffer,
@@ -323,21 +286,7 @@ impl Device {
                         .color(color),
                 );
             }
-            #[cfg(feature = "radeon-profiler")]
-            {
-                self.debug.marker.cmd_debug_marker_begin(
-                    command_buffer,
-                    &vk::DebugMarkerMarkerInfoEXT::builder()
-                        .color(color)
-                        .marker_name(&name),
-                );
-            }
             f();
-            #[cfg(feature = "radeon-profiler")]
-            {
-                self.debug.marker.cmd_debug_marker_end(command_buffer);
-            }
-            #[cfg(not(feature = "radeon-profiler"))]
             {
                 self.instance
                     .debug_utils()

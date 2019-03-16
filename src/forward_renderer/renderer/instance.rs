@@ -1,5 +1,5 @@
 use ash;
-use ash::extensions::ext::{DebugReport, DebugUtils};
+use ash::extensions::ext::DebugUtils;
 use ash::extensions::khr::Surface;
 use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
@@ -25,14 +25,11 @@ pub struct Instance {
     debug: Debug,
 }
 
-#[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
+#[cfg(feature = "validation")]
 struct Debug {
     utils: DebugUtils,
     messenger: vk::DebugUtilsMessengerEXT,
 }
-
-#[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
-struct Debug;
 
 impl Instance {
     pub fn new(
@@ -49,10 +46,7 @@ impl Instance {
 
         let entry = Entry::new().unwrap();
 
-        let layer_names = if cfg!(all(
-            feature = "validation",
-            not(feature = "radeon-profiler")
-        )) {
+        let layer_names = if cfg!(feature = "validation",) {
             vec![CString::new("VK_LAYER_LUNARG_standard_validation").unwrap()]
         } else {
             vec![]
@@ -76,19 +70,10 @@ impl Instance {
 
         let surface = unsafe { create_surface(entry.vk(), &instance, &window).unwrap() };
 
-        #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
+        #[cfg(feature = "validation")]
         {
             use std::ffi::c_void;
             let debug_utils = DebugUtils::new(entry.vk(), &instance);
-            /*
-            let debug_utils = vk::ExtDebugUtilsFn::load(|name| unsafe {
-                transmute(
-                    entry
-                        .vk()
-                        .get_instance_proc_addr(instance.handle(), name.as_ptr()),
-                )
-            });
-            */
 
             unsafe extern "system" fn vulkan_debug_callback(
                 severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -171,7 +156,7 @@ impl Instance {
             ))
         }
 
-        #[cfg(not(all(feature = "validation", not(feature = "radeon-profiler"))))]
+        #[cfg(not(feature = "validation"))]
         {
             Ok((
                 Instance {
@@ -192,7 +177,7 @@ impl Instance {
         &self.handle
     }
 
-    #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
+    #[cfg(feature = "validation")]
     pub fn debug_utils(&self) -> &DebugUtils {
         &self.debug.utils
     }
@@ -208,7 +193,7 @@ impl Deref for Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        #[cfg(all(feature = "validation", not(feature = "radeon-profiler")))]
+        #[cfg(feature = "validation")]
         unsafe {
             self.debug
                 .utils
@@ -233,13 +218,8 @@ fn extension_names() -> Vec<*const i8> {
     }
 
     if cfg!(feature = "validation") {
-        if cfg!(not(feature = "radeon-profiler")) {
-            // for validation layers, use the new, consolidated extension for debugging
-            base.push(DebugUtils::name().as_ptr());
-        } else if cfg!(feature = "radeon-profiler") {
-            // for profiling, Radeon GPU profiler only understand the old extension for debug markers
-            base.push(DebugReport::name().as_ptr());
-        }
+        // for validation layers, use the new, consolidated extension for debugging
+        base.push(DebugUtils::name().as_ptr());
     }
 
     base
