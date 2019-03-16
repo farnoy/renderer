@@ -242,7 +242,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         let mut mapped = index_upload_buffer
             .map::<u32>()
             .expect("failed to map index upload buffer");
-        mapped[..].copy_from_slice(&indices);
+        mapped[0..index_len as usize].copy_from_slice(&indices);
     }
     let upload = renderer.graphics_command_pool.record_one_time({
         let vertex_buffer = &vertex_buffer;
