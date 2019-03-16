@@ -1,6 +1,9 @@
 use super::{
     super::{
-        super::ecs::{systems::Camera, components::{AABB, GltfMesh}},
+        super::ecs::{
+            components::{GltfMesh, AABB},
+            systems::Camera,
+        },
         alloc,
         device::{
             Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, DoubleBuffered, Fence,
@@ -99,8 +102,6 @@ impl<'a> System<'a> for CoarseCulling {
         }
     }
 }
-
-
 
 impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
     fn setup(res: &mut Resources) {

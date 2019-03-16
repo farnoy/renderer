@@ -25,7 +25,7 @@ use self::{
     instance::Instance,
     systems::{
         consolidate_mesh_buffers::ConsolidatedMeshBuffers, cull_pipeline::CullPassData,
-        textures::{BaseColorDescriptorSet},
+        textures::BaseColorDescriptorSet,
     },
 };
 
@@ -33,9 +33,11 @@ pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
         consolidate_mesh_buffers::ConsolidateMeshBuffers,
-        cull_pipeline::{CullPass, CoarseCulled, CoarseCulling, AssignBufferIndex, GltfMeshBufferIndex},
+        cull_pipeline::{
+            AssignBufferIndex, CoarseCulled, CoarseCulling, CullPass, GltfMeshBufferIndex,
+        },
         present::{AcquireFramebuffer, PresentData, PresentFramebuffer},
-        textures::{SynchronizeBaseColorTextures, GltfMeshBaseColorTexture},
+        textures::{GltfMeshBaseColorTexture, SynchronizeBaseColorTextures},
     },
 };
 
@@ -1129,7 +1131,6 @@ impl Gui {
         }
     }
 }
-
 
 pub struct MVPUpload;
 

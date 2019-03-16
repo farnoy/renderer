@@ -8,7 +8,7 @@ use winit::{
     WindowEvent,
 };
 
-use super::super::renderer::{RenderFrame};
+use super::super::renderer::RenderFrame;
 
 pub struct MVPCalculation;
 
@@ -161,7 +161,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
-        use cgmath::{Angle, Matrix, InnerSpace, EuclideanSpace, Rotation};
+        use cgmath::{Angle, EuclideanSpace, InnerSpace, Matrix, Rotation};
         // Right handed perspective projection, depth between [0,1]
         let near = 0.1;
         let far = 100.0;
@@ -182,12 +182,15 @@ impl<'a> System<'a> for ProjectCamera {
         let s = f.cross(up).normalize();
         let u = s.cross(f);
 
-        camera.view = cgmath::Matrix4::new(
-            s.x, u.x, -f.x, 0.0,
-            s.y, u.y, -f.y, 0.0,
-            s.z, u.z, -f.z, 0.0,
-            -camera.position.dot(s), -camera.position.dot(u), camera.position.dot(f), 1.0,
-        );
+        #[rustfmt::skip]
+        {
+            camera.view = cgmath::Matrix4::new(
+                s.x, u.x, -f.x, 0.0,
+                s.y, u.y, -f.y, 0.0,
+                s.z, u.z, -f.z, 0.0,
+                -camera.position.dot(s), -camera.position.dot(u), camera.position.dot(f), 1.0,
+            );
+        }
 
         let m = (camera.projection * camera.view).transpose();
         camera.frustum_planes = [

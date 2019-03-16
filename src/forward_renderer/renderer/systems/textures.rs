@@ -1,8 +1,4 @@
-use super::{
-    super::{
-        device::{Image},
-    }
-};
+use super::super::device::Image;
 #[cfg(not(feature = "renderdoc"))]
 use super::{
     super::{

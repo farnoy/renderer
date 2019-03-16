@@ -390,7 +390,7 @@ pub fn new_graphics_pipeline2(
         .iter()
         .map(|&(stage, ref path)| {
             let file = File::open(path).expect("Could not find shader.");
-            let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+            let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
             let (l, aligned, r) = unsafe { bytes.as_slice().align_to() };
             assert!(l.is_empty() && r.is_empty(), "failed to realign code");
             let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);
@@ -441,7 +441,7 @@ pub fn new_compute_pipeline(
 ) -> Pipeline {
     let shader_module = {
         let file = File::open(shader).expect("Could not find shader.");
-        let bytes: Vec<u8> = file.bytes().filter_map(|byte| byte.ok()).collect();
+        let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
         let (l, aligned, r) = unsafe { bytes.as_slice().align_to() };
         assert!(l.is_empty() && r.is_empty(), "failed to realign code");
         let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);

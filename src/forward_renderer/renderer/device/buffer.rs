@@ -6,7 +6,7 @@ use super::{super::alloc, mapping::MappedBuffer, Device};
 pub struct Buffer {
     pub handle: vk::Buffer,
     allocation: alloc::VmaAllocation,
-    allocation_info: alloc::VmaAllocationInfo,
+    pub allocation_info: alloc::VmaAllocationInfo,
     device: Arc<Device>,
 }
 

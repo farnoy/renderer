@@ -1,4 +1,5 @@
 #![feature(arbitrary_self_types)]
+#![feature(stmt_expr_attributes)]
 
 extern crate ash;
 extern crate cgmath;
@@ -22,9 +23,10 @@ mod forward_renderer;
 use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
-        load_gltf, AcquireFramebuffer, ConsolidateMeshBuffers, CullPass, Gui, LoadedMesh,
-        PresentFramebuffer, RenderFrame, Renderer, SynchronizeBaseColorTextures,
-        CoarseCulled, GltfMeshBaseColorTexture, GltfMeshBufferIndex, AssignBufferIndex, MVPUpload, CoarseCulling
+        load_gltf, AcquireFramebuffer, AssignBufferIndex, CoarseCulled, CoarseCulling,
+        ConsolidateMeshBuffers, CullPass, GltfMeshBaseColorTexture, GltfMeshBufferIndex, Gui,
+        LoadedMesh, MVPUpload, PresentFramebuffer, RenderFrame, Renderer,
+        SynchronizeBaseColorTextures,
     },
 };
 use ash::version::DeviceV1_0;
@@ -94,7 +96,9 @@ fn main() {
     world
         .create_entity()
         .with::<Position>(Position(cgmath::Vector3::new(0.0, 5.0, 5.0)))
-        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(90.0))))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
+            90.0,
+        ))))
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))
@@ -119,7 +123,9 @@ fn main() {
     world
         .create_entity()
         .with::<Position>(Position(cgmath::Vector3::new(-5.0, 5.0, 0.0)))
-        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_z(cgmath::Deg(60.0))))
+        .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_z(cgmath::Deg(
+            60.0,
+        ))))
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
         .with::<CoarseCulled>(CoarseCulled(false))

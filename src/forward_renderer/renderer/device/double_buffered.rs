@@ -10,7 +10,7 @@ impl<T> DoubleBuffered<T> {
     pub fn new<F: FnMut(u32) -> T>(mut creator: F, amount: u8) -> DoubleBuffered<T> {
         DoubleBuffered {
             amount,
-            data: (0..amount).map(|ix| creator(ix as u32)).collect(),
+            data: (0..amount).map(|ix| creator(u32::from(ix))).collect(),
         }
     }
 
