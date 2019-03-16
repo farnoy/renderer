@@ -163,7 +163,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
         );
 
-        let culled_index_buffer = DoubleBuffered::new(|ix| {
+        let culled_index_buffer = renderer.new_buffered(|ix| {
             let b = device.new_buffer(
                 vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
@@ -173,7 +173,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             b
         });
 
-        let cull_complete_semaphore = DoubleBuffered::new(|ix| {
+        let cull_complete_semaphore = renderer.new_buffered(|ix| {
             let s = renderer.device.new_semaphore();
             renderer
                 .device
@@ -181,7 +181,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             s
         });
 
-        let culled_commands_buffer = DoubleBuffered::new(|ix| {
+        let culled_commands_buffer = renderer.new_buffered(|ix| {
             let b = device.new_buffer(
                 vk::BufferUsageFlags::INDIRECT_BUFFER
                     | vk::BufferUsageFlags::STORAGE_BUFFER
@@ -193,7 +193,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             b
         });
 
-        let cull_set = DoubleBuffered::new(|ix| {
+        let cull_set = renderer.new_buffered(|ix| {
             let s = renderer.descriptor_pool.allocate_set(&cull_set_layout);
             device.set_object_name(s.handle, &format!("Cull Descriptor Set - {}", ix));
 
@@ -226,13 +226,15 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             s
         });
 
-        let cull_complete_fence = DoubleBuffered::new(|ix| {
+        let cull_complete_fence = renderer.new_buffered(|ix| {
             let f = renderer.device.new_fence();
             renderer
                 .device
                 .set_object_name(f.handle, &format!("Cull complete fence - {}", ix));
             f
         });
+
+        let previous_run_command_buffer = renderer.new_buffered(|_| None);
 
         drop(renderer);
 
@@ -244,7 +246,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             cull_set_layout,
             cull_set,
             cull_complete_semaphore,
-            previous_run_command_buffer: DoubleBuffered::new(|_| None),
+            previous_run_command_buffer,
             cull_complete_fence,
         });
     }

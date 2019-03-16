@@ -47,7 +47,7 @@ impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
     #[cfg(not(feature = "renderdoc"))]
     fn setup(res: &mut Resources) {
         let renderer = res.fetch::<RenderFrame>();
-        let set = DoubleBuffered::new(|ix| {
+        let set = renderer.new_buffered(|ix| {
             let s = renderer
                 .descriptor_pool
                 .allocate_set(&renderer.base_color_descriptor_set_layout);

@@ -36,7 +36,7 @@ impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
             .device
             .set_object_name(present_semaphore.handle, "Present semaphore");
 
-        let render_complete_fence = DoubleBuffered::new(|ix| {
+        let render_complete_fence = renderer.new_buffered(|ix| {
             let f = renderer.device.new_fence();
             renderer
                 .device
@@ -44,12 +44,14 @@ impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
             f
         });
 
+        let render_command_buffer = renderer.new_buffered(|_| None);
+
         drop(renderer);
 
         res.insert(PresentData {
             render_complete_semaphore,
             present_semaphore,
-            render_command_buffer: DoubleBuffered::new(|_| None),
+            render_command_buffer,
             render_complete_fence,
             image_index: 0,
         });

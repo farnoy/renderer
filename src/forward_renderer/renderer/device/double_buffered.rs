@@ -1,19 +1,24 @@
+use smallvec::SmallVec;
+
 pub struct DoubleBuffered<T> {
-    data: [T; 2],
+    // Supports up to triple-buffered inline, should be enough
+    amount: u8,
+    data: SmallVec<[T; 3]>,
 }
 
 impl<T> DoubleBuffered<T> {
-    pub fn new<F: FnMut(u32) -> T>(mut creator: F) -> DoubleBuffered<T> {
+    pub fn new<F: FnMut(u32) -> T>(mut creator: F, amount: u8) -> DoubleBuffered<T> {
         DoubleBuffered {
-            data: [creator(0), creator(1)],
+            amount,
+            data: (0..amount).map(|ix| creator(ix as u32)).collect(),
         }
     }
 
     pub fn current(&self, ix: u32) -> &T {
-        &self.data[ix as usize % 2]
+        &self.data[ix as usize % self.amount as usize]
     }
 
     pub fn current_mut(&mut self, ix: u32) -> &mut T {
-        &mut self.data[ix as usize % 2]
+        &mut self.data[ix as usize % self.amount as usize]
     }
 }

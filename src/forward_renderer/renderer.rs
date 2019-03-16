@@ -376,40 +376,46 @@ impl RenderFrame {
 
         device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
 
-        let mvp_buffer = DoubleBuffered::new(|ix| {
-            let b = device.new_buffer(
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                4 * 4 * 4 * 4096,
-            );
-            device.set_object_name(b.handle, &format!("MVP Buffer - {}", ix));
-            b
-        });
-        let mvp_set = DoubleBuffered::new(|ix| {
-            let s = descriptor_pool.allocate_set(&mvp_set_layout);
-            device.set_object_name(s.handle, &format!("MVP Set - {}", ix));
+        let mvp_buffer = DoubleBuffered::new(
+            |ix| {
+                let b = device.new_buffer(
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                    4 * 4 * 4 * 4096,
+                );
+                device.set_object_name(b.handle, &format!("MVP Buffer - {}", ix));
+                b
+            },
+            framebuffer.image_views.len() as u8,
+        );
+        let mvp_set = DoubleBuffered::new(
+            |ix| {
+                let s = descriptor_pool.allocate_set(&mvp_set_layout);
+                device.set_object_name(s.handle, &format!("MVP Set - {}", ix));
 
-            {
-                let mvp_updates = &[vk::DescriptorBufferInfo {
-                    buffer: mvp_buffer.current(ix).handle,
-                    offset: 0,
-                    range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
-                }];
-                unsafe {
-                    device.update_descriptor_sets(
-                        &[vk::WriteDescriptorSet::builder()
-                            .dst_set(s.handle)
-                            .dst_binding(0)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .buffer_info(mvp_updates)
-                            .build()],
-                        &[],
-                    );
+                {
+                    let mvp_updates = &[vk::DescriptorBufferInfo {
+                        buffer: mvp_buffer.current(ix).handle,
+                        offset: 0,
+                        range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                    }];
+                    unsafe {
+                        device.update_descriptor_sets(
+                            &[vk::WriteDescriptorSet::builder()
+                                .dst_set(s.handle)
+                                .dst_binding(0)
+                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                .buffer_info(mvp_updates)
+                                .build()],
+                            &[],
+                        );
+                    }
                 }
-            }
 
-            s
-        });
+                s
+            },
+            framebuffer.image_views.len() as u8,
+        );
 
         (
             RenderFrame {
@@ -527,6 +533,10 @@ impl RenderFrame {
         };
 
         renderpass.map(|handle| RenderPass { handle, device })
+    }
+
+    pub fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
+        DoubleBuffered::new(creator, self.framebuffer.image_views.len() as u8)
     }
 }
 

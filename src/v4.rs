@@ -10,6 +10,7 @@ extern crate meshopt;
 extern crate num_traits;
 extern crate parking_lot;
 extern crate rayon;
+extern crate smallvec;
 extern crate specs;
 extern crate specs_derive;
 #[cfg(windows)]
