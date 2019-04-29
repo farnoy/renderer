@@ -34,7 +34,7 @@ use ash::version::DeviceV1_0;
 use cgmath::{Rotation3, Zero};
 use microprofile::scope;
 use parking_lot::Mutex;
-use specs::Builder;
+use specs::{Builder, WorldExt};
 use std::sync::Arc;
 
 fn main() {
