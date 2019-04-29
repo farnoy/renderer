@@ -47,7 +47,7 @@ impl Instance {
         let entry = Entry::new().unwrap();
 
         let layer_names = if cfg!(feature = "validation",) {
-            vec![CString::new("VK_LAYER_LUNARG_standard_validation").unwrap()]
+            vec![CString::new("VK_LAYER_KHRONOS_validation").unwrap()]
         } else {
             vec![]
         };
