@@ -8,6 +8,7 @@ extern crate hashbrown;
 extern crate image;
 extern crate imgui;
 extern crate meshopt;
+extern crate microprofile;
 extern crate num_traits;
 extern crate parking_lot;
 extern crate rayon;
@@ -31,11 +32,13 @@ use crate::forward_renderer::{
 };
 use ash::version::DeviceV1_0;
 use cgmath::{Rotation3, Zero};
+use microprofile::scope;
 use parking_lot::Mutex;
 use specs::Builder;
 use std::sync::Arc;
 
 fn main() {
+    microprofile::init!();
     let mut world = specs::World::new();
     setup(&mut world);
     let rayon_threadpool = Arc::new(
@@ -340,8 +343,16 @@ fn main() {
     dispatcher.setup(&mut world);
 
     'frame: loop {
-        dispatcher.dispatch_thread_local(&world);
-        dispatcher.dispatch_par(&world);
+        microprofile::flip!();
+        microprofile::scope!("game-loop", "all");
+        {
+            microprofile::scope!("game-loop", "dispatch thread local");
+            dispatcher.dispatch_thread_local(&world);
+        }
+        {
+            microprofile::scope!("game-loop", "dispatch par");
+            dispatcher.dispatch_par(&world);
+        }
         world.maintain();
         if *quit_handle.lock() {
             unsafe {
@@ -354,4 +365,5 @@ fn main() {
             break 'frame;
         }
     }
+    microprofile::shutdown!();
 }

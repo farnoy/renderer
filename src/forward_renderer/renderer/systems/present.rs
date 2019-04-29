@@ -3,6 +3,7 @@ use super::super::{
     RenderFrame,
 };
 use ash::{version::DeviceV1_0, vk};
+use microprofile::scope;
 use specs::prelude::*;
 use std::u64;
 
@@ -65,6 +66,7 @@ impl<'a> System<'a> for AcquireFramebuffer {
     );
 
     fn run(&mut self, (renderer, mut present_data): Self::SystemData) {
+        microprofile::scope!("ecs", "present");
         if present_data
             .render_command_buffer
             .current(present_data.image_index + 1)

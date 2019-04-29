@@ -1,5 +1,6 @@
 use super::components::*;
 use cgmath::{self, One, Zero};
+use microprofile::scope;
 use parking_lot::Mutex;
 use specs::prelude::*;
 use std::{sync::Arc, time::Instant};
@@ -23,6 +24,7 @@ impl<'a> System<'a> for MVPCalculation {
     );
 
     fn run(&mut self, (positions, rotations, scales, mut mvps, camera): Self::SystemData) {
+        microprofile::scope!("ecs", "mvp calculation");
         (&positions, &rotations, &scales, &mut mvps)
             .par_join()
             .for_each(|(pos, rot, scale, mvp)| {
@@ -91,6 +93,7 @@ impl<'a> System<'a> for InputHandler {
     type SystemData = (Write<'a, InputState>, Write<'a, Camera>);
 
     fn run(&mut self, (mut input_state, mut camera): Self::SystemData) {
+        microprofile::scope!("ecs", "input handler");
         use cgmath::Rotation3;
         let quit_handle = Arc::clone(&self.quit_handle);
         input_state.clear();
@@ -161,6 +164,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
+        microprofile::scope!("ecs", "project camera");
         use cgmath::{Angle, EuclideanSpace, InnerSpace, Matrix, Rotation};
         // Right handed perspective projection, depth between [0,1]
         let near = 0.1;
@@ -242,6 +246,7 @@ impl<'a> System<'a> for AABBCalculation {
     );
 
     fn run(&mut self, (matrices, mesh, mut aabb): Self::SystemData) {
+        microprofile::scope!("ecs", "aabb calculation");
         use std::f32::{MAX, MIN};
         for (matrices, mesh, mut aabb) in (&matrices, &mesh, &mut aabb).join() {
             let min = mesh.aabb_c - mesh.aabb_h;

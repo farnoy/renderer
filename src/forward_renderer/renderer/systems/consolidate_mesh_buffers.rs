@@ -9,6 +9,7 @@ use ash::{
     vk::{self, Handle},
 };
 use hashbrown::{hash_map::Entry, HashMap};
+use microprofile::scope;
 use specs::prelude::*;
 use std::{mem::size_of, u64};
 
@@ -104,6 +105,7 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
     );
 
     fn run(&mut self, (renderer, meshes, mut consolidate_mesh_buffers): Self::SystemData) {
+        microprofile::scope!("ecs", "consolidate mesh buffers");
         if consolidate_mesh_buffers
             .previous_run_command_buffer
             .is_some()

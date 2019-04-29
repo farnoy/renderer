@@ -12,6 +12,7 @@ use super::ecs::components::Matrices;
 use ash::{prelude::*, version::DeviceV1_0, vk};
 use cgmath;
 use imgui::{self, im_str};
+use microprofile::scope;
 use specs::prelude::*;
 use std::{mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc};
 use winit;
@@ -568,6 +569,7 @@ impl<'a> System<'a> for Renderer {
             mut present_data,
         ): Self::SystemData,
     ) {
+        microprofile::scope!("ecs", "renderer");
         let total = coarse_culled.join().count() as u32;
         let command_buffer = renderer.graphics_command_pool.record_one_time({
             let renderer = &renderer;
@@ -1143,6 +1145,7 @@ impl<'a> System<'a> for MVPUpload {
     );
 
     fn run(&mut self, (matrices, indices, present_data, mut renderer): Self::SystemData) {
+        microprofile::scope!("ecs", "mvp upload");
         let mut mvp_mapped = renderer
             .mvp_buffer
             .current_mut(present_data.image_index)

@@ -19,6 +19,7 @@ use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},
 };
+use microprofile::scope;
 use num_traits::ToPrimitive;
 use specs::prelude::*;
 use specs_derive::Component;
@@ -66,6 +67,7 @@ impl<'a> System<'a> for AssignBufferIndex {
     );
 
     fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
+        microprofile::scope!("ecs", "assign buffer index");
         let mut ix = 0;
         for (entity, _mesh, coarse_culled) in (&*entities, &meshes, &coarse_culled).join() {
             if coarse_culled.0 {
@@ -86,6 +88,7 @@ impl<'a> System<'a> for CoarseCulling {
     );
 
     fn run(&mut self, (aabb, camera, mut culled): Self::SystemData) {
+        microprofile::scope!("ecs", "coarse culling");
         for (aabb, culled) in (&aabb, &mut culled).join() {
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
@@ -275,6 +278,7 @@ impl<'a> System<'a> for CullPass {
             consolidate_mesh_buffers,
         ): Self::SystemData,
     ) {
+        microprofile::scope!("ecs", "cull pass");
         if cull_pass_data
             .previous_run_command_buffer
             .current(present_data.image_index)
