@@ -337,11 +337,11 @@ fn main() {
 
     let mut dispatcher = dispatcher_builder.build();
 
-    dispatcher.setup(&mut world.res);
+    dispatcher.setup(&mut world);
 
     'frame: loop {
-        dispatcher.dispatch_thread_local(&world.res);
-        dispatcher.dispatch_par(&world.res);
+        dispatcher.dispatch_thread_local(&world);
+        dispatcher.dispatch_par(&world);
         world.maintain();
         if *quit_handle.lock() {
             unsafe {

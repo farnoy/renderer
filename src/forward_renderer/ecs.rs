@@ -1,7 +1,7 @@
 pub mod components;
 pub mod systems;
 
-use specs::World;
+use specs::{World, WorldExt};
 
 use self::components::*;
 use super::renderer::setup_ecs as renderer_setup;

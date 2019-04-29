@@ -41,8 +41,8 @@ pub struct BaseColorSetupHandler;
 
 impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
     #[cfg(not(feature = "renderdoc"))]
-    fn setup(res: &mut Resources) {
-        let renderer = res.fetch::<RenderFrame>();
+    fn setup(world: &mut World) {
+        let renderer = world.fetch::<RenderFrame>();
         let set = renderer.new_buffered(|ix| {
             let s = renderer
                 .descriptor_pool
@@ -63,12 +63,12 @@ impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
         );
         drop(renderer);
 
-        res.insert(BaseColorDescriptorSet { set, sampler });
+        world.insert(BaseColorDescriptorSet { set, sampler });
     }
 
     #[cfg(feature = "renderdoc")]
-    fn setup(res: &mut Resources) {
-        res.insert(BaseColorDescriptorSet {});
+    fn setup(world: &mut World) {
+        world.insert(BaseColorDescriptorSet {});
     }
 }
 

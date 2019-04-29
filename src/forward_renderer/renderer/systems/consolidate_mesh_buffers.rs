@@ -47,8 +47,8 @@ pub struct ConsolidateMeshBuffers;
 // TODO: use actual transfer queue for the transfers
 
 impl shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuffers {
-    fn setup(res: &mut Resources) {
-        let renderer = res.fetch::<RenderFrame>();
+    fn setup(world: &mut World) {
+        let renderer = world.fetch::<RenderFrame>();
         let vertex_offsets = HashMap::new();
         let index_offsets = HashMap::new();
 
@@ -79,7 +79,7 @@ impl shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuffers {
         );
         drop(renderer);
 
-        res.insert(ConsolidatedMeshBuffers {
+        world.insert(ConsolidatedMeshBuffers {
             vertex_offsets,
             next_vertex_offset: 0,
             index_offsets,

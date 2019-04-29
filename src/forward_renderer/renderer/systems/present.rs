@@ -23,8 +23,8 @@ pub struct PresentFramebuffer;
 pub struct PresentDataSetupHandler;
 
 impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
-    fn setup(res: &mut Resources) {
-        let renderer = res.fetch::<RenderFrame>();
+    fn setup(world: &mut World) {
+        let renderer = world.fetch::<RenderFrame>();
         let render_complete_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
             render_complete_semaphore.handle,
@@ -48,7 +48,7 @@ impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
 
         drop(renderer);
 
-        res.insert(PresentData {
+        world.insert(PresentData {
             render_complete_semaphore,
             present_semaphore,
             render_command_buffer,

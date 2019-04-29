@@ -104,8 +104,8 @@ impl<'a> System<'a> for CoarseCulling {
 }
 
 impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
-    fn setup(res: &mut Resources) {
-        let renderer = res.fetch::<RenderFrame>();
+    fn setup(world: &mut World) {
+        let renderer = world.fetch::<RenderFrame>();
         let device = &renderer.device;
 
         let cull_set_layout = device.new_descriptor_set_layout(&[
@@ -239,7 +239,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
 
         drop(renderer);
 
-        res.insert(CullPassData {
+        world.insert(CullPassData {
             culled_commands_buffer,
             culled_index_buffer,
             cull_pipeline,
