@@ -119,7 +119,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         }
     }
     meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
-    meshopt::optimize_overdraw_in_place(&mut indices, &positions, 1.05);
+    // meshopt::optimize_overdraw_in_place(&mut indices, &meshopt::VertexDataAdapter::new(&positions, size_of::<f32>(), 0), 1.05);
     let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
     let indices_new = meshopt::remap_index_buffer(Some(&indices), positions.len(), &remap);
     let positions_new = meshopt::remap_vertex_buffer(&positions, positions.len(), &remap);

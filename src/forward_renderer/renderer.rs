@@ -261,7 +261,7 @@ impl RenderFrame {
                     &vk::PipelineDepthStencilStateCreateInfo::builder()
                         .depth_test_enable(true)
                         .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(true)
+                        .depth_bounds_test_enable(false)
                         .max_depth_bounds(1.0)
                         .min_depth_bounds(0.0)
                         .build(),
@@ -352,7 +352,7 @@ impl RenderFrame {
                         .depth_test_enable(true)
                         .depth_write_enable(true)
                         .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(true)
+                        .depth_bounds_test_enable(false)
                         .max_depth_bounds(1.0)
                         .min_depth_bounds(0.0)
                         .build(),

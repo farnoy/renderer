@@ -23,7 +23,7 @@ pub struct PresentFramebuffer;
 
 pub struct PresentDataSetupHandler;
 
-impl shred::SetupHandler<PresentData> for PresentDataSetupHandler {
+impl specs::shred::SetupHandler<PresentData> for PresentDataSetupHandler {
     fn setup(world: &mut World) {
         let renderer = world.fetch::<RenderFrame>();
         let render_complete_semaphore = renderer.device.new_semaphore();

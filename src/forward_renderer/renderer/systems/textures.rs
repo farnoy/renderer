@@ -11,7 +11,7 @@ use super::{
 #[cfg(not(feature = "renderdoc"))]
 use ash::{version::DeviceV1_0, vk};
 use specs::prelude::*;
-use specs_derive::Component;
+use specs::Component;
 use std::sync::Arc;
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
@@ -39,7 +39,7 @@ pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
 
 pub struct BaseColorSetupHandler;
 
-impl shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
+impl specs::shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
     #[cfg(not(feature = "renderdoc"))]
     fn setup(world: &mut World) {
         let renderer = world.fetch::<RenderFrame>();

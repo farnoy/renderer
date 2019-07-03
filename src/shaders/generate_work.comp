@@ -57,62 +57,62 @@ void main() {
     }
     memoryBarrierShared();
 
-    if (gl_GlobalInvocationID.x >= indexCount / 3) {
-        return;
-    }
+    bool cull = false;
 
-    uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
-    uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
-    uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
-    vec4 input0 = vec4(
-        vertex_buffer[vertexOffset + ix0][0],
-        vertex_buffer[vertexOffset + ix0][1],
-        vertex_buffer[vertexOffset + ix0][2],
-        1.0
-    );
-    vec4 input1 = vec4(
-        vertex_buffer[vertexOffset + ix1][0],
-        vertex_buffer[vertexOffset + ix1][1],
-        vertex_buffer[vertexOffset + ix1][2],
-        1.0
-    );
-    vec4 input2 = vec4(
-        vertex_buffer[vertexOffset + ix2][0],
-        vertex_buffer[vertexOffset + ix2][1],
-        vertex_buffer[vertexOffset + ix2][2],
-        1.0
-    );
-    vec4 vertex0 = mvp[gltfIndex] * input0;
-    vec4 vertex1 = mvp[gltfIndex] * input1;
-    vec4 vertex2 = mvp[gltfIndex] * input2;
+    if (gl_GlobalInvocationID.x < indexCount / 3) {
+        uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
+        uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
+        uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
+        vec4 input0 = vec4(
+            vertex_buffer[vertexOffset + ix0][0],
+            vertex_buffer[vertexOffset + ix0][1],
+            vertex_buffer[vertexOffset + ix0][2],
+            1.0
+        );
+        vec4 input1 = vec4(
+            vertex_buffer[vertexOffset + ix1][0],
+            vertex_buffer[vertexOffset + ix1][1],
+            vertex_buffer[vertexOffset + ix1][2],
+            1.0
+        );
+        vec4 input2 = vec4(
+            vertex_buffer[vertexOffset + ix2][0],
+            vertex_buffer[vertexOffset + ix2][1],
+            vertex_buffer[vertexOffset + ix2][2],
+            1.0
+        );
+        vec4 vertex0 = mvp[gltfIndex] * input0;
+        vec4 vertex1 = mvp[gltfIndex] * input1;
+        vec4 vertex2 = mvp[gltfIndex] * input2;
 
-    vec3 ndc0 = vertex0.xyz / vertex0.w;
-    vec3 ndc1 = vertex1.xyz / vertex1.w;
-    vec3 ndc2 = vertex2.xyz / vertex2.w;
+        vec3 ndc0 = vertex0.xyz / vertex0.w;
+        vec3 ndc1 = vertex1.xyz / vertex1.w;
+        vec3 ndc2 = vertex2.xyz / vertex2.w;
 
-    bool cull =
-        // frustum culling
-        (ndc0.z > 1.0 && ndc1.z > 1.0 && ndc2.z > 1.0) ||
-        (ndc0.z < 0.0 && ndc1.z < 0.0 && ndc2.z < 0.0) ||
-        (ndc0.x < -1.0 && ndc1.x < -1.0 && ndc2.x < -1.0) ||
-        (ndc0.x > 1.0 && ndc1.x > 1.0 && ndc2.x > 1.0) ||
-        (ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0) ||
-        (ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0);
+        cull =
+            // frustum culling
+            (ndc0.z > 1.0 && ndc1.z > 1.0 && ndc2.z > 1.0) ||
+            (ndc0.z < 0.0 && ndc1.z < 0.0 && ndc2.z < 0.0) ||
+            (ndc0.x < -1.0 && ndc1.x < -1.0 && ndc2.x < -1.0) ||
+            (ndc0.x > 1.0 && ndc1.x > 1.0 && ndc2.x > 1.0) ||
+            (ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0) ||
+            (ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0);
 
-    // backface culling in counter clockwise front-facing order
-    if (!cull)
-        cull = determinant(mat3(vertex2.xyw, vertex1.xyw, vertex0.xyw)) > 0;
+        // backface culling in counter clockwise front-facing order
+        if (!cull)
+            cull = determinant(mat3(vertex2.xyw, vertex1.xyw, vertex0.xyw)) > 0;
 
-    // degenerate triangle culling, this is a bad algorithm but even while being
-    // conservative here, it discards a lot of stuff
-    if (!cull) {
-        float a = distance(ndc0, ndc1);
-        float b = distance(ndc0, ndc2);
-        float c = distance(ndc1, ndc2);
-        float s = (a + b + c) / 2.0;
-        float area = sqrt(s * (s - a) * (s - b) * (s - c));
-        cull = area < 0.0000005; // magic constant
-        cull = false; // disable for now
+        // degenerate triangle culling, this is a bad algorithm but even while being
+        // conservative here, it discards a lot of stuff
+        if (!cull) {
+            float a = distance(ndc0, ndc1);
+            float b = distance(ndc0, ndc2);
+            float c = distance(ndc1, ndc2);
+            float s = (a + b + c) / 2.0;
+            float area = sqrt(s * (s - a) * (s - b) * (s - c));
+            cull = area < 0.0000005; // magic constant
+            cull = false; // disable for now
+        }
     }
 
     uvec4 ballot = subgroupBallot(!cull);
@@ -136,6 +136,9 @@ void main() {
     barrier();
 
     if (!cull) {
+        uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
+        uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
+        uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
         uint local_offset = globalOffset + offset + exclusiveBitCount;
         out_index_buffer[local_offset][0] = ix0;
         out_index_buffer[local_offset][1] = ix1;

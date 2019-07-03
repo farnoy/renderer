@@ -47,7 +47,7 @@ pub struct ConsolidateMeshBuffers;
 // TODO: dynamic unloading of meshes
 // TODO: use actual transfer queue for the transfers
 
-impl shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuffers {
+impl specs::shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuffers {
     fn setup(world: &mut World) {
         let renderer = world.fetch::<RenderFrame>();
         let vertex_offsets = HashMap::new();

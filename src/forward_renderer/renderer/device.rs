@@ -111,8 +111,7 @@ impl Device {
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
-                geometry_shader: 1,
-                depth_bounds: 1,
+                depth_bounds: 0,
                 multi_draw_indirect: 1,
                 vertex_pipeline_stores_and_atomics: 1,
                 robust_buffer_access: 1,

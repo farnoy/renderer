@@ -22,7 +22,7 @@ use ash::{
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use specs::prelude::*;
-use specs_derive::Component;
+use specs::Component;
 use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc, u64};
 
 // Cull geometry in compute pass
@@ -106,7 +106,7 @@ impl<'a> System<'a> for CoarseCulling {
     }
 }
 
-impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
+impl specs::shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
     fn setup(world: &mut World) {
         let renderer = world.fetch::<RenderFrame>();
         let device = &renderer.device;
@@ -171,7 +171,7 @@ impl shred::SetupHandler<CullPassData> for CullPassDataSetupHandler {
             let b = device.new_buffer(
                 vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                size_of::<u32>() as vk::DeviceSize * 300_000_000,
+                size_of::<u32>() as vk::DeviceSize * 60_000_000,
             );
             device.set_object_name(b.handle, &format!("Global culled index buffer - {}", ix));
             b

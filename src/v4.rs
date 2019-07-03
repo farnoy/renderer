@@ -11,10 +11,8 @@ extern crate meshopt;
 extern crate microprofile;
 extern crate num_traits;
 extern crate parking_lot;
-extern crate rayon;
 extern crate smallvec;
 extern crate specs;
-extern crate specs_derive;
 #[cfg(windows)]
 extern crate winapi;
 extern crate winit;
@@ -34,7 +32,7 @@ use ash::version::DeviceV1_0;
 use cgmath::{Rotation3, Zero};
 use microprofile::scope;
 use parking_lot::Mutex;
-use specs::{Builder, WorldExt};
+use specs::{Builder, rayon, WorldExt};
 use std::sync::Arc;
 
 fn main() {
@@ -246,7 +244,7 @@ fn main() {
             .build();
     }
 
-    for ix in 0..2398 {
+    for ix in 0..200 {
         let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
         let pos = {
             use cgmath::Rotation;
