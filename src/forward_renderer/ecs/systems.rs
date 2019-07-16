@@ -66,7 +66,6 @@ static RIGHT_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
 
 impl Default for Camera {
     fn default() -> Camera {
-        use cgmath::Zero;
         let position = cgmath::Point3::new(0.0, 1.0, 2.0);
         let projection = cgmath::Matrix4::one();
         let view = cgmath::Matrix4::one();

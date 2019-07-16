@@ -279,8 +279,8 @@ fn main() {
 
     let gui = Gui::new(&renderer);
 
-    world.add_resource(renderer);
-    world.add_resource(gui);
+    world.insert(renderer);
+    world.insert(gui);
 
     let quit_handle = Arc::new(Mutex::new(false));
 

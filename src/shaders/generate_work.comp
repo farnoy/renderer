@@ -14,9 +14,9 @@ struct VkDrawIndexedIndirectCommand {
 layout(push_constant) uniform PushConstants {
     uint gltfIndex;
     uint indexCount;
-    uint indexOffset; 
-    uint indexOffsetInOutput; 
-    int vertexOffset; 
+    uint indexOffset;
+    uint indexOffsetInOutput;
+    int vertexOffset;
 };
 
 layout(set = 0, binding = 0) uniform MVP {
@@ -113,35 +113,32 @@ void main() {
             cull = area < 0.0000005; // magic constant
             cull = false; // disable for now
         }
-    }
 
-    uvec4 ballot = subgroupBallot(!cull);
-    uint count = subgroupBallotBitCount(ballot);
-    uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
+        uvec4 ballot = subgroupBallot(!cull);
+        uint count = subgroupBallotBitCount(ballot);
+        uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
 
-    uint offset = 0;
-    if (subgroupElect()) {
-        offset = atomicAdd(localOffset, count);
-    }
-    offset = subgroupBroadcastFirst(offset);
+        uint offset = 0;
+        if (subgroupElect()) {
+            offset = atomicAdd(localOffset, count);
+        }
+        offset = subgroupBroadcastFirst(offset);
 
-    barrier();
+        barrier();
 
-    if (gl_LocalInvocationID.x == 0) {
-        globalOffset = atomicAdd(indirect_commands[gltfIndex].indexCount, localOffset * 3);
-        globalOffset += indexOffsetInOutput; // to resume where previous mesh ended
-        globalOffset /= 3;
-    }
+        if (gl_LocalInvocationID.x == 0) {
+            globalOffset = atomicAdd(indirect_commands[gltfIndex].indexCount, localOffset * 3);
+            globalOffset += indexOffsetInOutput; // to resume where previous mesh ended
+            globalOffset /= 3;
+        }
 
-    barrier();
+        barrier();
 
-    if (!cull) {
-        uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
-        uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
-        uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
-        uint local_offset = globalOffset + offset + exclusiveBitCount;
-        out_index_buffer[local_offset][0] = ix0;
-        out_index_buffer[local_offset][1] = ix1;
-        out_index_buffer[local_offset][2] = ix2;
+        if (!cull) {
+            uint local_offset = globalOffset + offset + exclusiveBitCount;
+            out_index_buffer[local_offset][0] = ix0;
+            out_index_buffer[local_offset][1] = ix1;
+            out_index_buffer[local_offset][2] = ix2;
+        }
     }
 }
