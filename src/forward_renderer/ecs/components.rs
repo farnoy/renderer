@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
-pub struct Position(pub cgmath::Vector3<f32>);
+pub struct Position(pub cgmath::Point3<f32>);
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
@@ -45,9 +45,8 @@ pub struct GltfMesh {
     pub vertex_buffer: Arc<Buffer>,
     pub normal_buffer: Arc<Buffer>,
     pub uv_buffer: Arc<Buffer>,
-    pub index_buffer: Arc<Buffer>,
+    pub index_buffers: Arc<Vec<(Buffer, u64)>>,
     pub vertex_len: u64,
-    pub index_len: u64,
     pub aabb_c: cgmath::Vector3<f32>,
     pub aabb_h: cgmath::Vector3<f32>,
 }

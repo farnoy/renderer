@@ -15,9 +15,8 @@ pub struct LoadedMesh {
     pub vertex_buffer: Buffer,
     pub normal_buffer: Buffer,
     pub uv_buffer: Buffer,
-    pub index_buffer: Buffer,
+    pub index_buffers: Vec<(Buffer, u64)>,
     pub vertex_len: u64,
-    pub index_len: u64,
     pub aabb_c: cgmath::Vector3<f32>,
     pub aabb_h: cgmath::Vector3<f32>,
     pub base_color: Image,
@@ -62,7 +61,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .read_normals()
         .expect("failed to load normals")
         .collect::<Vec<_>>();
-    let mut indices = reader
+    let indices = reader
         .read_indices()
         .expect("failed to load indices")
         .into_u32()
@@ -118,8 +117,29 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             mapped[ix] = *pixel;
         }
     }
-    meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
-    // meshopt::optimize_overdraw_in_place(&mut indices, &meshopt::VertexDataAdapter::new(&positions, size_of::<f32>(), 0), 1.05);
+    let (a, meshoptpositions, b) = unsafe { positions.as_slice().align_to::<u8>() };
+    assert_eq!(a.len(), 0);
+    assert_eq!(b.len(), 0);
+    let vertex_adapter = meshopt::VertexDataAdapter::new(&meshoptpositions, size_of::<f32>() * 3, 0).expect("vertex data adapter failed");
+    let mut index_lods = if indices.len() > 1000 {
+        let mut lods = Vec::with_capacity(6);
+        for x in 1..6 {
+            let factor = (2 as usize).pow(x);
+            lods.push(meshopt::simplify::simplify_sloppy(&indices, &vertex_adapter, indices.len() / factor));
+        }
+        lods
+    } else {
+        vec![indices]
+    };
+    for mut indices in index_lods.iter_mut() {
+        // This is a bug in the library
+        #[allow(clippy::unnecessary_mut_passed)]
+        meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
+        // meshopt::optimize_overdraw_in_place(&mut indices, &meshopt::VertexDataAdapter::new(&positions, size_of::<f32>(), 0), 1.05);
+    }
+    /*
+    // quoting meshopt:
+    When a sequence of LOD meshes is generated that all use the original vertex buffer, care must be taken to order vertices optimally to not penalize mobile GPU architectures that are only capable of transforming a sequential vertex buffer range. It's recommended in this case to first optimize each LOD for vertex cache, then assemble all LODs in one large index buffer starting from the coarsest LOD (the one with fewest triangles), and call meshopt_optimizeVertexFetch on the final large index buffer. This will make sure that coarser LODs require a smaller vertex range and are efficient wrt vertex fetch and transform.
     let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
     let indices_new = meshopt::remap_index_buffer(Some(&indices), positions.len(), &remap);
     let positions_new = meshopt::remap_vertex_buffer(&positions, positions.len(), &remap);
@@ -131,6 +151,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let normals = normals_new;
     let uvs = uvs_new;
     let positions = positions_new;
+    */
 
     let vertex_len = positions.len() as u64;
     let vertex_size = size_of::<f32>() as u64 * 3 * vertex_len;
@@ -217,33 +238,38 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             mapped[ix] = *data;
         }
     }
-    let index_len = indices.len() as u64;
-    let index_size = size_of::<u32>() as u64 * index_len;
-    let index_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::INDEX_BUFFER
-            | vk::BufferUsageFlags::TRANSFER_DST
-            | vk::BufferUsageFlags::TRANSFER_SRC
-            | vk::BufferUsageFlags::STORAGE_BUFFER,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        index_size,
-    );
-    renderer
-        .device
-        .set_object_name(index_buffer.handle, "Gltf mesh index buffer");
-    let index_upload_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-        index_size,
-    );
-    renderer
-        .device
-        .set_object_name(index_upload_buffer.handle, "Gltf mesh index upload buffer");
-    {
-        let mut mapped = index_upload_buffer
-            .map::<u32>()
-            .expect("failed to map index upload buffer");
-        mapped[0..index_len as usize].copy_from_slice(&indices);
-    }
+    let index_buffers = index_lods.iter().enumerate().map(|(ix, indices)| {
+        let index_len = indices.len() as u64;
+        let index_size = size_of::<u32>() as u64 * index_len;
+        println!("creating index buffer {}", index_size);
+        let index_buffer = renderer.device.new_buffer(
+            vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::STORAGE_BUFFER,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            index_size,
+        );
+        renderer
+            .device
+            .set_object_name(index_buffer.handle, &format!("Gltf mesh index buffer LOD {}", ix));
+        let index_upload_buffer = renderer.device.new_buffer(
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+            index_size,
+        );
+        renderer
+            .device
+            .set_object_name(index_upload_buffer.handle, &format!("Gltf mesh index upload buffer LOD {}", ix));
+        {
+            let mut mapped = index_upload_buffer
+                .map::<u32>()
+                .expect("failed to map index upload buffer");
+            mapped[0..index_len as usize].copy_from_slice(&indices);
+        }
+
+        (index_buffer, index_upload_buffer, index_len)
+    }).collect::<Vec<_>>();
     let upload = renderer.graphics_command_pool.record_one_time({
         let vertex_buffer = &vertex_buffer;
         let vertex_upload_buffer = &vertex_upload_buffer;
@@ -251,8 +277,7 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         let normal_upload_buffer = &normal_upload_buffer;
         let uv_buffer = &uv_buffer;
         let uv_upload_buffer = &uv_upload_buffer;
-        let index_buffer = &index_buffer;
-        let index_upload_buffer = &index_upload_buffer;
+        let index_buffers = &index_buffers;
         let base_color_upload_buffer = &base_color_upload_buffer;
         let base_color_vkimage = &base_color_vkimage;
         let device = &renderer.device;
@@ -287,16 +312,18 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                     size: uv_upload_buffer.size(),
                 }],
             );
-            device.device.cmd_copy_buffer(
-                command_buffer,
-                index_upload_buffer.handle,
-                index_buffer.handle,
-                &[vk::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: 0,
-                    size: index_upload_buffer.size(),
-                }],
-            );
+            for (index_buffer, index_upload_buffer, _) in index_buffers.iter() {
+                device.device.cmd_copy_buffer(
+                    command_buffer,
+                    index_upload_buffer.handle,
+                    index_buffer.handle,
+                    &[vk::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: index_upload_buffer.size(),
+                    }],
+                );
+            }
             device.device.cmd_pipeline_barrier(
                 command_buffer,
                 vk::PipelineStageFlags::TRANSFER,
@@ -374,14 +401,14 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             .wait_for_fences(&[upload_fence.handle], true, u64::MAX)
             .expect("Wait for fence failed.");
     }
+    let index_buffers = index_buffers.into_iter().map(|(buffer, _, len)| (buffer, len)).collect();
 
     LoadedMesh {
         vertex_buffer,
         normal_buffer,
         uv_buffer,
-        index_buffer,
+        index_buffers,
         vertex_len,
-        index_len,
         aabb_c,
         aabb_h,
         base_color: base_color_vkimage,

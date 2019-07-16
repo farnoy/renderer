@@ -29,7 +29,7 @@ use crate::forward_renderer::{
     },
 };
 use ash::version::DeviceV1_0;
-use cgmath::{Rotation3, Zero};
+use cgmath::{EuclideanSpace, Rotation3, Zero};
 use microprofile::scope;
 use parking_lot::Mutex;
 use specs::{Builder, rayon, WorldExt};
@@ -52,9 +52,8 @@ fn main() {
         vertex_buffer,
         normal_buffer,
         uv_buffer,
-        index_buffer,
+        index_buffers,
         vertex_len,
-        index_len,
         aabb_c,
         aabb_h,
         base_color,
@@ -66,12 +65,12 @@ fn main() {
     let vertex_buffer = Arc::new(vertex_buffer);
     let normal_buffer = Arc::new(normal_buffer);
     let uv_buffer = Arc::new(uv_buffer);
-    let index_buffer = Arc::new(index_buffer);
+    let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
 
     world
         .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(0.0, 5.0, 0.0)))
+        .with::<Position>(Position(cgmath::Point3::new(0.0, 5.0, 0.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
         .with::<Scale>(Scale(1.0))
         .with::<Matrices>(Matrices::one())
@@ -84,9 +83,8 @@ fn main() {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
             uv_buffer: Arc::clone(&uv_buffer),
-            index_buffer: Arc::clone(&index_buffer),
+            index_buffers: Arc::clone(&index_buffers),
             vertex_len,
-            index_len,
             aabb_c,
             aabb_h,
         })
@@ -96,7 +94,7 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(0.0, 5.0, 5.0)))
+        .with::<Position>(Position(cgmath::Point3::new(0.0, 5.0, 5.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(
             90.0,
         ))))
@@ -111,9 +109,8 @@ fn main() {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
             uv_buffer: Arc::clone(&uv_buffer),
-            index_buffer: Arc::clone(&index_buffer),
+            index_buffers: Arc::clone(&index_buffers),
             vertex_len,
-            index_len,
             aabb_c,
             aabb_h,
         })
@@ -123,7 +120,7 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(cgmath::Vector3::new(-5.0, 5.0, 0.0)))
+        .with::<Position>(Position(cgmath::Point3::new(-5.0, 5.0, 0.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_z(cgmath::Deg(
             60.0,
         ))))
@@ -138,9 +135,8 @@ fn main() {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
             uv_buffer: Arc::clone(&uv_buffer),
-            index_buffer: Arc::clone(&index_buffer),
+            index_buffers: Arc::clone(&index_buffers),
             vertex_len,
-            index_len,
             aabb_c,
             aabb_h,
         })
@@ -153,9 +149,8 @@ fn main() {
             vertex_buffer,
             normal_buffer,
             uv_buffer,
-            index_buffer,
+            index_buffers,
             vertex_len,
-            index_len,
             aabb_c,
             aabb_h,
             base_color,
@@ -167,12 +162,12 @@ fn main() {
         let vertex_buffer = Arc::new(vertex_buffer);
         let normal_buffer = Arc::new(normal_buffer);
         let uv_buffer = Arc::new(uv_buffer);
-        let index_buffer = Arc::new(index_buffer);
+        let index_buffers = Arc::new(index_buffers);
         let base_color = Arc::new(base_color);
 
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(0.0, 0.0, 0.0)))
+            .with::<Position>(Position(cgmath::Point3::new(0.0, 0.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(50.0))
             .with::<Matrices>(Matrices::one())
@@ -185,9 +180,8 @@ fn main() {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
-                index_buffer: Arc::clone(&index_buffer),
+                index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
-                index_len,
                 aabb_c,
                 aabb_h,
             })
@@ -201,9 +195,8 @@ fn main() {
             vertex_buffer,
             normal_buffer,
             uv_buffer,
-            index_buffer,
+            index_buffers,
             vertex_len,
-            index_len,
             aabb_c,
             aabb_h,
             base_color,
@@ -215,12 +208,12 @@ fn main() {
         let vertex_buffer = Arc::new(vertex_buffer);
         let normal_buffer = Arc::new(normal_buffer);
         let uv_buffer = Arc::new(uv_buffer);
-        let index_buffer = Arc::new(index_buffer);
+        let index_buffers = Arc::new(index_buffers);
         let base_color = Arc::new(base_color);
 
         world
             .create_entity()
-            .with::<Position>(Position(cgmath::Vector3::new(5.0, 3.0, 2.0)))
+            .with::<Position>(Position(cgmath::Point3::new(5.0, 3.0, 2.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(1.0))
             .with::<Matrices>(Matrices::one())
@@ -233,9 +226,8 @@ fn main() {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
-                index_buffer: Arc::clone(&index_buffer),
+                index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
-                index_len,
                 aabb_c,
                 aabb_h,
             })
@@ -248,7 +240,7 @@ fn main() {
         let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
         let pos = {
             use cgmath::Rotation;
-            rot.rotate_vector(cgmath::vec3(0.0, 2.0, 5.0 + (ix / 10) as f32))
+            cgmath::Point3::from_vec(rot.rotate_vector(cgmath::vec3(0.0, 2.0, 5.0 + (ix / 10) as f32)))
         };
         world
             .create_entity()
@@ -267,9 +259,8 @@ fn main() {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
-                index_buffer: Arc::clone(&index_buffer),
+                index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
-                index_len,
                 aabb_c,
                 aabb_h,
             })

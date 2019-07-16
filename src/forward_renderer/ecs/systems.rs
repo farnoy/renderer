@@ -1,5 +1,5 @@
 use super::components::*;
-use cgmath::{self, One, Zero};
+use cgmath::{self, EuclideanSpace, One, Zero};
 use microprofile::scope;
 use parking_lot::Mutex;
 use specs::prelude::*;
@@ -28,7 +28,7 @@ impl<'a> System<'a> for MVPCalculation {
         (&positions, &rotations, &scales, &mut mvps)
             .par_join()
             .for_each(|(pos, rot, scale, mvp)| {
-                mvp.model = cgmath::Matrix4::from_translation(pos.0)
+                mvp.model = cgmath::Matrix4::from_translation(pos.0.to_vec())
                     * cgmath::Matrix4::from(rot.0)
                     * cgmath::Matrix4::from_scale(scale.0);
 
@@ -164,7 +164,7 @@ impl<'a> System<'a> for ProjectCamera {
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
         microprofile::scope!("ecs", "project camera");
-        use cgmath::{Angle, EuclideanSpace, InnerSpace, Matrix, Rotation};
+        use cgmath::{Angle, InnerSpace, Matrix, Rotation};
         // Right handed perspective projection, depth between [0,1]
         let near = 0.1;
         let far = 100.0;

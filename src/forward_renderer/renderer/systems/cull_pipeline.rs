@@ -1,7 +1,7 @@
 use super::{
     super::{
         super::ecs::{
-            components::{GltfMesh, AABB},
+            components::{GltfMesh, AABB, Position},
             systems::Camera,
         },
         alloc,
@@ -19,6 +19,7 @@ use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},
 };
+use cgmath::prelude::*;
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use specs::prelude::*;
@@ -265,6 +266,8 @@ impl<'a> System<'a> for CullPass {
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadExpect<'a, PresentData>,
         ReadExpect<'a, ConsolidatedMeshBuffers>,
+        ReadStorage<'a, Position>,
+        Read<'a, Camera>,
     );
 
     fn run(
@@ -276,6 +279,8 @@ impl<'a> System<'a> for CullPass {
             mesh_indices,
             present_data,
             consolidate_mesh_buffers,
+            positions,
+            camera,
         ): Self::SystemData,
     ) {
         microprofile::scope!("ecs", "cull pass");
@@ -368,24 +373,31 @@ impl<'a> System<'a> for CullPass {
                             ],
                             &[],
                         );
-                        for (mesh, mesh_index) in (&meshes, &mesh_indices).join() {
+                        for (mesh, mesh_index, mesh_position) in (&meshes, &mesh_indices, &positions).join() {
                             let vertex_offset = consolidate_mesh_buffers
                                 .vertex_offsets
                                 .get(&mesh.vertex_buffer.handle.as_raw())
                                 .expect("Vertex buffer not consolidated");
+                            let distance_from_camera = (camera.position - mesh_position.0).magnitude();
+                            // TODO: fine-tune this later
+                            let (index_buffer, index_len) = if distance_from_camera > 10.0 {
+                                mesh.index_buffers.last().expect("empty index buffer LODs")
+                            } else {
+                                mesh.index_buffers.first().expect("empty index buffer LODs")
+                            };
                             let index_offset = consolidate_mesh_buffers
                                 .index_offsets
-                                .get(&mesh.index_buffer.handle.as_raw())
+                                .get(&index_buffer.handle.as_raw())
                                 .expect("Index buffer not consolidated");
                             let constants = [
                                 mesh_index.0,
-                                mesh.index_len.to_u32().unwrap(),
+                                index_len.to_u32().unwrap(),
                                 index_offset.to_u32().unwrap(),
                                 index_offset_in_output,
                                 vertex_offset.to_i32().unwrap() as u32,
                             ];
 
-                            index_offset_in_output += mesh.index_len.to_u32().unwrap();
+                            index_offset_in_output += index_len.to_u32().unwrap();
 
                             let casted: &[u8] = {
                                 from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
@@ -397,7 +409,7 @@ impl<'a> System<'a> for CullPass {
                                 0,
                                 casted,
                             );
-                            let index_len = mesh.index_len as u32;
+                            let index_len = *index_len as u32;
                             let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
                             let workgroup_count = index_len / 3 / workgroup_size
                                 + min(1, index_len / 3 % workgroup_size);

@@ -192,25 +192,26 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
                         needs_transfer = true;
                     }
 
-                    if let Entry::Vacant(v) = index_offsets.entry(mesh.index_buffer.handle.as_raw())
-                    {
-                        v.insert(*next_index_offset);
+                    for (lod_index_buffer, index_len) in mesh.index_buffers.iter() {
+                        if let Entry::Vacant(v) = index_offsets.entry(lod_index_buffer.handle.as_raw()) {
+                            v.insert(*next_index_offset);
 
-                        unsafe {
-                            renderer.device.cmd_copy_buffer(
-                                command_buffer,
-                                mesh.index_buffer.handle,
-                                index_buffer.handle,
-                                &[vk::BufferCopy::builder()
-                                    .size(mesh.index_len * size_of::<u32>() as vk::DeviceSize)
-                                    .dst_offset(
-                                        *next_index_offset * size_of::<u32>() as vk::DeviceSize,
-                                    )
-                                    .build()],
-                            );
+                            unsafe {
+                                renderer.device.cmd_copy_buffer(
+                                    command_buffer,
+                                    lod_index_buffer.handle,
+                                    index_buffer.handle,
+                                    &[vk::BufferCopy::builder()
+                                        .size(index_len * size_of::<u32>() as vk::DeviceSize)
+                                        .dst_offset(
+                                            *next_index_offset * size_of::<u32>() as vk::DeviceSize,
+                                        )
+                                        .build()],
+                                );
+                            }
+                            *next_index_offset += index_len;
+                            needs_transfer = true;
                         }
-                        *next_index_offset += mesh.index_len;
-                        needs_transfer = true;
                     }
                 }
             });
