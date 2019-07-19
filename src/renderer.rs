@@ -7,12 +7,11 @@ mod helpers;
 mod instance;
 mod swapchain;
 mod systems {
-    mod consolidate_mesh_buffers;
-    mod cull_pipeline;
-    mod present;
-    mod textures;
-
-    pub use self::{consolidate_mesh_buffers::*, cull_pipeline::*, present::*, textures::*};
+    pub mod consolidate_mesh_buffers;
+    pub mod cull_pipeline;
+    pub mod present;
+    pub mod shadow_mapping;
+    pub mod textures;
 }
 
 use crate::ecs::{
@@ -37,17 +36,12 @@ use self::{
     },
     helpers::*,
     instance::Instance,
-    systems::{
-        BaseColorDescriptorSet, CoarseCulled, ConsolidatedMeshBuffers, CullPassData,
-        GltfMeshBufferIndex, ImageIndex, VisitedMarker as BaseColorVisitedMarker,
-    },
 };
 
 pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
-        AcquireFramebuffer, AssignBufferIndex, CoarseCulling, ConsolidateMeshBuffers, CullPass,
-        GltfMeshBaseColorTexture, PresentData, PresentFramebuffer, SynchronizeBaseColorTextures,
+        consolidate_mesh_buffers::*, cull_pipeline::*, present::*, shadow_mapping::*, textures::*,
     },
 };
 
@@ -1483,6 +1477,7 @@ impl<'a> System<'a> for DepthOnlyPass {
         Write<'a, DepthPassData, DepthPassData>,
         Read<'a, MVPData, MVPData>,
         Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
+        Read<'a, ShadowMappingData, ShadowMappingData>,
     );
 
     fn run(
@@ -1498,6 +1493,7 @@ impl<'a> System<'a> for DepthOnlyPass {
             mut depth_pass,
             mvp_data,
             graphics_command_pool,
+            shadow_mapping_data,
         ): Self::SystemData,
     ) {
         microprofile::scope!("ecs", "depth-pass");
@@ -1575,7 +1571,10 @@ impl<'a> System<'a> for DepthOnlyPass {
                 );
             }
         });
-        let wait_semaphores = &[present_data.present_semaphore.handle];
+        let wait_semaphores = &[shadow_mapping_data
+            .complete_semaphore
+            .current(image_index.0)
+            .handle];
         let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = &[depth_pass.complete_semaphore.current(image_index.0).handle];
         let command_buffers = &[*command_buffer];

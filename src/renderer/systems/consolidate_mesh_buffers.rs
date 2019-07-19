@@ -1,9 +1,9 @@
-use super::super::{
+use crate::renderer::{
     alloc,
     device::{Buffer, CommandBuffer, DoubleBuffered, Fence, Semaphore},
+    systems::present::ImageIndex,
     GltfMesh, GraphicsCommandPool, RenderFrame,
 };
-use super::present::ImageIndex;
 use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},

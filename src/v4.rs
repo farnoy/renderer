@@ -25,8 +25,8 @@ pub mod renderer;
 use crate::renderer::{
     load_gltf, setup_ecs as renderer_setup_ecs, AcquireFramebuffer, AssignBufferIndex,
     CoarseCulling, ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMesh,
-    GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PresentFramebuffer, RenderFrame, Renderer,
-    SynchronizeBaseColorTextures,
+    GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PrepareShadowMaps, PresentFramebuffer,
+    RenderFrame, Renderer, SynchronizeBaseColorTextures,
 };
 use ash::version::DeviceV1_0;
 use cgmath::{EuclideanSpace, Rotation3};
@@ -80,7 +80,8 @@ fn main() {
             AssignBufferIndex,
             SynchronizeBaseColorTextures,
             MVPUpload,
-            par![DepthOnlyPass, CullPass,],
+            par![PrepareShadowMaps, CullPass,],
+            DepthOnlyPass,
             Renderer,
             PresentFramebuffer,
         ],

@@ -23,7 +23,7 @@ pub struct BaseColorDescriptorSet {
 
 #[derive(Component)]
 #[storage(VecStorage)]
-pub struct VisitedMarker {
+pub struct BaseColorVisitedMarker {
     image_view: helpers::ImageView,
 }
 
@@ -104,7 +104,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
         ReadStorage<'a, GltfMeshBaseColorTexture>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         Read<'a, ImageIndex>,
-        WriteStorage<'a, VisitedMarker>,
+        WriteStorage<'a, BaseColorVisitedMarker>,
     );
 
     fn run(
@@ -150,8 +150,8 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
                     }),
             );
             let res = visited_markers
-                .insert(entity, VisitedMarker { image_view })
-                .expect("failed to insert VisitedMarker");
+                .insert(entity, BaseColorVisitedMarker { image_view })
+                .expect("failed to insert BaseColorVisitedMarker");
             assert!(res.is_none()); // double check that there was nothing there
         }
 
