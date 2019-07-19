@@ -107,7 +107,7 @@ impl RenderFrame {
                                 .initial_layout(vk::ImageLayout::UNDEFINED)
                                 .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
                             vk::AttachmentDescription::builder()
-                                .format(vk::Format::D16_UNORM)
+                                .format(vk::Format::D32_SFLOAT)
                                 .samples(vk::SampleCountFlags::TYPE_1)
                                 .load_op(vk::AttachmentLoadOp::LOAD)
                                 .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -234,7 +234,7 @@ impl specs::shred::SetupHandler<MainAttachments> for MainAttachments {
         let depth_images = (0..images.len())
             .map(|_| {
                 renderer.device.new_image(
-                    vk::Format::D16_UNORM,
+                    vk::Format::D32_SFLOAT,
                     vk::Extent3D {
                         width: window_width,
                         height: window_height,
@@ -286,7 +286,7 @@ impl specs::shred::SetupHandler<MainAttachments> for MainAttachments {
             .map(|ref image| {
                 let create_view_info = vk::ImageViewCreateInfo::builder()
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::D16_UNORM)
+                    .format(vk::Format::D32_SFLOAT)
                     .components(vk::ComponentMapping {
                         r: vk::ComponentSwizzle::IDENTITY,
                         g: vk::ComponentSwizzle::IDENTITY,
@@ -515,7 +515,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                     &vk::RenderPassCreateInfo::builder()
                         .attachments(unsafe {
                             &*(&[vk::AttachmentDescription::builder()
-                                .format(vk::Format::D16_UNORM)
+                                .format(vk::Format::D32_SFLOAT)
                                 .samples(vk::SampleCountFlags::TYPE_1)
                                 .load_op(vk::AttachmentLoadOp::CLEAR)
                                 .store_op(vk::AttachmentStoreOp::STORE)
