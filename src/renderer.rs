@@ -983,51 +983,6 @@ impl<'a> System<'a> for Renderer {
                             "gltf meshes",
                             [1.0, 0.0, 0.0, 1.0],
                             || {
-                                /*
-                                let cull_complete_event = cull_pass_event
-                                    .cull_complete_event
-                                    .current(image_index.0)
-                                    .lock();
-                                renderer.device.cmd_wait_events(
-                                    command_buffer,
-                                    &[cull_complete_event.handle],
-                                    vk::PipelineStageFlags::HOST,
-                                    vk::PipelineStageFlags::VERTEX_INPUT
-                                        | vk::PipelineStageFlags::DRAW_INDIRECT,
-                                    &[],
-                                    &[
-                                        /*
-                                        vk::BufferMemoryBarrier::builder()
-                                            .buffer(
-                                                cull_pass_data
-                                                    .culled_index_buffer
-                                                    .current(image_index.0)
-                                                    .handle,
-                                            )
-                                            .size(vk::WHOLE_SIZE)
-                                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                            .dst_access_mask(vk::AccessFlags::INDEX_READ)
-                                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                            .build(),
-                                        vk::BufferMemoryBarrier::builder()
-                                            .buffer(
-                                                cull_pass_data
-                                                    .culled_commands_buffer
-                                                    .current(image_index.0)
-                                                    .handle,
-                                            )
-                                            .size(vk::WHOLE_SIZE)
-                                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                            .dst_access_mask(vk::AccessFlags::INDIRECT_COMMAND_READ)
-                                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                            .build(),
-                                            */
-                                    ],
-                                    &[],
-                                );
-                                */
                                 // gltf mesh
                                 renderer.device.cmd_bind_pipeline(
                                     command_buffer,
