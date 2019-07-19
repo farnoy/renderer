@@ -9,13 +9,14 @@ use winit::{
     WindowEvent,
 };
 
-use super::super::renderer::RenderFrame;
+use crate::renderer::{GltfMesh, RenderFrame};
 
 pub struct MVPCalculation;
 
 impl<'a> System<'a> for MVPCalculation {
     #[allow(clippy::type_complexity)]
     type SystemData = (
+        Entities<'a>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, Rotation>,
         ReadStorage<'a, Scale>,
@@ -23,8 +24,20 @@ impl<'a> System<'a> for MVPCalculation {
         Read<'a, Camera>,
     );
 
-    fn run(&mut self, (positions, rotations, scales, mut mvps, camera): Self::SystemData) {
+    fn run(
+        &mut self,
+        (entities, positions, rotations, scales, mut mvps, camera): Self::SystemData,
+    ) {
         microprofile::scope!("ecs", "mvp calculation");
+        let mut entities_to_update = vec![];
+        for (entity_id, _, _, _, ()) in (&*entities, &positions, &rotations, &scales, !&mvps).join()
+        {
+            entities_to_update.push(entity_id);
+        }
+        for entity_id in entities_to_update.into_iter() {
+            mvps.insert(entity_id, Matrices::one())
+                .expect("failed to insert missing matrices");
+        }
         (&positions, &rotations, &scales, &mut mvps)
             .par_join()
             .for_each(|(pos, rot, scale, mvp)| {
@@ -239,15 +252,16 @@ pub struct AABBCalculation;
 
 impl<'a> System<'a> for AABBCalculation {
     type SystemData = (
+        Entities<'a>,
         ReadStorage<'a, Matrices>,
         ReadStorage<'a, GltfMesh>,
         WriteStorage<'a, AABB>,
     );
 
-    fn run(&mut self, (matrices, mesh, mut aabb): Self::SystemData) {
+    fn run(&mut self, (entities, matrices, mesh, mut aabb): Self::SystemData) {
         microprofile::scope!("ecs", "aabb calculation");
         use std::f32::{MAX, MIN};
-        for (matrices, mesh, mut aabb) in (&matrices, &mesh, &mut aabb).join() {
+        for (entity_id, matrices, mesh) in (&*entities, &matrices, &mesh).join() {
             let min = mesh.aabb_c - mesh.aabb_h;
             let max = mesh.aabb_c + mesh.aabb_h;
             let (min, max) = [
@@ -276,8 +290,14 @@ impl<'a> System<'a> for AABBCalculation {
             );
             let min = cgmath::Vector3::from(min);
             let max = cgmath::Vector3::from(max);
-            aabb.c = (max + min) / 2.0;
-            aabb.h = (max - min) / 2.0;
+            aabb.insert(
+                entity_id,
+                AABB {
+                    c: (max + min) / 2.0,
+                    h: (max - min) / 2.0,
+                },
+            )
+            .expect("Failed to insert AABB");
         }
     }
 }

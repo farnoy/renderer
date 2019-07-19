@@ -1,15 +1,12 @@
-use ash;
-use ash::extensions::ext::DebugUtils;
-use ash::extensions::khr::Surface;
-use ash::version::{EntryV1_0, InstanceV1_0};
-use ash::vk;
+use ash::{
+    self,
+    extensions::{ext::DebugUtils, khr::Surface},
+    version::{EntryV1_0, InstanceV1_0},
+    vk,
+};
 #[cfg(feature = "validation")]
 use std::borrow::Cow;
-use std::ffi::CString;
-#[allow(unused_imports)]
-use std::mem::transmute;
-use std::ops::Deref;
-use std::sync::Arc;
+use std::{ffi::CString, ops::Deref, sync::Arc};
 use winit;
 
 use super::{entry::Entry, helpers::create_surface};

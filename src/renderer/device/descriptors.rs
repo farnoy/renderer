@@ -4,17 +4,17 @@ use std::sync::Arc;
 
 pub struct DescriptorPool {
     pub handle: vk::DescriptorPool,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 pub struct DescriptorSetLayout {
     pub handle: vk::DescriptorSetLayout,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 pub struct DescriptorSet {
     pub handle: vk::DescriptorSet,
-    pub pool: Arc<DescriptorPool>,
+    pool: Arc<DescriptorPool>,
 }
 
 impl DescriptorPool {

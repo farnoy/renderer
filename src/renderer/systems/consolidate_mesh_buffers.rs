@@ -1,8 +1,7 @@
 use super::super::{
-    super::ecs::components::GltfMesh,
     alloc,
     device::{Buffer, CommandBuffer, DoubleBuffered, Fence, Semaphore},
-    GraphicsCommandPool, RenderFrame,
+    GltfMesh, GraphicsCommandPool, RenderFrame,
 };
 use super::present::ImageIndex;
 use ash::{

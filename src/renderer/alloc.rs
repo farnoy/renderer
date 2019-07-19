@@ -1,8 +1,8 @@
-#![allow(warnings)]
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types, unused, clippy::all)]
 
 use ash::{
     self, prelude,
-    version::{self, DeviceV1_0, EntryV1_0, InstanceV1_0},
+    version::{EntryV1_0, InstanceV1_0},
     vk,
 };
 use std::{
@@ -25,12 +25,14 @@ type VkDevice = vk::Device;
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 #[derive(Copy, Clone)]
+#[repr(C)]
 pub struct VmaAllocator(*mut VmaAllocator_T);
 
 unsafe impl Send for VmaAllocator {}
 unsafe impl Sync for VmaAllocator {}
 
 #[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct VmaAllocation(*mut VmaAllocation_T);
 
 unsafe impl Send for VmaAllocation {}
@@ -250,10 +252,10 @@ pub fn destroy(allocator: VmaAllocator) {
 }
 
 pub fn stats(allocator: VmaAllocator) -> VmaStats {
+    let mut stats = mem::MaybeUninit::uninit();
     unsafe {
-        let mut stats: VmaStats = mem::uninitialized();
-        vmaCalculateStats(allocator, &mut stats as *mut _);
-        stats
+        vmaCalculateStats(allocator, stats.as_mut_ptr());
+        stats.assume_init()
     }
 }
 

@@ -1,22 +1,29 @@
 // TODO: pub(crate) should disappear?
-pub mod alloc;
-pub mod device;
+mod alloc;
+mod device;
 mod entry;
 mod gltf_mesh;
 mod helpers;
 mod instance;
 mod swapchain;
-mod systems;
+mod systems {
+    mod consolidate_mesh_buffers;
+    mod cull_pipeline;
+    mod present;
+    mod textures;
 
-use super::ecs::{
-    components::{GltfMesh, Matrices, Position},
+    pub use self::{consolidate_mesh_buffers::*, cull_pipeline::*, present::*, textures::*};
+}
+
+use crate::ecs::{
+    components::{Matrices, Position},
     systems::Camera,
 };
 use ash::{version::DeviceV1_0, vk};
 use cgmath;
 use imgui::{self, im_str};
 use microprofile::scope;
-use specs::prelude::*;
+use specs::*;
 use std::{
     convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts,
     sync::Arc,
@@ -31,24 +38,30 @@ use self::{
     helpers::*,
     instance::Instance,
     systems::{
-        consolidate_mesh_buffers::ConsolidatedMeshBuffers, cull_pipeline::CullPassData,
-        textures::BaseColorDescriptorSet,
+        BaseColorDescriptorSet, CoarseCulled, ConsolidatedMeshBuffers, CullPassData,
+        GltfMeshBufferIndex, ImageIndex, VisitedMarker as BaseColorVisitedMarker,
     },
 };
 
 pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
-        consolidate_mesh_buffers::ConsolidateMeshBuffers,
-        cull_pipeline::{
-            AssignBufferIndex, CoarseCulled, CoarseCulling, CullPass, GltfMeshBufferIndex,
-        },
-        present::{AcquireFramebuffer, ImageIndex, PresentData, PresentFramebuffer},
-        textures::{GltfMeshBaseColorTexture, SynchronizeBaseColorTextures},
+        AcquireFramebuffer, AssignBufferIndex, CoarseCulling, ConsolidateMeshBuffers, CullPass,
+        GltfMeshBaseColorTexture, PresentData, PresentFramebuffer, SynchronizeBaseColorTextures,
     },
 };
 
-pub use self::systems::textures::VisitedMarker as BaseColorVisitedMarker;
+#[derive(Clone, Component)]
+#[storage(VecStorage)]
+pub struct GltfMesh {
+    pub vertex_buffer: Arc<Buffer>,
+    pub normal_buffer: Arc<Buffer>,
+    pub uv_buffer: Arc<Buffer>,
+    pub index_buffers: Arc<Vec<(Buffer, u64)>>,
+    pub vertex_len: u64,
+    pub aabb_c: cgmath::Vector3<f32>,
+    pub aabb_h: cgmath::Vector3<f32>,
+}
 
 // TODO: rename
 pub struct RenderFrame {

@@ -1,9 +1,8 @@
-use ash::extensions::khr::Swapchain;
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
 use ash::{
     self,
-    extensions::khr::Surface,
+    extensions::khr::{Surface, Swapchain},
     version::{DeviceV1_0, InstanceV1_0},
     vk,
 };
@@ -20,26 +19,19 @@ mod sync;
 
 use super::{alloc, Instance};
 
-pub use self::{
-    buffer::Buffer,
-    commands::{CommandBuffer, CommandPool},
-    descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
-    double_buffered::DoubleBuffered,
-    image::Image,
-    sync::{Event, Fence, Semaphore},
-};
+pub use self::{buffer::*, commands::*, descriptors::*, double_buffered::*, image::*, sync::*};
 
 type AshDevice = ash::Device;
 
 pub struct Device {
-    pub device: AshDevice,
-    pub instance: Arc<Instance>,
-    pub physical_device: vk::PhysicalDevice,
-    pub allocator: alloc::VmaAllocator,
-    pub graphics_queue_family: u32,
-    pub compute_queue_family: u32,
-    pub graphics_queue: Arc<Mutex<vk::Queue>>,
-    pub compute_queues: Vec<Arc<Mutex<vk::Queue>>>,
+    pub(super) device: AshDevice,
+    pub(super) instance: Arc<Instance>,
+    pub(super) physical_device: vk::PhysicalDevice,
+    pub(super) allocator: alloc::VmaAllocator,
+    pub(super) graphics_queue_family: u32,
+    pub(super) compute_queue_family: u32,
+    pub(super) graphics_queue: Arc<Mutex<vk::Queue>>,
+    pub(super) compute_queues: Vec<Arc<Mutex<vk::Queue>>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -347,7 +339,7 @@ impl Drop for Device {
 
 pub struct RenderPass {
     pub handle: vk::RenderPass,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 impl RenderPass {

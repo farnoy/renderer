@@ -1,19 +1,19 @@
 use super::{
     super::{
-        super::ecs::{
-            components::{GltfMesh, Position, AABB},
-            systems::Camera,
-        },
         alloc,
         device::{
             Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, DoubleBuffered, Event,
             Fence, Semaphore,
         },
         helpers::{self, pick_lod, Pipeline, PipelineLayout},
-        MVPData, MainDescriptorPool, RenderFrame,
+        GltfMesh, MVPData, MainDescriptorPool, RenderFrame,
     },
     consolidate_mesh_buffers::ConsolidatedMeshBuffers,
     present::ImageIndex,
+};
+use crate::ecs::{
+    components::{Position, AABB},
+    systems::Camera,
 };
 use ash::{
     version::DeviceV1_0,
@@ -22,8 +22,7 @@ use ash::{
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
-use specs::prelude::*;
-use specs::Component;
+use specs::*;
 use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc, u64};
 
 // Cull geometry in compute pass
@@ -80,7 +79,9 @@ impl<'a> System<'a> for AssignBufferIndex {
             if coarse_culled.0 {
                 indices.remove(entity);
             } else {
-                drop(indices.insert(entity, GltfMeshBufferIndex(ix as u32)));
+                indices
+                    .insert(entity, GltfMeshBufferIndex(ix as u32))
+                    .expect("Failed to insert mesh buffer index");
                 ix += 1;
             }
         }
@@ -89,14 +90,15 @@ impl<'a> System<'a> for AssignBufferIndex {
 
 impl<'a> System<'a> for CoarseCulling {
     type SystemData = (
+        Entities<'a>,
         ReadStorage<'a, AABB>,
         Read<'a, Camera>,
         WriteStorage<'a, CoarseCulled>,
     );
 
-    fn run(&mut self, (aabb, camera, mut culled): Self::SystemData) {
+    fn run(&mut self, (entities, aabb, camera, mut culled): Self::SystemData) {
         microprofile::scope!("ecs", "coarse culling");
-        for (aabb, culled) in (&aabb, &mut culled).join() {
+        for (entity_id, aabb) in (&*entities, &aabb).join() {
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
                 let e =
@@ -108,7 +110,9 @@ impl<'a> System<'a> for CoarseCulling {
                     break 'per_plane;
                 }
             }
-            culled.0 = outside;
+            culled
+                .insert(entity_id, CoarseCulled(outside))
+                .expect("failed to update coarse culled");
         }
     }
 }

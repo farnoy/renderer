@@ -16,19 +16,21 @@ extern crate specs;
 extern crate winapi;
 extern crate winit;
 
-mod forward_renderer;
+pub mod ecs {
+    pub mod components;
+    pub mod systems;
+}
+pub mod renderer;
 
-use crate::forward_renderer::{
-    ecs::{components::*, setup, systems::*},
-    renderer::{
-        load_gltf, AcquireFramebuffer, AssignBufferIndex, CoarseCulled, CoarseCulling,
-        ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMeshBaseColorTexture,
-        GltfMeshBufferIndex, LoadedMesh, MVPUpload, PresentFramebuffer, RenderFrame, Renderer,
-        SynchronizeBaseColorTextures,
-    },
+use crate::renderer::{
+    load_gltf, setup_ecs as renderer_setup_ecs, AcquireFramebuffer, AssignBufferIndex,
+    CoarseCulling, ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMesh,
+    GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PresentFramebuffer, RenderFrame, Renderer,
+    SynchronizeBaseColorTextures,
 };
 use ash::version::DeviceV1_0;
-use cgmath::{EuclideanSpace, Rotation3, Zero};
+use cgmath::{EuclideanSpace, Rotation3};
+use ecs::{components::*, systems::*};
 use microprofile::scope;
 use parking_lot::Mutex;
 use specs::{
@@ -41,7 +43,13 @@ use std::sync::Arc;
 fn main() {
     microprofile::init!();
     let mut world = specs::World::new();
-    setup(&mut world);
+    world.register::<Position>();
+    world.register::<Rotation>();
+    world.register::<Scale>();
+    world.register::<Matrices>();
+    world.register::<AABB>();
+    world.register::<GltfMesh>();
+    renderer_setup_ecs(&mut world);
     let rayon_threadpool = Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(8)
@@ -106,12 +114,6 @@ fn main() {
         .with::<Position>(Position(cgmath::Point3::new(0.0, 5.0, 0.0)))
         .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
         .with::<Scale>(Scale(1.0))
-        .with::<Matrices>(Matrices::one())
-        .with::<CoarseCulled>(CoarseCulled(false))
-        .with::<AABB>(AABB {
-            c: cgmath::Vector3::zero(),
-            h: cgmath::Vector3::zero(),
-        })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -121,7 +123,6 @@ fn main() {
             aabb_c,
             aabb_h,
         })
-        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
         .build();
 
@@ -132,12 +133,6 @@ fn main() {
             90.0,
         ))))
         .with::<Scale>(Scale(1.0))
-        .with::<Matrices>(Matrices::one())
-        .with::<CoarseCulled>(CoarseCulled(false))
-        .with::<AABB>(AABB {
-            c: cgmath::Vector3::zero(),
-            h: cgmath::Vector3::zero(),
-        })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -147,7 +142,6 @@ fn main() {
             aabb_c,
             aabb_h,
         })
-        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
         .build();
 
@@ -158,12 +152,6 @@ fn main() {
             60.0,
         ))))
         .with::<Scale>(Scale(1.0))
-        .with::<Matrices>(Matrices::one())
-        .with::<CoarseCulled>(CoarseCulled(false))
-        .with::<AABB>(AABB {
-            c: cgmath::Vector3::zero(),
-            h: cgmath::Vector3::zero(),
-        })
         .with::<GltfMesh>(GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
             normal_buffer: Arc::clone(&normal_buffer),
@@ -173,7 +161,6 @@ fn main() {
             aabb_c,
             aabb_h,
         })
-        .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
         .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
         .build();
 
@@ -203,12 +190,6 @@ fn main() {
             .with::<Position>(Position(cgmath::Point3::new(0.0, 0.0, 0.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(50.0))
-            .with::<Matrices>(Matrices::one())
-            .with::<CoarseCulled>(CoarseCulled(false))
-            .with::<AABB>(AABB {
-                c: cgmath::Vector3::zero(),
-                h: cgmath::Vector3::zero(),
-            })
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
@@ -218,7 +199,6 @@ fn main() {
                 aabb_c,
                 aabb_h,
             })
-            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
             .build();
     }
@@ -249,12 +229,6 @@ fn main() {
             .with::<Position>(Position(cgmath::Point3::new(5.0, 3.0, 2.0)))
             .with::<Rotation>(Rotation(cgmath::Quaternion::from_angle_y(cgmath::Deg(0.0))))
             .with::<Scale>(Scale(1.0))
-            .with::<Matrices>(Matrices::one())
-            .with::<CoarseCulled>(CoarseCulled(false))
-            .with::<AABB>(AABB {
-                c: cgmath::Vector3::zero(),
-                h: cgmath::Vector3::zero(),
-            })
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
@@ -264,7 +238,6 @@ fn main() {
                 aabb_c,
                 aabb_h,
             })
-            .with::<GltfMeshBufferIndex>(GltfMeshBufferIndex(0))
             .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
             .build();
     }
@@ -286,12 +259,6 @@ fn main() {
                 (ix * 20) as f32,
             ))))
             .with::<Scale>(Scale(0.6))
-            .with::<Matrices>(Matrices::one())
-            .with::<CoarseCulled>(CoarseCulled(false))
-            .with::<AABB>(AABB {
-                c: cgmath::Vector3::zero(),
-                h: cgmath::Vector3::zero(),
-            })
             .with::<GltfMesh>(GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),

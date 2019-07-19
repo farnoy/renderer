@@ -1,8 +1,5 @@
-use super::super::renderer::device::Buffer;
 use cgmath;
-use specs::Component;
-use specs::*;
-use std::sync::Arc;
+use specs::{storage::BTreeStorage, Component, *};
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
@@ -17,7 +14,7 @@ pub struct Rotation(pub cgmath::Quaternion<f32>);
 pub struct Scale(pub f32);
 
 #[derive(Clone, Copy, Component)]
-#[storage(VecStorage)]
+#[storage(BTreeStorage)]
 pub struct Light {
     pub strength: f32,
 }
@@ -37,18 +34,6 @@ impl Matrices {
             model: cgmath::Matrix4::one(),
         }
     }
-}
-
-#[derive(Clone, Component)]
-#[storage(VecStorage)]
-pub struct GltfMesh {
-    pub vertex_buffer: Arc<Buffer>,
-    pub normal_buffer: Arc<Buffer>,
-    pub uv_buffer: Arc<Buffer>,
-    pub index_buffers: Arc<Vec<(Buffer, u64)>>,
-    pub vertex_len: u64,
-    pub aabb_c: cgmath::Vector3<f32>,
-    pub aabb_h: cgmath::Vector3<f32>,
 }
 
 // Stores the AABB after translation, rotation, scale
