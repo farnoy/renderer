@@ -1,32 +1,28 @@
 use super::super::device::Image;
-#[cfg(not(feature = "renderdoc"))]
 use super::{
     super::{
-        device::{DescriptorSet, DoubleBuffered},
-        helpers, RenderFrame,
+        device::{DescriptorSet, DescriptorSetLayout, DoubleBuffered},
+        helpers, MainDescriptorPool, RenderFrame,
     },
     cull_pipeline::GltfMeshBufferIndex,
-    present::PresentData,
+    present::ImageIndex,
 };
-#[cfg(not(feature = "renderdoc"))]
 use ash::{version::DeviceV1_0, vk};
 use specs::prelude::*;
 use specs::Component;
-use std::sync::Arc;
+use std::{ptr, sync::Arc};
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
 pub struct SynchronizeBaseColorTextures;
 
 pub struct BaseColorDescriptorSet {
-    #[cfg(not(feature = "renderdoc"))]
+    pub layout: DescriptorSetLayout,
     pub(in super::super) set: DoubleBuffered<DescriptorSet>,
-    #[cfg(not(feature = "renderdoc"))]
     sampler: helpers::Sampler,
 }
 
 #[derive(Component)]
 #[storage(VecStorage)]
-#[cfg(not(feature = "renderdoc"))]
 pub struct VisitedMarker {
     image_view: helpers::ImageView,
 }
@@ -37,51 +33,77 @@ pub struct VisitedMarker {
 #[storage(VecStorage)]
 pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
 
-pub struct BaseColorSetupHandler;
-
-impl specs::shred::SetupHandler<BaseColorDescriptorSet> for BaseColorSetupHandler {
-    #[cfg(not(feature = "renderdoc"))]
+impl specs::shred::SetupHandler<BaseColorDescriptorSet> for BaseColorDescriptorSet {
     fn setup(world: &mut World) {
-        let renderer = world.fetch::<RenderFrame>();
-        let set = renderer.new_buffered(|ix| {
-            let s = renderer
-                .descriptor_pool
-                .allocate_set(&renderer.base_color_descriptor_set_layout);
-            renderer.device.set_object_name(
-                s.handle,
-                &format!("Base Color Consolidated descriptor set - {}", ix),
-            );
-            s
-        });
+        if world.has_value::<BaseColorDescriptorSet>() {
+            return;
+        }
 
-        let sampler = helpers::new_sampler(
-            renderer.device.clone(),
-            &vk::SamplerCreateInfo::builder()
-                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+        let result = world.exec(
+            |(renderer, main_descriptor_pool): (
+                ReadExpect<RenderFrame>,
+                Write<MainDescriptorPool, MainDescriptorPool>,
+            )| {
+                let layout = {
+                    let mut binding_flags =
+                        vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
+                            .binding_flags(&[vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
+                    let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+                        .bindings(&[vk::DescriptorSetLayoutBinding {
+                            binding: 0,
+                            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                            descriptor_count: 3072,
+                            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                            p_immutable_samplers: ptr::null(),
+                        }])
+                        .push_next(&mut binding_flags);
+
+                    renderer.device.new_descriptor_set_layout2(&create_info)
+                };
+
+                renderer.device.set_object_name(
+                    layout.handle,
+                    "Base Color Consolidated Descriptor Set Layout",
+                );
+
+                let set = renderer.new_buffered(|ix| {
+                    let s = main_descriptor_pool.0.allocate_set(&layout);
+                    renderer.device.set_object_name(
+                        s.handle,
+                        &format!("Base Color Consolidated descriptor set - {}", ix),
+                    );
+                    s
+                });
+
+                let sampler = helpers::new_sampler(
+                    renderer.device.clone(),
+                    &vk::SamplerCreateInfo::builder()
+                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                );
+
+                BaseColorDescriptorSet {
+                    layout,
+                    set,
+                    sampler,
+                }
+            },
         );
-        drop(renderer);
 
-        world.insert(BaseColorDescriptorSet { set, sampler });
-    }
-
-    #[cfg(feature = "renderdoc")]
-    fn setup(world: &mut World) {
-        world.insert(BaseColorDescriptorSet {});
+        world.insert(result);
     }
 }
 
-#[cfg(not(feature = "renderdoc"))]
 impl<'a> System<'a> for SynchronizeBaseColorTextures {
     #[allow(clippy::type_complexity)]
     type SystemData = (
         Entities<'a>,
-        WriteExpect<'a, RenderFrame>,
-        Write<'a, BaseColorDescriptorSet, BaseColorSetupHandler>,
+        ReadExpect<'a, RenderFrame>,
+        Write<'a, BaseColorDescriptorSet, BaseColorDescriptorSet>,
         ReadStorage<'a, GltfMeshBaseColorTexture>,
         ReadStorage<'a, GltfMeshBufferIndex>,
-        ReadExpect<'a, PresentData>,
+        Read<'a, ImageIndex>,
         WriteStorage<'a, VisitedMarker>,
     );
 
@@ -93,7 +115,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             base_color_descriptor_set,
             base_color_textures,
             buffer_indices,
-            present_data,
+            image_index,
             mut visited_markers,
         ): Self::SystemData,
     ) {
@@ -142,12 +164,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             unsafe {
                 renderer.device.device.update_descriptor_sets(
                     &[vk::WriteDescriptorSet::builder()
-                        .dst_set(
-                            base_color_descriptor_set
-                                .set
-                                .current(present_data.image_index)
-                                .handle,
-                        )
+                        .dst_set(base_color_descriptor_set.set.current(image_index.0).handle)
                         .dst_binding(0)
                         .dst_array_element(buffer_index.0)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -158,12 +175,4 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             }
         }
     }
-}
-
-#[cfg(feature = "renderdoc")]
-impl<'a> System<'a> for SynchronizeBaseColorTextures {
-    type SystemData = (Write<'a, BaseColorDescriptorSet, BaseColorSetupHandler>,);
-
-    #[allow(unused_variables)]
-    fn run(&mut self, base_color_descriptor_set: Self::SystemData) {}
 }

@@ -12,6 +12,11 @@ pub struct Fence {
     pub device: Arc<Device>,
 }
 
+pub struct Event {
+    pub handle: vk::Event,
+    pub device: Arc<Device>,
+}
+
 impl Semaphore {
     pub(super) fn new(device: &Arc<Device>) -> Semaphore {
         let create_info = vk::SemaphoreCreateInfo::builder();
@@ -40,6 +45,31 @@ impl Fence {
     }
 }
 
+impl Event {
+    pub(super) fn new(device: &Arc<Device>) -> Event {
+        let create_info = vk::EventCreateInfo::builder();
+        let event = unsafe {
+            device
+                .device
+                .create_event(&create_info, None)
+                .expect("Create event failed.")
+        };
+        Event {
+            device: Arc::clone(device),
+            handle: event,
+        }
+    }
+
+    #[allow(unused)]
+    pub fn signal(&self) {
+        unsafe {
+            self.device
+                .set_event(self.handle)
+                .expect("failed to signal event");
+        }
+    }
+}
+
 impl Drop for Semaphore {
     fn drop(&mut self) {
         unsafe {
@@ -52,6 +82,14 @@ impl Drop for Fence {
     fn drop(&mut self) {
         unsafe {
             self.device.device.destroy_fence(self.handle, None);
+        }
+    }
+}
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.device.destroy_event(self.handle, None);
         }
     }
 }

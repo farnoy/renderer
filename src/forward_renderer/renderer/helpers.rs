@@ -1,4 +1,4 @@
-use super::{alloc, device::DescriptorSetLayout, swapchain};
+use super::{device::DescriptorSetLayout, swapchain};
 #[cfg(windows)]
 use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
@@ -8,7 +8,8 @@ use ash::{
     version::{DeviceV1_0, EntryV1_0},
     vk, Instance as AshInstance,
 };
-use std::{ffi::CString, fs::File, io::Read, path::PathBuf, ptr, sync::Arc, u32};
+use cgmath::InnerSpace;
+use std::{ffi::CString, fs::File, io::Read, path::PathBuf, sync::Arc, u32};
 #[cfg(windows)]
 use winapi;
 use winit;
@@ -20,17 +21,12 @@ pub struct Swapchain {
     pub surface_format: vk::SurfaceFormatKHR,
 }
 
-pub struct RenderPass {
-    pub handle: vk::RenderPass,
-    pub device: Arc<Device>,
+pub struct SwapchainImage {
+    pub handle: vk::Image,
 }
 
 pub struct Framebuffer {
-    pub _images: Vec<vk::Image>,
-    pub image_views: Vec<vk::ImageView>,
-    pub depth_images: Vec<(vk::Image, alloc::VmaAllocation, alloc::VmaAllocationInfo)>,
-    pub depth_image_views: Vec<vk::ImageView>,
-    pub handles: Vec<vk::Framebuffer>,
+    pub handle: vk::Framebuffer,
     pub device: Arc<Device>,
 }
 
@@ -54,25 +50,10 @@ pub struct Pipeline {
     pub device: Arc<Device>,
 }
 
-impl Drop for RenderPass {
-    fn drop(&mut self) {
-        unsafe { self.device.device.destroy_render_pass(self.handle, None) }
-    }
-}
-
 impl Drop for Framebuffer {
     fn drop(&mut self) {
         unsafe {
-            self.device.device.device_wait_idle().unwrap();
-            for view in self.image_views.iter().chain(self.depth_image_views.iter()) {
-                self.device.device.destroy_image_view(*view, None);
-            }
-            for image in &self.depth_images {
-                self.device.device.destroy_image(image.0, None);
-            }
-            for handle in &self.handles {
-                self.device.device.destroy_framebuffer(*handle, None);
-            }
+            self.device.device.destroy_framebuffer(self.handle, None);
         }
     }
 }
@@ -192,147 +173,6 @@ pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
     Swapchain {
         handle: swapchain,
         surface_format,
-    }
-}
-
-pub fn setup_framebuffer(
-    instance: &Instance,
-    device: Arc<Device>,
-    swapchain: &Swapchain,
-    renderpass: &RenderPass,
-) -> Framebuffer {
-    let Swapchain {
-        handle: ref swapchain,
-        ref surface_format,
-        ..
-    } = *swapchain;
-    let Instance {
-        window_width,
-        window_height,
-        ..
-    } = *instance;
-
-    let images = unsafe {
-        swapchain
-            .ext
-            .get_swapchain_images(swapchain.swapchain)
-            .unwrap()
-    };
-    println!("swapchain images len {}", images.len());
-    let depth_images = (0..images.len())
-        .map(|_| {
-            alloc::create_image(
-                device.allocator,
-                &vk::ImageCreateInfo::builder()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(vk::Format::D16_UNORM)
-                    .extent(vk::Extent3D {
-                        width: instance.window_width,
-                        height: instance.window_height,
-                        depth: 1,
-                    })
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                    .queue_family_indices(&[device.graphics_queue_family])
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
-                &alloc::VmaAllocationCreateInfo {
-                    flags: alloc::VmaAllocationCreateFlagBits(0),
-                    memoryTypeBits: 0,
-                    pUserData: ptr::null_mut(),
-                    pool: ptr::null_mut(),
-                    preferredFlags: 0,
-                    requiredFlags: 0,
-                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                },
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>();
-    let image_views = images
-        .iter()
-        .map(|&image| {
-            let create_view_info = vk::ImageViewCreateInfo::builder()
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(surface_format.format)
-                .components(vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::R,
-                    g: vk::ComponentSwizzle::G,
-                    b: vk::ComponentSwizzle::B,
-                    a: vk::ComponentSwizzle::A,
-                })
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .image(image);
-            unsafe {
-                device
-                    .device
-                    .create_image_view(&create_view_info, None)
-                    .unwrap()
-            }
-        })
-        .collect::<Vec<_>>();
-    let depth_image_views = depth_images
-        .iter()
-        .map(|ref image| {
-            let create_view_info = vk::ImageViewCreateInfo::builder()
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::D16_UNORM)
-                .components(vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
-                })
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .image(image.0);
-            unsafe {
-                device
-                    .device
-                    .create_image_view(&create_view_info, None)
-                    .unwrap()
-            }
-        })
-        .collect::<Vec<_>>();
-    let handles = image_views
-        .iter()
-        .zip(depth_image_views.iter())
-        .map(|(&present_image_view, &depth_image_view)| {
-            let framebuffer_attachments = [present_image_view, depth_image_view];
-            let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
-                .render_pass(renderpass.handle)
-                .attachments(&framebuffer_attachments)
-                .width(window_width)
-                .height(window_height)
-                .layers(1);
-            unsafe {
-                device
-                    .device
-                    .create_framebuffer(&frame_buffer_create_info, None)
-                    .unwrap()
-            }
-        })
-        .collect::<Vec<_>>();
-
-    Framebuffer {
-        _images: images,
-        image_views,
-        depth_images,
-        depth_image_views,
-        handles,
-        device,
     }
 }
 
@@ -511,4 +351,18 @@ pub unsafe fn create_surface<E: EntryV1_0>(
         .hwnd(hwnd as *const c_void);
     let win32_surface_loader = Win32Surface::new(entry, instance);
     win32_surface_loader.create_win32_surface(&win32_create_info, None)
+}
+
+pub fn pick_lod<T>(
+    lods: &[T],
+    camera_pos: cgmath::Point3<f32>,
+    mesh_pos: cgmath::Point3<f32>,
+) -> &T {
+    let distance_from_camera = (camera_pos - mesh_pos).magnitude();
+    // TODO: fine-tune this later
+    if distance_from_camera > 10.0 {
+        lods.last().expect("empty index buffer LODs")
+    } else {
+        lods.first().expect("empty index buffer LODs")
+    }
 }

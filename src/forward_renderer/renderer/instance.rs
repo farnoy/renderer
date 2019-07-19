@@ -3,6 +3,8 @@ use ash::extensions::ext::DebugUtils;
 use ash::extensions::khr::Surface;
 use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
+#[cfg(feature = "validation")]
+use std::borrow::Cow;
 use std::ffi::CString;
 #[allow(unused_imports)]
 use std::mem::transmute;
@@ -30,6 +32,9 @@ struct Debug {
     utils: DebugUtils,
     messenger: vk::DebugUtilsMessengerEXT,
 }
+
+#[cfg(not(feature = "validation"))]
+struct Debug;
 
 impl Instance {
     pub fn new(
@@ -84,9 +89,7 @@ impl Instance {
                 use std::ffi::CStr;
                 let message_id = (*data).p_message_id_name;
                 if !message_id.is_null() {
-                    let s = CStr::from_ptr(message_id)
-                        .to_str()
-                        .expect("Something weird in p_message_id_name");
+                    let s = CStr::from_ptr(message_id).to_string_lossy();
                     print!("[ {} ] ", s);
                 };
 
@@ -107,15 +110,13 @@ impl Instance {
                     "{} & {} => {}",
                     severity_str,
                     type_str,
-                    CStr::from_ptr((*data).p_message)
-                        .to_str()
-                        .expect("Weird validation layer message")
+                    CStr::from_ptr((*data).p_message).to_string_lossy()
                 );
                 for ix in 0..((*data).object_count) {
                     let object = (*data).p_objects.offset(ix as isize).read();
                     let name = match object.p_object_name {
-                        x if x.is_null() => "Unknown name",
-                        x => CStr::from_ptr(x).to_str().unwrap(),
+                        x if x.is_null() => Cow::Borrowed("Unknown name"),
+                        x => CStr::from_ptr(x).to_string_lossy(),
                     };
                     println!(
                         "    Object[{}] - Type {:?}, Value 0x{:x?}, Name \"{}\"",

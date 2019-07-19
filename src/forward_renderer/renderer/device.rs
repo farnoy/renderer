@@ -26,7 +26,7 @@ pub use self::{
     descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
     double_buffered::DoubleBuffered,
     image::Image,
-    sync::{Fence, Semaphore},
+    sync::{Event, Fence, Semaphore},
 };
 
 type AshDevice = ash::Device;
@@ -141,45 +141,44 @@ impl Device {
                 .enabled_extension_names(&device_extension_names_raw)
                 .enabled_features(&features);
 
-            if cfg!(not(feature = "renderdoc")) {
-                device_create_info =
-                    device_create_info.push_next(&mut descriptor_indexing_features);
-            }
+            device_create_info = device_create_info.push_next(&mut descriptor_indexing_features);
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
         let allocator =
             alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
-        let graphics_queue = unsafe {
-            Arc::new(Mutex::new(
-                device.get_device_queue(graphics_queue_family, 0),
-            ))
-        };
+        let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
         let compute_queues = match compute_queues_spec {
             Some((compute_queue_family, len)) => (0..len)
-                .map(|ix| unsafe {
-                    Arc::new(Mutex::new(
-                        device.get_device_queue(compute_queue_family, ix),
-                    ))
-                })
+                .map(|ix| unsafe { device.get_device_queue(compute_queue_family, ix) })
                 .collect::<Vec<_>>(),
-            None => vec![Arc::clone(&graphics_queue)],
+            None => vec![graphics_queue],
         };
 
-        {
-            Ok(Device {
-                device,
-                instance: Arc::clone(instance),
-                physical_device,
-                allocator,
-                graphics_queue_family,
-                compute_queue_family: compute_queues_spec
-                    .map(|a| a.0)
-                    .unwrap_or(graphics_queue_family),
-                graphics_queue,
-                compute_queues,
-            })
+        let device = Device {
+            device,
+            instance: Arc::clone(instance),
+            physical_device,
+            allocator,
+            graphics_queue_family,
+            compute_queue_family: compute_queues_spec
+                .map(|a| a.0)
+                .unwrap_or(graphics_queue_family),
+            graphics_queue: Arc::new(Mutex::new(graphics_queue)),
+            compute_queues: compute_queues
+                .iter()
+                .cloned()
+                .map(|q| Arc::new(Mutex::new(q)))
+                .collect(),
+        };
+        device.set_object_name(graphics_queue, "Graphics Queue");
+        for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
+            if compute_queue != graphics_queue {
+                device.set_object_name(compute_queue, &format!("Compute Queue - {}", ix));
+            }
         }
+
+        Ok(device)
     }
 
     pub fn new_descriptor_pool(
@@ -234,10 +233,32 @@ impl Device {
         format: vk::Format,
         extent: vk::Extent3D,
         samples: vk::SampleCountFlags,
+        tiling: vk::ImageTiling,
+        initial_layout: vk::ImageLayout,
         usage: vk::ImageUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
     ) -> Image {
-        Image::new(self, format, extent, samples, usage, allocation_usage)
+        Image::new(
+            self,
+            format,
+            extent,
+            samples,
+            tiling,
+            initial_layout,
+            usage,
+            allocation_usage,
+        )
+    }
+
+    pub fn new_event(self: &Arc<Self>) -> Event {
+        Event::new(self)
+    }
+
+    pub fn new_renderpass(
+        self: &Arc<Self>,
+        create_info: &vk::RenderPassCreateInfoBuilder,
+    ) -> RenderPass {
+        RenderPass::new(self, create_info)
     }
 
     pub fn vk(&self) -> &AshDevice {
@@ -321,5 +342,34 @@ impl Drop for Device {
             alloc::destroy(self.allocator);
             self.device.destroy_device(None);
         }
+    }
+}
+
+pub struct RenderPass {
+    pub handle: vk::RenderPass,
+    pub device: Arc<Device>,
+}
+
+impl RenderPass {
+    pub(super) fn new(
+        device: &Arc<Device>,
+        create_info: &vk::RenderPassCreateInfoBuilder,
+    ) -> RenderPass {
+        let handle = unsafe {
+            device
+                .device
+                .create_render_pass(create_info, None)
+                .expect("Failed to create renderpass")
+        };
+        RenderPass {
+            device: Arc::clone(device),
+            handle,
+        }
+    }
+}
+
+impl Drop for RenderPass {
+    fn drop(&mut self) {
+        unsafe { self.device.device.destroy_render_pass(self.handle, None) }
     }
 }

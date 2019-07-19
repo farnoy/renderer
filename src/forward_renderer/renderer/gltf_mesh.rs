@@ -3,12 +3,13 @@ use cgmath;
 use gltf;
 use image;
 use meshopt;
+use specs::prelude::*;
 use std::{mem::size_of, path::Path, u64};
 
 use super::{
     alloc,
     device::{Buffer, Image},
-    RenderFrame,
+    GraphicsCommandPool, RenderFrame,
 };
 
 pub struct LoadedMesh {
@@ -31,7 +32,9 @@ impl meshopt::DecodePosition for Pos {
     }
 }
 
-pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
+pub fn load(world: &mut World, path: &str) -> LoadedMesh {
+    let (renderer, graphics_command_pool) =
+        world.system_data::<(ReadExpect<RenderFrame>, ReadExpect<GraphicsCommandPool>)>();
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded
         .meshes()
@@ -92,6 +95,8 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             depth: 1,
         },
         vk::SampleCountFlags::TYPE_1,
+        vk::ImageTiling::LINEAR, // todo use optimal?
+        vk::ImageLayout::PREINITIALIZED,
         vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
     );
@@ -120,12 +125,18 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let (a, meshoptpositions, b) = unsafe { positions.as_slice().align_to::<u8>() };
     assert_eq!(a.len(), 0);
     assert_eq!(b.len(), 0);
-    let vertex_adapter = meshopt::VertexDataAdapter::new(&meshoptpositions, size_of::<f32>() * 3, 0).expect("vertex data adapter failed");
+    let vertex_adapter =
+        meshopt::VertexDataAdapter::new(&meshoptpositions, size_of::<f32>() * 3, 0)
+            .expect("vertex data adapter failed");
     let mut index_lods = if indices.len() > 1000 {
         let mut lods = Vec::with_capacity(6);
         for x in 1..6 {
             let factor = (2 as usize).pow(x);
-            lods.push(meshopt::simplify::simplify_sloppy(&indices, &vertex_adapter, indices.len() / factor));
+            lods.push(meshopt::simplify::simplify_sloppy(
+                &indices,
+                &vertex_adapter,
+                indices.len() / factor,
+            ));
         }
         lods
     } else {
@@ -238,39 +249,44 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             mapped[ix] = *data;
         }
     }
-    let index_buffers = index_lods.iter().enumerate().map(|(ix, indices)| {
-        let index_len = indices.len() as u64;
-        let index_size = size_of::<u32>() as u64 * index_len;
-        println!("creating index buffer {}", index_size);
-        let index_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::INDEX_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::TRANSFER_SRC
-                | vk::BufferUsageFlags::STORAGE_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            index_size,
-        );
-        renderer
-            .device
-            .set_object_name(index_buffer.handle, &format!("Gltf mesh index buffer LOD {}", ix));
-        let index_upload_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            index_size,
-        );
-        renderer
-            .device
-            .set_object_name(index_upload_buffer.handle, &format!("Gltf mesh index upload buffer LOD {}", ix));
-        {
-            let mut mapped = index_upload_buffer
-                .map::<u32>()
-                .expect("failed to map index upload buffer");
-            mapped[0..index_len as usize].copy_from_slice(&indices);
-        }
+    let index_buffers = index_lods
+        .iter()
+        .enumerate()
+        .map(|(ix, indices)| {
+            let index_len = indices.len() as u64;
+            let index_size = size_of::<u32>() as u64 * index_len;
+            let index_buffer = renderer.device.new_buffer(
+                vk::BufferUsageFlags::INDEX_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::STORAGE_BUFFER,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                index_size,
+            );
+            renderer.device.set_object_name(
+                index_buffer.handle,
+                &format!("Gltf mesh index buffer LOD {}", ix),
+            );
+            let index_upload_buffer = renderer.device.new_buffer(
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                index_size,
+            );
+            renderer.device.set_object_name(
+                index_upload_buffer.handle,
+                &format!("Gltf mesh index upload buffer LOD {}", ix),
+            );
+            {
+                let mut mapped = index_upload_buffer
+                    .map::<u32>()
+                    .expect("failed to map index upload buffer");
+                mapped[0..index_len as usize].copy_from_slice(&indices);
+            }
 
-        (index_buffer, index_upload_buffer, index_len)
-    }).collect::<Vec<_>>();
-    let upload = renderer.graphics_command_pool.record_one_time({
+            (index_buffer, index_upload_buffer, index_len)
+        })
+        .collect::<Vec<_>>();
+    let upload = graphics_command_pool.0.record_one_time({
         let vertex_buffer = &vertex_buffer;
         let vertex_upload_buffer = &vertex_upload_buffer;
         let normal_buffer = &normal_buffer;
@@ -401,7 +417,10 @@ pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             .wait_for_fences(&[upload_fence.handle], true, u64::MAX)
             .expect("Wait for fence failed.");
     }
-    let index_buffers = index_buffers.into_iter().map(|(buffer, _, len)| (buffer, len)).collect();
+    let index_buffers = index_buffers
+        .into_iter()
+        .map(|(buffer, _, len)| (buffer, len))
+        .collect();
 
     LoadedMesh {
         vertex_buffer,

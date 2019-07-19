@@ -16,6 +16,8 @@ impl Image {
         format: vk::Format,
         extent: vk::Extent3D,
         samples: vk::SampleCountFlags,
+        tiling: vk::ImageTiling,
+        initial_layout: vk::ImageLayout,
         usage: vk::ImageUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
     ) -> Image {
@@ -39,8 +41,8 @@ impl Image {
             .mip_levels(1)
             .array_layers(1)
             .image_type(vk::ImageType::TYPE_2D)
-            .tiling(vk::ImageTiling::LINEAR)
-            .initial_layout(vk::ImageLayout::PREINITIALIZED)
+            .tiling(tiling)
+            .initial_layout(initial_layout)
             .sharing_mode(sharing_mode)
             .queue_family_indices(&queue_family_indices);
 

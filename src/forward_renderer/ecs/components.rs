@@ -1,7 +1,7 @@
 use super::super::renderer::device::Buffer;
 use cgmath;
-use specs::*;
 use specs::Component;
+use specs::*;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Component)]

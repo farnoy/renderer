@@ -11,7 +11,6 @@ extern crate meshopt;
 extern crate microprofile;
 extern crate num_traits;
 extern crate parking_lot;
-extern crate smallvec;
 extern crate specs;
 #[cfg(windows)]
 extern crate winapi;
@@ -23,8 +22,8 @@ use crate::forward_renderer::{
     ecs::{components::*, setup, systems::*},
     renderer::{
         load_gltf, AcquireFramebuffer, AssignBufferIndex, CoarseCulled, CoarseCulling,
-        ConsolidateMeshBuffers, CullPass, GltfMeshBaseColorTexture, GltfMeshBufferIndex, Gui,
-        LoadedMesh, MVPUpload, PresentFramebuffer, RenderFrame, Renderer,
+        ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMeshBaseColorTexture,
+        GltfMeshBufferIndex, LoadedMesh, MVPUpload, PresentFramebuffer, RenderFrame, Renderer,
         SynchronizeBaseColorTextures,
     },
 };
@@ -32,7 +31,11 @@ use ash::version::DeviceV1_0;
 use cgmath::{EuclideanSpace, Rotation3, Zero};
 use microprofile::scope;
 use parking_lot::Mutex;
-use specs::{Builder, rayon, WorldExt};
+use specs::{
+    rayon,
+    shred::{par, seq, ParSeq},
+    Builder, WorldExt,
+};
 use std::sync::Arc;
 
 fn main() {
@@ -48,6 +51,37 @@ fn main() {
 
     let (renderer, events_loop) = RenderFrame::new();
 
+    world.insert(renderer);
+
+    let quit_handle = Arc::new(Mutex::new(false));
+
+    let mut dispatcher = ParSeq::new(
+        seq![
+            AcquireFramebuffer,
+            CalculateFrameTiming,
+            InputHandler {
+                events_loop,
+                quit_handle: quit_handle.clone(),
+                move_mouse: true,
+            },
+            par![FlyCamera::default(), ConsolidateMeshBuffers,],
+            ProjectCamera,
+            MVPCalculation,
+            AABBCalculation,
+            CoarseCulling,
+            AssignBufferIndex,
+            SynchronizeBaseColorTextures,
+            MVPUpload,
+            DepthOnlyPass,
+            CullPass,
+            Renderer,
+            PresentFramebuffer,
+        ],
+        rayon_threadpool,
+    );
+
+    dispatcher.setup(&mut world);
+
     let LoadedMesh {
         vertex_buffer,
         normal_buffer,
@@ -58,7 +92,7 @@ fn main() {
         aabb_h,
         base_color,
     } = load_gltf(
-        &renderer,
+        &mut world,
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
     );
 
@@ -155,7 +189,7 @@ fn main() {
             aabb_h,
             base_color,
         } = load_gltf(
-            &renderer,
+            &mut world,
             "vendor/glTF-Sample-Models/2.0/TwoSidedPlane/glTF/TwoSidedPlane.gltf",
         );
 
@@ -201,7 +235,7 @@ fn main() {
             aabb_h,
             base_color,
         } = load_gltf(
-            &renderer,
+            &mut world,
             "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
         );
 
@@ -240,7 +274,11 @@ fn main() {
         let rot = cgmath::Quaternion::from_angle_y(cgmath::Deg((ix * 20) as f32));
         let pos = {
             use cgmath::Rotation;
-            cgmath::Point3::from_vec(rot.rotate_vector(cgmath::vec3(0.0, 2.0, 5.0 + (ix / 10) as f32)))
+            cgmath::Point3::from_vec(rot.rotate_vector(cgmath::vec3(
+                0.0,
+                2.0,
+                5.0 + (ix / 10) as f32,
+            )))
         };
         world
             .create_entity()
@@ -268,79 +306,12 @@ fn main() {
             .build();
     }
 
-    let gui = Gui::new(&renderer);
-
-    world.insert(renderer);
-    world.insert(gui);
-
-    let quit_handle = Arc::new(Mutex::new(false));
-
-    let dispatcher_builder = specs::DispatcherBuilder::new()
-        .with_pool(Arc::clone(&rayon_threadpool))
-        .with_thread_local(InputHandler {
-            events_loop,
-            quit_handle: quit_handle.clone(),
-            move_mouse: true,
-        })
-        .with(CalculateFrameTiming, "calculate_frame_timing", &[])
-        .with_barrier()
-        .with(FlyCamera::default(), "fly_camera", &[])
-        .with(ProjectCamera, "project_camera", &["fly_camera"])
-        .with(MVPCalculation, "mvp", &["project_camera"])
-        .with(AABBCalculation, "aabb_calc", &["mvp"])
-        .with(ConsolidateMeshBuffers, "consolidate_vertex_buffers", &[])
-        .with(
-            CoarseCulling,
-            "coarse_culling",
-            &["aabb_calc", "project_camera"],
-        )
-        .with(
-            AssignBufferIndex,
-            "assign_buffer_index",
-            &["coarse_culling"],
-        )
-        .with(
-            SynchronizeBaseColorTextures,
-            "synchronize_base_color_textures",
-            &["assign_buffer_index"],
-        )
-        .with(MVPUpload, "mvp_upload", &["mvp", "assign_buffer_index"])
-        .with(AcquireFramebuffer, "acquire_framebuffer", &[])
-        .with(
-            CullPass,
-            "cull_pass",
-            &[
-                "acquire_framebuffer",
-                "assign_buffer_index",
-                "mvp_upload",
-                "coarse_culling",
-                "consolidate_vertex_buffers",
-            ],
-        )
-        .with(
-            Renderer,
-            "render_frame",
-            &["cull_pass", "synchronize_base_color_textures"],
-        )
-        .with(PresentFramebuffer, "present_framebuffer", &["render_frame"]);
-
-    // print stages of execution
-    println!("{:?}", dispatcher_builder);
-
-    let mut dispatcher = dispatcher_builder.build();
-
-    dispatcher.setup(&mut world);
-
     'frame: loop {
         microprofile::flip!();
         microprofile::scope!("game-loop", "all");
         {
-            microprofile::scope!("game-loop", "dispatch thread local");
-            dispatcher.dispatch_thread_local(&world);
-        }
-        {
-            microprofile::scope!("game-loop", "dispatch par");
-            dispatcher.dispatch_par(&world);
+            microprofile::scope!("game-loop", "dispatch");
+            dispatcher.dispatch(&world);
         }
         world.maintain();
         if *quit_handle.lock() {

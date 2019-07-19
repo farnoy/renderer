@@ -7,13 +7,19 @@ use microprofile::scope;
 use specs::prelude::*;
 use std::u64;
 
-// Shared resource
 pub struct PresentData {
     pub(in super::super) render_complete_semaphore: Semaphore,
     pub(in super::super) present_semaphore: Semaphore,
     pub(in super::super) render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
     pub(in super::super) render_complete_fence: DoubleBuffered<Fence>,
-    pub image_index: u32,
+}
+
+pub struct ImageIndex(pub u32);
+
+impl Default for ImageIndex {
+    fn default() -> Self {
+        ImageIndex(0)
+    }
 }
 
 // Acquire swapchain image and store the index
@@ -21,10 +27,12 @@ pub struct AcquireFramebuffer;
 
 pub struct PresentFramebuffer;
 
-pub struct PresentDataSetupHandler;
-
-impl specs::shred::SetupHandler<PresentData> for PresentDataSetupHandler {
+impl specs::shred::SetupHandler<PresentData> for PresentData {
     fn setup(world: &mut World) {
+        if world.has_value::<PresentData>() {
+            return;
+        }
+
         let renderer = world.fetch::<RenderFrame>();
         let render_complete_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
@@ -54,7 +62,6 @@ impl specs::shred::SetupHandler<PresentData> for PresentDataSetupHandler {
             present_semaphore,
             render_command_buffer,
             render_complete_fence,
-            image_index: 0,
         });
     }
 }
@@ -62,14 +69,15 @@ impl specs::shred::SetupHandler<PresentData> for PresentDataSetupHandler {
 impl<'a> System<'a> for AcquireFramebuffer {
     type SystemData = (
         ReadExpect<'a, RenderFrame>,
-        Write<'a, PresentData, PresentDataSetupHandler>,
+        Read<'a, PresentData, PresentData>,
+        Write<'a, ImageIndex>,
     );
 
-    fn run(&mut self, (renderer, mut present_data): Self::SystemData) {
+    fn run(&mut self, (renderer, present_data, mut image_index): Self::SystemData) {
         microprofile::scope!("ecs", "present");
         if present_data
             .render_command_buffer
-            .current(present_data.image_index + 1)
+            .current(image_index.0 + 1)
             .is_some()
         {
             unsafe {
@@ -78,7 +86,7 @@ impl<'a> System<'a> for AcquireFramebuffer {
                     .wait_for_fences(
                         &[present_data
                             .render_complete_fence
-                            .current(present_data.image_index + 1)
+                            .current(image_index.0 + 1)
                             .handle],
                         true,
                         u64::MAX,
@@ -91,11 +99,11 @@ impl<'a> System<'a> for AcquireFramebuffer {
                 .device
                 .reset_fences(&[present_data
                     .render_complete_fence
-                    .current(present_data.image_index + 1)
+                    .current(image_index.0 + 1)
                     .handle])
                 .expect("failed to reset render complete fence");
         }
-        present_data.image_index = unsafe {
+        image_index.0 = unsafe {
             renderer
                 .swapchain
                 .handle
@@ -113,13 +121,17 @@ impl<'a> System<'a> for AcquireFramebuffer {
 }
 
 impl<'a> System<'a> for PresentFramebuffer {
-    type SystemData = (ReadExpect<'a, RenderFrame>, ReadExpect<'a, PresentData>);
+    type SystemData = (
+        ReadExpect<'a, RenderFrame>,
+        Read<'a, PresentData, PresentData>,
+        Read<'a, ImageIndex>,
+    );
 
-    fn run(&mut self, (renderer, present_data): Self::SystemData) {
+    fn run(&mut self, (renderer, present_data, image_index): Self::SystemData) {
         {
             let wait_semaphores = &[present_data.render_complete_semaphore.handle];
             let swapchains = &[renderer.swapchain.handle.swapchain];
-            let image_indices = &[present_data.image_index];
+            let image_indices = &[image_index.0];
             let present_info = vk::PresentInfoKHR::builder()
                 .wait_semaphores(wait_semaphores)
                 .swapchains(swapchains)

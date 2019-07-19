@@ -26,8 +26,6 @@ fn main() {
                 "-g",
                 "--target-env",
                 "vulkan1.1",
-                #[cfg(feature = "renderdoc")]
-                "-DRENDERDOC",
                 "-o",
                 output_path.to_str().unwrap(),
                 format!("{}/src/shaders/{}", src, shader).as_str(),

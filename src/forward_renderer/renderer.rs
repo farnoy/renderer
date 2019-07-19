@@ -8,19 +8,25 @@ mod instance;
 mod swapchain;
 mod systems;
 
-use super::ecs::components::Matrices;
-use ash::{prelude::*, version::DeviceV1_0, vk};
+use super::ecs::{
+    components::{GltfMesh, Matrices, Position},
+    systems::Camera,
+};
+use ash::{version::DeviceV1_0, vk};
 use cgmath;
 use imgui::{self, im_str};
 use microprofile::scope;
 use specs::prelude::*;
-use std::{mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc};
+use std::{
+    convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts,
+    sync::Arc,
+};
 use winit;
 
 use self::{
     device::{
-        Buffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device,
-        DoubleBuffered, Image,
+        Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout,
+        Device, DoubleBuffered, Image, RenderPass, Semaphore,
     },
     helpers::*,
     instance::Instance,
@@ -37,12 +43,11 @@ pub use self::{
         cull_pipeline::{
             AssignBufferIndex, CoarseCulled, CoarseCulling, CullPass, GltfMeshBufferIndex,
         },
-        present::{AcquireFramebuffer, PresentData, PresentFramebuffer},
+        present::{AcquireFramebuffer, ImageIndex, PresentData, PresentFramebuffer},
         textures::{GltfMeshBaseColorTexture, SynchronizeBaseColorTextures},
     },
 };
 
-#[cfg(not(feature = "renderdoc"))]
 pub use self::systems::textures::VisitedMarker as BaseColorVisitedMarker;
 
 // TODO: rename
@@ -50,20 +55,8 @@ pub struct RenderFrame {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
     pub swapchain: Swapchain,
-    pub framebuffer: Framebuffer,
-    pub graphics_command_pool: Arc<CommandPool>,
     pub compute_command_pool: Arc<CommandPool>,
-    pub descriptor_pool: Arc<DescriptorPool>,
     pub renderpass: RenderPass,
-    pub depth_pipeline: Pipeline,
-    pub depth_pipeline_layout: PipelineLayout,
-    pub gltf_pipeline: Pipeline,
-    pub gltf_pipeline_layout: PipelineLayout,
-    pub mvp_set_layout: DescriptorSetLayout,
-    pub mvp_set: DoubleBuffered<DescriptorSet>,
-    pub mvp_buffer: DoubleBuffered<Buffer>,
-    pub mesh_assembly_set_layout: DescriptorSetLayout,
-    pub base_color_descriptor_set_layout: DescriptorSetLayout,
 }
 
 impl RenderFrame {
@@ -73,20 +66,100 @@ impl RenderFrame {
         let device = Arc::new(Device::new(&instance).expect("Failed to create device"));
         device.set_object_name(device.handle(), "Device");
         let swapchain = new_swapchain(&instance, &device);
-        let graphics_command_pool = device.new_command_pool(
-            device.graphics_queue_family,
-            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-        );
         let compute_command_pool = device.new_command_pool(
             device.compute_queue_family,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
-        let main_renderpass = RenderFrame::setup_renderpass(Arc::clone(&device), &swapchain)
-            .expect("Failed to create renderpass");
-        let framebuffer =
-            setup_framebuffer(&instance, Arc::clone(&device), &swapchain, &main_renderpass);
+        let main_renderpass = {
+            let color_attachment = vk::AttachmentReference {
+                attachment: 0,
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            };
+            let depth_attachment = vk::AttachmentReference {
+                attachment: 1,
+                layout: vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+            };
 
-        let descriptor_pool = Arc::new(device.new_descriptor_pool(
+            device.new_renderpass(
+                &vk::RenderPassCreateInfo::builder()
+                    .attachments(unsafe {
+                        &*(&[
+                            vk::AttachmentDescription::builder()
+                                .format(swapchain.surface_format.format)
+                                .samples(vk::SampleCountFlags::TYPE_1)
+                                .load_op(vk::AttachmentLoadOp::CLEAR)
+                                .store_op(vk::AttachmentStoreOp::STORE)
+                                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .initial_layout(vk::ImageLayout::UNDEFINED)
+                                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                            vk::AttachmentDescription::builder()
+                                .format(vk::Format::D16_UNORM)
+                                .samples(vk::SampleCountFlags::TYPE_1)
+                                .load_op(vk::AttachmentLoadOp::LOAD)
+                                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .initial_layout(
+                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                )
+                                .final_layout(
+                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                ),
+                        ]
+                            as *const [vk::AttachmentDescriptionBuilder<'_>; 2]
+                            as *const [vk::AttachmentDescription; 2])
+                    })
+                    .subpasses(unsafe {
+                        &*(&[vk::SubpassDescription::builder()
+                            .color_attachments(&[color_attachment])
+                            .depth_stencil_attachment(&depth_attachment)
+                            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]
+                            as *const [vk::SubpassDescriptionBuilder<'_>; 1]
+                            as *const [vk::SubpassDescription; 1])
+                    })
+                    .dependencies(unsafe {
+                        &*(&[vk::SubpassDependency::builder()
+                            .src_subpass(vk::SUBPASS_EXTERNAL)
+                            .dst_subpass(0)
+                            .src_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+                            .dst_stage_mask(vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+                            .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ)]
+                            as *const [vk::SubpassDependencyBuilder<'_>; 1]
+                            as *const [vk::SubpassDependency; 1])
+                    }),
+            )
+        };
+        device.set_object_name(main_renderpass.handle, "Main pass RenderPass");
+
+        (
+            RenderFrame {
+                instance: Arc::clone(&instance),
+                device: Arc::clone(&device),
+                compute_command_pool: Arc::new(compute_command_pool),
+                renderpass: main_renderpass,
+                swapchain,
+            },
+            events_loop,
+        )
+    }
+
+    pub fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
+        DoubleBuffered::new(creator)
+    }
+}
+
+pub struct MainDescriptorPool(pub Arc<DescriptorPool>);
+
+impl specs::shred::SetupHandler<MainDescriptorPool> for MainDescriptorPool {
+    fn setup(world: &mut World) {
+        if world.has_value::<MainDescriptorPool>() {
+            return;
+        }
+
+        let renderer = world.fetch::<RenderFrame>();
+
+        let descriptor_pool = Arc::new(renderer.device.new_descriptor_pool(
             3_000,
             &[
                 vk::DescriptorPoolSize {
@@ -103,443 +176,677 @@ impl RenderFrame {
                 },
             ],
         ));
+        renderer
+            .device
+            .set_object_name(descriptor_pool.handle, "Main Descriptor Pool");
+        drop(renderer);
 
-        let mvp_set_layout = device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-            binding: 0,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
-            p_immutable_samplers: ptr::null(),
-        }]);
-        device.set_object_name(mvp_set_layout.handle, "MVP Set Layout");
+        world.insert(MainDescriptorPool(descriptor_pool));
+    }
+}
 
-        let mesh_assembly_set_layout = device.new_descriptor_set_layout(&[
-            vk::DescriptorSetLayoutBinding {
-                binding: 0,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::COMPUTE,
-                p_immutable_samplers: ptr::null(),
-            },
-            vk::DescriptorSetLayoutBinding {
-                binding: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::COMPUTE,
-                p_immutable_samplers: ptr::null(),
-            },
-        ]);
-        device.set_object_name(mesh_assembly_set_layout.handle, "Mesh Assembly Layout");
+pub struct MainAttachments {
+    pub swapchain_images: Vec<Arc<SwapchainImage>>,
+    pub swapchain_image_views: Vec<Arc<ImageView>>,
+    pub depth_images: Vec<Arc<Image>>,
+    pub depth_image_views: Vec<Arc<ImageView>>,
+    pub device: Arc<Device>,
+}
 
-        let base_color_descriptor_set_layout = {
-            let mut binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
-                .binding_flags(&[#[cfg(not(feature = "renderdoc"))]
-                vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
-            let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
-                .bindings(&[vk::DescriptorSetLayoutBinding {
-                    binding: 0,
-                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 3072,
-                    stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                    p_immutable_samplers: ptr::null(),
-                }])
-                .push_next(&mut binding_flags);
+impl specs::shred::SetupHandler<MainAttachments> for MainAttachments {
+    fn setup(world: &mut World) {
+        if world.has_value::<MainAttachments>() {
+            return;
+        }
 
-            device.new_descriptor_set_layout2(&create_info)
+        let renderer = world.fetch::<RenderFrame>();
+        let Swapchain {
+            handle: ref swapchain,
+            ref surface_format,
+            ..
+        } = renderer.swapchain;
+        let Instance {
+            window_width,
+            window_height,
+            ..
+        } = *renderer.instance;
+
+        let images = unsafe {
+            swapchain
+                .ext
+                .get_swapchain_images(swapchain.swapchain)
+                .unwrap()
         };
+        println!("swapchain images len {}", images.len());
+        let depth_images = (0..images.len())
+            .map(|_| {
+                renderer.device.new_image(
+                    vk::Format::D16_UNORM,
+                    vk::Extent3D {
+                        width: window_width,
+                        height: window_height,
+                        depth: 1,
+                    },
+                    vk::SampleCountFlags::TYPE_1,
+                    vk::ImageTiling::OPTIMAL,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                )
+            })
+            .collect::<Vec<_>>();
+        let image_views = images
+            .iter()
+            .map(|&image| {
+                let create_view_info = vk::ImageViewCreateInfo::builder()
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(surface_format.format)
+                    .components(vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::R,
+                        g: vk::ComponentSwizzle::G,
+                        b: vk::ComponentSwizzle::B,
+                        a: vk::ComponentSwizzle::A,
+                    })
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image(image);
+                let handle = unsafe {
+                    renderer
+                        .device
+                        .create_image_view(&create_view_info, None)
+                        .unwrap()
+                };
 
-        device.set_object_name(
-            base_color_descriptor_set_layout.handle,
-            "Base Color Consolidated Descriptor Set Layout",
-        );
-
-        let gltf_pipeline_layout = new_pipeline_layout(
-            Arc::clone(&device),
-            #[cfg(feature = "renderdoc")]
-            {
-                &[&mvp_set_layout]
-            },
-            #[cfg(not(feature = "renderdoc"))]
-            {
-                &[&mvp_set_layout, &base_color_descriptor_set_layout]
-            },
-            &[],
-        );
-        device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
-        let gltf_pipeline = new_graphics_pipeline2(
-            Arc::clone(&device),
-            &[
-                (
-                    vk::ShaderStageFlags::VERTEX,
-                    PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv"),
-                ),
-                (
-                    vk::ShaderStageFlags::FRAGMENT,
-                    PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv"),
-                ),
-            ],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(
-                    &vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_attribute_descriptions(&[
-                            vk::VertexInputAttributeDescription {
-                                location: 0,
-                                binding: 0,
-                                format: vk::Format::R32G32B32_SFLOAT,
-                                offset: 0,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 1,
-                                binding: 1,
-                                format: vk::Format::R32G32B32_SFLOAT,
-                                offset: 0,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 2,
-                                binding: 2,
-                                format: vk::Format::R32G32_SFLOAT,
-                                offset: 0,
-                            },
-                        ])
-                        .vertex_binding_descriptions(&[
-                            vk::VertexInputBindingDescription {
-                                binding: 0,
-                                stride: size_of::<f32>() as u32 * 3,
-                                input_rate: vk::VertexInputRate::VERTEX,
-                            },
-                            vk::VertexInputBindingDescription {
-                                binding: 1,
-                                stride: size_of::<f32>() as u32 * 3,
-                                input_rate: vk::VertexInputRate::VERTEX,
-                            },
-                            vk::VertexInputBindingDescription {
-                                binding: 2,
-                                stride: size_of::<f32>() as u32 * 2,
-                                input_rate: vk::VertexInputRate::VERTEX,
-                            },
-                        ])
-                        .build(),
-                )
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build(),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .scissors(&[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: instance.window_width,
-                                height: instance.window_height,
-                            },
-                        }])
-                        .viewports(&[vk::Viewport {
-                            x: 0.0,
-                            y: (instance.window_height as f32),
-                            width: instance.window_width as f32,
-                            height: -(instance.window_height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }])
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .depth_stencil_state(
-                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
-                        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(false)
-                        .max_depth_bounds(1.0)
-                        .min_depth_bounds(0.0)
-                        .build(),
-                )
-                .color_blend_state(
-                    &vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
-                            .blend_enable(true)
-                            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .color_blend_op(vk::BlendOp::ADD)
-                            .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                            .alpha_blend_op(vk::BlendOp::ADD)
-                            .color_write_mask(vk::ColorComponentFlags::all())
-                            .build()])
-                        .build(),
-                )
-                .layout(gltf_pipeline_layout.handle)
-                .render_pass(main_renderpass.handle)
-                .subpass(1)
-                .build(),
-        );
-        device.set_object_name(gltf_pipeline.handle, "GLTF Pipeline");
-        let depth_pipeline_layout =
-            new_pipeline_layout(Arc::clone(&device), &[&mvp_set_layout], &[]);
-        let depth_pipeline = new_graphics_pipeline2(
-            Arc::clone(&device),
-            &[(
-                vk::ShaderStageFlags::VERTEX,
-                PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
-            )],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(
-                    &vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_attribute_descriptions(&[vk::VertexInputAttributeDescription {
-                            location: 0,
-                            binding: 0,
-                            format: vk::Format::R32G32B32_SFLOAT,
-                            offset: 0,
-                        }])
-                        .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
-                            binding: 0,
-                            stride: size_of::<f32>() as u32 * 3,
-                            input_rate: vk::VertexInputRate::VERTEX,
-                        }])
-                        .build(),
-                )
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build(),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .scissors(&[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: instance.window_width,
-                                height: instance.window_height,
-                            },
-                        }])
-                        .viewports(&[vk::Viewport {
-                            x: 0.0,
-                            y: (instance.window_height as f32),
-                            width: instance.window_width as f32,
-                            height: -(instance.window_height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }])
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .depth_stencil_state(
-                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
-                        .depth_write_enable(true)
-                        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(false)
-                        .max_depth_bounds(1.0)
-                        .min_depth_bounds(0.0)
-                        .build(),
-                )
-                .color_blend_state(
-                    &vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&[vk::PipelineColorBlendAttachmentState {
-                            blend_enable: 1,
-                            src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
-                            dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-                            color_blend_op: vk::BlendOp::ADD,
-                            src_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-                            dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-                            alpha_blend_op: vk::BlendOp::ADD,
-                            color_write_mask: vk::ColorComponentFlags::all(),
-                        }])
-                        .build(),
-                )
-                .layout(depth_pipeline_layout.handle)
-                .render_pass(main_renderpass.handle)
-                .subpass(0)
-                .build(),
-        );
-
-        device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
-
-        let mvp_buffer = DoubleBuffered::new(
-            |ix| {
-                let b = device.new_buffer(
-                    vk::BufferUsageFlags::UNIFORM_BUFFER,
-                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                    4 * 4 * 4 * 4096,
-                );
-                device.set_object_name(b.handle, &format!("MVP Buffer - {}", ix));
-                b
-            },
-            framebuffer.image_views.len() as u8,
-        );
-        let mvp_set = DoubleBuffered::new(
-            |ix| {
-                let s = descriptor_pool.allocate_set(&mvp_set_layout);
-                device.set_object_name(s.handle, &format!("MVP Set - {}", ix));
-
-                {
-                    let mvp_updates = &[vk::DescriptorBufferInfo {
-                        buffer: mvp_buffer.current(ix).handle,
-                        offset: 0,
-                        range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
-                    }];
-                    unsafe {
-                        device.update_descriptor_sets(
-                            &[vk::WriteDescriptorSet::builder()
-                                .dst_set(s.handle)
-                                .dst_binding(0)
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .buffer_info(mvp_updates)
-                                .build()],
-                            &[],
-                        );
-                    }
+                ImageView {
+                    handle,
+                    device: Arc::clone(&renderer.device),
                 }
+            })
+            .collect::<Vec<_>>();
+        let depth_image_views = depth_images
+            .iter()
+            .map(|ref image| {
+                let create_view_info = vk::ImageViewCreateInfo::builder()
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(vk::Format::D16_UNORM)
+                    .components(vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::IDENTITY,
+                        g: vk::ComponentSwizzle::IDENTITY,
+                        b: vk::ComponentSwizzle::IDENTITY,
+                        a: vk::ComponentSwizzle::IDENTITY,
+                    })
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image(image.handle);
+                let handle = unsafe {
+                    renderer
+                        .device
+                        .create_image_view(&create_view_info, None)
+                        .unwrap()
+                };
+                ImageView {
+                    handle,
+                    device: Arc::clone(&renderer.device),
+                }
+            })
+            .collect::<Vec<_>>();
 
-                s
+        let attachments = MainAttachments {
+            swapchain_images: images
+                .iter()
+                .cloned()
+                .map(|handle| SwapchainImage { handle })
+                .map(Arc::new)
+                .collect(),
+            swapchain_image_views: image_views.into_iter().map(Arc::new).collect(),
+            depth_images: depth_images.into_iter().map(Arc::new).collect(),
+            depth_image_views: depth_image_views.into_iter().map(Arc::new).collect(),
+            device: Arc::clone(&renderer.device),
+        };
+        drop(renderer);
+
+        world.insert(attachments);
+    }
+}
+
+pub struct MainFramebuffer {
+    pub handles: Vec<Framebuffer>,
+}
+
+impl specs::shred::SetupHandler<MainFramebuffer> for MainFramebuffer {
+    fn setup(world: &mut World) {
+        if world.has_value::<MainFramebuffer>() {
+            return;
+        }
+
+        let result = world.exec(
+            |(renderer, main_attachments): (
+                ReadExpect<RenderFrame>,
+                Read<MainAttachments, MainAttachments>,
+            )| {
+                let Instance {
+                    window_width,
+                    window_height,
+                    ..
+                } = *renderer.instance;
+
+                let handles = main_attachments
+                    .swapchain_image_views
+                    .iter()
+                    .cloned()
+                    .zip(main_attachments.depth_image_views.iter().cloned())
+                    .enumerate()
+                    .map(|(ix, (present_image_view, depth_image_view))| {
+                        let framebuffer_attachments =
+                            [present_image_view.handle, depth_image_view.handle];
+                        let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
+                            .render_pass(renderer.renderpass.handle)
+                            .attachments(&framebuffer_attachments)
+                            .width(window_width)
+                            .height(window_height)
+                            .layers(1);
+                        let handle = unsafe {
+                            renderer
+                                .device
+                                .create_framebuffer(&frame_buffer_create_info, None)
+                                .unwrap()
+                        };
+                        renderer
+                            .device
+                            .set_object_name(handle, &format!("Main Framebuffer - {}", ix));
+                        Framebuffer {
+                            handle,
+                            device: Arc::clone(&renderer.device),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                MainFramebuffer { handles }
             },
-            framebuffer.image_views.len() as u8,
         );
 
-        (
-            RenderFrame {
-                instance: Arc::clone(&instance),
-                device: Arc::clone(&device),
-                framebuffer,
-                depth_pipeline,
-                depth_pipeline_layout,
-                gltf_pipeline,
-                gltf_pipeline_layout,
-                graphics_command_pool: Arc::new(graphics_command_pool),
-                compute_command_pool: Arc::new(compute_command_pool),
-                descriptor_pool,
-                mvp_set_layout,
-                mvp_set,
-                mvp_buffer,
-                renderpass: main_renderpass,
-                swapchain,
-                mesh_assembly_set_layout,
-                base_color_descriptor_set_layout,
-            },
-            events_loop,
-        )
+        world.insert(result);
     }
+}
 
-    fn setup_renderpass(device: Arc<Device>, swapchain: &Swapchain) -> VkResult<RenderPass> {
-        let attachment_descriptions = [
-            vk::AttachmentDescription {
-                format: swapchain.surface_format.format,
-                flags: vk::AttachmentDescriptionFlags::empty(),
-                samples: vk::SampleCountFlags::TYPE_1,
-                load_op: vk::AttachmentLoadOp::CLEAR,
-                store_op: vk::AttachmentStoreOp::STORE,
-                stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-            },
-            vk::AttachmentDescription {
-                format: vk::Format::D16_UNORM,
-                flags: vk::AttachmentDescriptionFlags::empty(),
-                samples: vk::SampleCountFlags::TYPE_1,
-                load_op: vk::AttachmentLoadOp::CLEAR,
-                store_op: vk::AttachmentStoreOp::DONT_CARE,
-                stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            },
-        ];
-        let color_attachment = vk::AttachmentReference {
-            attachment: 0,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
-        let depth_attachment = vk::AttachmentReference {
-            attachment: 1,
-            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-        let subpass_descs = [
-            vk::SubpassDescription {
-                color_attachment_count: 0,
-                p_color_attachments: ptr::null(),
-                p_depth_stencil_attachment: &depth_attachment,
-                flags: Default::default(),
-                pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
-                input_attachment_count: 0,
-                p_input_attachments: ptr::null(),
-                p_resolve_attachments: ptr::null(),
-                preserve_attachment_count: 0,
-                p_preserve_attachments: ptr::null(),
-            },
-            vk::SubpassDescription {
-                color_attachment_count: 1,
-                p_color_attachments: &color_attachment,
-                p_depth_stencil_attachment: &depth_attachment,
-                flags: Default::default(),
-                pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
-                input_attachment_count: 0,
-                p_input_attachments: ptr::null(),
-                p_resolve_attachments: ptr::null(),
-                preserve_attachment_count: 0,
-                p_preserve_attachments: ptr::null(),
-            },
-        ];
-        let subpass_dependencies = [
-            vk::SubpassDependency {
-                dependency_flags: Default::default(),
-                src_subpass: vk::SUBPASS_EXTERNAL,
-                dst_subpass: 0,
-                src_stage_mask: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                src_access_mask: Default::default(),
-                dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            },
-            vk::SubpassDependency {
-                dependency_flags: Default::default(),
-                src_subpass: 0,
-                dst_subpass: 1,
-                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
-            },
-        ];
+pub struct GraphicsCommandPool(pub Arc<CommandPool>);
 
-        let renderpass_create_info = vk::RenderPassCreateInfo::builder()
-            .attachments(&attachment_descriptions)
-            .subpasses(&subpass_descs)
-            .dependencies(&subpass_dependencies);
-        let renderpass = unsafe {
-            device
-                .device
-                .create_render_pass(&renderpass_create_info, None)
-        };
+impl specs::shred::SetupHandler<GraphicsCommandPool> for GraphicsCommandPool {
+    fn setup(world: &mut World) {
+        if world.has_value::<GraphicsCommandPool>() {
+            return;
+        }
 
-        renderpass.map(|handle| RenderPass { handle, device })
+        let renderer = world.fetch::<RenderFrame>();
+        let graphics_command_pool = renderer.device.new_command_pool(
+            renderer.device.graphics_queue_family,
+            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        );
+        drop(renderer);
+
+        world.insert(GraphicsCommandPool(Arc::new(graphics_command_pool)));
     }
+}
 
-    pub fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
-        DoubleBuffered::new(creator, self.framebuffer.image_views.len() as u8)
+pub struct MVPData {
+    pub mvp_set_layout: DescriptorSetLayout,
+    pub mvp_set: DoubleBuffered<DescriptorSet>,
+    pub mvp_buffer: DoubleBuffered<Buffer>,
+}
+
+impl specs::shred::SetupHandler<MVPData> for MVPData {
+    fn setup(world: &mut World) {
+        if world.has_value::<MVPData>() {
+            return;
+        }
+
+        let result = world.exec(
+            |(renderer, main_descriptor_pool): (
+                ReadExpect<RenderFrame>,
+                Read<MainDescriptorPool, MainDescriptorPool>,
+            )| {
+                let device = &renderer.device;
+
+                let mvp_set_layout =
+                    device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+                        binding: 0,
+                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
+                        p_immutable_samplers: ptr::null(),
+                    }]);
+                device.set_object_name(mvp_set_layout.handle, "MVP Set Layout");
+
+                let mvp_buffer = DoubleBuffered::new(|ix| {
+                    let b = device.new_buffer(
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                        4 * 4 * 4 * 4096,
+                    );
+                    device.set_object_name(b.handle, &format!("MVP Buffer - {}", ix));
+                    b
+                });
+                let mvp_set = DoubleBuffered::new(|ix| {
+                    let s = main_descriptor_pool.0.allocate_set(&mvp_set_layout);
+                    device.set_object_name(s.handle, &format!("MVP Set - {}", ix));
+
+                    {
+                        let mvp_updates = &[vk::DescriptorBufferInfo {
+                            buffer: mvp_buffer.current(ix).handle,
+                            offset: 0,
+                            range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                        }];
+                        unsafe {
+                            device.update_descriptor_sets(
+                                &[vk::WriteDescriptorSet::builder()
+                                    .dst_set(s.handle)
+                                    .dst_binding(0)
+                                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                    .buffer_info(mvp_updates)
+                                    .build()],
+                                &[],
+                            );
+                        }
+                    }
+
+                    s
+                });
+
+                MVPData {
+                    mvp_set_layout,
+                    mvp_set,
+                    mvp_buffer,
+                }
+            },
+        );
+
+        world.insert(result);
+    }
+}
+
+pub struct DepthPassData {
+    pub depth_pipeline: Pipeline,
+    pub depth_pipeline_layout: PipelineLayout,
+    pub renderpass: RenderPass,
+    pub framebuffer: Vec<Framebuffer>,
+    pub complete_semaphore: DoubleBuffered<Semaphore>,
+    pub previous_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
+}
+
+impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
+    fn setup(world: &mut World) {
+        if world.has_value::<DepthPassData>() {
+            return;
+        }
+
+        let result = world.exec(
+            |(renderer, mvp_data, main_attachments): (
+                ReadExpect<RenderFrame>,
+                Read<MVPData, MVPData>,
+                Read<MainAttachments, MainAttachments>,
+            )| {
+                let device = &renderer.device;
+                let instance = &renderer.instance;
+
+                let renderpass = device.new_renderpass(
+                    &vk::RenderPassCreateInfo::builder()
+                        .attachments(unsafe {
+                            &*(&[vk::AttachmentDescription::builder()
+                                .format(vk::Format::D16_UNORM)
+                                .samples(vk::SampleCountFlags::TYPE_1)
+                                .load_op(vk::AttachmentLoadOp::CLEAR)
+                                .store_op(vk::AttachmentStoreOp::STORE)
+                                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .initial_layout(vk::ImageLayout::UNDEFINED)
+                                .final_layout(
+                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                )]
+                                as *const [vk::AttachmentDescriptionBuilder<'_>; 1]
+                                as *const [vk::AttachmentDescription; 1])
+                        })
+                        .subpasses(unsafe {
+                            &*(&[vk::SubpassDescription::builder()
+                                .depth_stencil_attachment(&vk::AttachmentReference {
+                                    attachment: 0,
+                                    layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                })
+                                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]
+                                as *const [vk::SubpassDescriptionBuilder<'_>; 1]
+                                as *const [vk::SubpassDescription; 1])
+                        })
+                        .dependencies(unsafe {
+                            &*(&[vk::SubpassDependency::builder()
+                                .src_subpass(vk::SUBPASS_EXTERNAL)
+                                .dst_subpass(0)
+                                .src_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+                                .dst_stage_mask(vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+                                .dst_access_mask(
+                                    vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                )]
+                                as *const [vk::SubpassDependencyBuilder<'_>; 1]
+                                as *const [vk::SubpassDependency; 1])
+                        }),
+                );
+
+                renderer
+                    .device
+                    .set_object_name(renderpass.handle, "Depth prepass renderpass");
+
+                let depth_pipeline_layout =
+                    new_pipeline_layout(Arc::clone(&device), &[&mvp_data.mvp_set_layout], &[]);
+                let depth_pipeline = new_graphics_pipeline2(
+                    Arc::clone(&device),
+                    &[(
+                        vk::ShaderStageFlags::VERTEX,
+                        PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
+                    )],
+                    vk::GraphicsPipelineCreateInfo::builder()
+                        .vertex_input_state(
+                            &vk::PipelineVertexInputStateCreateInfo::builder()
+                                .vertex_attribute_descriptions(&[
+                                    vk::VertexInputAttributeDescription {
+                                        location: 0,
+                                        binding: 0,
+                                        format: vk::Format::R32G32B32_SFLOAT,
+                                        offset: 0,
+                                    },
+                                ])
+                                .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
+                                    binding: 0,
+                                    stride: size_of::<f32>() as u32 * 3,
+                                    input_rate: vk::VertexInputRate::VERTEX,
+                                }])
+                                .build(),
+                        )
+                        .input_assembly_state(
+                            &vk::PipelineInputAssemblyStateCreateInfo::builder()
+                                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                                .build(),
+                        )
+                        .viewport_state(
+                            &vk::PipelineViewportStateCreateInfo::builder()
+                                .scissors(&[vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: instance.window_width,
+                                        height: instance.window_height,
+                                    },
+                                }])
+                                .viewports(&[vk::Viewport {
+                                    x: 0.0,
+                                    y: (instance.window_height as f32),
+                                    width: instance.window_width as f32,
+                                    height: -(instance.window_height as f32),
+                                    min_depth: 0.0,
+                                    max_depth: 1.0,
+                                }])
+                                .build(),
+                        )
+                        .rasterization_state(
+                            &vk::PipelineRasterizationStateCreateInfo::builder()
+                                .cull_mode(vk::CullModeFlags::BACK)
+                                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                                .line_width(1.0)
+                                .polygon_mode(vk::PolygonMode::FILL)
+                                .build(),
+                        )
+                        .multisample_state(
+                            &vk::PipelineMultisampleStateCreateInfo::builder()
+                                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                .build(),
+                        )
+                        .depth_stencil_state(
+                            &vk::PipelineDepthStencilStateCreateInfo::builder()
+                                .depth_test_enable(true)
+                                .depth_write_enable(true)
+                                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                                .depth_bounds_test_enable(false)
+                                .max_depth_bounds(1.0)
+                                .min_depth_bounds(0.0)
+                                .build(),
+                        )
+                        .color_blend_state(
+                            &vk::PipelineColorBlendStateCreateInfo::builder()
+                                .attachments(&[vk::PipelineColorBlendAttachmentState {
+                                    blend_enable: 1,
+                                    src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+                                    dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                                    color_blend_op: vk::BlendOp::ADD,
+                                    src_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                                    dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+                                    alpha_blend_op: vk::BlendOp::ADD,
+                                    color_write_mask: vk::ColorComponentFlags::all(),
+                                }])
+                                .build(),
+                        )
+                        .layout(depth_pipeline_layout.handle)
+                        .render_pass(renderpass.handle)
+                        .subpass(0)
+                        .build(),
+                );
+
+                device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
+
+                let framebuffer = main_attachments
+                    .depth_image_views
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, depth_image_view)| {
+                        let framebuffer_attachments = [depth_image_view.handle];
+                        let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
+                            .render_pass(renderpass.handle)
+                            .attachments(&framebuffer_attachments)
+                            .width(renderer.instance.window_width)
+                            .height(renderer.instance.window_height)
+                            .layers(1);
+                        let handle = unsafe {
+                            renderer
+                                .device
+                                .create_framebuffer(&frame_buffer_create_info, None)
+                                .unwrap()
+                        };
+                        renderer
+                            .device
+                            .set_object_name(handle, &format!("Depth only Framebuffer - {}", ix));
+                        Framebuffer {
+                            handle,
+                            device: Arc::clone(&renderer.device),
+                        }
+                    })
+                    .collect();
+
+                let complete_semaphore = renderer.new_buffered(|ix| {
+                    let s = renderer.device.new_semaphore();
+                    renderer
+                        .device
+                        .set_object_name(s.handle, &format!("Depth complete semaphore - {}", ix));
+                    s
+                });
+
+                let previous_command_buffer = renderer.new_buffered(|_| None);
+
+                DepthPassData {
+                    depth_pipeline_layout,
+                    depth_pipeline,
+                    renderpass,
+                    framebuffer,
+                    complete_semaphore,
+                    previous_command_buffer,
+                }
+            },
+        );
+
+        world.insert(result);
+    }
+}
+
+pub struct GltfPassData {
+    pub gltf_pipeline: Pipeline,
+    pub gltf_pipeline_layout: PipelineLayout,
+}
+
+impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
+    fn setup(world: &mut World) {
+        if world.has_value::<GltfPassData>() {
+            return;
+        }
+
+        let result = world.exec(
+            |(renderer, mvp_data, base_color): (
+                ReadExpect<RenderFrame>,
+                Read<MVPData, MVPData>,
+                Read<BaseColorDescriptorSet, BaseColorDescriptorSet>,
+            )| {
+                let device = &renderer.device;
+                let instance = &renderer.instance;
+
+                let gltf_pipeline_layout = new_pipeline_layout(
+                    Arc::clone(&device),
+                    { &[&mvp_data.mvp_set_layout, &base_color.layout] },
+                    &[],
+                );
+                device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
+                let gltf_pipeline = new_graphics_pipeline2(
+                    Arc::clone(&device),
+                    &[
+                        (
+                            vk::ShaderStageFlags::VERTEX,
+                            PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv"),
+                        ),
+                        (
+                            vk::ShaderStageFlags::FRAGMENT,
+                            PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv"),
+                        ),
+                    ],
+                    vk::GraphicsPipelineCreateInfo::builder()
+                        .vertex_input_state(
+                            &vk::PipelineVertexInputStateCreateInfo::builder()
+                                .vertex_attribute_descriptions(&[
+                                    vk::VertexInputAttributeDescription {
+                                        location: 0,
+                                        binding: 0,
+                                        format: vk::Format::R32G32B32_SFLOAT,
+                                        offset: 0,
+                                    },
+                                    vk::VertexInputAttributeDescription {
+                                        location: 1,
+                                        binding: 1,
+                                        format: vk::Format::R32G32B32_SFLOAT,
+                                        offset: 0,
+                                    },
+                                    vk::VertexInputAttributeDescription {
+                                        location: 2,
+                                        binding: 2,
+                                        format: vk::Format::R32G32_SFLOAT,
+                                        offset: 0,
+                                    },
+                                ])
+                                .vertex_binding_descriptions(&[
+                                    vk::VertexInputBindingDescription {
+                                        binding: 0,
+                                        stride: size_of::<f32>() as u32 * 3,
+                                        input_rate: vk::VertexInputRate::VERTEX,
+                                    },
+                                    vk::VertexInputBindingDescription {
+                                        binding: 1,
+                                        stride: size_of::<f32>() as u32 * 3,
+                                        input_rate: vk::VertexInputRate::VERTEX,
+                                    },
+                                    vk::VertexInputBindingDescription {
+                                        binding: 2,
+                                        stride: size_of::<f32>() as u32 * 2,
+                                        input_rate: vk::VertexInputRate::VERTEX,
+                                    },
+                                ])
+                                .build(),
+                        )
+                        .input_assembly_state(
+                            &vk::PipelineInputAssemblyStateCreateInfo::builder()
+                                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                                .build(),
+                        )
+                        .viewport_state(
+                            &vk::PipelineViewportStateCreateInfo::builder()
+                                .scissors(&[vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: instance.window_width,
+                                        height: instance.window_height,
+                                    },
+                                }])
+                                .viewports(&[vk::Viewport {
+                                    x: 0.0,
+                                    y: (instance.window_height as f32),
+                                    width: instance.window_width as f32,
+                                    height: -(instance.window_height as f32),
+                                    min_depth: 0.0,
+                                    max_depth: 1.0,
+                                }])
+                                .build(),
+                        )
+                        .rasterization_state(
+                            &vk::PipelineRasterizationStateCreateInfo::builder()
+                                .cull_mode(vk::CullModeFlags::BACK)
+                                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                                .line_width(1.0)
+                                .polygon_mode(vk::PolygonMode::FILL)
+                                .build(),
+                        )
+                        .multisample_state(
+                            &vk::PipelineMultisampleStateCreateInfo::builder()
+                                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                .build(),
+                        )
+                        .depth_stencil_state(
+                            &vk::PipelineDepthStencilStateCreateInfo::builder()
+                                .depth_test_enable(true)
+                                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                                .depth_bounds_test_enable(false)
+                                .max_depth_bounds(1.0)
+                                .min_depth_bounds(0.0)
+                                .build(),
+                        )
+                        .color_blend_state(
+                            &vk::PipelineColorBlendStateCreateInfo::builder()
+                                .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
+                                    .blend_enable(true)
+                                    .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                                    .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                    .color_blend_op(vk::BlendOp::ADD)
+                                    .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                    .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                                    .alpha_blend_op(vk::BlendOp::ADD)
+                                    .color_write_mask(vk::ColorComponentFlags::all())
+                                    .build()])
+                                .build(),
+                        )
+                        .layout(gltf_pipeline_layout.handle)
+                        .render_pass(renderer.renderpass.handle)
+                        .subpass(0)
+                        .build(),
+                );
+                device.set_object_name(gltf_pipeline.handle, "GLTF Pipeline");
+
+                GltfPassData {
+                    gltf_pipeline_layout,
+                    gltf_pipeline,
+                }
+            },
+        );
+
+        world.insert(result);
     }
 }
 
@@ -549,33 +856,54 @@ impl<'a> System<'a> for Renderer {
     #[allow(clippy::type_complexity)]
     type SystemData = (
         ReadExpect<'a, RenderFrame>,
-        WriteExpect<'a, Gui>,
+        Read<'a, MainAttachments, MainAttachments>,
+        Read<'a, MainFramebuffer, MainFramebuffer>,
+        Write<'a, Gui, Gui>,
         ReadStorage<'a, GltfMeshBufferIndex>,
-        ReadExpect<'a, BaseColorDescriptorSet>,
+        Read<'a, BaseColorDescriptorSet, BaseColorDescriptorSet>,
         ReadExpect<'a, ConsolidatedMeshBuffers>,
         ReadExpect<'a, CullPassData>,
-        WriteExpect<'a, PresentData>,
+        Write<'a, PresentData, PresentData>,
+        Read<'a, ImageIndex>,
+        ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, Position>,
+        Read<'a, Camera>,
+        Read<'a, DepthPassData, DepthPassData>,
+        Read<'a, MVPData, MVPData>,
+        Read<'a, GltfPassData, GltfPassData>,
+        Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
     );
 
     fn run(
         &mut self,
         (
             renderer,
+            main_attachments,
+            main_framebuffer,
             mut gui,
-            coarse_culled,
+            mesh_buffer_indices,
             base_color_descriptor_set,
             consolidated_mesh_buffers,
             cull_pass_data,
             mut present_data,
+            image_index,
+            meshes,
+            positions,
+            camera,
+            depth_pass,
+            mvp_data,
+            gltf_pass,
+            graphics_command_pool,
         ): Self::SystemData,
     ) {
         microprofile::scope!("ecs", "renderer");
-        let total = coarse_culled.join().count() as u32;
-        let command_buffer = renderer.graphics_command_pool.record_one_time({
+        let total = mesh_buffer_indices.join().count() as u32;
+        let command_buffer = graphics_command_pool.0.record_one_time({
             let renderer = &renderer;
             let consolidated_mesh_buffers = &consolidated_mesh_buffers;
-            let present_data = &present_data;
+            let image_index = &image_index;
             let cull_pass_data = &cull_pass_data;
+            let depth_pass = &depth_pass;
             move |command_buffer| unsafe {
                 if !gui.transitioned {
                     renderer.device.cmd_pipeline_barrier(
@@ -617,7 +945,7 @@ impl<'a> System<'a> for Renderer {
                 ];
                 let begin_info = vk::RenderPassBeginInfo::builder()
                     .render_pass(renderer.renderpass.handle)
-                    .framebuffer(renderer.framebuffer.handles[present_data.image_index as usize])
+                    .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
                     .render_area(vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
                         extent: vk::Extent2D {
@@ -626,6 +954,96 @@ impl<'a> System<'a> for Renderer {
                         },
                     })
                     .clear_values(clear_values);
+
+                renderer.device.debug_marker_around(
+                    command_buffer,
+                    "depth prepass",
+                    [0.3, 0.3, 0.3, 1.0],
+                    || {
+                        renderer.device.cmd_begin_render_pass(
+                            command_buffer,
+                            &vk::RenderPassBeginInfo::builder()
+                                .render_pass(depth_pass.renderpass.handle)
+                                .framebuffer(depth_pass.framebuffer[image_index.0 as usize].handle)
+                                .render_area(vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: renderer.instance.window_width,
+                                        height: renderer.instance.window_height,
+                                    },
+                                })
+                                .clear_values(&[vk::ClearValue {
+                                    depth_stencil: vk::ClearDepthStencilValue {
+                                        depth: 1.0,
+                                        stencil: 0,
+                                    },
+                                }]),
+                            vk::SubpassContents::INLINE,
+                        );
+                        renderer.device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            depth_pass.depth_pipeline.handle,
+                        );
+                        renderer.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            depth_pass.depth_pipeline_layout.handle,
+                            0,
+                            &[mvp_data.mvp_set.current(image_index.0).handle],
+                            &[],
+                        );
+                        for (mesh, index, mesh_position) in
+                            (&meshes, &mesh_buffer_indices, &positions).join()
+                        {
+                            let (index_buffer, index_count) =
+                                pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+                            renderer.device.cmd_bind_index_buffer(
+                                command_buffer,
+                                index_buffer.handle,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                            renderer.device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                0,
+                                &[mesh.vertex_buffer.handle],
+                                &[0],
+                            );
+                            renderer.device.cmd_draw_indexed(
+                                command_buffer,
+                                (*index_count).try_into().unwrap(),
+                                1,
+                                0,
+                                0,
+                                index.0,
+                            );
+                        }
+                        renderer.device.cmd_end_render_pass(command_buffer);
+                    },
+                );
+
+                renderer.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    Default::default(),
+                    &[],
+                    &[],
+                    &*(&[vk::ImageMemoryBarrier::builder()
+                        .image(main_attachments.swapchain_images[image_index.0 as usize].handle)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1)
+                                .level_count(1)
+                                .build(),
+                        )
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)]
+                        as *const [vk::ImageMemoryBarrierBuilder<'_>; 1]
+                        as *const [vk::ImageMemoryBarrier; 1]),
+                );
 
                 renderer.device.debug_marker_around(
                     command_buffer,
@@ -639,75 +1057,68 @@ impl<'a> System<'a> for Renderer {
                         );
                         renderer.device.debug_marker_around(
                             command_buffer,
-                            "depth prepass",
-                            [0.3, 0.3, 0.3, 1.0],
-                            || {
-                                renderer.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    renderer.depth_pipeline.handle,
-                                );
-                                renderer.device.cmd_bind_descriptor_sets(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    renderer.depth_pipeline_layout.handle,
-                                    0,
-                                    &[renderer.mvp_set.current(present_data.image_index).handle],
-                                    &[],
-                                );
-                                renderer.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    cull_pass_data
-                                        .culled_index_buffer
-                                        .current(present_data.image_index)
-                                        .handle,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                renderer.device.cmd_bind_vertex_buffers(
-                                    command_buffer,
-                                    0,
-                                    &[consolidated_mesh_buffers.position_buffer.handle],
-                                    &[0],
-                                );
-                                renderer.device.cmd_draw_indexed_indirect(
-                                    command_buffer,
-                                    cull_pass_data
-                                        .culled_commands_buffer
-                                        .current(present_data.image_index)
-                                        .handle,
-                                    0,
-                                    total,
-                                    size_of::<u32>() as u32 * 5,
-                                );
-                                renderer
-                                    .device
-                                    .cmd_next_subpass(command_buffer, vk::SubpassContents::INLINE);
-                            },
-                        );
-                        renderer.device.debug_marker_around(
-                            command_buffer,
                             "gltf meshes",
                             [1.0, 0.0, 0.0, 1.0],
                             || {
+                                /*
+                                let cull_complete_event = cull_pass_event
+                                    .cull_complete_event
+                                    .current(image_index.0)
+                                    .lock();
+                                renderer.device.cmd_wait_events(
+                                    command_buffer,
+                                    &[cull_complete_event.handle],
+                                    vk::PipelineStageFlags::HOST,
+                                    vk::PipelineStageFlags::VERTEX_INPUT
+                                        | vk::PipelineStageFlags::DRAW_INDIRECT,
+                                    &[],
+                                    &[
+                                        /*
+                                        vk::BufferMemoryBarrier::builder()
+                                            .buffer(
+                                                cull_pass_data
+                                                    .culled_index_buffer
+                                                    .current(image_index.0)
+                                                    .handle,
+                                            )
+                                            .size(vk::WHOLE_SIZE)
+                                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                                            .dst_access_mask(vk::AccessFlags::INDEX_READ)
+                                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                            .build(),
+                                        vk::BufferMemoryBarrier::builder()
+                                            .buffer(
+                                                cull_pass_data
+                                                    .culled_commands_buffer
+                                                    .current(image_index.0)
+                                                    .handle,
+                                            )
+                                            .size(vk::WHOLE_SIZE)
+                                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                                            .dst_access_mask(vk::AccessFlags::INDIRECT_COMMAND_READ)
+                                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                            .build(),
+                                            */
+                                    ],
+                                    &[],
+                                );
+                                */
                                 // gltf mesh
                                 renderer.device.cmd_bind_pipeline(
                                     command_buffer,
                                     vk::PipelineBindPoint::GRAPHICS,
-                                    renderer.gltf_pipeline.handle,
+                                    gltf_pass.gltf_pipeline.handle,
                                 );
                                 renderer.device.cmd_bind_descriptor_sets(
                                     command_buffer,
                                     vk::PipelineBindPoint::GRAPHICS,
-                                    renderer.gltf_pipeline_layout.handle,
+                                    gltf_pass.gltf_pipeline_layout.handle,
                                     0,
                                     &[
-                                        renderer.mvp_set.current(present_data.image_index).handle,
-                                        #[cfg(not(feature = "renderdoc"))]
-                                        base_color_descriptor_set
-                                            .set
-                                            .current(present_data.image_index)
-                                            .handle,
+                                        mvp_data.mvp_set.current(image_index.0).handle,
+                                        base_color_descriptor_set.set.current(image_index.0).handle,
                                     ],
                                     &[],
                                 );
@@ -715,7 +1126,7 @@ impl<'a> System<'a> for Renderer {
                                     command_buffer,
                                     cull_pass_data
                                         .culled_index_buffer
-                                        .current(present_data.image_index)
+                                        .current(image_index.0)
                                         .handle,
                                     0,
                                     vk::IndexType::UINT32,
@@ -734,7 +1145,7 @@ impl<'a> System<'a> for Renderer {
                                     command_buffer,
                                     cull_pass_data
                                         .culled_commands_buffer
-                                        .current(present_data.image_index)
+                                        .current(image_index.0)
                                         .handle,
                                     0,
                                     total,
@@ -856,24 +1267,25 @@ impl<'a> System<'a> for Renderer {
             }
         });
         let mut wait_semaphores = vec![
-            present_data.present_semaphore.handle,
+            depth_pass.complete_semaphore.current(image_index.0).handle,
             cull_pass_data
                 .cull_complete_semaphore
-                .current(present_data.image_index)
+                .current(image_index.0)
                 .handle,
         ];
-        if let Some(ref semaphore) = consolidated_mesh_buffers.sync_point {
-            wait_semaphores.push(semaphore.handle);
-        }
-        let signal_semaphores = &[present_data.render_complete_semaphore.handle];
-        let dst_stage_masks = &[
+        let mut dst_stage_masks = vec![
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COMPUTE_SHADER,
         ];
+        if let Some(ref semaphore) = consolidated_mesh_buffers.sync_point.current(image_index.0) {
+            wait_semaphores.push(semaphore.handle);
+            dst_stage_masks.push(vk::PipelineStageFlags::COMPUTE_SHADER);
+        }
+        let signal_semaphores = &[present_data.render_complete_semaphore.handle];
         let command_buffers = &[*command_buffer];
         let submit = vk::SubmitInfo::builder()
             .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(dst_stage_masks)
+            .wait_dst_stage_mask(&dst_stage_masks)
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores)
             .build();
@@ -887,14 +1299,15 @@ impl<'a> System<'a> for Renderer {
                     &[submit],
                     present_data
                         .render_complete_fence
-                        .current(present_data.image_index)
+                        .current(image_index.0)
                         .handle,
                 )
                 .unwrap();
         }
 
-        let ix = present_data.image_index;
-        *present_data.render_command_buffer.current_mut(ix) = Some(command_buffer);
+        *present_data
+            .render_command_buffer
+            .current_mut(image_index.0) = Some(command_buffer);
     }
 }
 
@@ -912,225 +1325,238 @@ pub struct Gui {
     pub transitioned: bool,
 }
 
-impl Gui {
-    pub fn new(renderer: &RenderFrame) -> Gui {
-        let mut imgui = imgui::ImGui::init();
-        let vertex_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4096 * size_of::<imgui::ImDrawVert>() as vk::DeviceSize,
-        );
-        let index_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::INDEX_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4096 * size_of::<imgui::ImDrawIdx>() as vk::DeviceSize,
-        );
-        let texture = imgui.prepare_texture(|handle| {
-            let texture = renderer.device.new_image(
-                vk::Format::R8G8B8A8_UNORM,
-                vk::Extent3D {
-                    width: handle.width,
-                    height: handle.height,
-                    depth: 1,
-                },
-                vk::SampleCountFlags::TYPE_1,
-                vk::ImageUsageFlags::SAMPLED,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            );
-            {
-                let mut texture_data = texture
-                    .map::<c_uchar>()
-                    .expect("failed to map imgui texture");
-                texture_data[0..handle.pixels.len()].copy_from_slice(handle.pixels);
-            }
-            texture
-        });
-        let sampler = new_sampler(
-            renderer.device.clone(),
-            &vk::SamplerCreateInfo::builder()
-                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-        );
+impl specs::shred::SetupHandler<Gui> for Gui {
+    fn setup(world: &mut World) {
+        if world.has_value::<Gui>() {
+            return;
+        }
 
-        let descriptor_set_layout =
-            renderer
-                .device
-                .new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                    binding: 0,
-                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                    p_immutable_samplers: ptr::null(),
-                }]);
+        let result = world.exec(
+            |(renderer, main_descriptor_pool): (
+                ReadExpect<RenderFrame>,
+                Read<MainDescriptorPool, MainDescriptorPool>,
+            )| {
+                let mut imgui = imgui::ImGui::init();
+                let vertex_buffer = renderer.device.new_buffer(
+                    vk::BufferUsageFlags::VERTEX_BUFFER,
+                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                    4096 * size_of::<imgui::ImDrawVert>() as vk::DeviceSize,
+                );
+                let index_buffer = renderer.device.new_buffer(
+                    vk::BufferUsageFlags::INDEX_BUFFER,
+                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                    4096 * size_of::<imgui::ImDrawIdx>() as vk::DeviceSize,
+                );
+                let texture = imgui.prepare_texture(|handle| {
+                    let texture = renderer.device.new_image(
+                        vk::Format::R8G8B8A8_UNORM,
+                        vk::Extent3D {
+                            width: handle.width,
+                            height: handle.height,
+                            depth: 1,
+                        },
+                        vk::SampleCountFlags::TYPE_1,
+                        vk::ImageTiling::LINEAR, // todo use optimal?
+                        vk::ImageLayout::PREINITIALIZED,
+                        vk::ImageUsageFlags::SAMPLED,
+                        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                    );
+                    {
+                        let mut texture_data = texture
+                            .map::<c_uchar>()
+                            .expect("failed to map imgui texture");
+                        texture_data[0..handle.pixels.len()].copy_from_slice(handle.pixels);
+                    }
+                    texture
+                });
+                let sampler = new_sampler(
+                    renderer.device.clone(),
+                    &vk::SamplerCreateInfo::builder()
+                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                );
 
-        let descriptor_set = renderer
-            .descriptor_pool
-            .allocate_set(&descriptor_set_layout);
-
-        let pipeline_layout = new_pipeline_layout(
-            renderer.device.clone(),
-            &[&descriptor_set_layout],
-            &[vk::PushConstantRange {
-                offset: 0,
-                size: 4 * size_of::<f32>() as u32,
-                stage_flags: vk::ShaderStageFlags::VERTEX,
-            }],
-        );
-
-        let pipeline = new_graphics_pipeline2(
-            renderer.device.clone(),
-            &[
-                (
-                    vk::ShaderStageFlags::VERTEX,
-                    PathBuf::from(env!("OUT_DIR")).join("gui.vert.spv"),
-                ),
-                (
-                    vk::ShaderStageFlags::FRAGMENT,
-                    PathBuf::from(env!("OUT_DIR")).join("gui.frag.spv"),
-                ),
-            ],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(
-                    &vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_attribute_descriptions(&[
-                            vk::VertexInputAttributeDescription {
-                                location: 0,
-                                binding: 0,
-                                format: vk::Format::R32G32_SFLOAT,
-                                offset: 0,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 1,
-                                binding: 0,
-                                format: vk::Format::R32G32_SFLOAT,
-                                offset: size_of::<f32>() as u32 * 2,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 2,
-                                binding: 0,
-                                format: vk::Format::R8G8B8A8_UNORM,
-                                offset: size_of::<f32>() as u32 * 4,
-                            },
-                        ])
-                        .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
+                let descriptor_set_layout =
+                    renderer
+                        .device
+                        .new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
                             binding: 0,
-                            stride: size_of::<imgui::ImDrawVert>() as u32,
-                            input_rate: vk::VertexInputRate::VERTEX,
-                        }])
+                            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                            descriptor_count: 1,
+                            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                            p_immutable_samplers: ptr::null(),
+                        }]);
+
+                let descriptor_set = main_descriptor_pool.0.allocate_set(&descriptor_set_layout);
+
+                let pipeline_layout = new_pipeline_layout(
+                    renderer.device.clone(),
+                    &[&descriptor_set_layout],
+                    &[vk::PushConstantRange {
+                        offset: 0,
+                        size: 4 * size_of::<f32>() as u32,
+                        stage_flags: vk::ShaderStageFlags::VERTEX,
+                    }],
+                );
+
+                let pipeline = new_graphics_pipeline2(
+                    renderer.device.clone(),
+                    &[
+                        (
+                            vk::ShaderStageFlags::VERTEX,
+                            PathBuf::from(env!("OUT_DIR")).join("gui.vert.spv"),
+                        ),
+                        (
+                            vk::ShaderStageFlags::FRAGMENT,
+                            PathBuf::from(env!("OUT_DIR")).join("gui.frag.spv"),
+                        ),
+                    ],
+                    vk::GraphicsPipelineCreateInfo::builder()
+                        .vertex_input_state(
+                            &vk::PipelineVertexInputStateCreateInfo::builder()
+                                .vertex_attribute_descriptions(&[
+                                    vk::VertexInputAttributeDescription {
+                                        location: 0,
+                                        binding: 0,
+                                        format: vk::Format::R32G32_SFLOAT,
+                                        offset: 0,
+                                    },
+                                    vk::VertexInputAttributeDescription {
+                                        location: 1,
+                                        binding: 0,
+                                        format: vk::Format::R32G32_SFLOAT,
+                                        offset: size_of::<f32>() as u32 * 2,
+                                    },
+                                    vk::VertexInputAttributeDescription {
+                                        location: 2,
+                                        binding: 0,
+                                        format: vk::Format::R8G8B8A8_UNORM,
+                                        offset: size_of::<f32>() as u32 * 4,
+                                    },
+                                ])
+                                .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
+                                    binding: 0,
+                                    stride: size_of::<imgui::ImDrawVert>() as u32,
+                                    input_rate: vk::VertexInputRate::VERTEX,
+                                }])
+                                .build(),
+                        )
+                        .input_assembly_state(
+                            &vk::PipelineInputAssemblyStateCreateInfo::builder()
+                                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                                .build(),
+                        )
+                        .viewport_state(
+                            &vk::PipelineViewportStateCreateInfo::builder()
+                                .scissors(&[vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: renderer.instance.window_width,
+                                        height: renderer.instance.window_height,
+                                    },
+                                }])
+                                .viewports(&[vk::Viewport {
+                                    x: 0.0,
+                                    y: (renderer.instance.window_height as f32),
+                                    width: renderer.instance.window_width as f32,
+                                    height: -(renderer.instance.window_height as f32),
+                                    min_depth: 0.0,
+                                    max_depth: 1.0,
+                                }])
+                                .build(),
+                        )
+                        .rasterization_state(
+                            &vk::PipelineRasterizationStateCreateInfo::builder()
+                                .cull_mode(vk::CullModeFlags::NONE)
+                                .line_width(1.0)
+                                .polygon_mode(vk::PolygonMode::FILL)
+                                .build(),
+                        )
+                        .multisample_state(
+                            &vk::PipelineMultisampleStateCreateInfo::builder()
+                                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                .build(),
+                        )
+                        .depth_stencil_state(&vk::PipelineDepthStencilStateCreateInfo::default())
+                        .color_blend_state(
+                            &vk::PipelineColorBlendStateCreateInfo::builder()
+                                .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
+                                    .blend_enable(true)
+                                    .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                                    .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                    .color_blend_op(vk::BlendOp::ADD)
+                                    .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                    .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                                    .alpha_blend_op(vk::BlendOp::ADD)
+                                    .color_write_mask(vk::ColorComponentFlags::all())
+                                    .build()])
+                                .build(),
+                        )
+                        .layout(pipeline_layout.handle)
+                        .render_pass(renderer.renderpass.handle)
+                        .subpass(0)
                         .build(),
-                )
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build(),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .scissors(&[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: renderer.instance.window_width,
-                                height: renderer.instance.window_height,
-                            },
-                        }])
-                        .viewports(&[vk::Viewport {
-                            x: 0.0,
-                            y: (renderer.instance.window_height as f32),
-                            width: renderer.instance.window_width as f32,
-                            height: -(renderer.instance.window_height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }])
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::NONE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .depth_stencil_state(&vk::PipelineDepthStencilStateCreateInfo::default())
-                .color_blend_state(
-                    &vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
-                            .blend_enable(true)
-                            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .color_blend_op(vk::BlendOp::ADD)
-                            .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                            .alpha_blend_op(vk::BlendOp::ADD)
-                            .color_write_mask(vk::ColorComponentFlags::all())
-                            .build()])
-                        .build(),
-                )
-                .layout(pipeline_layout.handle)
-                .render_pass(renderer.renderpass.handle)
-                .subpass(1)
-                .build(),
+                );
+                renderer
+                    .device
+                    .set_object_name(pipeline.handle, "GUI Pipeline");
+
+                let texture_view = new_image_view(
+                    Arc::clone(&renderer.device),
+                    &vk::ImageViewCreateInfo::builder()
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(vk::Format::R8G8B8A8_UNORM)
+                        .components(vk::ComponentMapping {
+                            r: vk::ComponentSwizzle::IDENTITY,
+                            g: vk::ComponentSwizzle::IDENTITY,
+                            b: vk::ComponentSwizzle::IDENTITY,
+                            a: vk::ComponentSwizzle::IDENTITY,
+                        })
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .image(texture.handle),
+                );
+
+                unsafe {
+                    renderer.device.update_descriptor_sets(
+                        &[vk::WriteDescriptorSet::builder()
+                            .dst_set(descriptor_set.handle)
+                            .dst_binding(0)
+                            .dst_array_element(0)
+                            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                            .image_info(&[vk::DescriptorImageInfo::builder()
+                                .sampler(sampler.handle)
+                                .image_view(texture_view.handle)
+                                .image_layout(vk::ImageLayout::GENERAL)
+                                .build()])
+                            .build()],
+                        &[],
+                    );
+                }
+
+                Gui {
+                    imgui,
+                    vertex_buffer,
+                    index_buffer,
+                    texture,
+                    texture_view,
+                    sampler,
+                    descriptor_set_layout,
+                    descriptor_set,
+                    pipeline_layout,
+                    pipeline,
+                    transitioned: false,
+                }
+            },
         );
-        renderer
-            .device
-            .set_object_name(pipeline.handle, "GUI Pipeline");
 
-        let texture_view = new_image_view(
-            Arc::clone(&renderer.device),
-            &vk::ImageViewCreateInfo::builder()
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_UNORM)
-                .components(vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
-                })
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .image(texture.handle),
-        );
-
-        unsafe {
-            renderer.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set.handle)
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&[vk::DescriptorImageInfo::builder()
-                        .sampler(sampler.handle)
-                        .image_view(texture_view.handle)
-                        .image_layout(vk::ImageLayout::GENERAL)
-                        .build()])
-                    .build()],
-                &[],
-            );
-        }
-
-        Gui {
-            imgui,
-            vertex_buffer,
-            index_buffer,
-            texture,
-            texture_view,
-            sampler,
-            descriptor_set_layout,
-            descriptor_set,
-            pipeline_layout,
-            pipeline,
-            transitioned: false,
-        }
+        world.insert(result);
     }
 }
 
@@ -1140,15 +1566,15 @@ impl<'a> System<'a> for MVPUpload {
     type SystemData = (
         ReadStorage<'a, Matrices>,
         ReadStorage<'a, GltfMeshBufferIndex>,
-        ReadExpect<'a, PresentData>,
-        WriteExpect<'a, RenderFrame>,
+        Read<'a, ImageIndex>,
+        Write<'a, MVPData, MVPData>,
     );
 
-    fn run(&mut self, (matrices, indices, present_data, mut renderer): Self::SystemData) {
+    fn run(&mut self, (matrices, indices, image_index, mut mvp_data): Self::SystemData) {
         microprofile::scope!("ecs", "mvp upload");
-        let mut mvp_mapped = renderer
+        let mut mvp_mapped = mvp_data
             .mvp_buffer
-            .current_mut(present_data.image_index)
+            .current_mut(image_index.0)
             .map::<cgmath::Matrix4<f32>>()
             .expect("failed to map MVP buffer");
         for (index, matrices) in (&indices, &matrices).join() {
@@ -1160,7 +1586,138 @@ impl<'a> System<'a> for MVPUpload {
 pub fn setup_ecs(world: &mut World) {
     world.register::<GltfMeshBufferIndex>();
     world.register::<GltfMeshBaseColorTexture>();
-    #[cfg(not(feature = "renderdoc"))]
     world.register::<BaseColorVisitedMarker>();
     world.register::<CoarseCulled>();
+}
+
+pub struct DepthOnlyPass;
+
+impl<'a> System<'a> for DepthOnlyPass {
+    #[allow(clippy::type_complexity)]
+    type SystemData = (
+        ReadExpect<'a, RenderFrame>,
+        ReadStorage<'a, GltfMeshBufferIndex>,
+        Read<'a, PresentData, PresentData>,
+        Read<'a, ImageIndex>,
+        ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, Position>,
+        Read<'a, Camera>,
+        Write<'a, DepthPassData, DepthPassData>,
+        Read<'a, MVPData, MVPData>,
+        Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
+    );
+
+    fn run(
+        &mut self,
+        (
+            renderer,
+            mesh_buffer_indices,
+            present_data,
+            image_index,
+            meshes,
+            positions,
+            camera,
+            mut depth_pass,
+            mvp_data,
+            graphics_command_pool,
+        ): Self::SystemData,
+    ) {
+        microprofile::scope!("ecs", "depth-pass");
+        let command_buffer = graphics_command_pool.0.record_one_time({
+            let renderer = &renderer;
+            let image_index = &image_index;
+            let depth_pass = &depth_pass;
+            move |command_buffer| unsafe {
+                renderer.device.debug_marker_around(
+                    command_buffer,
+                    "depth prepass",
+                    [0.3, 0.3, 0.3, 1.0],
+                    || {
+                        renderer.device.cmd_begin_render_pass(
+                            command_buffer,
+                            &vk::RenderPassBeginInfo::builder()
+                                .render_pass(depth_pass.renderpass.handle)
+                                .framebuffer(depth_pass.framebuffer[image_index.0 as usize].handle)
+                                .render_area(vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: renderer.instance.window_width,
+                                        height: renderer.instance.window_height,
+                                    },
+                                })
+                                .clear_values(&[vk::ClearValue {
+                                    depth_stencil: vk::ClearDepthStencilValue {
+                                        depth: 1.0,
+                                        stencil: 0,
+                                    },
+                                }]),
+                            vk::SubpassContents::INLINE,
+                        );
+                        renderer.device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            depth_pass.depth_pipeline.handle,
+                        );
+                        renderer.device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            depth_pass.depth_pipeline_layout.handle,
+                            0,
+                            &[mvp_data.mvp_set.current(image_index.0).handle],
+                            &[],
+                        );
+                        for (mesh, index, mesh_position) in
+                            (&meshes, &mesh_buffer_indices, &positions).join()
+                        {
+                            let (index_buffer, index_count) =
+                                pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+                            renderer.device.cmd_bind_index_buffer(
+                                command_buffer,
+                                index_buffer.handle,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                            renderer.device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                0,
+                                &[mesh.vertex_buffer.handle],
+                                &[0],
+                            );
+                            renderer.device.cmd_draw_indexed(
+                                command_buffer,
+                                (*index_count).try_into().unwrap(),
+                                1,
+                                0,
+                                0,
+                                index.0,
+                            );
+                        }
+                        renderer.device.cmd_end_render_pass(command_buffer);
+                    },
+                );
+            }
+        });
+        let wait_semaphores = &[present_data.present_semaphore.handle];
+        let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = &[depth_pass.complete_semaphore.current(image_index.0).handle];
+        let command_buffers = &[*command_buffer];
+        let submit = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(dst_stage_masks)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores)
+            .build();
+        let queue = renderer.device.graphics_queue.lock();
+
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &[submit], vk::Fence::null())
+                .unwrap();
+        }
+
+        *depth_pass
+            .previous_command_buffer
+            .current_mut(image_index.0) = Some(command_buffer);
+    }
 }
