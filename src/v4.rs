@@ -9,6 +9,8 @@ extern crate image;
 extern crate imgui;
 extern crate meshopt;
 extern crate microprofile;
+extern crate nalgebra as na;
+extern crate nalgebra_glm as glm;
 extern crate num_traits;
 extern crate parking_lot;
 extern crate specs;
@@ -26,7 +28,7 @@ use crate::renderer::{
     load_gltf, setup_ecs as renderer_setup_ecs, AcquireFramebuffer, AssignBufferIndex,
     CoarseCulling, ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMesh,
     GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PrepareShadowMaps, PresentFramebuffer,
-    RenderFrame, Renderer, SynchronizeBaseColorTextures,
+    RenderFrame, Renderer, ShadowMappingMVPCalculation, SynchronizeBaseColorTextures,
 };
 use ash::version::DeviceV1_0;
 use cgmath::{EuclideanSpace, Rotation3};
@@ -74,7 +76,7 @@ fn main() {
             },
             par![FlyCamera::default(), ConsolidateMeshBuffers,],
             ProjectCamera,
-            MVPCalculation,
+            par![MVPCalculation, ShadowMappingMVPCalculation,],
             AABBCalculation,
             CoarseCulling,
             AssignBufferIndex,
@@ -109,6 +111,18 @@ fn main() {
     let uv_buffer = Arc::new(uv_buffer);
     let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
+
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Point3::new(16.0, 50.0, 15.0)))
+        .with::<Light>(Light { strength: 1.0 })
+        .build();
+
+    world
+        .create_entity()
+        .with::<Position>(Position(cgmath::Point3::new(-30.0, 50.0, -10.0)))
+        .with::<Light>(Light { strength: 0.7 })
+        .build();
 
     world
         .create_entity()

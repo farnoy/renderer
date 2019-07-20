@@ -1460,6 +1460,7 @@ pub fn setup_ecs(world: &mut World) {
     world.register::<GltfMeshBaseColorTexture>();
     world.register::<BaseColorVisitedMarker>();
     world.register::<CoarseCulled>();
+    world.register::<ShadowMappingMVPData>();
 }
 
 pub struct DepthOnlyPass;

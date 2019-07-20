@@ -1,6 +1,8 @@
+use crate::ecs::components::*;
 use crate::renderer::*;
 use ash::vk;
-use specs::*;
+use na;
+use specs::{prelude::*, *};
 
 const MAP_SIZE: u32 = 2048;
 
@@ -235,36 +237,183 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
     }
 }
 
+#[derive(Component)]
+#[storage(VecStorage)]
+/// Holds MVP data for meshes from the perspective of this light.
+/// This differs from the main `MVPData` component by the origin and projection matrix setup.
+pub struct ShadowMappingMVPData {
+    mvp_set: DoubleBuffered<DescriptorSet>,
+    mvp_buffer: DoubleBuffered<Buffer>,
+}
+
+pub struct ShadowMappingMVPCalculation;
+
+impl<'a> System<'a> for ShadowMappingMVPCalculation {
+    #[allow(clippy::type_complexity)]
+    type SystemData = (
+        Entities<'a>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, Rotation>,
+        ReadStorage<'a, Scale>,
+        WriteStorage<'a, ShadowMappingMVPData>,
+        ReadStorage<'a, Light>,
+        Read<'a, ImageIndex>,
+        ReadStorage<'a, GltfMeshBufferIndex>,
+        ReadExpect<'a, RenderFrame>,
+        Read<'a, MainDescriptorPool, MainDescriptorPool>,
+        Read<'a, MVPData, MVPData>,
+    );
+
+    fn run(
+        &mut self,
+        (
+            entities,
+            positions,
+            rotations,
+            scales,
+            mut mvps,
+            lights,
+            image_index,
+            mesh_indices,
+            renderer,
+            main_descriptor_pool,
+            mvp_data,
+        ): Self::SystemData,
+    ) {
+        microprofile::scope!("ecs", "shadow mapping mvp calculation");
+        let mut entities_to_update = vec![];
+        for (entity_id, _, ()) in (&*entities, &positions, !&mvps).join() {
+            entities_to_update.push(entity_id);
+        }
+        for entity_id in entities_to_update.into_iter() {
+            let mvp_buffer = DoubleBuffered::new(|ix| {
+                let b = renderer.device.new_buffer(
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                    4 * 4 * 4 * 4096,
+                );
+                renderer.device.set_object_name(
+                    b.handle,
+                    &format!(
+                        "Shadow Mapping MVP Buffer - entity={:?} ix={}",
+                        entity_id, ix
+                    ),
+                );
+                b
+            });
+            let mvp_set = DoubleBuffered::new(|ix| {
+                let s = main_descriptor_pool
+                    .0
+                    .allocate_set(&mvp_data.mvp_set_layout);
+                renderer.device.set_object_name(
+                    s.handle,
+                    &format!("Shadow Mapping MVP Set - entity={:?} ix={}", entity_id, ix),
+                );
+
+                {
+                    let mvp_updates = &[vk::DescriptorBufferInfo {
+                        buffer: mvp_buffer.current(ix).handle,
+                        offset: 0,
+                        range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                    }];
+                    unsafe {
+                        renderer.device.update_descriptor_sets(
+                            &[vk::WriteDescriptorSet::builder()
+                                .dst_set(s.handle)
+                                .dst_binding(0)
+                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                .buffer_info(mvp_updates)
+                                .build()],
+                            &[],
+                        );
+                    }
+                }
+
+                s
+            });
+
+            mvps.insert(
+                entity_id,
+                ShadowMappingMVPData {
+                    mvp_set,
+                    mvp_buffer,
+                },
+            )
+            .expect("failed to insert ShadowMappingMVPData");
+        }
+        (&lights, &positions, &mut mvps)
+            .par_join()
+            .for_each(|(light, light_position, mut mvp)| {
+                let l = na::Point3::new(light_position.0.x, light_position.0.y, light_position.0.z);
+                let near = 0.1;
+                let far = 100.0;
+                let left = -10.0;
+                let right = 10.0;
+                let top = 10.0;
+                let bottom = -10.0;
+                let projection = glm::ortho_rh_zo(left, right, bottom, top, near, far);
+
+                let up = na::Vector3::new(0.0, 1.0, 0.0);
+
+                let view = na::Isometry3::look_at_rh(&l, &na::Point3::new(0.0, 0.0, 0.0), &up);
+
+                let mut mvp_mapped = mvp
+                    .mvp_buffer
+                    .current_mut(image_index.0)
+                    .map::<na::Matrix4<f32>>()
+                    .expect("failed to map MVP buffer");
+                for (entity, pos, rot, scale) in
+                    (&*entities, &positions, &rotations, &scales).join()
+                {
+                    let position = na::Point3::new(pos.0.x, pos.0.y, pos.0.z).coords;
+                    let rotation = na::Unit::new_normalize(na::Quaternion::from_parts(
+                        rot.0.s,
+                        na::Vector3::new(rot.0.v.x, rot.0.v.y, rot.0.v.z),
+                    ));
+                    let translation = na::Translation3::from_vector(position);
+                    let model = na::Similarity3::from_parts(translation, rotation, scale.0);
+                    let mvp = projection * na::Matrix4::<f32>::from(view * model);
+                    // println!("test {:?} mvp={:?}", entity, mvp);
+                    mvp_mapped[entity.id() as usize] = mvp;
+                }
+            });
+    }
+}
+
 /// Identifies stale shadow maps in the atlas and refreshes them
 pub struct PrepareShadowMaps;
 
 impl<'a> System<'a> for PrepareShadowMaps {
     #[allow(clippy::type_complexity)]
     type SystemData = (
+        Entities<'a>,
         ReadExpect<'a, RenderFrame>,
         Read<'a, DepthPassData, DepthPassData>,
-        Read<'a, MVPData, MVPData>,
         Read<'a, ImageIndex>,
         Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
         Write<'a, ShadowMappingData, ShadowMappingData>,
         ReadStorage<'a, GltfMeshBufferIndex>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, GltfMesh>,
+        ReadStorage<'a, Light>,
+        ReadStorage<'a, ShadowMappingMVPData>,
         Read<'a, PresentData, PresentData>,
     );
 
     fn run(
         &mut self,
         (
+            entities,
             renderer,
             depth_pass,
-            mvp_data,
             image_index,
             graphics_command_pool,
             mut shadow_mapping,
             mesh_buffer_indices,
             positions,
             meshes,
+            lights,
+            shadow_mvps,
             present_data,
         ): Self::SystemData,
     ) {
@@ -321,57 +470,38 @@ impl<'a> System<'a> for PrepareShadowMaps {
                             vk::PipelineBindPoint::GRAPHICS,
                             shadow_mapping.depth_pipeline.handle,
                         );
-                        renderer.device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            depth_pass.depth_pipeline_layout.handle,
-                            0,
-                            &[mvp_data.mvp_set.current(image_index.0).handle],
-                            &[],
-                        );
-                        let row = image_index.0;
-                        let column = 0;
-                        let x = (MAP_SIZE * column);
-                        let y = (MAP_SIZE * row);
-                        renderer.device.cmd_set_viewport(
-                            command_buffer,
-                            0,
-                            &[vk::Viewport {
-                                x: x as f32,
-                                y: (MAP_SIZE * (row + 1)) as f32,
-                                width: MAP_SIZE as f32,
-                                height: -(MAP_SIZE as f32),
-                                min_depth: 0.0,
-                                max_depth: 1.0,
-                            }],
-                        );
-                        renderer.device.cmd_set_scissor(
-                            command_buffer,
-                            0,
-                            &[vk::Rect2D {
-                                offset: vk::Offset2D {
-                                    x: x as i32,
-                                    y: y as i32,
-                                },
-                                extent: vk::Extent2D {
-                                    width: MAP_SIZE,
-                                    height: MAP_SIZE,
-                                },
-                            }],
-                        );
-                        renderer.device.cmd_clear_attachments(
-                            command_buffer,
-                            &[vk::ClearAttachment::builder()
-                                .clear_value(vk::ClearValue {
-                                    depth_stencil: vk::ClearDepthStencilValue {
-                                        depth: 1.0,
-                                        stencil: 1,
-                                    },
-                                })
-                                .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                .build()],
-                            &[vk::ClearRect::builder()
-                                .rect(vk::Rect2D {
+
+                        for (ix, (light, shadow_mvp)) in (&lights, &shadow_mvps).join().enumerate()
+                        {
+                            renderer.device.cmd_bind_descriptor_sets(
+                                command_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                depth_pass.depth_pipeline_layout.handle,
+                                0,
+                                &[shadow_mvp.mvp_set.current(image_index.0).handle],
+                                &[],
+                            );
+
+                            let row = ix as u32 / 4;
+                            let column = ix as u32 % 4;
+                            let x = (MAP_SIZE * column);
+                            let y = (MAP_SIZE * row);
+                            renderer.device.cmd_set_viewport(
+                                command_buffer,
+                                0,
+                                &[vk::Viewport {
+                                    x: x as f32,
+                                    y: (MAP_SIZE * (row + 1)) as f32,
+                                    width: MAP_SIZE as f32,
+                                    height: -(MAP_SIZE as f32),
+                                    min_depth: 0.0,
+                                    max_depth: 1.0,
+                                }],
+                            );
+                            renderer.device.cmd_set_scissor(
+                                command_buffer,
+                                0,
+                                &[vk::Rect2D {
                                     offset: vk::Offset2D {
                                         x: x as i32,
                                         y: y as i32,
@@ -380,36 +510,63 @@ impl<'a> System<'a> for PrepareShadowMaps {
                                         width: MAP_SIZE,
                                         height: MAP_SIZE,
                                     },
-                                })
-                                .layer_count(1)
-                                .base_array_layer(0)
-                                .build()],
-                        );
-                        for (mesh, index, mesh_position) in
-                            (&meshes, &mesh_buffer_indices, &positions).join()
-                        {
-                            let (index_buffer, index_count) = mesh.index_buffers.last().unwrap();
-                            renderer.device.cmd_bind_index_buffer(
-                                command_buffer,
-                                index_buffer.handle,
-                                0,
-                                vk::IndexType::UINT32,
+                                }],
                             );
-                            renderer.device.cmd_bind_vertex_buffers(
+                            renderer.device.cmd_clear_attachments(
                                 command_buffer,
-                                0,
-                                &[mesh.vertex_buffer.handle],
-                                &[0],
+                                &[vk::ClearAttachment::builder()
+                                    .clear_value(vk::ClearValue {
+                                        depth_stencil: vk::ClearDepthStencilValue {
+                                            depth: 1.0,
+                                            stencil: 1,
+                                        },
+                                    })
+                                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                                    .build()],
+                                &[vk::ClearRect::builder()
+                                    .rect(vk::Rect2D {
+                                        offset: vk::Offset2D {
+                                            x: x as i32,
+                                            y: y as i32,
+                                        },
+                                        extent: vk::Extent2D {
+                                            width: MAP_SIZE,
+                                            height: MAP_SIZE,
+                                        },
+                                    })
+                                    .layer_count(1)
+                                    .base_array_layer(0)
+                                    .build()],
                             );
-                            renderer.device.cmd_draw_indexed(
-                                command_buffer,
-                                (*index_count).try_into().unwrap(),
-                                1,
-                                0,
-                                0,
-                                index.0,
-                            );
+
+                            for (entity, mesh, mesh_position) in
+                                (&*entities, &meshes, &positions).join()
+                            {
+                                let (index_buffer, index_count) =
+                                    mesh.index_buffers.last().unwrap();
+                                renderer.device.cmd_bind_index_buffer(
+                                    command_buffer,
+                                    index_buffer.handle,
+                                    0,
+                                    vk::IndexType::UINT32,
+                                );
+                                renderer.device.cmd_bind_vertex_buffers(
+                                    command_buffer,
+                                    0,
+                                    &[mesh.vertex_buffer.handle],
+                                    &[0],
+                                );
+                                renderer.device.cmd_draw_indexed(
+                                    command_buffer,
+                                    (*index_count).try_into().unwrap(),
+                                    1,
+                                    0,
+                                    0,
+                                    entity.id(),
+                                );
+                            }
                         }
+
                         renderer.device.cmd_end_render_pass(command_buffer);
                     },
                 );
