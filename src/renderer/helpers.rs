@@ -8,7 +8,6 @@ use ash::{
     version::{DeviceV1_0, EntryV1_0},
     vk, Instance as AshInstance,
 };
-use cgmath::InnerSpace;
 use std::{ffi::CString, fs::File, io::Read, path::PathBuf, sync::Arc, u32};
 #[cfg(windows)]
 use winapi;
@@ -353,11 +352,7 @@ pub unsafe fn create_surface<E: EntryV1_0>(
     win32_surface_loader.create_win32_surface(&win32_create_info, None)
 }
 
-pub fn pick_lod<T>(
-    lods: &[T],
-    camera_pos: cgmath::Point3<f32>,
-    mesh_pos: cgmath::Point3<f32>,
-) -> &T {
+pub fn pick_lod<T>(lods: &[T], camera_pos: na::Point3<f32>, mesh_pos: na::Point3<f32>) -> &T {
     let distance_from_camera = (camera_pos - mesh_pos).magnitude();
     // TODO: fine-tune this later
     if distance_from_camera > 10.0 {

@@ -1,7 +1,6 @@
 use crate::ecs::components::*;
 use crate::renderer::*;
 use ash::vk;
-use na;
 use specs::{prelude::*, *};
 
 const MAP_SIZE: u32 = 2048;
@@ -314,7 +313,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                     let mvp_updates = &[vk::DescriptorBufferInfo {
                         buffer: mvp_buffer.current(ix).handle,
                         offset: 0,
-                        range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                        range: 4096 * size_of::<na::Matrix4<f32>>() as vk::DeviceSize,
                     }];
                     unsafe {
                         renderer.device.update_descriptor_sets(
@@ -365,13 +364,8 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 for (entity, pos, rot, scale) in
                     (&*entities, &positions, &rotations, &scales).join()
                 {
-                    let position = na::Point3::new(pos.0.x, pos.0.y, pos.0.z).coords;
-                    let rotation = na::Unit::new_normalize(na::Quaternion::from_parts(
-                        rot.0.s,
-                        na::Vector3::new(rot.0.v.x, rot.0.v.y, rot.0.v.z),
-                    ));
-                    let translation = na::Translation3::from_vector(position);
-                    let model = na::Similarity3::from_parts(translation, rotation, scale.0);
+                    let translation = na::Translation3::from(pos.0.coords);
+                    let model = na::Similarity3::from_parts(translation, rot.0, scale.0);
                     let mvp = projection * na::Matrix4::<f32>::from(view * model);
                     // println!("test {:?} mvp={:?}", entity, mvp);
                     mvp_mapped[entity.id() as usize] = mvp;

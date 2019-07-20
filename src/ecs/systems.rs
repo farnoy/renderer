@@ -1,6 +1,6 @@
 use super::components::*;
-use cgmath::{self, EuclideanSpace, One, Zero};
 use microprofile::scope;
+use na::RealField;
 use parking_lot::Mutex;
 use specs::prelude::*;
 use std::{sync::Arc, time::Instant};
@@ -9,7 +9,7 @@ use winit::{
     WindowEvent,
 };
 
-use crate::renderer::{GltfMesh, RenderFrame};
+use crate::renderer::{forward_vector, right_vector, up_vector, GltfMesh, RenderFrame};
 
 pub struct MVPCalculation;
 
@@ -41,49 +41,35 @@ impl<'a> System<'a> for MVPCalculation {
         (&positions, &rotations, &scales, &mut mvps)
             .par_join()
             .for_each(|(pos, rot, scale, mvp)| {
-                mvp.model = cgmath::Matrix4::from_translation(pos.0.to_vec())
-                    * cgmath::Matrix4::from(rot.0)
-                    * cgmath::Matrix4::from_scale(scale.0);
+                let translation = na::Translation3::from(pos.0.coords);
+                let model = na::Similarity3::from_parts(translation, rot.0, scale.0);
+                mvp.model = na::Matrix4::<f32>::from(na::Similarity3::from_parts(
+                    translation,
+                    rot.0,
+                    scale.0,
+                ));
 
-                mvp.mvp = camera.projection * camera.view * mvp.model;
+                mvp.mvp = camera.projection * na::Matrix4::<f32>::from(camera.view * model);
             });
     }
 }
 
 pub struct Camera {
-    pub position: cgmath::Point3<f32>,
-    pub rotation: cgmath::Quaternion<f32>,
-    pub projection: cgmath::Matrix4<f32>,
-    pub view: cgmath::Matrix4<f32>,
+    pub position: na::Point3<f32>,
+    pub rotation: na::UnitQuaternion<f32>,
+    pub projection: na::Matrix4<f32>,
+    pub view: na::Isometry3<f32>,
     // left -> right -> bottom -> top -> near -> far
-    pub frustum_planes: [cgmath::Vector4<f32>; 6],
+    pub frustum_planes: [na::Vector4<f32>; 6],
 }
-
-static UP_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
-    x: 0.0,
-    y: 1.0,
-    z: 0.0,
-};
-static FORWARD_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
-    x: 0.0,
-    y: 0.0,
-    z: 1.0,
-};
-// Not sure why but the right vector points in negative X, which bothers me.
-// Consequence of right-handed projection matrix?
-static RIGHT_VECTOR: cgmath::Vector3<f32> = cgmath::Vector3 {
-    x: -1.0,
-    y: 0.0,
-    z: 0.0,
-};
 
 impl Default for Camera {
     fn default() -> Camera {
-        let position = cgmath::Point3::new(0.0, 1.0, 2.0);
-        let projection = cgmath::Matrix4::one();
-        let view = cgmath::Matrix4::one();
-        let rotation = cgmath::Quaternion::one();
-        let zero = cgmath::Vector4::zero();
+        let position = na::Point3::new(0.0, 1.0, 2.0);
+        let projection = na::Matrix4::identity();
+        let view = na::Isometry3::identity();
+        let rotation = na::UnitQuaternion::identity();
+        let zero = na::Vector4::new(0.0, 0.0, 0.0, 0.0);
 
         Camera {
             position,
@@ -106,7 +92,6 @@ impl<'a> System<'a> for InputHandler {
 
     fn run(&mut self, (mut input_state, mut camera): Self::SystemData) {
         microprofile::scope!("ecs", "input handler");
-        use cgmath::Rotation3;
         let quit_handle = Arc::clone(&self.quit_handle);
         input_state.clear();
         let move_mouse = self.move_mouse;
@@ -155,10 +140,16 @@ impl<'a> System<'a> for InputHandler {
                 event: DeviceEvent::MouseMotion { delta: (x, y), .. },
                 ..
             } if move_mouse => {
+                let y_angle = f32::pi() / 180.0 * (-y as f32);
+                let x_angle = f32::pi() / 180.0 * (-x as f32);
+                camera.rotation = camera.rotation
+                    * na::Rotation3::from_axis_angle(
+                        &right_vector(),
+                        y_angle,
+                    );
                 camera.rotation =
-                    camera.rotation * cgmath::Quaternion::from_angle_x(cgmath::Deg(y as f32));
-                camera.rotation =
-                    cgmath::Quaternion::from_angle_y(cgmath::Deg(-x as f32)) * camera.rotation;
+                    na::Rotation3::from_axis_angle(&up_vector(), x_angle)
+                        * camera.rotation;
             }
             _ => (),
         });
@@ -177,45 +168,27 @@ impl<'a> System<'a> for ProjectCamera {
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
         microprofile::scope!("ecs", "project camera");
-        use cgmath::{Angle, InnerSpace, Matrix, Rotation};
-        // Right handed perspective projection, depth between [0,1]
         let near = 0.1;
         let far = 100.0;
         let aspect = renderer.instance.window_width as f32 / renderer.instance.window_height as f32;
-        let fovy = cgmath::Deg(70.0);
-        let tan_half_fovy = cgmath::Rad::tan(cgmath::Rad::from(fovy) / 2.0);
+        let fovy = f32::pi() * 70.0 / 180.0;
 
-        camera.projection = cgmath::Matrix4::zero();
-        camera.projection[0][0] = 1.0 / (aspect * tan_half_fovy);
-        camera.projection[1][1] = 1.0 / tan_half_fovy;
-        camera.projection[2][3] = -1.0;
-        camera.projection[2][2] = far / (near - far);
-        camera.projection[3][2] = -(far * near) / (far - near);
+        camera.projection = glm::perspective_rh_zo(aspect, fovy, near, far);
 
-        let dir = camera.rotation.rotate_vector(FORWARD_VECTOR);
-        let up = camera.rotation.rotate_vector(UP_VECTOR);
-        let f = dir.normalize();
-        let s = f.cross(up).normalize();
-        let u = s.cross(f);
+        let dir = camera.rotation.transform_vector(&forward_vector());
+        let extended_forward = camera.position + dir;
+        let up = camera.rotation.transform_vector(&up_vector());
 
-        #[rustfmt::skip]
-        {
-            camera.view = cgmath::Matrix4::new(
-                s.x, u.x, -f.x, 0.0,
-                s.y, u.y, -f.y, 0.0,
-                s.z, u.z, -f.z, 0.0,
-                -camera.position.dot(s), -camera.position.dot(u), camera.position.dot(f), 1.0,
-            );
-        }
+        camera.view = na::Isometry3::look_at_rh(&camera.position, &extended_forward, &up);
 
-        let m = (camera.projection * camera.view).transpose();
+        let m = (camera.projection * camera.view.to_homogeneous()).transpose();
         camera.frustum_planes = [
-            -(m.w + m.x),
-            -(m.w - m.x),
-            -(m.w + m.y),
-            -(m.w - m.y),
-            -(m.w + m.z),
-            -(m.w - m.z),
+            (-m.index((.., 3)) + m.index((.., 0))),
+            (-m.index((.., 1)) - m.index((.., 0))),
+            (-m.index((.., 3)) + m.index((.., 1))),
+            (-m.index((.., 3)) - m.index((.., 1))),
+            (-m.index((.., 3)) + m.index((.., 2))),
+            (-m.index((.., 3)) - m.index((.., 2))),
         ];
     }
 }
@@ -266,19 +239,19 @@ impl<'a> System<'a> for AABBCalculation {
             let max = mesh.aabb_c + mesh.aabb_h;
             let (min, max) = [
                 // bottom half (min y)
-                cgmath::vec3(min.x, min.y, min.z),
-                cgmath::vec3(max.x, min.y, min.z),
-                cgmath::vec3(min.x, min.y, max.z),
-                cgmath::vec3(max.x, min.y, max.z),
+                na::Point3::new(min.x, min.y, min.z),
+                na::Point3::new(max.x, min.y, min.z),
+                na::Point3::new(min.x, min.y, max.z),
+                na::Point3::new(max.x, min.y, max.z),
                 // top half (max y)
-                cgmath::vec3(min.x, max.y, min.z),
-                cgmath::vec3(max.x, max.y, min.z),
-                cgmath::vec3(min.x, max.y, max.z),
-                cgmath::vec3(max.x, max.y, max.z),
+                na::Point3::new(min.x, max.y, min.z),
+                na::Point3::new(max.x, max.y, min.z),
+                na::Point3::new(min.x, max.y, max.z),
+                na::Point3::new(max.x, max.y, max.z),
             ]
             .iter()
-            .map(|vertex| matrices.model * vertex.extend(1.0))
-            .map(|vertex| vertex / vertex.w)
+            .map(|vertex| matrices.model * vertex.to_homogeneous())
+            .map(|vertex| vertex.xyz() / vertex.w)
             .fold(
                 ((MAX, MAX, MAX), (MIN, MIN, MIN)),
                 |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
@@ -288,8 +261,8 @@ impl<'a> System<'a> for AABBCalculation {
                     )
                 },
             );
-            let min = cgmath::Vector3::from(min);
-            let max = cgmath::Vector3::from(max);
+            let min = na::Vector3::new(min.0, min.1, min.2);
+            let max = na::Vector3::new(max.0, max.1, max.2);
             aabb.insert(
                 entity_id,
                 AABB {
@@ -355,7 +328,6 @@ impl<'a> System<'a> for FlyCamera {
     );
 
     fn run(&mut self, (input, frame_timing, mut camera): Self::SystemData) {
-        use cgmath::Rotation;
         for key in &input.key_presses {
             match key {
                 Some(VirtualKeyCode::W) => {
@@ -410,24 +382,24 @@ impl<'a> System<'a> for FlyCamera {
         }
         let mut speed = if self.fast { 10.0 } else { 1.0 };
         speed *= frame_timing.time_delta;
-        let mut increment = cgmath::Vector3::zero();
+        let mut increment: na::Vector3<f32> = na::zero();
         if self.forward {
-            increment += speed * camera.rotation.rotate_vector(FORWARD_VECTOR)
+            increment += speed * camera.rotation.transform_vector(&forward_vector())
         }
         if self.backward {
-            increment -= speed * camera.rotation.rotate_vector(FORWARD_VECTOR);
+            increment -= speed * camera.rotation.transform_vector(&forward_vector());
         }
         if self.up {
-            increment += speed * camera.rotation.rotate_vector(UP_VECTOR);
+            increment += speed * camera.rotation.transform_vector(&up_vector());
         }
         if self.down {
-            increment -= speed * camera.rotation.rotate_vector(UP_VECTOR);
+            increment -= speed * camera.rotation.transform_vector(&up_vector());
         }
         if self.right {
-            increment += speed * camera.rotation.rotate_vector(RIGHT_VECTOR);
+            increment += speed * camera.rotation.transform_vector(&right_vector());
         }
         if self.left {
-            increment -= speed * camera.rotation.rotate_vector(RIGHT_VECTOR);
+            increment -= speed * camera.rotation.transform_vector(&right_vector());
         }
 
         camera.position += increment;

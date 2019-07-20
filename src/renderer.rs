@@ -19,7 +19,6 @@ use crate::ecs::{
     systems::Camera,
 };
 use ash::{version::DeviceV1_0, vk};
-use cgmath;
 use imgui::{self, im_str};
 use microprofile::scope;
 use specs::*;
@@ -45,6 +44,18 @@ pub use self::{
     },
 };
 
+pub fn up_vector() -> na::Unit<na::Vector3<f32>> {
+    na::Unit::new_unchecked(na::Vector3::y())
+}
+pub fn forward_vector() -> na::Unit<na::Vector3<f32>>  {
+    na::Unit::new_unchecked(na::Vector3::z())
+}
+// Not sure why but the right vector points in negative X, which bothers me.
+// Consequence of right-handed projection matrix?
+pub fn right_vector() -> na::Unit<na::Vector3<f32>> {
+    -na::Unit::new_unchecked(na::Vector3::x())
+}
+
 #[derive(Clone, Component)]
 #[storage(VecStorage)]
 pub struct GltfMesh {
@@ -53,8 +64,8 @@ pub struct GltfMesh {
     pub uv_buffer: Arc<Buffer>,
     pub index_buffers: Arc<Vec<(Buffer, u64)>>,
     pub vertex_len: u64,
-    pub aabb_c: cgmath::Vector3<f32>,
-    pub aabb_h: cgmath::Vector3<f32>,
+    pub aabb_c: na::Vector3<f32>,
+    pub aabb_h: na::Vector3<f32>,
 }
 
 // TODO: rename
@@ -451,7 +462,7 @@ impl specs::shred::SetupHandler<MVPData> for MVPData {
                         let mvp_updates = &[vk::DescriptorBufferInfo {
                             buffer: mvp_buffer.current(ix).handle,
                             offset: 0,
-                            range: 4096 * size_of::<cgmath::Matrix4<f32>>() as vk::DeviceSize,
+                            range: 4096 * size_of::<na::Matrix4<f32>>() as vk::DeviceSize,
                         }];
                         unsafe {
                             device.update_descriptor_sets(
@@ -1447,7 +1458,7 @@ impl<'a> System<'a> for MVPUpload {
         let mut mvp_mapped = mvp_data
             .mvp_buffer
             .current_mut(image_index.0)
-            .map::<cgmath::Matrix4<f32>>()
+            .map::<na::Matrix4<f32>>()
             .expect("failed to map MVP buffer");
         for (index, matrices) in (&indices, &matrices).join() {
             mvp_mapped[index.0 as usize] = matrices.mvp;

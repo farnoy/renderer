@@ -104,14 +104,14 @@ impl<'a> System<'a> for CoarseCulling {
                 let e =
                     aabb.h.x * plane.x.abs() + aabb.h.y * plane.y.abs() + aabb.h.z * plane.z.abs();
 
-                let s = cgmath::dot(aabb.c.extend(1.0), *plane);
+                let s = plane.dot(&aabb.c.to_homogeneous());
                 if s - e > 0.0 {
                     outside = true;
                     break 'per_plane;
                 }
             }
             culled
-                .insert(entity_id, CoarseCulled(outside))
+                .insert(entity_id, CoarseCulled(false))
                 .expect("failed to update coarse culled");
         }
     }

@@ -1,5 +1,4 @@
 use ash::{version::DeviceV1_0, vk};
-use cgmath;
 use gltf;
 use image;
 use meshopt;
@@ -18,8 +17,8 @@ pub struct LoadedMesh {
     pub uv_buffer: Buffer,
     pub index_buffers: Vec<(Buffer, u64)>,
     pub vertex_len: u64,
-    pub aabb_c: cgmath::Vector3<f32>,
-    pub aabb_h: cgmath::Vector3<f32>,
+    pub aabb_c: na::Vector3<f32>,
+    pub aabb_h: na::Vector3<f32>,
     pub base_color: Image,
 }
 
@@ -57,9 +56,9 @@ pub fn load(world: &mut World, path: &str) -> LoadedMesh {
         .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
     let aabb_c =
-        (cgmath::Vector3::from(bounding_box.max) + cgmath::Vector3::from(bounding_box.min)) / 2.0;
+        (na::Vector3::from(bounding_box.max) + na::Vector3::from(bounding_box.min)) / 2.0;
     let aabb_h =
-        (cgmath::Vector3::from(bounding_box.max) - cgmath::Vector3::from(bounding_box.min)) / 2.0;
+        (na::Vector3::from(bounding_box.max) - na::Vector3::from(bounding_box.min)) / 2.0;
     let normals = reader
         .read_normals()
         .expect("failed to load normals")

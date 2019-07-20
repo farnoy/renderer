@@ -1,13 +1,12 @@
-use cgmath;
 use specs::{storage::BTreeStorage, Component, *};
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
-pub struct Position(pub cgmath::Point3<f32>);
+pub struct Position(pub na::Point3<f32>);
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
-pub struct Rotation(pub cgmath::Quaternion<f32>);
+pub struct Rotation(pub na::UnitQuaternion<f32>);
 
 #[derive(Clone, Copy, Component)]
 #[storage(VecStorage)]
@@ -22,16 +21,15 @@ pub struct Light {
 #[derive(Clone, Copy, Component, Debug)]
 #[storage(VecStorage)]
 pub struct Matrices {
-    pub mvp: cgmath::Matrix4<f32>,
-    pub model: cgmath::Matrix4<f32>,
+    pub mvp: na::Matrix4<f32>,
+    pub model: na::Matrix4<f32>,
 }
 
 impl Matrices {
     pub fn one() -> Matrices {
-        use cgmath::One;
         Matrices {
-            mvp: cgmath::Matrix4::one(),
-            model: cgmath::Matrix4::one(),
+            mvp: na::Matrix4::identity(),
+            model: na::Matrix4::identity(),
         }
     }
 }
@@ -40,8 +38,8 @@ impl Matrices {
 #[derive(Clone, Component, Debug)]
 #[storage(VecStorage)]
 pub struct AABB {
-    pub c: cgmath::Vector3<f32>,
-    pub h: cgmath::Vector3<f32>,
+    pub c: na::Vector3<f32>,
+    pub h: na::Vector3<f32>,
 }
 
 /*
