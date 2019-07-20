@@ -257,7 +257,6 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
         WriteStorage<'a, ShadowMappingMVPData>,
         ReadStorage<'a, Light>,
         Read<'a, ImageIndex>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
         ReadExpect<'a, RenderFrame>,
         Read<'a, MainDescriptorPool, MainDescriptorPool>,
         Read<'a, MVPData, MVPData>,
@@ -273,7 +272,6 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
             mut mvps,
             lights,
             image_index,
-            mesh_indices,
             renderer,
             main_descriptor_pool,
             mvp_data,
@@ -342,7 +340,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
         }
         (&lights, &positions, &mut mvps)
             .par_join()
-            .for_each(|(light, light_position, mut mvp)| {
+            .for_each(|(_light, light_position, mvp)| {
                 let l = na::Point3::new(light_position.0.x, light_position.0.y, light_position.0.z);
                 let near = 0.1;
                 let far = 100.0;
@@ -386,8 +384,6 @@ impl<'a> System<'a> for PrepareShadowMaps {
         Read<'a, ImageIndex>,
         Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
         Write<'a, ShadowMappingData, ShadowMappingData>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
-        ReadStorage<'a, Position>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, Light>,
         ReadStorage<'a, ShadowMappingMVPData>,
@@ -403,8 +399,6 @@ impl<'a> System<'a> for PrepareShadowMaps {
             image_index,
             graphics_command_pool,
             mut shadow_mapping,
-            mesh_buffer_indices,
-            positions,
             meshes,
             lights,
             shadow_mvps,
@@ -465,7 +459,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
                             shadow_mapping.depth_pipeline.handle,
                         );
 
-                        for (ix, (light, shadow_mvp)) in (&lights, &shadow_mvps).join().enumerate()
+                        for (ix, (_light, shadow_mvp)) in (&lights, &shadow_mvps).join().enumerate()
                         {
                             renderer.device.cmd_bind_descriptor_sets(
                                 command_buffer,
@@ -478,8 +472,8 @@ impl<'a> System<'a> for PrepareShadowMaps {
 
                             let row = ix as u32 / 4;
                             let column = ix as u32 % 4;
-                            let x = (MAP_SIZE * column);
-                            let y = (MAP_SIZE * row);
+                            let x = MAP_SIZE * column;
+                            let y = MAP_SIZE * row;
                             renderer.device.cmd_set_viewport(
                                 command_buffer,
                                 0,
@@ -533,8 +527,8 @@ impl<'a> System<'a> for PrepareShadowMaps {
                                     .build()],
                             );
 
-                            for (entity, mesh, mesh_position) in
-                                (&*entities, &meshes, &positions).join()
+                            for (entity, mesh) in
+                                (&*entities, &meshes).join()
                             {
                                 let (index_buffer, index_count) =
                                     mesh.index_buffers.last().unwrap();

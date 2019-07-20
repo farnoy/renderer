@@ -874,7 +874,6 @@ impl<'a> System<'a> for Renderer {
     #[allow(clippy::type_complexity)]
     type SystemData = (
         ReadExpect<'a, RenderFrame>,
-        Read<'a, MainAttachments, MainAttachments>,
         Read<'a, MainFramebuffer, MainFramebuffer>,
         Write<'a, Gui, Gui>,
         ReadStorage<'a, GltfMeshBufferIndex>,
@@ -883,9 +882,6 @@ impl<'a> System<'a> for Renderer {
         ReadExpect<'a, CullPassData>,
         Write<'a, PresentData, PresentData>,
         Read<'a, ImageIndex>,
-        ReadStorage<'a, GltfMesh>,
-        ReadStorage<'a, Position>,
-        Read<'a, Camera>,
         Read<'a, DepthPassData, DepthPassData>,
         Read<'a, MVPData, MVPData>,
         Read<'a, GltfPassData, GltfPassData>,
@@ -896,7 +892,6 @@ impl<'a> System<'a> for Renderer {
         &mut self,
         (
             renderer,
-            main_attachments,
             main_framebuffer,
             mut gui,
             mesh_buffer_indices,
@@ -905,9 +900,6 @@ impl<'a> System<'a> for Renderer {
             cull_pass_data,
             mut present_data,
             image_index,
-            meshes,
-            positions,
-            camera,
             depth_pass,
             mvp_data,
             gltf_pass,
@@ -921,7 +913,6 @@ impl<'a> System<'a> for Renderer {
             let consolidated_mesh_buffers = &consolidated_mesh_buffers;
             let image_index = &image_index;
             let cull_pass_data = &cull_pass_data;
-            let depth_pass = &depth_pass;
             move |command_buffer| unsafe {
                 if !gui.transitioned {
                     renderer.device.cmd_pipeline_barrier(
@@ -1481,7 +1472,6 @@ impl<'a> System<'a> for DepthOnlyPass {
     type SystemData = (
         ReadExpect<'a, RenderFrame>,
         ReadStorage<'a, GltfMeshBufferIndex>,
-        Read<'a, PresentData, PresentData>,
         Read<'a, ImageIndex>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, Position>,
@@ -1497,7 +1487,6 @@ impl<'a> System<'a> for DepthOnlyPass {
         (
             renderer,
             mesh_buffer_indices,
-            present_data,
             image_index,
             meshes,
             positions,

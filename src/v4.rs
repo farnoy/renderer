@@ -24,7 +24,7 @@ pub mod ecs {
 pub mod renderer;
 
 use crate::renderer::{
-    forward_vector, load_gltf, right_vector, setup_ecs as renderer_setup_ecs, up_vector,
+    load_gltf, right_vector, setup_ecs as renderer_setup_ecs, up_vector,
     AcquireFramebuffer, AssignBufferIndex, CoarseCulling, ConsolidateMeshBuffers, CullPass,
     DepthOnlyPass, GltfMesh, GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PrepareShadowMaps,
     PresentFramebuffer, RenderFrame, Renderer, ShadowMappingMVPCalculation,

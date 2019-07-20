@@ -183,12 +183,12 @@ impl<'a> System<'a> for ProjectCamera {
 
         let m = (camera.projection * camera.view.to_homogeneous()).transpose();
         camera.frustum_planes = [
-            (-m.index((.., 3)) + m.index((.., 0))),
-            (-m.index((.., 1)) - m.index((.., 0))),
-            (-m.index((.., 3)) + m.index((.., 1))),
-            (-m.index((.., 3)) - m.index((.., 1))),
-            (-m.index((.., 3)) + m.index((.., 2))),
-            (-m.index((.., 3)) - m.index((.., 2))),
+            -(m.column(3) + m.column(0)),
+            -(m.column(3) - m.column(0)),
+            -(m.column(3) + m.column(1)),
+            -(m.column(3) - m.column(1)),
+            -(m.column(3) + m.column(2)),
+            -(m.column(3) - m.column(2)),
         ];
     }
 }
