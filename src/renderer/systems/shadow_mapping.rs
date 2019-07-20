@@ -112,7 +112,7 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::builder()
                                 .cull_mode(vk::CullModeFlags::BACK)
-                                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                                .front_face(vk::FrontFace::CLOCKWISE)
                                 .line_width(1.0)
                                 .polygon_mode(vk::PolygonMode::FILL)
                                 .build(),
@@ -348,11 +348,9 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 let right = 10.0;
                 let top = 10.0;
                 let bottom = -10.0;
-                let projection = glm::ortho_rh_zo(left, right, bottom, top, near, far);
+                let projection = glm::ortho_lh_zo(left, right, bottom, top, near, far);
 
-                let up = na::Vector3::new(0.0, 1.0, 0.0);
-
-                let view = na::Isometry3::look_at_rh(&l, &na::Point3::new(0.0, 0.0, 0.0), &up);
+                let view = na::Isometry3::look_at_lh(&l, &na::Point3::new(0.0, 0.0, 0.0), &up_vector());
 
                 let mut mvp_mapped = mvp
                     .mvp_buffer

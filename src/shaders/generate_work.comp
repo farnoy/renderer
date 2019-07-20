@@ -98,9 +98,9 @@ void main() {
             (ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0) ||
             (ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0);
 
-        // backface culling in counter clockwise front-facing order
+        // backface culling in counter clockwise front-facing order, left handed projection
         if (!cull)
-            cull = determinant(mat3(vertex2.xyw, vertex1.xyw, vertex0.xyw)) > 0;
+            cull = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw)) > 0;
 
         // degenerate triangle culling, this is a bad algorithm but even while being
         // conservative here, it discards a lot of stuff

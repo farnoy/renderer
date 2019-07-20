@@ -50,10 +50,8 @@ pub fn up_vector() -> na::Unit<na::Vector3<f32>> {
 pub fn forward_vector() -> na::Unit<na::Vector3<f32>>  {
     na::Unit::new_unchecked(na::Vector3::z())
 }
-// Not sure why but the right vector points in negative X, which bothers me.
-// Consequence of right-handed projection matrix?
 pub fn right_vector() -> na::Unit<na::Vector3<f32>> {
-    -na::Unit::new_unchecked(na::Vector3::x())
+    na::Unit::new_unchecked(na::Vector3::x())
 }
 
 #[derive(Clone, Component)]
@@ -604,7 +602,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                                 }])
                                 .viewports(&[vk::Viewport {
                                     x: 0.0,
-                                    y: (instance.window_height as f32),
+                                    y: instance.window_height as f32,
                                     width: instance.window_width as f32,
                                     height: -(instance.window_height as f32),
                                     min_depth: 0.0,
@@ -615,7 +613,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::builder()
                                 .cull_mode(vk::CullModeFlags::BACK)
-                                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                                .front_face(vk::FrontFace::CLOCKWISE)
                                 .line_width(1.0)
                                 .polygon_mode(vk::PolygonMode::FILL)
                                 .build(),
@@ -806,7 +804,7 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                                 }])
                                 .viewports(&[vk::Viewport {
                                     x: 0.0,
-                                    y: (instance.window_height as f32),
+                                    y: instance.window_height as f32,
                                     width: instance.window_width as f32,
                                     height: -(instance.window_height as f32),
                                     min_depth: 0.0,
@@ -817,7 +815,7 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::builder()
                                 .cull_mode(vk::CullModeFlags::BACK)
-                                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                                .front_face(vk::FrontFace::CLOCKWISE)
                                 .line_width(1.0)
                                 .polygon_mode(vk::PolygonMode::FILL)
                                 .build(),
@@ -1332,7 +1330,7 @@ impl specs::shred::SetupHandler<Gui> for Gui {
                                 }])
                                 .viewports(&[vk::Viewport {
                                     x: 0.0,
-                                    y: (renderer.instance.window_height as f32),
+                                    y: renderer.instance.window_height as f32,
                                     width: renderer.instance.window_width as f32,
                                     height: -(renderer.instance.window_height as f32),
                                     min_depth: 0.0,

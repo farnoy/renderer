@@ -140,8 +140,8 @@ impl<'a> System<'a> for InputHandler {
                 event: DeviceEvent::MouseMotion { delta: (x, y), .. },
                 ..
             } if move_mouse => {
-                let y_angle = f32::pi() / 180.0 * (-y as f32);
-                let x_angle = f32::pi() / 180.0 * (-x as f32);
+                let y_angle = f32::pi() / 180.0 * y as f32;
+                let x_angle = f32::pi() / 180.0 * x as f32;
                 camera.rotation = camera.rotation
                     * na::Rotation3::from_axis_angle(
                         &right_vector(),
@@ -173,13 +173,13 @@ impl<'a> System<'a> for ProjectCamera {
         let aspect = renderer.instance.window_width as f32 / renderer.instance.window_height as f32;
         let fovy = f32::pi() * 70.0 / 180.0;
 
-        camera.projection = glm::perspective_rh_zo(aspect, fovy, near, far);
+        camera.projection = glm::perspective_lh_zo(aspect, fovy, near, far);
 
         let dir = camera.rotation.transform_vector(&forward_vector());
         let extended_forward = camera.position + dir;
         let up = camera.rotation.transform_vector(&up_vector());
 
-        camera.view = na::Isometry3::look_at_rh(&camera.position, &extended_forward, &up);
+        camera.view = na::Isometry3::look_at_lh(&camera.position, &extended_forward, &up);
 
         let m = (camera.projection * camera.view.to_homogeneous()).transpose();
         camera.frustum_planes = [

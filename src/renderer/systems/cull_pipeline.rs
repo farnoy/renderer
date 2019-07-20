@@ -113,7 +113,7 @@ impl<'a> System<'a> for CoarseCulling {
                 }
             }
             culled
-                .insert(entity_id, CoarseCulled(outside))
+                .insert(entity_id, CoarseCulled(false))
                 .expect("failed to update coarse culled");
         }
     }
