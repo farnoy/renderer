@@ -99,21 +99,19 @@ impl<'a> System<'a> for CoarseCulling {
     fn run(&mut self, (entities, aabb, camera, mut culled): Self::SystemData) {
         microprofile::scope!("ecs", "coarse culling");
         for (entity_id, aabb) in (&*entities, &aabb).join() {
-            // TODO: broken after nalgebra changes
             #[allow(unused)]
             let mut outside = false;
-            'per_plane: for plane in camera.frustum_planes.iter().take(4) {
-                let e =
-                    aabb.h.dot(&plane.xyz().abs());
+            'per_plane: for plane in camera.frustum_planes.iter() {
+                let e = aabb.h.dot(&plane.xyz().abs());
 
-                let s = plane.xyz().dot(&aabb.c);
+                let s = plane.dot(&aabb.c.push(1.0));
                 if s - e > 0.0 {
                     outside = true;
                     break 'per_plane;
                 }
             }
             culled
-                .insert(entity_id, CoarseCulled(false))
+                .insert(entity_id, CoarseCulled(outside))
                 .expect("failed to update coarse culled");
         }
     }
