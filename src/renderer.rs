@@ -47,7 +47,7 @@ pub use self::{
 pub fn up_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::y())
 }
-pub fn forward_vector() -> na::Unit<na::Vector3<f32>>  {
+pub fn forward_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::z())
 }
 pub fn right_vector() -> na::Unit<na::Vector3<f32>> {

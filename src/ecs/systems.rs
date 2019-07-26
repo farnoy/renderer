@@ -142,14 +142,10 @@ impl<'a> System<'a> for InputHandler {
             } if move_mouse => {
                 let y_angle = f32::pi() / 180.0 * y as f32;
                 let x_angle = f32::pi() / 180.0 * x as f32;
-                camera.rotation = camera.rotation
-                    * na::Rotation3::from_axis_angle(
-                        &right_vector(),
-                        y_angle,
-                    );
                 camera.rotation =
-                    na::Rotation3::from_axis_angle(&up_vector(), x_angle)
-                        * camera.rotation;
+                    camera.rotation * na::Rotation3::from_axis_angle(&right_vector(), y_angle);
+                camera.rotation =
+                    na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
             }
             _ => (),
         });

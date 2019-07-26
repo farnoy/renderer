@@ -350,7 +350,8 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 let bottom = -10.0;
                 let projection = glm::ortho_lh_zo(left, right, bottom, top, near, far);
 
-                let view = na::Isometry3::look_at_lh(&l, &na::Point3::new(0.0, 0.0, 0.0), &up_vector());
+                let view =
+                    na::Isometry3::look_at_lh(&l, &na::Point3::new(0.0, 0.0, 0.0), &up_vector());
 
                 let mut mvp_mapped = mvp
                     .mvp_buffer
@@ -525,9 +526,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
                                     .build()],
                             );
 
-                            for (entity, mesh) in
-                                (&*entities, &meshes).join()
-                            {
+                            for (entity, mesh) in (&*entities, &meshes).join() {
                                 let (index_buffer, index_count) =
                                     mesh.index_buffers.last().unwrap();
                                 renderer.device.cmd_bind_index_buffer(

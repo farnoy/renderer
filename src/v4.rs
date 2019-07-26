@@ -1,5 +1,4 @@
 #![feature(arbitrary_self_types)]
-#![feature(stmt_expr_attributes)]
 
 extern crate ash;
 extern crate gltf;
@@ -24,11 +23,10 @@ pub mod ecs {
 pub mod renderer;
 
 use crate::renderer::{
-    load_gltf, right_vector, setup_ecs as renderer_setup_ecs, up_vector,
-    AcquireFramebuffer, AssignBufferIndex, CoarseCulling, ConsolidateMeshBuffers, CullPass,
-    DepthOnlyPass, GltfMesh, GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PrepareShadowMaps,
-    PresentFramebuffer, RenderFrame, Renderer, ShadowMappingMVPCalculation,
-    SynchronizeBaseColorTextures,
+    load_gltf, right_vector, setup_ecs as renderer_setup_ecs, up_vector, AcquireFramebuffer,
+    AssignBufferIndex, CoarseCulling, ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMesh,
+    GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PrepareShadowMaps, PresentFramebuffer,
+    RenderFrame, Renderer, ShadowMappingMVPCalculation, SynchronizeBaseColorTextures,
 };
 use ash::version::DeviceV1_0;
 use ecs::{components::*, systems::*};

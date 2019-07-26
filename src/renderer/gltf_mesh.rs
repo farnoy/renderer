@@ -55,10 +55,8 @@ pub fn load(world: &mut World, path: &str) -> LoadedMesh {
         .into_f32()
         .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
-    let aabb_c =
-        (na::Vector3::from(bounding_box.max) + na::Vector3::from(bounding_box.min)) / 2.0;
-    let aabb_h =
-        (na::Vector3::from(bounding_box.max) - na::Vector3::from(bounding_box.min)) / 2.0;
+    let aabb_c = (na::Vector3::from(bounding_box.max) + na::Vector3::from(bounding_box.min)) / 2.0;
+    let aabb_h = (na::Vector3::from(bounding_box.max) - na::Vector3::from(bounding_box.min)) / 2.0;
     let normals = reader
         .read_normals()
         .expect("failed to load normals")
