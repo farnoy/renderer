@@ -106,7 +106,7 @@ impl specs::shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuf
 impl<'a> System<'a> for ConsolidateMeshBuffers {
     #[allow(clippy::type_complexity)]
     type SystemData = (
-        WriteExpect<'a, RenderFrame>,
+        ReadExpect<'a, RenderFrame>,
         Read<'a, GraphicsCommandPool, GraphicsCommandPool>,
         ReadStorage<'a, GltfMesh>,
         Read<'a, ImageIndex>,
