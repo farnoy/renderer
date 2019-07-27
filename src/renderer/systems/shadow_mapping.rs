@@ -1,7 +1,6 @@
 use crate::ecs::components::*;
 use crate::renderer::*;
 use ash::vk;
-use na::RealField;
 use specs::{prelude::*, *};
 
 const MAP_SIZE: u32 = 4096;
@@ -377,7 +376,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 let b = renderer.device.new_buffer(
                     vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                     alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                    4 * 4 * 4 * 4096,
+                    size_of::<na::Matrix4<f32>>() as vk::DeviceSize * 4096,
                 );
                 renderer.device.set_object_name(
                     b.handle,
@@ -433,30 +432,26 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
             .for_each(|(_light, light_position, light_rotation, mvp)| {
                 let near = 30.0;
                 let far = 60.0;
-                let projection = glm::perspective_lh_zo(1.0, f32::pi() * 90.0 / 180.0, near, far);
+                let projection =
+                    glm::perspective_lh_zo(1.0, glm::radians(&glm::vec1(90.0)).x, near, far);
 
-                let dir = light_rotation.0.transform_vector(&forward_vector());
-                let extended_forward = light_position.0 + dir;
-                let up = light_rotation.0.transform_vector(&up_vector());
-
-                let view = na::Isometry3::look_at_lh(&light_position.0, &extended_forward, &up);
+                let view = na::Isometry3::from_parts(
+                    na::Translation3::from(light_rotation.0 * (-light_position.0.coords)),
+                    light_rotation.0,
+                );
 
                 let mut mvp_mapped = mvp
                     .mvp_buffer
                     .current_mut(image_index.0)
                     .map::<na::Matrix4<f32>>()
                     .expect("failed to map MVP buffer");
-                for (entity, pos, rot, scale) in (
-                    &*entities,
-                    &positions,
-                    &rotations,
-                    &scales,
-                )
-                    .join()
+                for (entity, pos, rot, scale) in
+                    (&*entities, &positions, &rotations, &scales).join()
                 {
-                    let translation = na::Translation3::from(pos.0.coords);
-                    let model = na::Similarity3::from_parts(translation, rot.0, scale.0);
-                    let mvp = projection * na::Matrix4::<f32>::from(view * model);
+                    let model = glm::translation(&pos.0.coords)
+                        * rot.0.to_homogeneous()
+                        * glm::scaling(&glm::Vec3::repeat(scale.0));
+                    let mvp = projection * view.to_homogeneous() * model;
                     mvp_mapped[entity.id() as usize] = mvp;
                 }
             });
@@ -652,7 +647,6 @@ impl<'a> System<'a> for PrepareShadowMaps {
 
         let queue = renderer.device.graphics_queue.lock();
 
-        let a = renderer.device.new_fence();
         unsafe {
             renderer
                 .device
@@ -668,7 +662,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
                             .handle])]
                         as *const [vk::SubmitInfoBuilder<'_>; 1]
                         as *const [vk::SubmitInfo; 1]),
-                    a.handle,
+                    vk::Fence::null(),
                 )
                 .unwrap();
         }
@@ -676,13 +670,6 @@ impl<'a> System<'a> for PrepareShadowMaps {
         *shadow_mapping
             .previous_command_buffer
             .current_mut(image_index.0) = Some(command_buffer);
-
-        unsafe {
-            renderer
-                .device
-                .wait_for_fences(&[a.handle], true, std::u64::MAX)
-                .expect("Wait for fence failed.");
-        }
 
         // TODO: extract to another stage?
         // Update descriptor sets so that users of lights have the latest info

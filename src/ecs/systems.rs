@@ -43,15 +43,11 @@ impl<'a> System<'a> for MVPCalculation {
         (&positions, &rotations, &scales, &mut mvps)
             .par_join()
             .for_each(|(pos, rot, scale, mvp)| {
-                let translation = na::Translation3::from(pos.0.coords);
-                let model = na::Similarity3::from_parts(translation, rot.0, scale.0);
-                mvp.model = na::Matrix4::<f32>::from(na::Similarity3::from_parts(
-                    translation,
-                    rot.0,
-                    scale.0,
-                ));
-
-                mvp.mvp = camera.projection * na::Matrix4::<f32>::from(camera.view * model);
+                let model = glm::translation(&pos.0.coords)
+                    * rot.0.to_homogeneous()
+                    * glm::scaling(&glm::Vec3::repeat(scale.0));
+                mvp.model = model;
+                mvp.mvp = camera.projection * camera.view * model;
             });
     }
 }
@@ -60,7 +56,7 @@ pub struct Camera {
     pub position: na::Point3<f32>,
     pub rotation: na::UnitQuaternion<f32>,
     pub projection: na::Matrix4<f32>,
-    pub view: na::Isometry3<f32>,
+    pub view: na::Matrix4<f32>,
     // left -> right -> bottom -> top -> near -> far
     pub frustum_planes: [na::Vector4<f32>; 6],
 }
@@ -69,7 +65,7 @@ impl Default for Camera {
     fn default() -> Camera {
         let position = na::Point3::new(0.0, 1.0, 2.0);
         let projection = na::Matrix4::identity();
-        let view = na::Isometry3::identity();
+        let view = na::Matrix4::identity();
         let rotation = na::UnitQuaternion::identity();
         let zero = na::Vector4::new(0.0, 0.0, 0.0, 0.0);
 
@@ -171,24 +167,24 @@ impl<'a> System<'a> for ProjectCamera {
         let near = 0.1;
         let far = 100.0;
         let aspect = renderer.instance.window_width as f32 / renderer.instance.window_height as f32;
-        let fovy = f32::pi() * 70.0 / 180.0;
+        let fovy = glm::radians(&glm::vec1(70.0));
 
-        camera.projection = glm::perspective_lh_zo(aspect, fovy, near, far);
+        camera.projection = glm::perspective_lh_zo(aspect, fovy.x, near, far);
 
         let dir = camera.rotation.transform_vector(&forward_vector());
         let extended_forward = camera.position + dir;
         let up = camera.rotation.transform_vector(&up_vector());
 
-        camera.view = na::Isometry3::look_at_lh(&camera.position, &extended_forward, &up);
+        camera.view = glm::look_at_lh(&camera.position.coords, &extended_forward.coords, &up);
 
-        let m = (camera.projection * camera.view.to_homogeneous()).transpose();
+        let m = camera.projection * camera.view;
         camera.frustum_planes = [
-            -(m.column(3) + m.column(0)),
-            -(m.column(3) - m.column(0)),
-            -(m.column(3) + m.column(1)),
-            -(m.column(3) - m.column(1)),
-            -(m.column(3) + m.column(2)),
-            -(m.column(3) - m.column(2)),
+            -(m.row(3) + m.row(0)).transpose(),
+            -(m.row(3) - m.row(0)).transpose(),
+            -(m.row(3) + m.row(1)).transpose(),
+            -(m.row(3) - m.row(1)).transpose(),
+            -(m.row(3) + m.row(2)).transpose(),
+            -(m.row(3) - m.row(2)).transpose(),
         ];
     }
 }

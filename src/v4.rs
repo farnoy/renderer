@@ -87,13 +87,7 @@ fn main() {
             AssignBufferIndex,
             SynchronizeBaseColorTextures,
             MVPUpload,
-            par![
-                CullPass,
-                seq![
-                    PrepareShadowMaps,
-                    DepthOnlyPass,
-                ],
-            ],
+            par![CullPass, seq![PrepareShadowMaps, DepthOnlyPass,],],
             Renderer,
             PresentFramebuffer,
         ],
@@ -122,12 +116,12 @@ fn main() {
     let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
 
-    world
+    let light = world
         .create_entity()
-        .with::<Position>(Position(na::Point3::new(6.0, 50.0, 0.0)))
-        .with::<Rotation>(Rotation(na::UnitQuaternion::from_axis_angle(
-            &right_vector(),
-            f32::pi() / 2.0,
+        .with::<Position>(Position(na::Point3::new(-6.0, 50.0, 0.0)))
+        .with::<Rotation>(Rotation(na::UnitQuaternion::look_at_lh(
+            &(na::Point3::new(0.0, 0.0, 0.0) - &na::Point3::new(-6.0, 50.0, 0.0)),
+            &up_vector(),
         )))
         .with::<Light>(Light { strength: 1.0 })
         .build();
@@ -135,9 +129,9 @@ fn main() {
     world
         .create_entity()
         .with::<Position>(Position(na::Point3::new(-6.0, 50.0, 8.0)))
-        .with::<Rotation>(Rotation(na::UnitQuaternion::from_axis_angle(
-            &right_vector(),
-            f32::pi() / 2.0 + f32::pi() / 16.0,
+        .with::<Rotation>(Rotation(na::UnitQuaternion::look_at_lh(
+            &(na::Point3::new(0.0, 0.0, 0.0) - &na::Point3::new(-6.0, 50.0, 8.0)),
+            &up_vector(),
         )))
         .with::<Light>(Light { strength: 0.7 })
         .build();
@@ -302,11 +296,24 @@ fn main() {
             .build();
     }
 
+    let mut f = 0.01f32;
     'frame: loop {
         #[cfg(feature = "profiling")]
         microprofile::flip!();
         #[cfg(feature = "profiling")]
         microprofile::scope!("game-loop", "all");
+        {
+            let mut positions = world.write_storage::<Position>();
+            let pos = &mut positions.get_mut(light).unwrap().0;
+            let mut rotations = world.write_storage::<Rotation>();
+            let rot = &mut rotations.get_mut(light).unwrap().0;
+            pos.x = f.sin() * 4.0 + -6.0;
+            *rot = na::UnitQuaternion::look_at_lh(
+                &(na::Point3::new(0.0, 0.0, 0.0) - *pos),
+                &up_vector(),
+            );
+            f += 0.01;
+        }
         {
             #[cfg(feature = "profiling")]
             microprofile::scope!("game-loop", "dispatch");
