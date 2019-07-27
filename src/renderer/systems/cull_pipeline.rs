@@ -19,6 +19,7 @@ use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},
 };
+#[cfg(feature = "microprofile")]
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
@@ -73,6 +74,7 @@ impl<'a> System<'a> for AssignBufferIndex {
     );
 
     fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "assign buffer index");
         let mut ix = 0;
         for (entity, _mesh, coarse_culled) in (&*entities, &meshes, &coarse_culled).join() {
@@ -97,6 +99,7 @@ impl<'a> System<'a> for CoarseCulling {
     );
 
     fn run(&mut self, (entities, aabb, camera, mut culled): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "coarse culling");
         for (entity_id, aabb) in (&*entities, &aabb).join() {
             #[allow(unused)]
@@ -353,6 +356,7 @@ impl<'a> System<'a> for CullPass {
             mvp_data,
         ): Self::SystemData,
     ) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "cull pass");
         if cull_pass_data_private
             .previous_run_command_buffer

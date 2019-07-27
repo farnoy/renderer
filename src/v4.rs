@@ -6,6 +6,7 @@ extern crate hashbrown;
 extern crate image;
 extern crate imgui;
 extern crate meshopt;
+#[cfg(feature = "microprofile")]
 extern crate microprofile;
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
@@ -30,6 +31,7 @@ use crate::renderer::{
 };
 use ash::version::DeviceV1_0;
 use ecs::{components::*, systems::*};
+#[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
@@ -41,6 +43,7 @@ use specs::{
 use std::sync::Arc;
 
 fn main() {
+    #[cfg(feature = "profiling")]
     microprofile::init!();
     let mut world = specs::World::new();
     world.register::<Position>();
@@ -283,9 +286,12 @@ fn main() {
     }
 
     'frame: loop {
+        #[cfg(feature = "profiling")]
         microprofile::flip!();
+        #[cfg(feature = "profiling")]
         microprofile::scope!("game-loop", "all");
         {
+            #[cfg(feature = "profiling")]
             microprofile::scope!("game-loop", "dispatch");
             dispatcher.dispatch(&world);
         }
@@ -301,5 +307,6 @@ fn main() {
             break 'frame;
         }
     }
+    #[cfg(feature = "profiling")]
     microprofile::shutdown!();
 }

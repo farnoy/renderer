@@ -1,4 +1,5 @@
 use super::components::*;
+#[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
@@ -28,6 +29,7 @@ impl<'a> System<'a> for MVPCalculation {
         &mut self,
         (entities, positions, rotations, scales, mut mvps, camera): Self::SystemData,
     ) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "mvp calculation");
         let mut entities_to_update = vec![];
         for (entity_id, _, _, _, ()) in (&*entities, &positions, &rotations, &scales, !&mvps).join()
@@ -91,6 +93,7 @@ impl<'a> System<'a> for InputHandler {
     type SystemData = (Write<'a, InputState>, Write<'a, Camera>);
 
     fn run(&mut self, (mut input_state, mut camera): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "input handler");
         let quit_handle = Arc::clone(&self.quit_handle);
         input_state.clear();
@@ -163,6 +166,7 @@ impl<'a> System<'a> for ProjectCamera {
     type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
 
     fn run(&mut self, (renderer, mut camera): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "project camera");
         let near = 0.1;
         let far = 100.0;
@@ -228,6 +232,7 @@ impl<'a> System<'a> for AABBCalculation {
     );
 
     fn run(&mut self, (entities, matrices, mesh, mut aabb): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "aabb calculation");
         use std::f32::{MAX, MIN};
         for (entity_id, matrices, mesh) in (&*entities, &matrices, &mesh).join() {

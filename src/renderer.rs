@@ -20,6 +20,7 @@ use crate::ecs::{
 };
 use ash::{version::DeviceV1_0, vk};
 use imgui::{self, im_str};
+#[cfg(feature = "microprofile")]
 use microprofile::scope;
 use specs::*;
 use std::{
@@ -904,6 +905,7 @@ impl<'a> System<'a> for Renderer {
             graphics_command_pool,
         ): Self::SystemData,
     ) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "renderer");
         let total = mesh_buffer_indices.join().count() as u32;
         let command_buffer = graphics_command_pool.0.record_one_time({
@@ -1443,6 +1445,7 @@ impl<'a> System<'a> for MVPUpload {
     );
 
     fn run(&mut self, (matrices, indices, image_index, mut mvp_data): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "mvp upload");
         let mut mvp_mapped = mvp_data
             .mvp_buffer
@@ -1495,6 +1498,7 @@ impl<'a> System<'a> for DepthOnlyPass {
             shadow_mapping_data,
         ): Self::SystemData,
     ) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "depth-pass");
         let command_buffer = graphics_command_pool.0.record_one_time({
             let renderer = &renderer;

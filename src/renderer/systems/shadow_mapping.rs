@@ -277,6 +277,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
             mvp_data,
         ): Self::SystemData,
     ) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "shadow mapping mvp calculation");
         let mut entities_to_update = vec![];
         for (entity_id, _, ()) in (&*entities, &positions, !&mvps).join() {
@@ -404,6 +405,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
             present_data,
         ): Self::SystemData,
     ) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "shadow_mapping");
         let command_buffer = graphics_command_pool
             .0

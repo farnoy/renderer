@@ -3,6 +3,7 @@ use super::super::{
     RenderFrame,
 };
 use ash::{version::DeviceV1_0, vk};
+#[cfg(feature = "microprofile")]
 use microprofile::scope;
 use specs::prelude::*;
 use std::u64;
@@ -74,6 +75,7 @@ impl<'a> System<'a> for AcquireFramebuffer {
     );
 
     fn run(&mut self, (renderer, present_data, mut image_index): Self::SystemData) {
+        #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "present");
         if present_data
             .render_command_buffer
