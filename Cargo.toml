@@ -37,3 +37,4 @@ validation = []
 [profile.release]
 debug-assertions = true
 incremental = true
+overflow-checks = true
