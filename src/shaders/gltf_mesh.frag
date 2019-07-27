@@ -20,15 +20,15 @@ void main() {
     for (uint ix = 0; ix < 2; ix++) {
         vec3 light_pos = in_light_pos[ix].xyz / in_light_pos[ix].w;
         // negative viewport height
-        light_pos.y *= -1;
+        light_pos.y *= -1.;
         // convert to NDC
-        light_pos *= 0.5;
-        light_pos += 0.5;
-        // slice the shadow map atlas
+        light_pos *= .5;
+        light_pos += .5;
         light_pos.xy /= SHADOW_MAP_DIM;
-        light_pos.x += ix / SHADOW_MAP_DIM;
+        // slice the shadow map atlas
+        light_pos.x += float(ix) / SHADOW_MAP_DIM;
 
-        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z - 0.14));
-        o_color.rgb *= clamp(depth, 0.3, 1.0);
+        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z - .14));
+        o_color.rgb *= clamp(depth, .3, 1.);
     }
 }
