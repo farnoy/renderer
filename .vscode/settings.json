@@ -6,5 +6,6 @@
   "rust.features": [
     "validation"
   ],
-  "rust-client.channel": "nightly"
+  "rust-client.channel": "nightly",
+  "rust-client.disableRustup": true
 }

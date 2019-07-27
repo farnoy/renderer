@@ -38,7 +38,7 @@ fn main() {
         assert!(result, "failed to compile shader");
     }
 
-    println!("cargo:rustc-link-lib=static=amd_alloc");
+    println!("cargo:rustc-link-lib=amd_alloc");
     if cfg!(unix) {
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
@@ -54,7 +54,7 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.1.97.0\\Include"
+            "-IC:\\VulkanSDK\\1.1.108.0\\Include"
         } else {
             ""
         })

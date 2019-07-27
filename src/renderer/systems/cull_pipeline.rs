@@ -26,6 +26,8 @@ use parking_lot::Mutex;
 use specs::*;
 use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc, u64};
 
+const INDIRECT_COMMAND_BUFFER_LEN: vk::DeviceSize = 2400;
+
 // Cull geometry in compute pass
 pub struct CullPass;
 
@@ -69,23 +71,18 @@ impl<'a> System<'a> for AssignBufferIndex {
     type SystemData = (
         Entities<'a>,
         ReadStorage<'a, GltfMesh>,
-        ReadStorage<'a, CoarseCulled>,
         WriteStorage<'a, GltfMeshBufferIndex>,
     );
 
-    fn run(&mut self, (entities, meshes, coarse_culled, mut indices): Self::SystemData) {
+    fn run(&mut self, (entities, meshes, mut indices): Self::SystemData) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "assign buffer index");
-        let mut ix = 0;
-        for (entity, _mesh, coarse_culled) in (&*entities, &meshes, &coarse_culled).join() {
-            if coarse_culled.0 {
-                indices.remove(entity);
-            } else {
-                indices
-                    .insert(entity, GltfMeshBufferIndex(ix as u32))
-                    .expect("Failed to insert mesh buffer index");
-                ix += 1;
-            }
+        let mut _ix = 0;
+        for (entity, _mesh) in (&*entities, &meshes).join() {
+            indices
+                .insert(entity, GltfMeshBufferIndex(entity.id() as u32))
+                .expect("Failed to insert mesh buffer index");
+            _ix += 1;
         }
     }
 }
@@ -234,7 +231,8 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
                             | vk::BufferUsageFlags::STORAGE_BUFFER
                             | vk::BufferUsageFlags::TRANSFER_DST,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                        size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize * 2400,
+                        size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize
+                            * INDIRECT_COMMAND_BUFFER_LEN,
                     );
                     device.set_object_name(
                         b.handle,
@@ -423,6 +421,39 @@ impl<'a> System<'a> for CullPass {
                     "cull pass",
                     [0.0, 1.0, 0.0, 1.0],
                     || {
+                        // Clear the command buffer before using
+                        {
+                            let blocksize =
+                                size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize;
+                            let from = 0;
+                            let size = blocksize * INDIRECT_COMMAND_BUFFER_LEN;
+                            let commands_buffer =
+                                cull_pass_data.culled_commands_buffer.current(image_index.0);
+                            debug_assert!(blocksize % 4 == 0);
+                            debug_assert!(commands_buffer.allocation_info.size >= size);
+                            renderer.device.cmd_fill_buffer(
+                                command_buffer,
+                                commands_buffer.handle,
+                                from,
+                                size,
+                                0,
+                            );
+                            renderer.device.cmd_pipeline_barrier(
+                                command_buffer,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                Default::default(),
+                                &[],
+                                &[vk::BufferMemoryBarrier::builder()
+                                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                                    .buffer(commands_buffer.handle)
+                                    .build()],
+                                &[],
+                            );
+                        }
                         renderer.device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::COMPUTE,
@@ -439,7 +470,6 @@ impl<'a> System<'a> for CullPass {
                             ],
                             &[],
                         );
-                        // for x in 1..10 {
                         for (mesh, mesh_index, mesh_position) in
                             (&meshes, &mesh_indices, &positions).join()
                         {

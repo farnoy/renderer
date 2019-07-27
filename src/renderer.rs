@@ -721,17 +721,24 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
         }
 
         let result = world.exec(
-            |(renderer, mvp_data, base_color): (
+            |(renderer, mvp_data, base_color, shadow_mapping): (
                 ReadExpect<RenderFrame>,
                 Read<MVPData, MVPData>,
                 Read<BaseColorDescriptorSet, BaseColorDescriptorSet>,
+                Read<ShadowMappingData, ShadowMappingData>,
             )| {
                 let device = &renderer.device;
                 let instance = &renderer.instance;
 
                 let gltf_pipeline_layout = new_pipeline_layout(
                     Arc::clone(&device),
-                    { &[&mvp_data.mvp_set_layout, &base_color.layout] },
+                    {
+                        &[
+                            &mvp_data.mvp_set_layout,
+                            &base_color.layout,
+                            &shadow_mapping.user_set_layout,
+                        ]
+                    },
                     &[],
                 );
                 device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
@@ -885,6 +892,7 @@ impl<'a> System<'a> for Renderer {
         Read<'a, MVPData, MVPData>,
         Read<'a, GltfPassData, GltfPassData>,
         Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
+        Read<'a, ShadowMappingData, ShadowMappingData>,
     );
 
     fn run(
@@ -903,6 +911,7 @@ impl<'a> System<'a> for Renderer {
             mvp_data,
             gltf_pass,
             graphics_command_pool,
+            shadow_mapping_data,
         ): Self::SystemData,
     ) {
         #[cfg(feature = "profiling")]
@@ -993,6 +1002,7 @@ impl<'a> System<'a> for Renderer {
                                     &[
                                         mvp_data.mvp_set.current(image_index.0).handle,
                                         base_color_descriptor_set.set.current(image_index.0).handle,
+                                        shadow_mapping_data.user_set.current(image_index.0).handle,
                                     ],
                                     &[],
                                 );

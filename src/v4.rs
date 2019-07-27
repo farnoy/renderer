@@ -115,13 +115,21 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(na::Point3::new(16.0, 50.0, 15.0)))
+        .with::<Position>(Position(na::Point3::new(6.0, 50.0, 0.0)))
+        .with::<Rotation>(Rotation(na::UnitQuaternion::from_axis_angle(
+            &right_vector(),
+            f32::pi() / 2.0,
+        )))
         .with::<Light>(Light { strength: 1.0 })
         .build();
 
     world
         .create_entity()
-        .with::<Position>(Position(na::Point3::new(-30.0, 50.0, -10.0)))
+        .with::<Position>(Position(na::Point3::new(-6.0, 50.0, 8.0)))
+        .with::<Rotation>(Rotation(na::UnitQuaternion::from_axis_angle(
+            &right_vector(),
+            f32::pi() / 2.0 + f32::pi() / 16.0,
+        )))
         .with::<Light>(Light { strength: 0.7 })
         .build();
 

@@ -99,7 +99,10 @@ impl Device {
         };
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
-            let device_extension_names_raw = [Swapchain::name().as_ptr()];
+            let device_extension_names_raw = [
+                Swapchain::name().as_ptr(),
+                vk::ExtDescriptorIndexingFn::name().as_ptr(),
+            ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
@@ -109,6 +112,7 @@ impl Device {
                 robust_buffer_access: 1,
                 fill_mode_non_solid: 0,
                 draw_indirect_first_instance: 1,
+                shader_storage_buffer_array_dynamic_indexing: 1,
                 ..Default::default()
             };
             let mut priorities = vec![];
@@ -126,6 +130,7 @@ impl Device {
             let mut descriptor_indexing_features =
                 vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
                     .runtime_descriptor_array(true)
+                    .shader_storage_buffer_array_non_uniform_indexing(true)
                     .descriptor_binding_partially_bound(true);
 
             let mut device_create_info = vk::DeviceCreateInfo::builder()
