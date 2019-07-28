@@ -20,17 +20,11 @@ pub struct Light {
 
 #[derive(Clone, Copy, Component, Debug)]
 #[storage(VecStorage)]
-pub struct Matrices {
-    pub mvp: na::Matrix4<f32>,
-    pub model: na::Matrix4<f32>,
-}
+pub struct ModelMatrix(pub glm::Mat4);
 
-impl Matrices {
-    pub fn one() -> Matrices {
-        Matrices {
-            mvp: na::Matrix4::identity(),
-            model: na::Matrix4::identity(),
-        }
+impl ModelMatrix {
+    pub fn one() -> ModelMatrix {
+        ModelMatrix(glm::Mat4::identity())
     }
 }
 

@@ -12,42 +12,47 @@ use winit::{
 
 use crate::renderer::{forward_vector, right_vector, up_vector, GltfMesh, RenderFrame};
 
-pub struct MVPCalculation;
+pub struct ModelMatrixCalculation;
 
-impl<'a> System<'a> for MVPCalculation {
+impl<'a> System<'a> for ModelMatrixCalculation {
     #[allow(clippy::type_complexity)]
     type SystemData = (
         Entities<'a>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, Rotation>,
         ReadStorage<'a, Scale>,
-        WriteStorage<'a, Matrices>,
-        Read<'a, Camera>,
+        WriteStorage<'a, ModelMatrix>,
     );
 
     fn run(
         &mut self,
-        (entities, positions, rotations, scales, mut mvps, camera): Self::SystemData,
+        (entities, positions, rotations, scales, mut model_matrices): Self::SystemData,
     ) {
         #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "mvp calculation");
+        microprofile::scope!("ecs", "model matrix calculation");
         let mut entities_to_update = vec![];
-        for (entity_id, _, _, _, ()) in (&*entities, &positions, &rotations, &scales, !&mvps).join()
+        for (entity_id, _, _, _, ()) in (
+            &*entities,
+            &positions,
+            &rotations,
+            &scales,
+            !&model_matrices,
+        )
+            .join()
         {
             entities_to_update.push(entity_id);
         }
         for entity_id in entities_to_update.into_iter() {
-            mvps.insert(entity_id, Matrices::one())
+            model_matrices
+                .insert(entity_id, ModelMatrix::one())
                 .expect("failed to insert missing matrices");
         }
-        (&positions, &rotations, &scales, &mut mvps)
+        (&positions, &rotations, &scales, &mut model_matrices)
             .par_join()
-            .for_each(|(pos, rot, scale, mvp)| {
-                let model = glm::translation(&pos.0.coords)
+            .for_each(|(pos, rot, scale, mut model)| {
+                model.0 = glm::translation(&pos.0.coords)
                     * rot.0.to_homogeneous()
                     * glm::scaling(&glm::Vec3::repeat(scale.0));
-                mvp.model = model;
-                mvp.mvp = camera.projection * camera.view * model;
             });
     }
 }
@@ -222,16 +227,16 @@ pub struct AABBCalculation;
 impl<'a> System<'a> for AABBCalculation {
     type SystemData = (
         Entities<'a>,
-        ReadStorage<'a, Matrices>,
+        ReadStorage<'a, ModelMatrix>,
         ReadStorage<'a, GltfMesh>,
         WriteStorage<'a, AABB>,
     );
 
-    fn run(&mut self, (entities, matrices, mesh, mut aabb): Self::SystemData) {
+    fn run(&mut self, (entities, model_matrices, mesh, mut aabb): Self::SystemData) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "aabb calculation");
         use std::f32::{MAX, MIN};
-        for (entity_id, matrices, mesh) in (&*entities, &matrices, &mesh).join() {
+        for (entity_id, model_matrix, mesh) in (&*entities, &model_matrices, &mesh).join() {
             let min = mesh.aabb_c - mesh.aabb_h;
             let max = mesh.aabb_c + mesh.aabb_h;
             let (min, max) = [
@@ -247,7 +252,7 @@ impl<'a> System<'a> for AABBCalculation {
                 na::Point3::new(max.x, max.y, max.z),
             ]
             .iter()
-            .map(|vertex| matrices.model * vertex.to_homogeneous())
+            .map(|vertex| model_matrix.0 * vertex.to_homogeneous())
             .map(|vertex| vertex.xyz() / vertex.w)
             .fold(
                 ((MAX, MAX, MAX), (MIN, MIN, MIN)),

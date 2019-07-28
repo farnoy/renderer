@@ -6,7 +6,7 @@ use super::{
             Fence, Semaphore,
         },
         helpers::{self, pick_lod, Pipeline, PipelineLayout},
-        GltfMesh, MVPData, MainDescriptorPool, RenderFrame,
+        CameraMatrices, GltfMesh, MainDescriptorPool, ModelData, RenderFrame,
     },
     consolidate_mesh_buffers::ConsolidatedMeshBuffers,
     present::ImageIndex,
@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 use specs::*;
 use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc, u64};
 
-const INDIRECT_COMMAND_BUFFER_LEN: vk::DeviceSize = 2400;
+pub const INDIRECT_COMMAND_BUFFER_LEN: vk::DeviceSize = 2400;
 
 // Cull geometry in compute pass
 pub struct CullPass;
@@ -36,14 +36,6 @@ pub struct CullPass;
 #[derive(Clone, Component, Debug)]
 #[storage(VecStorage)]
 pub struct CoarseCulled(pub bool);
-
-// Index in device generated indirect commands
-// Can be absent if culled
-#[derive(Clone, Component)]
-#[storage(VecStorage)]
-pub struct GltfMeshBufferIndex(pub u32);
-
-pub struct AssignBufferIndex;
 
 pub struct CoarseCulling;
 
@@ -65,26 +57,6 @@ pub struct CullPassDataPrivate {
 
 pub struct CullPassEvent {
     pub cull_complete_event: DoubleBuffered<Mutex<Event>>,
-}
-
-impl<'a> System<'a> for AssignBufferIndex {
-    type SystemData = (
-        Entities<'a>,
-        ReadStorage<'a, GltfMesh>,
-        WriteStorage<'a, GltfMeshBufferIndex>,
-    );
-
-    fn run(&mut self, (entities, meshes, mut indices): Self::SystemData) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "assign buffer index");
-        let mut _ix = 0;
-        for (entity, _mesh) in (&*entities, &meshes).join() {
-            indices
-                .insert(entity, GltfMeshBufferIndex(entity.id() as u32))
-                .expect("Failed to insert mesh buffer index");
-            _ix += 1;
-        }
-    }
 }
 
 impl<'a> System<'a> for CoarseCulling {
@@ -142,10 +114,11 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
         }
 
         let result = world.exec(
-            |(renderer, mvp_data, main_descriptor_pool): (
+            |(renderer, model_data, main_descriptor_pool, camera_matrices): (
                 ReadExpect<RenderFrame>,
-                Read<MVPData, MVPData>,
+                Read<ModelData, ModelData>,
                 Write<MainDescriptorPool, MainDescriptorPool>,
+                Read<CameraMatrices, CameraMatrices>,
             )| {
                 let device = &renderer.device;
 
@@ -192,7 +165,11 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
 
                 let cull_pipeline_layout = helpers::new_pipeline_layout(
                     Arc::clone(&device),
-                    &[&mvp_data.mvp_set_layout, &cull_set_layout],
+                    &[
+                        &model_data.model_set_layout,
+                        &camera_matrices.set_layout,
+                        &cull_set_layout,
+                    ],
                     &[vk::PushConstantRange {
                         stage_flags: vk::ShaderStageFlags::COMPUTE,
                         offset: 0,
@@ -327,31 +304,33 @@ impl specs::shred::SetupHandler<CullPassEvent> for CullPassEvent {
 impl<'a> System<'a> for CullPass {
     #[allow(clippy::type_complexity)]
     type SystemData = (
+        Entities<'a>,
         ReadExpect<'a, RenderFrame>,
         Read<'a, CullPassData, CullPassData>,
         Write<'a, CullPassDataPrivate, CullPassDataPrivate>,
         ReadStorage<'a, GltfMesh>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
         Read<'a, ImageIndex>,
         ReadExpect<'a, ConsolidatedMeshBuffers>,
         ReadStorage<'a, Position>,
         Read<'a, Camera>,
-        Read<'a, MVPData, MVPData>,
+        Read<'a, ModelData, ModelData>,
+        Read<'a, CameraMatrices, CameraMatrices>,
     );
 
     fn run(
         &mut self,
         (
+            entities,
             renderer,
             cull_pass_data,
             mut cull_pass_data_private,
             meshes,
-            mesh_indices,
             image_index,
             consolidate_mesh_buffers,
             positions,
             camera,
-            mvp_data,
+            model_data,
+            camera_matrices,
         ): Self::SystemData,
     ) {
         #[cfg(feature = "profiling")]
@@ -465,13 +444,14 @@ impl<'a> System<'a> for CullPass {
                             cull_pass_data.cull_pipeline_layout.handle,
                             0,
                             &[
-                                mvp_data.mvp_set.current(image_index.0).handle,
+                                model_data.model_set.current(image_index.0).handle,
+                                camera_matrices.set.current(image_index.0).handle,
                                 cull_pass_data.cull_set.current(image_index.0).handle,
                             ],
                             &[],
                         );
-                        for (mesh, mesh_index, mesh_position) in
-                            (&meshes, &mesh_indices, &positions).join()
+                        for (entity, mesh, mesh_position) in
+                            (&*entities, &meshes, &positions).join()
                         {
                             let vertex_offset = consolidate_mesh_buffers
                                 .vertex_offsets
@@ -484,7 +464,7 @@ impl<'a> System<'a> for CullPass {
                                 .get(&index_buffer.handle.as_raw())
                                 .expect("Index buffer not consolidated");
                             let constants = [
-                                mesh_index.0,
+                                entity.id(),
                                 index_len.to_u32().unwrap(),
                                 index_offset.to_u32().unwrap(),
                                 index_offset_in_output,

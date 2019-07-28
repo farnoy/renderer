@@ -25,9 +25,10 @@ pub mod renderer;
 
 use crate::renderer::{
     load_gltf, right_vector, setup_ecs as renderer_setup_ecs, up_vector, AcquireFramebuffer,
-    AssignBufferIndex, CoarseCulling, ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMesh,
-    GltfMeshBaseColorTexture, LoadedMesh, MVPUpload, PrepareShadowMaps, PresentFramebuffer,
-    RenderFrame, Renderer, ShadowMappingMVPCalculation, SynchronizeBaseColorTextures,
+    CameraMatricesUpload, CoarseCulling, ConsolidateMeshBuffers, CullPass, DepthOnlyPass, GltfMesh,
+    GltfMeshBaseColorTexture, LoadedMesh, ModelMatricesUpload, PrepareShadowMaps,
+    PresentFramebuffer, RenderFrame, Renderer, ShadowMappingMVPCalculation,
+    SynchronizeBaseColorTextures,
 };
 use ash::version::DeviceV1_0;
 use ecs::{components::*, systems::*};
@@ -49,7 +50,7 @@ fn main() {
     world.register::<Position>();
     world.register::<Rotation>();
     world.register::<Scale>();
-    world.register::<Matrices>();
+    world.register::<ModelMatrix>();
     world.register::<AABB>();
     world.register::<GltfMesh>();
     renderer_setup_ecs(&mut world);
@@ -80,13 +81,12 @@ fn main() {
                 ConsolidateMeshBuffers,
             ],
             par![
-                seq![MVPCalculation, AABBCalculation,],
+                seq![ModelMatrixCalculation, AABBCalculation,],
                 ShadowMappingMVPCalculation,
             ],
             CoarseCulling,
-            AssignBufferIndex,
             SynchronizeBaseColorTextures,
-            MVPUpload,
+            par![CameraMatricesUpload, ModelMatricesUpload,],
             par![CullPass, seq![PrepareShadowMaps, DepthOnlyPass,],],
             Renderer,
             PresentFramebuffer,

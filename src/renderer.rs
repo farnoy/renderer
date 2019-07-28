@@ -15,7 +15,7 @@ mod systems {
 }
 
 use crate::ecs::{
-    components::{Matrices, Position},
+    components::{ModelMatrix, Position},
     systems::Camera,
 };
 use ash::{version::DeviceV1_0, vk};
@@ -415,15 +415,15 @@ impl specs::shred::SetupHandler<GraphicsCommandPool> for GraphicsCommandPool {
     }
 }
 
-pub struct MVPData {
-    pub mvp_set_layout: DescriptorSetLayout,
-    pub mvp_set: DoubleBuffered<DescriptorSet>,
-    pub mvp_buffer: DoubleBuffered<Buffer>,
+pub struct CameraMatrices {
+    set_layout: DescriptorSetLayout,
+    buffer: DoubleBuffered<Buffer>,
+    set: DoubleBuffered<DescriptorSet>,
 }
 
-impl specs::shred::SetupHandler<MVPData> for MVPData {
+impl specs::shred::SetupHandler<CameraMatrices> for CameraMatrices {
     fn setup(world: &mut World) {
-        if world.has_value::<MVPData>() {
+        if world.has_value::<CameraMatrices>() {
             return;
         }
 
@@ -432,39 +432,45 @@ impl specs::shred::SetupHandler<MVPData> for MVPData {
                 ReadExpect<RenderFrame>,
                 Read<MainDescriptorPool, MainDescriptorPool>,
             )| {
-                let device = &renderer.device;
-
-                let mvp_set_layout =
-                    device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    }]);
-                device.set_object_name(mvp_set_layout.handle, "MVP Set Layout");
-
-                let mvp_buffer = DoubleBuffered::new(|ix| {
-                    let b = device.new_buffer(
+                let buffer = DoubleBuffered::new(|ix| {
+                    let b = renderer.device.new_buffer(
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                        4 * 4 * 4 * 4096,
+                        size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
                     );
-                    device.set_object_name(b.handle, &format!("MVP Buffer - {}", ix));
+                    renderer
+                        .device
+                        .set_object_name(b.handle, &format!("Camera matrices Buffer - ix={}", ix));
                     b
                 });
-                let mvp_set = DoubleBuffered::new(|ix| {
-                    let s = main_descriptor_pool.0.allocate_set(&mvp_set_layout);
-                    device.set_object_name(s.handle, &format!("MVP Set - {}", ix));
+                let set_layout =
+                    renderer
+                        .device
+                        .new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+                            binding: 0,
+                            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                            descriptor_count: 1,
+                            stage_flags: vk::ShaderStageFlags::VERTEX
+                                | vk::ShaderStageFlags::COMPUTE,
+                            p_immutable_samplers: ptr::null(),
+                        }]);
+                renderer
+                    .device
+                    .set_object_name(set_layout.handle, "Camera matrices set layout");
+                let set = DoubleBuffered::new(|ix| {
+                    let s = main_descriptor_pool.0.allocate_set(&set_layout);
+                    renderer
+                        .device
+                        .set_object_name(s.handle, &format!("Camera matrices Set - ix={}", ix));
 
                     {
                         let mvp_updates = &[vk::DescriptorBufferInfo {
-                            buffer: mvp_buffer.current(ix).handle,
+                            buffer: buffer.current(ix).handle,
                             offset: 0,
-                            range: 4096 * size_of::<na::Matrix4<f32>>() as vk::DeviceSize,
+                            range: size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
                         }];
                         unsafe {
-                            device.update_descriptor_sets(
+                            renderer.device.update_descriptor_sets(
                                 &[vk::WriteDescriptorSet::builder()
                                     .dst_set(s.handle)
                                     .dst_binding(0)
@@ -479,10 +485,86 @@ impl specs::shred::SetupHandler<MVPData> for MVPData {
                     s
                 });
 
-                MVPData {
-                    mvp_set_layout,
-                    mvp_set,
-                    mvp_buffer,
+                CameraMatrices {
+                    set_layout,
+                    set,
+                    buffer,
+                }
+            },
+        );
+
+        world.insert(result);
+    }
+}
+
+pub struct ModelData {
+    pub model_set_layout: DescriptorSetLayout,
+    pub model_set: DoubleBuffered<DescriptorSet>,
+    pub model_buffer: DoubleBuffered<Buffer>,
+}
+
+impl specs::shred::SetupHandler<ModelData> for ModelData {
+    fn setup(world: &mut World) {
+        if world.has_value::<ModelData>() {
+            return;
+        }
+
+        let result = world.exec(
+            |(renderer, main_descriptor_pool): (
+                ReadExpect<RenderFrame>,
+                Read<MainDescriptorPool, MainDescriptorPool>,
+            )| {
+                let device = &renderer.device;
+
+                let model_set_layout =
+                    device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
+                        binding: 0,
+                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
+                        p_immutable_samplers: ptr::null(),
+                    }]);
+                device.set_object_name(model_set_layout.handle, "Model Set Layout");
+
+                let model_buffer = DoubleBuffered::new(|ix| {
+                    let b = device.new_buffer(
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                        size_of::<glm::Mat4>() as vk::DeviceSize * 4096,
+                    );
+                    device.set_object_name(b.handle, &format!("Model Buffer - {}", ix));
+                    b
+                });
+                let model_set = DoubleBuffered::new(|ix| {
+                    let s = main_descriptor_pool.0.allocate_set(&model_set_layout);
+                    device.set_object_name(s.handle, &format!("Model Set - {}", ix));
+
+                    {
+                        let model_updates = &[vk::DescriptorBufferInfo {
+                            buffer: model_buffer.current(ix).handle,
+                            offset: 0,
+                            range: 4096 * size_of::<glm::Mat4>() as vk::DeviceSize,
+                        }];
+                        unsafe {
+                            device.update_descriptor_sets(
+                                &[vk::WriteDescriptorSet::builder()
+                                    .dst_set(s.handle)
+                                    .dst_binding(0)
+                                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                    .buffer_info(model_updates)
+                                    .build()],
+                                &[],
+                            );
+                        }
+                    }
+
+                    s
+                });
+
+                ModelData {
+                    model_set_layout,
+                    model_set,
+                    model_buffer,
                 }
             },
         );
@@ -507,10 +589,11 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
         }
 
         let result = world.exec(
-            |(renderer, mvp_data, main_attachments): (
+            |(renderer, model_data, main_attachments, camera_matrices): (
                 ReadExpect<RenderFrame>,
-                Read<MVPData, MVPData>,
+                Read<ModelData, ModelData>,
                 Read<MainAttachments, MainAttachments>,
+                Read<CameraMatrices, CameraMatrices>,
             )| {
                 let device = &renderer.device;
                 let instance = &renderer.instance;
@@ -561,8 +644,11 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                     .device
                     .set_object_name(renderpass.handle, "Depth prepass renderpass");
 
-                let depth_pipeline_layout =
-                    new_pipeline_layout(Arc::clone(&device), &[&mvp_data.mvp_set_layout], &[]);
+                let depth_pipeline_layout = new_pipeline_layout(
+                    Arc::clone(&device),
+                    &[&model_data.model_set_layout, &camera_matrices.set_layout],
+                    &[],
+                );
                 let depth_pipeline = new_graphics_pipeline2(
                     Arc::clone(&device),
                     &[(
@@ -721,11 +807,12 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
         }
 
         let result = world.exec(
-            |(renderer, mvp_data, base_color, shadow_mapping): (
+            |(renderer, model_data, base_color, shadow_mapping, camera_matrices): (
                 ReadExpect<RenderFrame>,
-                Read<MVPData, MVPData>,
+                Read<ModelData, ModelData>,
                 Read<BaseColorDescriptorSet, BaseColorDescriptorSet>,
                 Read<ShadowMappingData, ShadowMappingData>,
+                Read<CameraMatrices, CameraMatrices>,
             )| {
                 let device = &renderer.device;
                 let instance = &renderer.instance;
@@ -734,9 +821,10 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                     Arc::clone(&device),
                     {
                         &[
-                            &mvp_data.mvp_set_layout,
-                            &base_color.layout,
+                            &model_data.model_set_layout,
+                            &camera_matrices.set_layout,
                             &shadow_mapping.user_set_layout,
+                            &base_color.layout,
                         ]
                     },
                     &[],
@@ -882,17 +970,17 @@ impl<'a> System<'a> for Renderer {
         ReadExpect<'a, RenderFrame>,
         Read<'a, MainFramebuffer, MainFramebuffer>,
         Write<'a, Gui, Gui>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
         Read<'a, BaseColorDescriptorSet, BaseColorDescriptorSet>,
         ReadExpect<'a, ConsolidatedMeshBuffers>,
         ReadExpect<'a, CullPassData>,
         Write<'a, PresentData, PresentData>,
         Read<'a, ImageIndex>,
         Read<'a, DepthPassData, DepthPassData>,
-        Read<'a, MVPData, MVPData>,
+        Read<'a, ModelData, ModelData>,
         Read<'a, GltfPassData, GltfPassData>,
         Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
         Read<'a, ShadowMappingData, ShadowMappingData>,
+        Read<'a, CameraMatrices, CameraMatrices>,
     );
 
     fn run(
@@ -901,22 +989,23 @@ impl<'a> System<'a> for Renderer {
             renderer,
             main_framebuffer,
             mut gui,
-            mesh_buffer_indices,
             base_color_descriptor_set,
             consolidated_mesh_buffers,
             cull_pass_data,
             mut present_data,
             image_index,
             depth_pass,
-            mvp_data,
+            model_data,
             gltf_pass,
             graphics_command_pool,
             shadow_mapping_data,
+            camera_matrices,
         ): Self::SystemData,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "renderer");
-        let total = mesh_buffer_indices.join().count() as u32;
+        // TODO: count this? pack and defragment draw calls?
+        let total = INDIRECT_COMMAND_BUFFER_LEN as u32;
         let command_buffer = graphics_command_pool.0.record_one_time({
             let renderer = &renderer;
             let consolidated_mesh_buffers = &consolidated_mesh_buffers;
@@ -1000,9 +1089,10 @@ impl<'a> System<'a> for Renderer {
                                     gltf_pass.gltf_pipeline_layout.handle,
                                     0,
                                     &[
-                                        mvp_data.mvp_set.current(image_index.0).handle,
-                                        base_color_descriptor_set.set.current(image_index.0).handle,
+                                        model_data.model_set.current(image_index.0).handle,
+                                        camera_matrices.set.current(image_index.0).handle,
                                         shadow_mapping_data.user_set.current(image_index.0).handle,
+                                        base_color_descriptor_set.set.current(image_index.0).handle,
                                     ],
                                     &[],
                                 );
@@ -1444,36 +1534,56 @@ impl specs::shred::SetupHandler<Gui> for Gui {
     }
 }
 
-pub struct MVPUpload;
+pub struct ModelMatricesUpload;
 
-impl<'a> System<'a> for MVPUpload {
+impl<'a> System<'a> for ModelMatricesUpload {
     type SystemData = (
-        ReadStorage<'a, Matrices>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
+        Entities<'a>,
+        ReadStorage<'a, ModelMatrix>,
         Read<'a, ImageIndex>,
-        Write<'a, MVPData, MVPData>,
+        Write<'a, ModelData, ModelData>,
     );
 
-    fn run(&mut self, (matrices, indices, image_index, mut mvp_data): Self::SystemData) {
+    fn run(&mut self, (entities, model_matrices, image_index, mut model_data): Self::SystemData) {
         #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "mvp upload");
-        let mut mvp_mapped = mvp_data
-            .mvp_buffer
+        microprofile::scope!("ecs", "model matrices upload");
+        let mut model_mapped = model_data
+            .model_buffer
             .current_mut(image_index.0)
-            .map::<na::Matrix4<f32>>()
-            .expect("failed to map MVP buffer");
-        for (index, matrices) in (&indices, &matrices).join() {
-            mvp_mapped[index.0 as usize] = matrices.mvp;
+            .map::<glm::Mat4>()
+            .expect("failed to map Model buffer");
+        for (entity, matrices) in (&*entities, &model_matrices).join() {
+            model_mapped[entity.id() as usize] = matrices.0;
         }
     }
 }
 
+pub struct CameraMatricesUpload;
+
+impl<'a> System<'a> for CameraMatricesUpload {
+    type SystemData = (
+        Read<'a, ImageIndex>,
+        Read<'a, Camera>,
+        Write<'a, CameraMatrices, CameraMatrices>,
+    );
+
+    fn run(&mut self, (image_index, camera, mut camera_matrices): Self::SystemData) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "camera matrices upload");
+        let mut model_mapped = camera_matrices
+            .buffer
+            .current_mut(image_index.0)
+            .map::<[glm::Mat4; 2]>()
+            .expect("failed to map camera matrix buffer");
+        model_mapped[0] = [camera.projection, camera.view];
+    }
+}
+
 pub fn setup_ecs(world: &mut World) {
-    world.register::<GltfMeshBufferIndex>();
     world.register::<GltfMeshBaseColorTexture>();
     world.register::<BaseColorVisitedMarker>();
     world.register::<CoarseCulled>();
-    world.register::<ShadowMappingMVPData>();
+    world.register::<ShadowMappingLightMatrices>();
 }
 
 pub struct DepthOnlyPass;
@@ -1481,14 +1591,15 @@ pub struct DepthOnlyPass;
 impl<'a> System<'a> for DepthOnlyPass {
     #[allow(clippy::type_complexity)]
     type SystemData = (
+        Entities<'a>,
         ReadExpect<'a, RenderFrame>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
         Read<'a, ImageIndex>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, Position>,
         Read<'a, Camera>,
+        Read<'a, CameraMatrices, CameraMatrices>,
         Write<'a, DepthPassData, DepthPassData>,
-        Read<'a, MVPData, MVPData>,
+        Read<'a, ModelData, ModelData>,
         Write<'a, GraphicsCommandPool, GraphicsCommandPool>,
         Read<'a, ShadowMappingData, ShadowMappingData>,
     );
@@ -1496,14 +1607,15 @@ impl<'a> System<'a> for DepthOnlyPass {
     fn run(
         &mut self,
         (
+            entities,
             renderer,
-            mesh_buffer_indices,
             image_index,
             meshes,
             positions,
             camera,
+            camera_matrices,
             mut depth_pass,
-            mvp_data,
+            model_data,
             graphics_command_pool,
             shadow_mapping_data,
         ): Self::SystemData,
@@ -1550,11 +1662,14 @@ impl<'a> System<'a> for DepthOnlyPass {
                             vk::PipelineBindPoint::GRAPHICS,
                             depth_pass.depth_pipeline_layout.handle,
                             0,
-                            &[mvp_data.mvp_set.current(image_index.0).handle],
+                            &[
+                                model_data.model_set.current(image_index.0).handle,
+                                camera_matrices.set.current(image_index.0).handle,
+                            ],
                             &[],
                         );
-                        for (mesh, index, mesh_position) in
-                            (&meshes, &mesh_buffer_indices, &positions).join()
+                        for (entity, mesh, mesh_position) in
+                            (&*entities, &meshes, &positions).join()
                         {
                             let (index_buffer, index_count) =
                                 pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
@@ -1576,7 +1691,7 @@ impl<'a> System<'a> for DepthOnlyPass {
                                 1,
                                 0,
                                 0,
-                                index.0,
+                                entity.id() as u32,
                             );
                         }
                         renderer.device.cmd_end_render_pass(command_buffer);

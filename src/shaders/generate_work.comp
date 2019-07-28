@@ -19,23 +19,28 @@ layout(push_constant) uniform PushConstants {
     int vertexOffset;
 };
 
-layout(set = 0, binding = 0) uniform MVP {
-    mat4 mvp[4096];
+layout(set = 0, binding = 0) uniform ModelMatrices {
+    mat4 model[4096];
 };
 
-layout(set = 1, binding = 0) buffer IndirectCommands {
+layout(set = 1, binding = 0) uniform CameraMatrices {
+    mat4 projection;
+    mat4 view;
+};
+
+layout(set = 2, binding = 0) buffer IndirectCommands {
     VkDrawIndexedIndirectCommand indirect_commands[];
 };
 
-layout(set = 1, binding = 1) buffer OutIndexBuffer {
+layout(set = 2, binding = 1) buffer OutIndexBuffer {
     uint out_index_buffer[][3];
 };
 
-layout(set = 1, binding = 2) buffer readonly VertexBuffer {
+layout(set = 2, binding = 2) buffer readonly VertexBuffer {
     float vertex_buffer[][3];
 };
 
-layout(set = 1, binding = 3) buffer readonly IndexBuffer {
+layout(set = 2, binding = 3) buffer readonly IndexBuffer {
     uint index_buffer[][3];
 };
 
@@ -81,9 +86,10 @@ void main() {
             vertex_buffer[vertexOffset + ix2][2],
             1.0
         );
-        vec4 vertex0 = mvp[gltfIndex] * input0;
-        vec4 vertex1 = mvp[gltfIndex] * input1;
-        vec4 vertex2 = mvp[gltfIndex] * input2;
+        mat4 mvp = projection * view * model[gltfIndex];
+        vec4 vertex0 = mvp * input0;
+        vec4 vertex1 = mvp * input1;
+        vec4 vertex2 = mvp * input2;
 
         vec3 ndc0 = vertex0.xyz / vertex0.w;
         vec3 ndc1 = vertex1.xyz / vertex1.w;

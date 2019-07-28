@@ -4,7 +4,6 @@ use super::{
         device::{DescriptorSet, DescriptorSetLayout, DoubleBuffered},
         helpers, MainDescriptorPool, RenderFrame,
     },
-    cull_pipeline::GltfMeshBufferIndex,
     present::ImageIndex,
 };
 use ash::{version::DeviceV1_0, vk};
@@ -102,7 +101,6 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
         ReadExpect<'a, RenderFrame>,
         Write<'a, BaseColorDescriptorSet, BaseColorDescriptorSet>,
         ReadStorage<'a, GltfMeshBaseColorTexture>,
-        ReadStorage<'a, GltfMeshBufferIndex>,
         Read<'a, ImageIndex>,
         WriteStorage<'a, BaseColorVisitedMarker>,
     );
@@ -114,7 +112,6 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             renderer,
             base_color_descriptor_set,
             base_color_textures,
-            buffer_indices,
             image_index,
             mut visited_markers,
         ): Self::SystemData,
@@ -155,7 +152,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             assert!(res.is_none()); // double check that there was nothing there
         }
 
-        for (buffer_index, marker) in (&buffer_indices, &visited_markers).join() {
+        for (entity, marker) in (&entities, &visited_markers).join() {
             let sampler_updates = &[vk::DescriptorImageInfo::builder()
                 .image_view(marker.image_view.handle)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -166,7 +163,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
                     &[vk::WriteDescriptorSet::builder()
                         .dst_set(base_color_descriptor_set.set.current(image_index.0).handle)
                         .dst_binding(0)
-                        .dst_array_element(buffer_index.0)
+                        .dst_array_element(entity.id())
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(sampler_updates)
                         .build()],

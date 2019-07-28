@@ -19,6 +19,7 @@ pub struct ShadowMappingData {
     pub user_set_layout: DescriptorSetLayout,
     pub user_set: DoubleBuffered<DescriptorSet>,
     _user_sampler: helpers::Sampler,
+    pub matrices_set_layout: DescriptorSetLayout,
 }
 
 impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
@@ -255,6 +256,18 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                         .push_next(&mut binding_flags);
                     renderer.device.new_descriptor_set_layout2(&create_info)
                 };
+                let matrices_set_layout = {
+                    let bindings = &[vk::DescriptorSetLayoutBinding {
+                        binding: 0,
+                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
+                        p_immutable_samplers: ptr::null(),
+                    }];
+                    let create_info =
+                        vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+                    renderer.device.new_descriptor_set_layout2(&create_info)
+                };
                 renderer
                     .device
                     .set_object_name(user_set_layout.handle, "Shadow Mapping User Set Layout");
@@ -316,6 +329,7 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                     user_set_layout,
                     user_set,
                     _user_sampler: user_sampler,
+                    matrices_set_layout,
                 }
             },
         );
@@ -326,11 +340,10 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
 
 #[derive(Component)]
 #[storage(VecStorage)]
-/// Holds MVP data for meshes from the perspective of this light.
-/// This differs from the main `MVPData` component by the origin and projection matrix setup.
-pub struct ShadowMappingMVPData {
-    mvp_set: DoubleBuffered<DescriptorSet>,
-    mvp_buffer: DoubleBuffered<Buffer>,
+/// Holds Projection and view matrices for each light.
+pub struct ShadowMappingLightMatrices {
+    matrices_set: DoubleBuffered<DescriptorSet>,
+    matrices_buffer: DoubleBuffered<Buffer>,
 }
 
 pub struct ShadowMappingMVPCalculation;
@@ -341,13 +354,12 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
         Entities<'a>,
         ReadStorage<'a, Position>,
         ReadStorage<'a, Rotation>,
-        ReadStorage<'a, Scale>,
-        WriteStorage<'a, ShadowMappingMVPData>,
+        WriteStorage<'a, ShadowMappingLightMatrices>,
         ReadStorage<'a, Light>,
         Read<'a, ImageIndex>,
         ReadExpect<'a, RenderFrame>,
         Read<'a, MainDescriptorPool, MainDescriptorPool>,
-        Read<'a, MVPData, MVPData>,
+        Read<'a, ShadowMappingData, ShadowMappingData>,
     );
 
     fn run(
@@ -356,41 +368,40 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
             entities,
             positions,
             rotations,
-            scales,
-            mut mvps,
+            mut light_matrices,
             lights,
             image_index,
             renderer,
             main_descriptor_pool,
-            mvp_data,
+            shadow_data,
         ): Self::SystemData,
     ) {
         #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "shadow mapping mvp calculation");
+        microprofile::scope!("ecs", "shadow mapping light matrices calculation");
         let mut entities_to_update = vec![];
-        for (entity_id, _, _, ()) in (&*entities, &positions, &lights, !&mvps).join() {
+        for (entity_id, _, _, ()) in (&*entities, &positions, &lights, !&light_matrices).join() {
             entities_to_update.push(entity_id);
         }
         for entity_id in entities_to_update.into_iter() {
-            let mvp_buffer = DoubleBuffered::new(|ix| {
+            let matrices_buffer = DoubleBuffered::new(|ix| {
                 let b = renderer.device.new_buffer(
                     vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                     alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                    size_of::<na::Matrix4<f32>>() as vk::DeviceSize * 4096,
+                    size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
                 );
                 renderer.device.set_object_name(
                     b.handle,
                     &format!(
-                        "Shadow Mapping MVP Buffer - entity={:?} ix={}",
+                        "Shadow Mapping Light matrices Buffer - entity={:?} ix={}",
                         entity_id, ix
                     ),
                 );
                 b
             });
-            let mvp_set = DoubleBuffered::new(|ix| {
+            let matrices_set = DoubleBuffered::new(|ix| {
                 let s = main_descriptor_pool
                     .0
-                    .allocate_set(&mvp_data.mvp_set_layout);
+                    .allocate_set(&shadow_data.matrices_set_layout);
                 renderer.device.set_object_name(
                     s.handle,
                     &format!("Shadow Mapping MVP Set - entity={:?} ix={}", entity_id, ix),
@@ -398,9 +409,9 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
 
                 {
                     let mvp_updates = &[vk::DescriptorBufferInfo {
-                        buffer: mvp_buffer.current(ix).handle,
+                        buffer: matrices_buffer.current(ix).handle,
                         offset: 0,
-                        range: 4096 * size_of::<na::Matrix4<f32>>() as vk::DeviceSize,
+                        range: size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
                     }];
                     unsafe {
                         renderer.device.update_descriptor_sets(
@@ -418,18 +429,19 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 s
             });
 
-            mvps.insert(
-                entity_id,
-                ShadowMappingMVPData {
-                    mvp_set,
-                    mvp_buffer,
-                },
-            )
-            .expect("failed to insert ShadowMappingMVPData");
+            light_matrices
+                .insert(
+                    entity_id,
+                    ShadowMappingLightMatrices {
+                        matrices_buffer,
+                        matrices_set,
+                    },
+                )
+                .expect("failed to insert ShadowMappingLightMatrices");
         }
-        (&lights, &positions, &rotations, &mut mvps)
+        (&lights, &positions, &rotations, &mut light_matrices)
             .par_join()
-            .for_each(|(_light, light_position, light_rotation, mvp)| {
+            .for_each(|(_light, light_position, light_rotation, light_matrix)| {
                 let near = 30.0;
                 let far = 60.0;
                 let projection =
@@ -440,20 +452,12 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                     light_rotation.0,
                 );
 
-                let mut mvp_mapped = mvp
-                    .mvp_buffer
+                let mut matrices_mapped = light_matrix
+                    .matrices_buffer
                     .current_mut(image_index.0)
-                    .map::<na::Matrix4<f32>>()
-                    .expect("failed to map MVP buffer");
-                for (entity, pos, rot, scale) in
-                    (&*entities, &positions, &rotations, &scales).join()
-                {
-                    let model = glm::translation(&pos.0.coords)
-                        * rot.0.to_homogeneous()
-                        * glm::scaling(&glm::Vec3::repeat(scale.0));
-                    let mvp = projection * view.to_homogeneous() * model;
-                    mvp_mapped[entity.id() as usize] = mvp;
-                }
+                    .map::<[glm::Mat4; 2]>()
+                    .expect("failed to map Light matrices buffer");
+                matrices_mapped[0] = [projection, view.to_homogeneous()];
             });
     }
 }
@@ -472,8 +476,9 @@ impl<'a> System<'a> for PrepareShadowMaps {
         Write<'a, ShadowMappingData, ShadowMappingData>,
         ReadStorage<'a, GltfMesh>,
         ReadStorage<'a, Light>,
-        ReadStorage<'a, ShadowMappingMVPData>,
+        ReadStorage<'a, ShadowMappingLightMatrices>,
         Read<'a, PresentData, PresentData>,
+        Read<'a, ModelData, ModelData>,
     );
 
     fn run(
@@ -487,8 +492,9 @@ impl<'a> System<'a> for PrepareShadowMaps {
             mut shadow_mapping,
             meshes,
             lights,
-            shadow_mvps,
+            shadow_matrices,
             present_data,
+            model_data,
         ): Self::SystemData,
     ) {
         #[cfg(feature = "profiling")]
@@ -546,14 +552,18 @@ impl<'a> System<'a> for PrepareShadowMaps {
                             shadow_mapping.depth_pipeline.handle,
                         );
 
-                        for (ix, (_light, shadow_mvp)) in (&lights, &shadow_mvps).join().enumerate()
+                        for (ix, (_light, shadow_mvp)) in
+                            (&lights, &shadow_matrices).join().enumerate()
                         {
                             renderer.device.cmd_bind_descriptor_sets(
                                 command_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 depth_pass.depth_pipeline_layout.handle,
                                 0,
-                                &[shadow_mvp.mvp_set.current(image_index.0).handle],
+                                &[
+                                    model_data.model_set.current(image_index.0).handle,
+                                    shadow_mvp.matrices_set.current(image_index.0).handle,
+                                ],
                                 &[],
                             );
 
@@ -677,11 +687,11 @@ impl<'a> System<'a> for PrepareShadowMaps {
         let mut mvp_updates =
             vec![[vk::DescriptorBufferInfo::default(); 1]; DIM as usize * DIM as usize];
         let mut write_descriptors = vec![];
-        for (ix, (_light, shadow_mvp)) in (&lights, &shadow_mvps).join().enumerate() {
+        for (ix, (_light, shadow_mvp)) in (&lights, &shadow_matrices).join().enumerate() {
             mvp_updates[ix] = [vk::DescriptorBufferInfo {
-                buffer: shadow_mvp.mvp_buffer.current(image_index.0).handle,
+                buffer: shadow_mvp.matrices_buffer.current(image_index.0).handle,
                 offset: 0,
-                range: 4096 * size_of::<na::Matrix4<f32>>() as vk::DeviceSize,
+                range: size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
             }];
             write_descriptors.push(
                 vk::WriteDescriptorSet::builder()

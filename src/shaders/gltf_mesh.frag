@@ -4,8 +4,8 @@
 
 #extension GL_EXT_nonuniform_qualifier: require
 
-layout(set = 1, binding = 0) uniform sampler2D base_color[];
 layout(set = 2, binding = 1) uniform sampler2DShadow shadow_maps;
+layout(set = 3, binding = 0) uniform sampler2D base_color[];
 
 layout (location = 0) in vec3 normal;
 layout (location = 1) in vec2 uv;
@@ -28,7 +28,7 @@ void main() {
         // slice the shadow map atlas
         light_pos.x += float(ix) / SHADOW_MAP_DIM;
 
-        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z - .14));
+        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z - .1));
         o_color.rgb *= clamp(depth, .3, 1.);
     }
 }
