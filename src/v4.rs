@@ -128,9 +128,9 @@ fn main() {
 
     world
         .create_entity()
-        .with::<Position>(Position(na::Point3::new(-6.0, 50.0, 8.0)))
+        .with::<Position>(Position(na::Point3::new(0.1, 50.0, 0.1)))
         .with::<Rotation>(Rotation(na::UnitQuaternion::look_at_lh(
-            &(na::Point3::new(0.0, 0.0, 0.0) - &na::Point3::new(-6.0, 50.0, 8.0)),
+            &(na::Point3::new(0.0, 0.0, 0.0) - &na::Point3::new(0.1, 50.0, 0.1)),
             &up_vector(),
         )))
         .with::<Light>(Light { strength: 0.7 })
@@ -205,45 +205,6 @@ fn main() {
             base_color,
         } = load_gltf(
             &mut world,
-            "vendor/glTF-Sample-Models/2.0/TwoSidedPlane/glTF/TwoSidedPlane.gltf",
-        );
-
-        let vertex_buffer = Arc::new(vertex_buffer);
-        let normal_buffer = Arc::new(normal_buffer);
-        let uv_buffer = Arc::new(uv_buffer);
-        let index_buffers = Arc::new(index_buffers);
-        let base_color = Arc::new(base_color);
-
-        world
-            .create_entity()
-            .with::<Position>(Position(na::Point3::new(0.0, 0.0, 0.0)))
-            .with::<Rotation>(Rotation(na::UnitQuaternion::identity()))
-            .with::<Scale>(Scale(50.0))
-            .with::<GltfMesh>(GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb_c,
-                aabb_h,
-            })
-            .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
-            .build();
-    }
-
-    {
-        let LoadedMesh {
-            vertex_buffer,
-            normal_buffer,
-            uv_buffer,
-            index_buffers,
-            vertex_len,
-            aabb_c,
-            aabb_h,
-            base_color,
-        } = load_gltf(
-            &mut world,
             "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
         );
 
@@ -269,12 +230,29 @@ fn main() {
             })
             .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
             .build();
+
+        world
+            .create_entity()
+            .with::<Position>(Position(na::Point3::new(0.0, -50.0, 0.0)))
+            .with::<Rotation>(Rotation(na::UnitQuaternion::identity()))
+            .with::<Scale>(Scale(100.0))
+            .with::<GltfMesh>(GltfMesh {
+                vertex_buffer: Arc::clone(&vertex_buffer),
+                normal_buffer: Arc::clone(&normal_buffer),
+                uv_buffer: Arc::clone(&uv_buffer),
+                index_buffers: Arc::clone(&index_buffers),
+                vertex_len,
+                aabb_c,
+                aabb_h,
+            })
+            .with::<GltfMeshBaseColorTexture>(GltfMeshBaseColorTexture(Arc::clone(&base_color)))
+            .build();
     }
 
     for ix in 0..200 {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
         let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
-        let pos = rot.transform_point(&na::Point3::new(0.0, 2.0, 5.0 + (ix / 10) as f32));
+        let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix / 10) as f32));
         world
             .create_entity()
             .with::<Position>(Position(pos))
@@ -307,12 +285,12 @@ fn main() {
             let pos = &mut positions.get_mut(light).unwrap().0;
             let mut rotations = world.write_storage::<Rotation>();
             let rot = &mut rotations.get_mut(light).unwrap().0;
-            pos.x = f.sin() * 4.0 + -6.0;
+            pos.x = f.sin() * 1.5 + 0.0;
             *rot = na::UnitQuaternion::look_at_lh(
                 &(na::Point3::new(0.0, 0.0, 0.0) - *pos),
                 &up_vector(),
             );
-            f += 0.01;
+            f += 0.005;
         }
         {
             #[cfg(feature = "profiling")]

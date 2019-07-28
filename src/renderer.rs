@@ -914,6 +914,10 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                                 .front_face(vk::FrontFace::CLOCKWISE)
                                 .line_width(1.0)
                                 .polygon_mode(vk::PolygonMode::FILL)
+                                // magic
+                                .depth_bias_enable(true)
+                                .depth_bias_constant_factor(-0.2)
+                                .depth_bias_slope_factor(-1.0)
                                 .build(),
                         )
                         .multisample_state(

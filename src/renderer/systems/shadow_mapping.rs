@@ -240,7 +240,7 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                             binding: 0,
                             descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
                             descriptor_count: DIM * DIM,
-                            stage_flags: vk::ShaderStageFlags::VERTEX,
+                            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             p_immutable_samplers: ptr::null(),
                         },
                         vk::DescriptorSetLayoutBinding {
@@ -346,6 +346,12 @@ pub struct ShadowMappingLightMatrices {
     matrices_buffer: DoubleBuffered<Buffer>,
 }
 
+struct LightMatrices {
+    projection: glm::Mat4,
+    view: glm::Mat4,
+    position: glm::Vec4,
+}
+
 pub struct ShadowMappingMVPCalculation;
 
 impl<'a> System<'a> for ShadowMappingMVPCalculation {
@@ -376,6 +382,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
             shadow_data,
         ): Self::SystemData,
     ) {
+        debug_assert_eq!(size_of::<LightMatrices>(), 144);
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "shadow mapping light matrices calculation");
         let mut entities_to_update = vec![];
@@ -387,7 +394,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 let b = renderer.device.new_buffer(
                     vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                     alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                    size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
+                    size_of::<LightMatrices>() as vk::DeviceSize,
                 );
                 renderer.device.set_object_name(
                     b.handle,
@@ -411,7 +418,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                     let mvp_updates = &[vk::DescriptorBufferInfo {
                         buffer: matrices_buffer.current(ix).handle,
                         offset: 0,
-                        range: size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
+                        range: size_of::<LightMatrices>() as vk::DeviceSize,
                     }];
                     unsafe {
                         renderer.device.update_descriptor_sets(
@@ -442,10 +449,10 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
         (&lights, &positions, &rotations, &mut light_matrices)
             .par_join()
             .for_each(|(_light, light_position, light_rotation, light_matrix)| {
-                let near = 30.0;
-                let far = 60.0;
+                let near = 1.0;
+                let far = 80.0;
                 let projection =
-                    glm::perspective_lh_zo(1.0, glm::radians(&glm::vec1(90.0)).x, near, far);
+                    glm::perspective_lh_zo(1.0, glm::radians(&glm::vec1(70.0)).x, near, far);
 
                 let view = na::Isometry3::from_parts(
                     na::Translation3::from(light_rotation.0 * (-light_position.0.coords)),
@@ -455,9 +462,13 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 let mut matrices_mapped = light_matrix
                     .matrices_buffer
                     .current_mut(image_index.0)
-                    .map::<[glm::Mat4; 2]>()
+                    .map::<LightMatrices>()
                     .expect("failed to map Light matrices buffer");
-                matrices_mapped[0] = [projection, view.to_homogeneous()];
+                matrices_mapped[0] = LightMatrices {
+                    projection,
+                    view: view.to_homogeneous(),
+                    position: light_position.0.coords.push(1.0),
+                };
             });
     }
 }
@@ -691,7 +702,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
             mvp_updates[ix] = [vk::DescriptorBufferInfo {
                 buffer: shadow_mvp.matrices_buffer.current(image_index.0).handle,
                 offset: 0,
-                range: size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
+                range: size_of::<LightMatrices>() as vk::DeviceSize,
             }];
             write_descriptors.push(
                 vk::WriteDescriptorSet::builder()
