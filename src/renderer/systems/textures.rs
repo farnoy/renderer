@@ -1,22 +1,19 @@
 use super::super::device::Image;
 use super::{
-    super::{
-        device::{DescriptorSet, DescriptorSetLayout, DoubleBuffered},
-        helpers, MainDescriptorPool, RenderFrame,
-    },
+    super::{device::DoubleBuffered, helpers, MainDescriptorPool, RenderFrame},
     present::ImageIndex,
 };
 use ash::{version::DeviceV1_0, vk};
 use specs::prelude::*;
 use specs::Component;
-use std::{ptr, sync::Arc};
+use std::sync::Arc;
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
 pub struct SynchronizeBaseColorTextures;
 
 pub struct BaseColorDescriptorSet {
-    pub layout: DescriptorSetLayout,
-    pub(in super::super) set: DoubleBuffered<DescriptorSet>,
+    pub layout: super::super::shaders::base_color_set::DescriptorSetLayout,
+    pub(in super::super) set: DoubleBuffered<super::super::shaders::base_color_set::DescriptorSet>,
     sampler: helpers::Sampler,
 }
 
@@ -43,32 +40,22 @@ impl specs::shred::SetupHandler<BaseColorDescriptorSet> for BaseColorDescriptorS
                 ReadExpect<RenderFrame>,
                 Write<MainDescriptorPool, MainDescriptorPool>,
             )| {
-                let layout = {
-                    let mut binding_flags =
-                        vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
-                            .binding_flags(&[vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND]);
-                    let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
-                        .bindings(&[vk::DescriptorSetLayoutBinding {
-                            binding: 0,
-                            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                            descriptor_count: 3072,
-                            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                            p_immutable_samplers: ptr::null(),
-                        }])
-                        .push_next(&mut binding_flags);
-
-                    renderer.device.new_descriptor_set_layout2(&create_info)
-                };
+                let layout = super::super::shaders::base_color_set::DescriptorSetLayout::new(
+                    &renderer.device,
+                );
 
                 renderer.device.set_object_name(
-                    layout.handle,
+                    layout.layout.handle,
                     "Base Color Consolidated Descriptor Set Layout",
                 );
 
                 let set = renderer.new_buffered(|ix| {
-                    let s = main_descriptor_pool.0.allocate_set(&layout);
+                    let s = super::super::shaders::base_color_set::DescriptorSet::new(
+                        &main_descriptor_pool,
+                        &layout,
+                    );
                     renderer.device.set_object_name(
-                        s.handle,
+                        s.set.handle,
                         &format!("Base Color Consolidated descriptor set - {}", ix),
                     );
                     s
@@ -161,7 +148,13 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
             unsafe {
                 renderer.device.device.update_descriptor_sets(
                     &[vk::WriteDescriptorSet::builder()
-                        .dst_set(base_color_descriptor_set.set.current(image_index.0).handle)
+                        .dst_set(
+                            base_color_descriptor_set
+                                .set
+                                .current(image_index.0)
+                                .set
+                                .handle,
+                        )
                         .dst_binding(0)
                         .dst_array_element(entity.id())
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)

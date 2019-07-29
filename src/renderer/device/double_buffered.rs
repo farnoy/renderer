@@ -27,4 +27,8 @@ impl<T> DoubleBuffered<T> {
     pub fn current_mut(&mut self, ix: u32) -> &mut T {
         &mut self.data[ix as usize % SIZE]
     }
+
+    pub fn iter<'a>(&'a self) -> impl std::iter::Iterator<Item = &T> + 'a {
+        self.data.iter()
+    }
 }

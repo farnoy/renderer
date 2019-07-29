@@ -59,24 +59,28 @@ impl specs::shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuf
         let index_offsets = HashMap::new();
 
         let position_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::STORAGE_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<[f32; 3]>() as vk::DeviceSize * 10 /* distinct meshes */ * 30_000 /* unique vertices */
+            super::super::shaders::cull_set::bindings::vertex_buffer::SIZE,
         );
         let normal_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<[f32; 3]>() as vk::DeviceSize * 10 /* distinct meshes */ * 30_000 /* unique vertices */
+            super::super::shaders::cull_set::bindings::vertex_buffer::SIZE,
         );
         let uv_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<[f32; 2]>() as vk::DeviceSize * 10 /* distinct meshes */ * 30_000 /* unique vertices */
+            size_of::<super::super::shaders::UVBuffer>() as vk::DeviceSize,
         );
         let index_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::STORAGE_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<u32>() as vk::DeviceSize * 3 /* indices per triangle */ * 10 /* distinct meshes */ * 30_000 /* unique triangles */
+            super::super::shaders::cull_set::bindings::index_buffer::SIZE,
         );
         let sync_point = renderer.new_buffered(|_| None);
         let sync_point_fence = renderer.device.new_fence();

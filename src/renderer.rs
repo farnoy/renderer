@@ -5,6 +5,7 @@ mod entry;
 mod gltf_mesh;
 mod helpers;
 mod instance;
+pub mod shaders;
 mod swapchain;
 mod systems {
     pub mod consolidate_mesh_buffers;
@@ -23,10 +24,7 @@ use imgui::{self, im_str};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use specs::*;
-use std::{
-    convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, ptr, slice::from_raw_parts,
-    sync::Arc,
-};
+use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, sync::Arc};
 use winit;
 
 use self::{
@@ -39,6 +37,7 @@ use self::{
 };
 
 pub use self::{
+    device::*,
     gltf_mesh::{load as load_gltf, LoadedMesh},
     systems::{
         consolidate_mesh_buffers::*, cull_pipeline::*, present::*, shadow_mapping::*, textures::*,
@@ -416,9 +415,9 @@ impl specs::shred::SetupHandler<GraphicsCommandPool> for GraphicsCommandPool {
 }
 
 pub struct CameraMatrices {
-    set_layout: DescriptorSetLayout,
+    pub set_layout: shaders::camera_set::DescriptorSetLayout,
     buffer: DoubleBuffered<Buffer>,
-    set: DoubleBuffered<DescriptorSet>,
+    set: DoubleBuffered<shaders::camera_set::DescriptorSet>,
 }
 
 impl specs::shred::SetupHandler<CameraMatrices> for CameraMatrices {
@@ -436,51 +435,25 @@ impl specs::shred::SetupHandler<CameraMatrices> for CameraMatrices {
                     let b = renderer.device.new_buffer(
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                        size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
+                        shaders::camera_set::bindings::matrices::SIZE,
                     );
                     renderer
                         .device
                         .set_object_name(b.handle, &format!("Camera matrices Buffer - ix={}", ix));
                     b
                 });
-                let set_layout =
-                    renderer
-                        .device
-                        .new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                            binding: 0,
-                            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                            descriptor_count: 1,
-                            stage_flags: vk::ShaderStageFlags::VERTEX
-                                | vk::ShaderStageFlags::COMPUTE,
-                            p_immutable_samplers: ptr::null(),
-                        }]);
+                let set_layout = shaders::camera_set::DescriptorSetLayout::new(&renderer.device);
                 renderer
                     .device
-                    .set_object_name(set_layout.handle, "Camera matrices set layout");
+                    .set_object_name(set_layout.layout.handle, "Camera matrices set layout");
                 let set = DoubleBuffered::new(|ix| {
-                    let s = main_descriptor_pool.0.allocate_set(&set_layout);
+                    let s =
+                        shaders::camera_set::DescriptorSet::new(&main_descriptor_pool, &set_layout);
                     renderer
                         .device
-                        .set_object_name(s.handle, &format!("Camera matrices Set - ix={}", ix));
+                        .set_object_name(s.set.handle, &format!("Camera matrices Set - ix={}", ix));
 
-                    {
-                        let mvp_updates = &[vk::DescriptorBufferInfo {
-                            buffer: buffer.current(ix).handle,
-                            offset: 0,
-                            range: size_of::<[glm::Mat4; 2]>() as vk::DeviceSize,
-                        }];
-                        unsafe {
-                            renderer.device.update_descriptor_sets(
-                                &[vk::WriteDescriptorSet::builder()
-                                    .dst_set(s.handle)
-                                    .dst_binding(0)
-                                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                    .buffer_info(mvp_updates)
-                                    .build()],
-                                &[],
-                            );
-                        }
-                    }
+                    s.update_whole_buffer(&renderer, 0, buffer.current(ix));
 
                     s
                 });
@@ -498,8 +471,8 @@ impl specs::shred::SetupHandler<CameraMatrices> for CameraMatrices {
 }
 
 pub struct ModelData {
-    pub model_set_layout: DescriptorSetLayout,
-    pub model_set: DoubleBuffered<DescriptorSet>,
+    pub model_set_layout: shaders::model_set::DescriptorSetLayout,
+    pub model_set: DoubleBuffered<shaders::model_set::DescriptorSet>,
     pub model_buffer: DoubleBuffered<Buffer>,
 }
 
@@ -516,48 +489,25 @@ impl specs::shred::SetupHandler<ModelData> for ModelData {
             )| {
                 let device = &renderer.device;
 
-                let model_set_layout =
-                    device.new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    }]);
-                device.set_object_name(model_set_layout.handle, "Model Set Layout");
+                let model_set_layout = shaders::model_set::DescriptorSetLayout::new(&device);
+                device.set_object_name(model_set_layout.layout.handle, "Model Set Layout");
 
                 let model_buffer = DoubleBuffered::new(|ix| {
                     let b = device.new_buffer(
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-                        size_of::<glm::Mat4>() as vk::DeviceSize * 4096,
+                        shaders::model_set::bindings::model::SIZE,
                     );
                     device.set_object_name(b.handle, &format!("Model Buffer - {}", ix));
                     b
                 });
                 let model_set = DoubleBuffered::new(|ix| {
-                    let s = main_descriptor_pool.0.allocate_set(&model_set_layout);
-                    device.set_object_name(s.handle, &format!("Model Set - {}", ix));
-
-                    {
-                        let model_updates = &[vk::DescriptorBufferInfo {
-                            buffer: model_buffer.current(ix).handle,
-                            offset: 0,
-                            range: 4096 * size_of::<glm::Mat4>() as vk::DeviceSize,
-                        }];
-                        unsafe {
-                            device.update_descriptor_sets(
-                                &[vk::WriteDescriptorSet::builder()
-                                    .dst_set(s.handle)
-                                    .dst_binding(0)
-                                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                    .buffer_info(model_updates)
-                                    .build()],
-                                &[],
-                            );
-                        }
-                    }
-
+                    let s = shaders::model_set::DescriptorSet::new(
+                        &main_descriptor_pool,
+                        &model_set_layout,
+                    );
+                    device.set_object_name(s.set.handle, &format!("Model Set - {}", ix));
+                    s.update_whole_buffer(&renderer, 0, &model_buffer.current(ix));
                     s
                 });
 
@@ -575,7 +525,7 @@ impl specs::shred::SetupHandler<ModelData> for ModelData {
 
 pub struct DepthPassData {
     pub depth_pipeline: Pipeline,
-    pub depth_pipeline_layout: PipelineLayout,
+    pub depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
     pub renderpass: RenderPass,
     pub framebuffer: Vec<Framebuffer>,
     pub complete_semaphore: DoubleBuffered<Semaphore>,
@@ -589,6 +539,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
         }
 
         let result = world.exec(
+            #[allow(clippy::type_complexity)]
             |(renderer, model_data, main_attachments, camera_matrices): (
                 ReadExpect<RenderFrame>,
                 Read<ModelData, ModelData>,
@@ -644,11 +595,17 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                     .device
                     .set_object_name(renderpass.handle, "Depth prepass renderpass");
 
-                let depth_pipeline_layout = new_pipeline_layout(
-                    Arc::clone(&device),
-                    &[&model_data.model_set_layout, &camera_matrices.set_layout],
-                    &[],
+                let depth_pipeline_layout = shaders::depth_pipe::PipelineLayout::new(
+                    &device,
+                    &model_data.model_set_layout,
+                    &camera_matrices.set_layout,
                 );
+                use std::io::Read;
+                let path = std::path::PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv");
+                let file = std::fs::File::open(path).expect("Could not find shader.");
+                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+                let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+                debug_assert!(shaders::depth_pipe::verify_spirv(&module));
                 let depth_pipeline = new_graphics_pipeline2(
                     Arc::clone(&device),
                     &[(
@@ -656,23 +613,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                         PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
                     )],
                     vk::GraphicsPipelineCreateInfo::builder()
-                        .vertex_input_state(
-                            &vk::PipelineVertexInputStateCreateInfo::builder()
-                                .vertex_attribute_descriptions(&[
-                                    vk::VertexInputAttributeDescription {
-                                        location: 0,
-                                        binding: 0,
-                                        format: vk::Format::R32G32B32_SFLOAT,
-                                        offset: 0,
-                                    },
-                                ])
-                                .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
-                                    binding: 0,
-                                    stride: size_of::<f32>() as u32 * 3,
-                                    input_rate: vk::VertexInputRate::VERTEX,
-                                }])
-                                .build(),
-                        )
+                        .vertex_input_state(&shaders::depth_pipe::vertex_input_state())
                         .input_assembly_state(
                             &vk::PipelineInputAssemblyStateCreateInfo::builder()
                                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -734,7 +675,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
                                 }])
                                 .build(),
                         )
-                        .layout(depth_pipeline_layout.handle)
+                        .layout(depth_pipeline_layout.layout.handle)
                         .render_pass(renderpass.handle)
                         .subpass(0)
                         .build(),
@@ -797,7 +738,7 @@ impl specs::shred::SetupHandler<DepthPassData> for DepthPassData {
 
 pub struct GltfPassData {
     pub gltf_pipeline: Pipeline,
-    pub gltf_pipeline_layout: PipelineLayout,
+    pub gltf_pipeline_layout: shaders::gltf_mesh::PipelineLayout,
 }
 
 impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
@@ -807,6 +748,7 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
         }
 
         let result = world.exec(
+            #[allow(clippy::type_complexity)]
             |(renderer, model_data, base_color, shadow_mapping, camera_matrices): (
                 ReadExpect<RenderFrame>,
                 Read<ModelData, ModelData>,
@@ -817,19 +759,20 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                 let device = &renderer.device;
                 let instance = &renderer.instance;
 
-                let gltf_pipeline_layout = new_pipeline_layout(
-                    Arc::clone(&device),
-                    {
-                        &[
-                            &model_data.model_set_layout,
-                            &camera_matrices.set_layout,
-                            &shadow_mapping.user_set_layout,
-                            &base_color.layout,
-                        ]
-                    },
-                    &[],
+                let gltf_pipeline_layout = shaders::gltf_mesh::PipelineLayout::new(
+                    &renderer.device,
+                    &model_data.model_set_layout,
+                    &camera_matrices.set_layout,
+                    &shadow_mapping.user_set_layout,
+                    &base_color.layout,
                 );
-                device.set_object_name(gltf_pipeline_layout.handle, "GLTF Pipeline Layout");
+                device.set_object_name(gltf_pipeline_layout.layout.handle, "GLTF Pipeline Layout");
+                use std::io::Read;
+                let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv");
+                let file = std::fs::File::open(path).expect("Could not find shader.");
+                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+                let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+                debug_assert!(shaders::gltf_mesh::verify_spirv(&module));
                 let gltf_pipeline = new_graphics_pipeline2(
                     Arc::clone(&device),
                     &[
@@ -843,47 +786,7 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                         ),
                     ],
                     vk::GraphicsPipelineCreateInfo::builder()
-                        .vertex_input_state(
-                            &vk::PipelineVertexInputStateCreateInfo::builder()
-                                .vertex_attribute_descriptions(&[
-                                    vk::VertexInputAttributeDescription {
-                                        location: 0,
-                                        binding: 0,
-                                        format: vk::Format::R32G32B32_SFLOAT,
-                                        offset: 0,
-                                    },
-                                    vk::VertexInputAttributeDescription {
-                                        location: 1,
-                                        binding: 1,
-                                        format: vk::Format::R32G32B32_SFLOAT,
-                                        offset: 0,
-                                    },
-                                    vk::VertexInputAttributeDescription {
-                                        location: 2,
-                                        binding: 2,
-                                        format: vk::Format::R32G32_SFLOAT,
-                                        offset: 0,
-                                    },
-                                ])
-                                .vertex_binding_descriptions(&[
-                                    vk::VertexInputBindingDescription {
-                                        binding: 0,
-                                        stride: size_of::<f32>() as u32 * 3,
-                                        input_rate: vk::VertexInputRate::VERTEX,
-                                    },
-                                    vk::VertexInputBindingDescription {
-                                        binding: 1,
-                                        stride: size_of::<f32>() as u32 * 3,
-                                        input_rate: vk::VertexInputRate::VERTEX,
-                                    },
-                                    vk::VertexInputBindingDescription {
-                                        binding: 2,
-                                        stride: size_of::<f32>() as u32 * 2,
-                                        input_rate: vk::VertexInputRate::VERTEX,
-                                    },
-                                ])
-                                .build(),
-                        )
+                        .vertex_input_state(&shaders::gltf_mesh::vertex_input_state())
                         .input_assembly_state(
                             &vk::PipelineInputAssemblyStateCreateInfo::builder()
                                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -948,7 +851,7 @@ impl specs::shred::SetupHandler<GltfPassData> for GltfPassData {
                                     .build()])
                                 .build(),
                         )
-                        .layout(gltf_pipeline_layout.handle)
+                        .layout(gltf_pipeline_layout.layout.handle)
                         .render_pass(renderer.renderpass.handle)
                         .subpass(0)
                         .build(),
@@ -1009,7 +912,8 @@ impl<'a> System<'a> for Renderer {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "renderer");
         // TODO: count this? pack and defragment draw calls?
-        let total = INDIRECT_COMMAND_BUFFER_LEN as u32;
+        let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
+            / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
         let command_buffer = graphics_command_pool.0.record_one_time({
             let renderer = &renderer;
             let consolidated_mesh_buffers = &consolidated_mesh_buffers;
@@ -1087,18 +991,13 @@ impl<'a> System<'a> for Renderer {
                                     vk::PipelineBindPoint::GRAPHICS,
                                     gltf_pass.gltf_pipeline.handle,
                                 );
-                                renderer.device.cmd_bind_descriptor_sets(
+                                gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
+                                    &renderer.device,
                                     command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    gltf_pass.gltf_pipeline_layout.handle,
-                                    0,
-                                    &[
-                                        model_data.model_set.current(image_index.0).handle,
-                                        camera_matrices.set.current(image_index.0).handle,
-                                        shadow_mapping_data.user_set.current(image_index.0).handle,
-                                        base_color_descriptor_set.set.current(image_index.0).handle,
-                                    ],
-                                    &[],
+                                    &model_data.model_set.current(image_index.0),
+                                    &camera_matrices.set.current(image_index.0),
+                                    shadow_mapping_data.user_set.current(image_index.0),
+                                    base_color_descriptor_set.set.current(image_index.0),
                                 );
                                 renderer.device.cmd_bind_index_buffer(
                                     command_buffer,
@@ -1136,39 +1035,38 @@ impl<'a> System<'a> for Renderer {
                             "GUI",
                             [1.0, 1.0, 0.0, 1.0],
                             || {
-                                let pipeline_layout = gui.pipeline_layout.handle;
-                                renderer.device.cmd_bind_descriptor_sets(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    pipeline_layout,
-                                    0,
-                                    &[gui.descriptor_set.handle],
-                                    &[],
-                                );
-                                renderer.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    gui.pipeline.handle,
-                                );
-                                renderer.device.cmd_bind_vertex_buffers(
-                                    command_buffer,
-                                    0,
-                                    &[gui.vertex_buffer.handle],
-                                    &[0],
-                                );
-                                renderer.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    gui.index_buffer.handle,
-                                    0,
-                                    vk::IndexType::UINT16,
-                                );
-                                // Split t
+                                // Split lifetimes
                                 let Gui {
                                     ref mut imgui,
                                     ref vertex_buffer,
                                     ref index_buffer,
+                                    ref pipeline_layout,
+                                    ref pipeline,
+                                    ref descriptor_set,
                                     ..
                                 } = *gui;
+                                pipeline_layout.bind_descriptor_sets(
+                                    &renderer.device,
+                                    command_buffer,
+                                    descriptor_set,
+                                );
+                                renderer.device.cmd_bind_pipeline(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    pipeline.handle,
+                                );
+                                renderer.device.cmd_bind_vertex_buffers(
+                                    command_buffer,
+                                    0,
+                                    &[vertex_buffer.handle],
+                                    &[0],
+                                );
+                                renderer.device.cmd_bind_index_buffer(
+                                    command_buffer,
+                                    index_buffer.handle,
+                                    0,
+                                    vk::IndexType::UINT16,
+                                );
                                 let ui = imgui.frame(
                                     imgui::FrameSize {
                                         logical_size: (
@@ -1188,21 +1086,16 @@ impl<'a> System<'a> for Renderer {
                                     });
                                 ui.render(|ui, draw_data| {
                                     let (x, y) = ui.imgui().display_size();
-                                    let constants = [2.0 / x, 2.0 / y, -1.0, -1.0];
-
-                                    let casted: &[u8] = {
-                                        from_raw_parts(
-                                            constants.as_ptr() as *const u8,
-                                            constants.len() * 4,
-                                        )
-                                    };
-                                    renderer.device.cmd_push_constants(
-                                        command_buffer,
-                                        pipeline_layout,
-                                        vk::ShaderStageFlags::VERTEX,
-                                        0,
-                                        casted,
-                                    );
+                                    {
+                                        pipeline_layout.push_constants(
+                                            &renderer.device,
+                                            command_buffer,
+                                            &shaders::ImguiPushConstants {
+                                                scale: glm::vec2(2.0 / x, 2.0 / y),
+                                                translate: glm::vec2(-1.0, -1.0),
+                                            },
+                                        );
+                                    }
                                     let mut vertex_offset = 0;
                                     let mut index_offset = 0;
                                     {
@@ -1296,9 +1189,9 @@ pub struct Gui {
     pub texture: Image,
     pub texture_view: ImageView,
     pub sampler: Sampler,
-    pub descriptor_set_layout: DescriptorSetLayout,
-    pub descriptor_set: DescriptorSet,
-    pub pipeline_layout: PipelineLayout,
+    pub descriptor_set_layout: shaders::imgui_set::DescriptorSetLayout,
+    pub descriptor_set: shaders::imgui_set::DescriptorSet,
+    pub pipeline_layout: shaders::imgui_pipe::PipelineLayout,
     pub pipeline: Pipeline,
     pub transitioned: bool,
 }
@@ -1356,28 +1249,24 @@ impl specs::shred::SetupHandler<Gui> for Gui {
                 );
 
                 let descriptor_set_layout =
-                    renderer
-                        .device
-                        .new_descriptor_set_layout(&[vk::DescriptorSetLayoutBinding {
-                            binding: 0,
-                            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                            descriptor_count: 1,
-                            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                            p_immutable_samplers: ptr::null(),
-                        }]);
+                    shaders::imgui_set::DescriptorSetLayout::new(&renderer.device);
 
-                let descriptor_set = main_descriptor_pool.0.allocate_set(&descriptor_set_layout);
-
-                let pipeline_layout = new_pipeline_layout(
-                    renderer.device.clone(),
-                    &[&descriptor_set_layout],
-                    &[vk::PushConstantRange {
-                        offset: 0,
-                        size: 4 * size_of::<f32>() as u32,
-                        stage_flags: vk::ShaderStageFlags::VERTEX,
-                    }],
+                let descriptor_set = shaders::imgui_set::DescriptorSet::new(
+                    &main_descriptor_pool,
+                    &descriptor_set_layout,
                 );
 
+                let pipeline_layout = shaders::imgui_pipe::PipelineLayout::new(
+                    &renderer.device,
+                    &descriptor_set_layout,
+                );
+
+                use std::io::Read;
+                let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gui.vert.spv");
+                let file = std::fs::File::open(path).expect("Could not find shader.");
+                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+                let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+                debug_assert!(shaders::imgui_pipe::verify_spirv(&module));
                 let pipeline = new_graphics_pipeline2(
                     renderer.device.clone(),
                     &[
@@ -1471,7 +1360,7 @@ impl specs::shred::SetupHandler<Gui> for Gui {
                                     .build()])
                                 .build(),
                         )
-                        .layout(pipeline_layout.handle)
+                        .layout(pipeline_layout.layout.handle)
                         .render_pass(renderer.renderpass.handle)
                         .subpass(0)
                         .build(),
@@ -1504,7 +1393,7 @@ impl specs::shred::SetupHandler<Gui> for Gui {
                 unsafe {
                     renderer.device.update_descriptor_sets(
                         &[vk::WriteDescriptorSet::builder()
-                            .dst_set(descriptor_set.handle)
+                            .dst_set(descriptor_set.set.handle)
                             .dst_binding(0)
                             .dst_array_element(0)
                             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -1577,9 +1466,13 @@ impl<'a> System<'a> for CameraMatricesUpload {
         let mut model_mapped = camera_matrices
             .buffer
             .current_mut(image_index.0)
-            .map::<[glm::Mat4; 2]>()
+            .map::<shaders::camera_set::bindings::matrices::T>()
             .expect("failed to map camera matrix buffer");
-        model_mapped[0] = [camera.projection, camera.view];
+        model_mapped[0] = shaders::camera_set::bindings::matrices::T {
+            projection: camera.projection,
+            view: camera.view,
+            position: camera.position.coords.push(1.0),
+        };
     }
 }
 
@@ -1661,16 +1554,11 @@ impl<'a> System<'a> for DepthOnlyPass {
                             vk::PipelineBindPoint::GRAPHICS,
                             depth_pass.depth_pipeline.handle,
                         );
-                        renderer.device.cmd_bind_descriptor_sets(
+                        depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                            &renderer.device,
                             command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            depth_pass.depth_pipeline_layout.handle,
-                            0,
-                            &[
-                                model_data.model_set.current(image_index.0).handle,
-                                camera_matrices.set.current(image_index.0).handle,
-                            ],
-                            &[],
+                            &model_data.model_set.current(image_index.0),
+                            &camera_matrices.set.current(image_index.0),
                         );
                         for (entity, mesh, mesh_position) in
                             (&*entities, &meshes, &positions).join()

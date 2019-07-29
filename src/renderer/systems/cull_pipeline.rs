@@ -1,11 +1,8 @@
 use super::{
     super::{
         alloc,
-        device::{
-            Buffer, CommandBuffer, DescriptorSet, DescriptorSetLayout, DoubleBuffered, Event,
-            Fence, Semaphore,
-        },
-        helpers::{self, pick_lod, Pipeline, PipelineLayout},
+        device::{Buffer, CommandBuffer, DoubleBuffered, Event, Fence, Semaphore},
+        helpers::{self, pick_lod, Pipeline},
         CameraMatrices, GltfMesh, MainDescriptorPool, ModelData, RenderFrame,
     },
     consolidate_mesh_buffers::ConsolidatedMeshBuffers,
@@ -24,9 +21,7 @@ use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
 use specs::*;
-use std::{cmp::min, mem::size_of, path::PathBuf, ptr, slice::from_raw_parts, sync::Arc, u64};
-
-pub const INDIRECT_COMMAND_BUFFER_LEN: vk::DeviceSize = 2400;
+use std::{cmp::min, path::PathBuf, sync::Arc, u64};
 
 // Cull geometry in compute pass
 pub struct CullPass;
@@ -42,10 +37,10 @@ pub struct CoarseCulling;
 pub struct CullPassData {
     pub culled_commands_buffer: DoubleBuffered<Buffer>,
     pub culled_index_buffer: DoubleBuffered<Buffer>,
-    pub cull_pipeline_layout: PipelineLayout,
+    pub cull_pipeline_layout: super::super::shaders::generate_work::PipelineLayout,
     pub cull_pipeline: Pipeline,
-    pub cull_set_layout: DescriptorSetLayout,
-    pub cull_set: DoubleBuffered<DescriptorSet>,
+    pub cull_set_layout: super::super::shaders::cull_set::DescriptorSetLayout,
+    pub cull_set: DoubleBuffered<super::super::shaders::cull_set::DescriptorSet>,
     pub cull_complete_semaphore: DoubleBuffered<Semaphore>,
     pub cull_complete_fence: DoubleBuffered<Fence>,
 }
@@ -114,6 +109,7 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
         }
 
         let result = world.exec(
+            #[allow(clippy::type_complexity)]
             |(renderer, model_data, main_descriptor_pool, camera_matrices): (
                 ReadExpect<RenderFrame>,
                 Read<ModelData, ModelData>,
@@ -122,63 +118,26 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
             )| {
                 let device = &renderer.device;
 
-                let cull_set_layout = device.new_descriptor_set_layout(&[
-                    vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    },
-                    vk::DescriptorSetLayoutBinding {
-                        binding: 1,
-                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    },
-                    vk::DescriptorSetLayoutBinding {
-                        binding: 2,
-                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    },
-                    vk::DescriptorSetLayoutBinding {
-                        binding: 3,
-                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    },
-                ]);
-                device.set_object_name(cull_set_layout.handle, "Cull Descriptor Set Layout");
+                let cull_set_layout =
+                    super::super::shaders::cull_set::DescriptorSetLayout::new(&renderer.device);
+                device.set_object_name(cull_set_layout.layout.handle, "Cull Descriptor Set Layout");
 
-                #[repr(C)]
-                struct MeshData {
-                    gltf_id: u32,
-                    index_count: u32,
-                    index_offset: u32,
-                    index_offset_in_output: u32,
-                    vertex_offset: i32,
-                }
-
-                let cull_pipeline_layout = helpers::new_pipeline_layout(
-                    Arc::clone(&device),
-                    &[
+                let cull_pipeline_layout =
+                    super::super::shaders::generate_work::PipelineLayout::new(
+                        &device,
                         &model_data.model_set_layout,
                         &camera_matrices.set_layout,
                         &cull_set_layout,
-                    ],
-                    &[vk::PushConstantRange {
-                        stage_flags: vk::ShaderStageFlags::COMPUTE,
-                        offset: 0,
-                        size: size_of::<MeshData>() as u32,
-                    }],
-                );
+                    );
+                use std::io::Read;
+                let path = std::path::PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv");
+                let file = std::fs::File::open(path).expect("Could not find shader.");
+                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+                let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+                debug_assert!(super::super::shaders::generate_work::verify_spirv(&module));
                 let cull_pipeline = helpers::new_compute_pipeline(
                     Arc::clone(&device),
-                    &cull_pipeline_layout,
+                    &cull_pipeline_layout.layout,
                     &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
                 );
 
@@ -186,7 +145,7 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
                     let b = device.new_buffer(
                         vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                        size_of::<u32>() as vk::DeviceSize * 60_000_000,
+                        super::super::shaders::cull_set::bindings::out_index_buffer::SIZE,
                     );
                     device
                         .set_object_name(b.handle, &format!("Global culled index buffer - {}", ix));
@@ -208,8 +167,7 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
                             | vk::BufferUsageFlags::STORAGE_BUFFER
                             | vk::BufferUsageFlags::TRANSFER_DST,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                        size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize
-                            * INDIRECT_COMMAND_BUFFER_LEN,
+                        super::super::shaders::cull_set::bindings::indirect_commands::SIZE,
                     );
                     device.set_object_name(
                         b.handle,
@@ -219,35 +177,13 @@ impl specs::shred::SetupHandler<CullPassData> for CullPassData {
                 });
 
                 let cull_set = renderer.new_buffered(|ix| {
-                    let s = main_descriptor_pool.0.allocate_set(&cull_set_layout);
-                    device.set_object_name(s.handle, &format!("Cull Descriptor Set - {}", ix));
-
-                    {
-                        let cull_updates = &[
-                            vk::DescriptorBufferInfo {
-                                buffer: culled_commands_buffer.current(ix).handle,
-                                offset: 0,
-                                range: vk::WHOLE_SIZE,
-                            },
-                            vk::DescriptorBufferInfo {
-                                buffer: culled_index_buffer.current(ix).handle,
-                                offset: 0,
-                                range: vk::WHOLE_SIZE,
-                            },
-                        ];
-                        unsafe {
-                            device.update_descriptor_sets(
-                                &[vk::WriteDescriptorSet::builder()
-                                    .dst_set(s.handle)
-                                    .dst_binding(0)
-                                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                                    .buffer_info(cull_updates)
-                                    .build()],
-                                &[],
-                            );
-                        }
-                    }
-
+                    let s = super::super::shaders::cull_set::DescriptorSet::new(
+                        &main_descriptor_pool,
+                        &cull_set_layout,
+                    );
+                    device.set_object_name(s.set.handle, &format!("Cull Descriptor Set - {}", ix));
+                    s.update_whole_buffer(&renderer, 0, &culled_commands_buffer.current(ix));
+                    s.update_whole_buffer(&renderer, 1, &culled_index_buffer.current(ix));
                     s
                 });
 
@@ -364,33 +300,16 @@ impl<'a> System<'a> for CullPass {
                 .expect("failed to reset cull complete fence");
         }
 
-        {
-            let cull_updates = &[
-                vk::DescriptorBufferInfo {
-                    buffer: consolidate_mesh_buffers.position_buffer.handle,
-                    offset: 0,
-                    range: vk::WHOLE_SIZE,
-                },
-                vk::DescriptorBufferInfo {
-                    buffer: consolidate_mesh_buffers.index_buffer.handle,
-                    offset: 0,
-                    range: vk::WHOLE_SIZE,
-                },
-            ];
-            unsafe {
-                renderer.device.update_descriptor_sets(
-                    &[vk::WriteDescriptorSet::builder()
-                        .dst_set(cull_pass_data.cull_set.current(image_index.0).handle)
-                        .dst_binding(2)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(cull_updates)
-                        .build()],
-                    &[],
-                );
-            }
-        }
+        cull_pass_data
+            .cull_set
+            .current(image_index.0)
+            .update_whole_buffer(&renderer, 2, &consolidate_mesh_buffers.position_buffer);
+        cull_pass_data
+            .cull_set
+            .current(image_index.0)
+            .update_whole_buffer(&renderer, 3, &consolidate_mesh_buffers.index_buffer);
 
-        let mut index_offset_in_output = 0;
+        let mut index_offset_in_output = 0i32;
 
         let cull_cb = renderer
             .compute_command_pool
@@ -402,19 +321,13 @@ impl<'a> System<'a> for CullPass {
                     || {
                         // Clear the command buffer before using
                         {
-                            let blocksize =
-                                size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize;
-                            let from = 0;
-                            let size = blocksize * INDIRECT_COMMAND_BUFFER_LEN;
                             let commands_buffer =
                                 cull_pass_data.culled_commands_buffer.current(image_index.0);
-                            debug_assert!(blocksize % 4 == 0);
-                            debug_assert!(commands_buffer.allocation_info.size >= size);
                             renderer.device.cmd_fill_buffer(
                                 command_buffer,
                                 commands_buffer.handle,
-                                from,
-                                size,
+                                0,
+                                super::super::shaders::cull_set::bindings::indirect_commands::SIZE,
                                 0,
                             );
                             renderer.device.cmd_pipeline_barrier(
@@ -438,17 +351,12 @@ impl<'a> System<'a> for CullPass {
                             vk::PipelineBindPoint::COMPUTE,
                             cull_pass_data.cull_pipeline.handle,
                         );
-                        renderer.device.cmd_bind_descriptor_sets(
+                        cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
+                            &renderer.device,
                             command_buffer,
-                            vk::PipelineBindPoint::COMPUTE,
-                            cull_pass_data.cull_pipeline_layout.handle,
-                            0,
-                            &[
-                                model_data.model_set.current(image_index.0).handle,
-                                camera_matrices.set.current(image_index.0).handle,
-                                cull_pass_data.cull_set.current(image_index.0).handle,
-                            ],
-                            &[],
+                            &model_data.model_set.current(image_index.0),
+                            &camera_matrices.set.current(image_index.0),
+                            &cull_pass_data.cull_set.current(image_index.0),
                         );
                         for (entity, mesh, mesh_position) in
                             (&*entities, &meshes, &positions).join()
@@ -463,25 +371,21 @@ impl<'a> System<'a> for CullPass {
                                 .index_offsets
                                 .get(&index_buffer.handle.as_raw())
                                 .expect("Index buffer not consolidated");
-                            let constants = [
-                                entity.id(),
-                                index_len.to_u32().unwrap(),
-                                index_offset.to_u32().unwrap(),
+
+                            let push_constants = super::super::shaders::GenerateWorkPushConstants {
+                                gltf_index: entity.id(),
+                                index_count: index_len.to_u32().unwrap(),
+                                index_offset: index_offset.to_u32().unwrap(),
                                 index_offset_in_output,
-                                vertex_offset.to_i32().unwrap() as u32,
-                            ];
-
-                            index_offset_in_output += index_len.to_u32().unwrap();
-
-                            let casted: &[u8] = {
-                                from_raw_parts(constants.as_ptr() as *const u8, constants.len() * 4)
+                                vertex_offset: vertex_offset.to_i32().unwrap(),
                             };
-                            renderer.device.cmd_push_constants(
+
+                            index_offset_in_output += index_len.to_i32().unwrap();
+
+                            cull_pass_data.cull_pipeline_layout.push_constants(
+                                &renderer.device,
                                 command_buffer,
-                                cull_pass_data.cull_pipeline_layout.handle,
-                                vk::ShaderStageFlags::COMPUTE,
-                                0,
-                                casted,
+                                &push_constants,
                             );
                             let index_len = *index_len as u32;
                             let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded

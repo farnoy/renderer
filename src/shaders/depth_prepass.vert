@@ -6,6 +6,7 @@ layout(set = 0, binding = 0) uniform ModelMatrices {
 layout(set = 1, binding = 0) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
+    vec4 pos;
 };
 layout (location = 0) in vec3 position;
 

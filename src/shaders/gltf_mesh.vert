@@ -7,6 +7,7 @@ layout(set = 0, binding = 0) uniform ModelMatrices {
 layout(set = 1, binding = 0) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
+    vec4 position;
 } camera;
 layout(set = 2, binding = 0) buffer readonly LightMatrices {
     mat4 projection;

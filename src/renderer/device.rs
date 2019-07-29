@@ -225,6 +225,7 @@ impl Device {
         Buffer::new(self, buffer_usage, allocation_usage, size)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_image(
         self: &Arc<Self>,
         format: vk::Format,

@@ -16,10 +16,9 @@ pub struct ShadowMappingData {
     pub complete_semaphore: DoubleBuffered<Semaphore>,
     previous_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
     image_transitioned: bool,
-    pub user_set_layout: DescriptorSetLayout,
-    pub user_set: DoubleBuffered<DescriptorSet>,
+    pub user_set_layout: super::super::shaders::shadow_map_set::DescriptorSetLayout,
+    pub user_set: DoubleBuffered<super::super::shaders::shadow_map_set::DescriptorSet>,
     _user_sampler: helpers::Sampler,
-    pub matrices_set_layout: DescriptorSetLayout,
 }
 
 impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
@@ -75,75 +74,61 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                         }),
                 );
 
-                let depth_pipeline = new_graphics_pipeline2(
-                    Arc::clone(&renderer.device),
-                    &[(
-                        vk::ShaderStageFlags::VERTEX,
-                        PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
-                    )],
-                    vk::GraphicsPipelineCreateInfo::builder()
-                        .vertex_input_state(
-                            &vk::PipelineVertexInputStateCreateInfo::builder()
-                                .vertex_attribute_descriptions(&[
-                                    vk::VertexInputAttributeDescription {
-                                        location: 0,
-                                        binding: 0,
-                                        format: vk::Format::R32G32B32_SFLOAT,
-                                        offset: 0,
-                                    },
-                                ])
-                                .vertex_binding_descriptions(&[
-                                    vk::VertexInputBindingDescription {
-                                        binding: 0,
-                                        stride: size_of::<f32>() as u32 * 3,
-                                        input_rate: vk::VertexInputRate::VERTEX,
-                                    },
+                let depth_pipeline =
+                    new_graphics_pipeline2(
+                        Arc::clone(&renderer.device),
+                        &[(
+                            vk::ShaderStageFlags::VERTEX,
+                            PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
+                        )],
+                        vk::GraphicsPipelineCreateInfo::builder()
+                            .vertex_input_state(
+                                &super::super::shaders::depth_pipe::vertex_input_state(),
+                            )
+                            .input_assembly_state(
+                                &vk::PipelineInputAssemblyStateCreateInfo::builder()
+                                    .topology(vk::PrimitiveTopology::TRIANGLE_LIST),
+                            )
+                            .dynamic_state(
+                                &vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&[
+                                    vk::DynamicState::VIEWPORT,
+                                    vk::DynamicState::SCISSOR,
                                 ]),
-                        )
-                        .input_assembly_state(
-                            &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                                .topology(vk::PrimitiveTopology::TRIANGLE_LIST),
-                        )
-                        .dynamic_state(
-                            &vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&[
-                                vk::DynamicState::VIEWPORT,
-                                vk::DynamicState::SCISSOR,
-                            ]),
-                        )
-                        .viewport_state(
-                            &vk::PipelineViewportStateCreateInfo::builder()
-                                .viewport_count(1)
-                                .scissor_count(1)
-                                .build(),
-                        )
-                        .rasterization_state(
-                            &vk::PipelineRasterizationStateCreateInfo::builder()
-                                .cull_mode(vk::CullModeFlags::BACK)
-                                .front_face(vk::FrontFace::CLOCKWISE)
-                                .line_width(1.0)
-                                .polygon_mode(vk::PolygonMode::FILL)
-                                .build(),
-                        )
-                        .multisample_state(
-                            &vk::PipelineMultisampleStateCreateInfo::builder()
-                                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                                .build(),
-                        )
-                        .depth_stencil_state(
-                            &vk::PipelineDepthStencilStateCreateInfo::builder()
-                                .depth_test_enable(true)
-                                .depth_write_enable(true)
-                                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                                .depth_bounds_test_enable(false)
-                                .max_depth_bounds(1.0)
-                                .min_depth_bounds(0.0)
-                                .build(),
-                        )
-                        .layout(depth_pass_data.depth_pipeline_layout.handle)
-                        .render_pass(renderpass.handle)
-                        .subpass(0)
-                        .build(),
-                );
+                            )
+                            .viewport_state(
+                                &vk::PipelineViewportStateCreateInfo::builder()
+                                    .viewport_count(1)
+                                    .scissor_count(1)
+                                    .build(),
+                            )
+                            .rasterization_state(
+                                &vk::PipelineRasterizationStateCreateInfo::builder()
+                                    .cull_mode(vk::CullModeFlags::BACK)
+                                    .front_face(vk::FrontFace::CLOCKWISE)
+                                    .line_width(1.0)
+                                    .polygon_mode(vk::PolygonMode::FILL)
+                                    .build(),
+                            )
+                            .multisample_state(
+                                &vk::PipelineMultisampleStateCreateInfo::builder()
+                                    .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                    .build(),
+                            )
+                            .depth_stencil_state(
+                                &vk::PipelineDepthStencilStateCreateInfo::builder()
+                                    .depth_test_enable(true)
+                                    .depth_write_enable(true)
+                                    .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                                    .depth_bounds_test_enable(false)
+                                    .max_depth_bounds(1.0)
+                                    .min_depth_bounds(0.0)
+                                    .build(),
+                            )
+                            .layout(depth_pass_data.depth_pipeline_layout.layout.handle)
+                            .render_pass(renderpass.handle)
+                            .subpass(0)
+                            .build(),
+                    );
                 renderer
                     .device
                     .set_object_name(depth_pipeline.handle, "Shadow mapping depth Pipeline");
@@ -227,50 +212,14 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
 
                 let previous_command_buffer = renderer.new_buffered(|_| None);
 
-                let user_set_layout = {
-                    let binding_flags_bindings = &[
-                        vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND,
-                        vk::DescriptorBindingFlagsEXT::default(),
-                    ];
-                    let mut binding_flags =
-                        vk::DescriptorSetLayoutBindingFlagsCreateInfoEXT::builder()
-                            .binding_flags(binding_flags_bindings);
-                    let bindings = &[
-                        vk::DescriptorSetLayoutBinding {
-                            binding: 0,
-                            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                            descriptor_count: DIM * DIM,
-                            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                            p_immutable_samplers: ptr::null(),
-                        },
-                        vk::DescriptorSetLayoutBinding {
-                            binding: 1,
-                            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                            descriptor_count: 1,
-                            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                            p_immutable_samplers: ptr::null(),
-                        },
-                    ];
-                    let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
-                        .bindings(bindings)
-                        .push_next(&mut binding_flags);
-                    renderer.device.new_descriptor_set_layout2(&create_info)
-                };
-                let matrices_set_layout = {
-                    let bindings = &[vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE,
-                        p_immutable_samplers: ptr::null(),
-                    }];
-                    let create_info =
-                        vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
-                    renderer.device.new_descriptor_set_layout2(&create_info)
-                };
-                renderer
-                    .device
-                    .set_object_name(user_set_layout.handle, "Shadow Mapping User Set Layout");
+                let user_set_layout =
+                    super::super::shaders::shadow_map_set::DescriptorSetLayout::new(
+                        &renderer.device,
+                    );
+                renderer.device.set_object_name(
+                    user_set_layout.layout.handle,
+                    "Shadow Mapping User Descriptor Set Layout",
+                );
 
                 let user_sampler = helpers::new_sampler(
                     renderer.device.clone(),
@@ -287,9 +236,12 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                 );
 
                 let user_set = renderer.new_buffered(|ix| {
-                    let s = main_descriptor_pool.0.allocate_set(&user_set_layout);
+                    let s = super::super::shaders::shadow_map_set::DescriptorSet::new(
+                        &main_descriptor_pool,
+                        &user_set_layout,
+                    );
                     renderer.device.set_object_name(
-                        s.handle,
+                        s.set.handle,
                         &format!("Shadow Mapping User Descriptor Set - {}", ix),
                     );
 
@@ -304,7 +256,7 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                         unsafe {
                             renderer.device.update_descriptor_sets(
                                 &[vk::WriteDescriptorSet::builder()
-                                    .dst_set(s.handle)
+                                    .dst_set(s.set.handle)
                                     .dst_binding(1)
                                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                                     .image_info(sampler_updates)
@@ -329,7 +281,6 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
                     user_set_layout,
                     user_set,
                     _user_sampler: user_sampler,
-                    matrices_set_layout,
                 }
             },
         );
@@ -342,14 +293,16 @@ impl shred::SetupHandler<ShadowMappingData> for ShadowMappingData {
 #[storage(VecStorage)]
 /// Holds Projection and view matrices for each light.
 pub struct ShadowMappingLightMatrices {
-    matrices_set: DoubleBuffered<DescriptorSet>,
+    matrices_set: DoubleBuffered<super::super::shaders::camera_set::DescriptorSet>,
     matrices_buffer: DoubleBuffered<Buffer>,
 }
 
+#[repr(C)]
+#[allow(unused_variables)]
 struct LightMatrices {
-    projection: glm::Mat4,
-    view: glm::Mat4,
-    position: glm::Vec4,
+    pub projection: glm::Mat4,
+    pub view: glm::Mat4,
+    pub position: glm::Vec4,
 }
 
 pub struct ShadowMappingMVPCalculation;
@@ -365,7 +318,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
         Read<'a, ImageIndex>,
         ReadExpect<'a, RenderFrame>,
         Read<'a, MainDescriptorPool, MainDescriptorPool>,
-        Read<'a, ShadowMappingData, ShadowMappingData>,
+        Read<'a, CameraMatrices, CameraMatrices>,
     );
 
     fn run(
@@ -379,7 +332,7 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
             image_index,
             renderer,
             main_descriptor_pool,
-            shadow_data,
+            camera_matrices,
         ): Self::SystemData,
     ) {
         debug_assert_eq!(size_of::<LightMatrices>(), 144);
@@ -406,33 +359,15 @@ impl<'a> System<'a> for ShadowMappingMVPCalculation {
                 b
             });
             let matrices_set = DoubleBuffered::new(|ix| {
-                let s = main_descriptor_pool
-                    .0
-                    .allocate_set(&shadow_data.matrices_set_layout);
+                let s = super::super::shaders::camera_set::DescriptorSet::new(
+                    &main_descriptor_pool,
+                    &camera_matrices.set_layout,
+                );
                 renderer.device.set_object_name(
-                    s.handle,
+                    s.set.handle,
                     &format!("Shadow Mapping MVP Set - entity={:?} ix={}", entity_id, ix),
                 );
-
-                {
-                    let mvp_updates = &[vk::DescriptorBufferInfo {
-                        buffer: matrices_buffer.current(ix).handle,
-                        offset: 0,
-                        range: size_of::<LightMatrices>() as vk::DeviceSize,
-                    }];
-                    unsafe {
-                        renderer.device.update_descriptor_sets(
-                            &[vk::WriteDescriptorSet::builder()
-                                .dst_set(s.handle)
-                                .dst_binding(0)
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .buffer_info(mvp_updates)
-                                .build()],
-                            &[],
-                        );
-                    }
-                }
-
+                s.update_whole_buffer(&renderer, 0, &matrices_buffer.current(ix));
                 s
             });
 
@@ -566,16 +501,11 @@ impl<'a> System<'a> for PrepareShadowMaps {
                         for (ix, (_light, shadow_mvp)) in
                             (&lights, &shadow_matrices).join().enumerate()
                         {
-                            renderer.device.cmd_bind_descriptor_sets(
+                            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                                &renderer.device,
                                 command_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                depth_pass.depth_pipeline_layout.handle,
-                                0,
-                                &[
-                                    model_data.model_set.current(image_index.0).handle,
-                                    shadow_mvp.matrices_set.current(image_index.0).handle,
-                                ],
-                                &[],
+                                &model_data.model_set.current(image_index.0),
+                                &shadow_mvp.matrices_set.current(image_index.0),
                             );
 
                             let row = ix as u32 / DIM;
@@ -637,7 +567,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
 
                             for (entity, mesh) in (&*entities, &meshes).join() {
                                 let (index_buffer, index_count) =
-                                    mesh.index_buffers.first().unwrap();
+                                    mesh.index_buffers.last().unwrap();
                                 renderer.device.cmd_bind_index_buffer(
                                     command_buffer,
                                     index_buffer.handle,
@@ -706,7 +636,7 @@ impl<'a> System<'a> for PrepareShadowMaps {
             }];
             write_descriptors.push(
                 vk::WriteDescriptorSet::builder()
-                    .dst_set(shadow_mapping.user_set.current(image_index.0).handle)
+                    .dst_set(shadow_mapping.user_set.current(image_index.0).set.handle)
                     .dst_binding(0)
                     .dst_array_element(ix as u32)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)

@@ -11,6 +11,7 @@ pub struct Image {
 }
 
 impl Image {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &Arc<Device>,
         format: vk::Format,

@@ -1,21 +1,8 @@
+#![feature(trace_macros)]
 #![feature(arbitrary_self_types)]
 
-extern crate ash;
-extern crate gltf;
-extern crate hashbrown;
-extern crate image;
-extern crate imgui;
-extern crate meshopt;
-#[cfg(feature = "microprofile")]
-extern crate microprofile;
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
-extern crate num_traits;
-extern crate parking_lot;
-extern crate specs;
-#[cfg(windows)]
-extern crate winapi;
-extern crate winit;
 
 pub mod ecs {
     pub mod components;
@@ -44,6 +31,44 @@ use specs::{
 use std::sync::Arc;
 
 fn main() {
+    /*
+    use std::io::Read;
+    let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv");
+    let file = std::fs::File::open(path).expect("Could not find shader.");
+    let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+    let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+    /*
+    let dupcia = &[
+        make_descriptor_set!(@step 0usize => indirect_commands: IndirectCommands : vk::DescriptorType::UNIFORM_BUFFER, kek : kuku : vk::DescriptorType::STORAGE_IMAGE),
+    ];
+    println!("dupcia {:?}", dupcia);
+    */
+    let bindings = renderer::shaders::cull_pipeline::bindings();
+    println!("and the answer is {:?}", bindings);
+    println!(
+        "compatible? {}",
+        renderer::shaders::gltf_mesh::verify_spirv(&module)
+    );
+    let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.frag.spv");
+    let file = std::fs::File::open(path).expect("Could not find shader.");
+    let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+    let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+    println!(
+        "compatible? {}",
+        renderer::shaders::gltf_mesh::verify_spirv(&module)
+    );
+    renderer::shaders::gltf_mesh::bind_pipeline(
+        renderer::shaders::TypedBuffer {
+            data: vec![glm::Vec3::repeat(1.0)],
+        },
+        renderer::shaders::TypedBuffer {
+            data: vec![glm::Vec3::repeat(6.0)],
+        },
+        renderer::shaders::TypedBuffer {
+            data: vec![glm::Vec2::repeat(6.0)],
+        },
+    );
+    */
     #[cfg(feature = "profiling")]
     microprofile::init!();
     let mut world = specs::World::new();
@@ -60,7 +85,6 @@ fn main() {
             .build()
             .unwrap(),
     );
-
     let (renderer, events_loop) = RenderFrame::new();
 
     world.insert(renderer);
@@ -120,7 +144,7 @@ fn main() {
         .create_entity()
         .with::<Position>(Position(na::Point3::new(-6.0, 50.0, 0.0)))
         .with::<Rotation>(Rotation(na::UnitQuaternion::look_at_lh(
-            &(na::Point3::new(0.0, 0.0, 0.0) - &na::Point3::new(-6.0, 50.0, 0.0)),
+            &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(-6.0, 50.0, 0.0)),
             &up_vector(),
         )))
         .with::<Light>(Light { strength: 1.0 })
@@ -130,7 +154,7 @@ fn main() {
         .create_entity()
         .with::<Position>(Position(na::Point3::new(0.1, 50.0, 0.1)))
         .with::<Rotation>(Rotation(na::UnitQuaternion::look_at_lh(
-            &(na::Point3::new(0.0, 0.0, 0.0) - &na::Point3::new(0.1, 50.0, 0.1)),
+            &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(0.1, 50.0, 0.1)),
             &up_vector(),
         )))
         .with::<Light>(Light { strength: 0.7 })
@@ -252,7 +276,11 @@ fn main() {
     for ix in 0..200 {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
         let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
-        let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix / 10) as f32));
+        let pos = rot.transform_point(&na::Point3::new(
+            0.0,
+            (ix as f32 * -0.01) + 2.0,
+            5.0 + (ix / 10) as f32,
+        ));
         world
             .create_entity()
             .with::<Position>(Position(pos))
