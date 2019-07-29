@@ -87,10 +87,26 @@ pub fn create(
                         .as_ptr(),
                 ),
             ),
+            vkBindBufferMemory2KHR: transmute(
+                entry.get_instance_proc_addr(
+                    instance.handle(),
+                    CStr::from_bytes_with_nul(b"vkBindBufferMemory2Khr\0")
+                        .unwrap()
+                        .as_ptr(),
+                ),
+            ),
             vkBindImageMemory: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
                     CStr::from_bytes_with_nul(b"vkBindImageMemory\0")
+                        .unwrap()
+                        .as_ptr(),
+                ),
+            ),
+            vkBindImageMemory2KHR: transmute(
+                entry.get_instance_proc_addr(
+                    instance.handle(),
+                    CStr::from_bytes_with_nul(b"vkBindImageMemory2KHR\0")
                         .unwrap()
                         .as_ptr(),
                 ),

@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 ash = "0.29.0"
 parking_lot = "0.9.0"
-gltf = "0.12.0"
+gltf = "0.13.0"
 hashbrown = "0.5.0"
 image = "0.22"
 imgui = "0.0.23"
@@ -26,7 +26,7 @@ name = "v4"
 path = "src/v4.rs"
 
 [build-dependencies]
-bindgen = "0.50.0"
+bindgen = "0.51.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3.5"
