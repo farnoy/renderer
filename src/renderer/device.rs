@@ -30,8 +30,8 @@ pub struct Device {
     pub(super) allocator: alloc::VmaAllocator,
     pub(super) graphics_queue_family: u32,
     pub(super) compute_queue_family: u32,
-    pub(super) graphics_queue: Arc<Mutex<vk::Queue>>,
-    pub(super) compute_queues: Vec<Arc<Mutex<vk::Queue>>>,
+    pub(super) graphics_queue: Mutex<vk::Queue>,
+    pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -161,11 +161,11 @@ impl Device {
             compute_queue_family: compute_queues_spec
                 .map(|a| a.0)
                 .unwrap_or(graphics_queue_family),
-            graphics_queue: Arc::new(Mutex::new(graphics_queue)),
+            graphics_queue: Mutex::new(graphics_queue),
             compute_queues: compute_queues
                 .iter()
                 .cloned()
-                .map(|q| Arc::new(Mutex::new(q)))
+                .map(Mutex::new)
                 .collect(),
         };
         device.set_object_name(graphics_queue, "Graphics Queue");

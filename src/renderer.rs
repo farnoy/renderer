@@ -192,11 +192,10 @@ impl MainDescriptorPool {
 }
 
 pub struct MainAttachments {
-    pub swapchain_images: Vec<Arc<SwapchainImage>>,
-    pub swapchain_image_views: Vec<Arc<ImageView>>,
-    pub depth_images: Vec<Arc<Image>>,
-    pub depth_image_views: Vec<Arc<ImageView>>,
-    pub device: Arc<Device>,
+    pub swapchain_images: Vec<SwapchainImage>,
+    pub swapchain_image_views: Vec<ImageView>,
+    pub depth_images: Vec<Image>,
+    pub depth_image_views: Vec<ImageView>,
 }
 
 impl MainAttachments {
@@ -307,12 +306,10 @@ impl MainAttachments {
                 .iter()
                 .cloned()
                 .map(|handle| SwapchainImage { handle })
-                .map(Arc::new)
                 .collect(),
-            swapchain_image_views: image_views.into_iter().map(Arc::new).collect(),
-            depth_images: depth_images.into_iter().map(Arc::new).collect(),
-            depth_image_views: depth_image_views.into_iter().map(Arc::new).collect(),
-            device: Arc::clone(&renderer.device),
+            swapchain_image_views: image_views,
+            depth_images: depth_images,
+            depth_image_views: depth_image_views,
         }
     }
 }
@@ -332,8 +329,7 @@ impl MainFramebuffer {
         let handles = main_attachments
             .swapchain_image_views
             .iter()
-            .cloned()
-            .zip(main_attachments.depth_image_views.iter().cloned())
+            .zip(main_attachments.depth_image_views.iter())
             .enumerate()
             .map(|(ix, (present_image_view, depth_image_view))| {
                 let framebuffer_attachments = [present_image_view.handle, depth_image_view.handle];

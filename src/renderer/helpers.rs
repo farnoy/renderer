@@ -36,17 +36,17 @@ pub struct ImageView {
 
 pub struct Sampler {
     pub handle: vk::Sampler,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 pub struct PipelineLayout {
     pub handle: vk::PipelineLayout,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 pub struct Pipeline {
     pub handle: vk::Pipeline,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 impl Drop for Framebuffer {

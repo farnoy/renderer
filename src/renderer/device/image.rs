@@ -7,7 +7,7 @@ pub struct Image {
     pub handle: vk::Image,
     allocation: alloc::VmaAllocation,
     allocation_info: alloc::VmaAllocationInfo,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 impl Image {

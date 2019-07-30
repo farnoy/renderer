@@ -4,17 +4,17 @@ use std::sync::Arc;
 
 pub struct Semaphore {
     pub handle: vk::Semaphore,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 pub struct Fence {
     pub handle: vk::Fence,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 pub struct Event {
     pub handle: vk::Event,
-    pub device: Arc<Device>,
+    device: Arc<Device>,
 }
 
 impl Semaphore {
