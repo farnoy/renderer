@@ -38,7 +38,7 @@ fn main() {
     let _rayon_threadpool = Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(8)
-            .build()
+            .build_global()
             .unwrap(),
     );
     let (renderer, events_loop) = RenderFrame::new();
