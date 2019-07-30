@@ -9,7 +9,8 @@ use super::{
     present::ImageIndex,
 };
 use crate::ecs::{
-    components::{Position, AABB},
+    components::{AABB},
+    custom::*,
     systems::Camera,
 };
 use ash::{
@@ -20,7 +21,6 @@ use ash::{
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
-use specs::*;
 use std::{cmp::min, path::PathBuf, sync::Arc, u64};
 
 // Cull geometry in compute pass
@@ -28,8 +28,6 @@ pub struct CullPass;
 
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
-#[derive(Clone, Component, Debug)]
-#[storage(VecStorage)]
 pub struct CoarseCulled(pub bool);
 
 pub struct CoarseCulling;
@@ -54,19 +52,17 @@ pub struct CullPassEvent {
     pub cull_complete_event: DoubleBuffered<Mutex<Event>>,
 }
 
-impl<'a> System<'a> for CoarseCulling {
-    type SystemData = (
-        Entities<'a>,
-        ReadStorage<'a, AABB>,
-        Read<'a, Camera>,
-        WriteStorage<'a, CoarseCulled>,
-    );
-
-    fn run(&mut self, (entities, aabb, camera, mut culled): Self::SystemData) {
+impl CoarseCulling {
+    pub fn exec(
+        entities: &EntitiesStorage,
+        aabbs: &ComponentStorage<AABB>,
+        camera: &Camera,
+        coarse_culled: &mut ComponentStorage<CoarseCulled>,
+    ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "coarse culling");
-        for (entity_id, aabb) in (&*entities, &aabb).join() {
-            #[allow(unused)]
+        for entity_id in (&entities.alive & &aabbs.alive).iter() {
+            let aabb = aabbs.data.get(&entity_id).unwrap();
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
                 let e = aabb.h.dot(&plane.xyz().abs());
@@ -77,197 +73,126 @@ impl<'a> System<'a> for CoarseCulling {
                     break 'per_plane;
                 }
             }
-            culled
-                .insert(entity_id, CoarseCulled(outside))
-                .expect("failed to update coarse culled");
+            coarse_culled.data.insert(entity_id, CoarseCulled(outside));
         }
     }
 }
 
-impl specs::shred::SetupHandler<CullPassDataPrivate> for CullPassDataPrivate {
-    fn setup(world: &mut World) {
-        if world.has_value::<CullPassDataPrivate>() {
-            return;
+impl CullPassDataPrivate {
+    pub fn new(renderer: &RenderFrame) -> CullPassDataPrivate {
+        CullPassDataPrivate {
+            previous_run_command_buffer: renderer.new_buffered(|_| None),
         }
-
-        let renderer = world.fetch::<RenderFrame>();
-
-        let previous_run_command_buffer = renderer.new_buffered(|_| None);
-
-        drop(renderer);
-
-        world.insert(CullPassDataPrivate {
-            previous_run_command_buffer,
-        });
     }
 }
 
-impl specs::shred::SetupHandler<CullPassData> for CullPassData {
-    fn setup(world: &mut World) {
-        if world.has_value::<CullPassData>() {
-            return;
-        }
+impl CullPassData {
+    pub fn new(
+        renderer: &RenderFrame,
+        model_data: &ModelData,
+        main_descriptor_pool: &mut MainDescriptorPool,
+        camera_matrices: &CameraMatrices,
+    ) -> CullPassData {
+        let device = &renderer.device;
 
-        let result = world.exec(
-            #[allow(clippy::type_complexity)]
-            |(renderer, model_data, main_descriptor_pool, camera_matrices): (
-                ReadExpect<RenderFrame>,
-                Read<ModelData, ModelData>,
-                Write<MainDescriptorPool, MainDescriptorPool>,
-                Read<CameraMatrices, CameraMatrices>,
-            )| {
-                let device = &renderer.device;
+        let cull_set_layout =
+            super::super::shaders::cull_set::DescriptorSetLayout::new(&renderer.device);
+        device.set_object_name(cull_set_layout.layout.handle, "Cull Descriptor Set Layout");
 
-                let cull_set_layout =
-                    super::super::shaders::cull_set::DescriptorSetLayout::new(&renderer.device);
-                device.set_object_name(cull_set_layout.layout.handle, "Cull Descriptor Set Layout");
-
-                let cull_pipeline_layout =
-                    super::super::shaders::generate_work::PipelineLayout::new(
-                        &device,
-                        &model_data.model_set_layout,
-                        &camera_matrices.set_layout,
-                        &cull_set_layout,
-                    );
-                use std::io::Read;
-                let path = std::path::PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv");
-                let file = std::fs::File::open(path).expect("Could not find shader.");
-                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-                let module = spirv_reflect::create_shader_module(&bytes).unwrap();
-                debug_assert!(super::super::shaders::generate_work::verify_spirv(&module));
-                let cull_pipeline = helpers::new_compute_pipeline(
-                    Arc::clone(&device),
-                    &cull_pipeline_layout.layout,
-                    &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
-                );
-
-                let culled_index_buffer = renderer.new_buffered(|ix| {
-                    let b = device.new_buffer(
-                        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-                        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                        super::super::shaders::cull_set::bindings::out_index_buffer::SIZE,
-                    );
-                    device
-                        .set_object_name(b.handle, &format!("Global culled index buffer - {}", ix));
-                    b
-                });
-
-                let cull_complete_semaphore = renderer.new_buffered(|ix| {
-                    let s = renderer.device.new_semaphore();
-                    renderer.device.set_object_name(
-                        s.handle,
-                        &format!("Cull pass complete semaphore - {}", ix),
-                    );
-                    s
-                });
-
-                let culled_commands_buffer = renderer.new_buffered(|ix| {
-                    let b = device.new_buffer(
-                        vk::BufferUsageFlags::INDIRECT_BUFFER
-                            | vk::BufferUsageFlags::STORAGE_BUFFER
-                            | vk::BufferUsageFlags::TRANSFER_DST,
-                        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                        super::super::shaders::cull_set::bindings::indirect_commands::SIZE,
-                    );
-                    device.set_object_name(
-                        b.handle,
-                        &format!("indirect draw commands buffer - {}", ix),
-                    );
-                    b
-                });
-
-                let cull_set = renderer.new_buffered(|ix| {
-                    let s = super::super::shaders::cull_set::DescriptorSet::new(
-                        &main_descriptor_pool,
-                        &cull_set_layout,
-                    );
-                    device.set_object_name(s.set.handle, &format!("Cull Descriptor Set - {}", ix));
-                    s.update_whole_buffer(&renderer, 0, &culled_commands_buffer.current(ix));
-                    s.update_whole_buffer(&renderer, 1, &culled_index_buffer.current(ix));
-                    s
-                });
-
-                let cull_complete_fence = renderer.new_buffered(|ix| {
-                    let f = renderer.device.new_fence();
-                    renderer
-                        .device
-                        .set_object_name(f.handle, &format!("Cull complete fence - {}", ix));
-                    f
-                });
-
-                drop(renderer);
-
-                CullPassData {
-                    culled_commands_buffer,
-                    culled_index_buffer,
-                    cull_pipeline,
-                    cull_pipeline_layout,
-                    cull_set_layout,
-                    cull_set,
-                    cull_complete_semaphore,
-                    cull_complete_fence,
-                }
-            },
+        let cull_pipeline_layout = super::super::shaders::generate_work::PipelineLayout::new(
+            &device,
+            &model_data.model_set_layout,
+            &camera_matrices.set_layout,
+            &cull_set_layout,
+        );
+        use std::io::Read;
+        let path = std::path::PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv");
+        let file = std::fs::File::open(path).expect("Could not find shader.");
+        let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+        let module = spirv_reflect::create_shader_module(&bytes).unwrap();
+        debug_assert!(super::super::shaders::generate_work::verify_spirv(&module));
+        let cull_pipeline = helpers::new_compute_pipeline(
+            Arc::clone(&device),
+            &cull_pipeline_layout.layout,
+            &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
         );
 
-        world.insert(result);
-    }
-}
+        let culled_index_buffer = renderer.new_buffered(|ix| {
+            let b = device.new_buffer(
+                vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                super::super::shaders::cull_set::bindings::out_index_buffer::SIZE,
+            );
+            device.set_object_name(b.handle, &format!("Global culled index buffer - {}", ix));
+            b
+        });
 
-impl specs::shred::SetupHandler<CullPassEvent> for CullPassEvent {
-    fn setup(world: &mut World) {
-        if world.has_value::<CullPassEvent>() {
-            return;
-        }
-
-        let renderer = world.fetch::<RenderFrame>();
-        let cull_complete_event = renderer.new_buffered(|ix| {
-            let e = renderer.device.new_event();
+        let cull_complete_semaphore = renderer.new_buffered(|ix| {
+            let s = renderer.device.new_semaphore();
             renderer
                 .device
-                .set_object_name(e.handle, &format!("Cull complete event - {}", ix));
-            Mutex::new(e)
+                .set_object_name(s.handle, &format!("Cull pass complete semaphore - {}", ix));
+            s
         });
 
-        drop(renderer);
-
-        world.insert(CullPassEvent {
-            cull_complete_event,
+        let culled_commands_buffer = renderer.new_buffered(|ix| {
+            let b = device.new_buffer(
+                vk::BufferUsageFlags::INDIRECT_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                super::super::shaders::cull_set::bindings::indirect_commands::SIZE,
+            );
+            device.set_object_name(b.handle, &format!("indirect draw commands buffer - {}", ix));
+            b
         });
+
+        let cull_set = renderer.new_buffered(|ix| {
+            let s = super::super::shaders::cull_set::DescriptorSet::new(
+                &main_descriptor_pool,
+                &cull_set_layout,
+            );
+            device.set_object_name(s.set.handle, &format!("Cull Descriptor Set - {}", ix));
+            s.update_whole_buffer(&renderer, 0, &culled_commands_buffer.current(ix));
+            s.update_whole_buffer(&renderer, 1, &culled_index_buffer.current(ix));
+            s
+        });
+
+        let cull_complete_fence = renderer.new_buffered(|ix| {
+            let f = renderer.device.new_fence();
+            renderer
+                .device
+                .set_object_name(f.handle, &format!("Cull complete fence - {}", ix));
+            f
+        });
+
+        CullPassData {
+            culled_commands_buffer,
+            culled_index_buffer,
+            cull_pipeline,
+            cull_pipeline_layout,
+            cull_set_layout,
+            cull_set,
+            cull_complete_semaphore,
+            cull_complete_fence,
+        }
     }
 }
 
-impl<'a> System<'a> for CullPass {
-    #[allow(clippy::type_complexity)]
-    type SystemData = (
-        Entities<'a>,
-        ReadExpect<'a, RenderFrame>,
-        Read<'a, CullPassData, CullPassData>,
-        Write<'a, CullPassDataPrivate, CullPassDataPrivate>,
-        ReadStorage<'a, GltfMesh>,
-        Read<'a, ImageIndex>,
-        ReadExpect<'a, ConsolidatedMeshBuffers>,
-        ReadStorage<'a, Position>,
-        Read<'a, Camera>,
-        Read<'a, ModelData, ModelData>,
-        Read<'a, CameraMatrices, CameraMatrices>,
-    );
-
-    fn run(
-        &mut self,
-        (
-            entities,
-            renderer,
-            cull_pass_data,
-            mut cull_pass_data_private,
-            meshes,
-            image_index,
-            consolidate_mesh_buffers,
-            positions,
-            camera,
-            model_data,
-            camera_matrices,
-        ): Self::SystemData,
+impl CullPass {
+    #[allow(clippy::too_many_arguments)]
+    pub fn exec(
+        entities: &EntitiesStorage,
+        renderer: &RenderFrame,
+        cull_pass_data: &CullPassData,
+        cull_pass_data_private: &mut CullPassDataPrivate,
+        meshes: &ComponentStorage<GltfMesh>,
+        image_index: &ImageIndex,
+        consolidate_mesh_buffers: &ConsolidatedMeshBuffers,
+        positions: &ComponentStorage<na::Point3<f32>>,
+        camera: &Camera,
+        model_data: &ModelData,
+        camera_matrices: &CameraMatrices,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "cull pass");
@@ -358,22 +283,23 @@ impl<'a> System<'a> for CullPass {
                             &camera_matrices.set.current(image_index.0),
                             &cull_pass_data.cull_set.current(image_index.0),
                         );
-                        for (entity, mesh, mesh_position) in
-                            (&*entities, &meshes, &positions).join()
+                        for entity_id in (&entities.alive & &meshes.alive & &positions.alive).iter()
                         {
+                            let mesh = meshes.data.get(&entity_id).unwrap();
+                            let mesh_position = positions.data.get(&entity_id).unwrap();
                             let vertex_offset = consolidate_mesh_buffers
                                 .vertex_offsets
                                 .get(&mesh.vertex_buffer.handle.as_raw())
                                 .expect("Vertex buffer not consolidated");
                             let (index_buffer, index_len) =
-                                pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+                                pick_lod(&mesh.index_buffers, camera.position, *mesh_position);
                             let index_offset = consolidate_mesh_buffers
                                 .index_offsets
                                 .get(&index_buffer.handle.as_raw())
                                 .expect("Index buffer not consolidated");
 
                             let push_constants = super::super::shaders::GenerateWorkPushConstants {
-                                gltf_index: entity.id(),
+                                gltf_index: entity_id,
                                 index_count: index_len.to_u32().unwrap(),
                                 index_offset: index_offset.to_u32().unwrap(),
                                 index_offset_in_output,

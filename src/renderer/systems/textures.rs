@@ -1,11 +1,10 @@
+use super::super::super::ecs::custom::*;
 use super::super::device::Image;
 use super::{
     super::{device::DoubleBuffered, helpers, MainDescriptorPool, RenderFrame},
     present::ImageIndex,
 };
 use ash::{version::DeviceV1_0, vk};
-use specs::prelude::*;
-use specs::Component;
 use std::sync::Arc;
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
@@ -17,100 +16,70 @@ pub struct BaseColorDescriptorSet {
     sampler: helpers::Sampler,
 }
 
-#[derive(Component)]
-#[storage(VecStorage)]
 pub struct BaseColorVisitedMarker {
     image_view: helpers::ImageView,
 }
 
 // Holds the base color texture that will be mapped into a single,
 // shared Descriptor Set
-#[derive(Component)]
-#[storage(VecStorage)]
 pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
 
-impl specs::shred::SetupHandler<BaseColorDescriptorSet> for BaseColorDescriptorSet {
-    fn setup(world: &mut World) {
-        if world.has_value::<BaseColorDescriptorSet>() {
-            return;
-        }
+impl BaseColorDescriptorSet {
+    pub fn new(
+        renderer: &RenderFrame,
+        main_descriptor_pool: &mut MainDescriptorPool,
+    ) -> BaseColorDescriptorSet {
+        let layout =
+            super::super::shaders::base_color_set::DescriptorSetLayout::new(&renderer.device);
 
-        let result = world.exec(
-            |(renderer, main_descriptor_pool): (
-                ReadExpect<RenderFrame>,
-                Write<MainDescriptorPool, MainDescriptorPool>,
-            )| {
-                let layout = super::super::shaders::base_color_set::DescriptorSetLayout::new(
-                    &renderer.device,
-                );
-
-                renderer.device.set_object_name(
-                    layout.layout.handle,
-                    "Base Color Consolidated Descriptor Set Layout",
-                );
-
-                let set = renderer.new_buffered(|ix| {
-                    let s = super::super::shaders::base_color_set::DescriptorSet::new(
-                        &main_descriptor_pool,
-                        &layout,
-                    );
-                    renderer.device.set_object_name(
-                        s.set.handle,
-                        &format!("Base Color Consolidated descriptor set - {}", ix),
-                    );
-                    s
-                });
-
-                let sampler = helpers::new_sampler(
-                    renderer.device.clone(),
-                    &vk::SamplerCreateInfo::builder()
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                );
-
-                BaseColorDescriptorSet {
-                    layout,
-                    set,
-                    sampler,
-                }
-            },
+        renderer.device.set_object_name(
+            layout.layout.handle,
+            "Base Color Consolidated Descriptor Set Layout",
         );
 
-        world.insert(result);
+        let set = renderer.new_buffered(|ix| {
+            let s = super::super::shaders::base_color_set::DescriptorSet::new(
+                &main_descriptor_pool,
+                &layout,
+            );
+            renderer.device.set_object_name(
+                s.set.handle,
+                &format!("Base Color Consolidated descriptor set - {}", ix),
+            );
+            s
+        });
+
+        let sampler = helpers::new_sampler(
+            renderer.device.clone(),
+            &vk::SamplerCreateInfo::builder()
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+        );
+
+        BaseColorDescriptorSet {
+            layout,
+            set,
+            sampler,
+        }
     }
 }
 
-impl<'a> System<'a> for SynchronizeBaseColorTextures {
-    #[allow(clippy::type_complexity)]
-    type SystemData = (
-        Entities<'a>,
-        ReadExpect<'a, RenderFrame>,
-        Write<'a, BaseColorDescriptorSet, BaseColorDescriptorSet>,
-        ReadStorage<'a, GltfMeshBaseColorTexture>,
-        Read<'a, ImageIndex>,
-        WriteStorage<'a, BaseColorVisitedMarker>,
-    );
-
-    fn run(
-        &mut self,
-        (
-            entities,
-            renderer,
-            base_color_descriptor_set,
-            base_color_textures,
-            image_index,
-            mut visited_markers,
-        ): Self::SystemData,
+impl SynchronizeBaseColorTextures {
+    pub fn exec(
+        entities: &EntitiesStorage,
+        renderer: &RenderFrame,
+        base_color_descriptor_set: &BaseColorDescriptorSet,
+        base_color_textures: &ComponentStorage<GltfMeshBaseColorTexture>,
+        image_index: &ImageIndex,
+        visited_markers: &mut ComponentStorage<BaseColorVisitedMarker>,
     ) {
-        let mut entities_to_update = BitSet::new();
-        for (entity, _, ()) in (&*entities, &base_color_textures, !&visited_markers).join() {
-            entities_to_update.add(entity.id());
-        }
+        let to_update = (&entities.alive & &base_color_textures.alive) - &visited_markers.alive;
 
-        for (entity, _, base_color) in
-            (&*entities, &entities_to_update, &base_color_textures).join()
-        {
+        visited_markers.alive |= to_update.clone();
+
+        for entity_id in to_update.iter() {
+            let base_color = base_color_textures.data.get(&entity_id).unwrap();
             let image_view = helpers::new_image_view(
                 renderer.device.clone(),
                 &vk::ImageViewCreateInfo::builder()
@@ -134,12 +103,13 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
                     }),
             );
             let res = visited_markers
-                .insert(entity, BaseColorVisitedMarker { image_view })
-                .expect("failed to insert BaseColorVisitedMarker");
+                .data
+                .insert(entity_id, BaseColorVisitedMarker { image_view });
             assert!(res.is_none()); // double check that there was nothing there
         }
 
-        for (entity, marker) in (&entities, &visited_markers).join() {
+        for entity_id in visited_markers.alive.iter() {
+            let marker = visited_markers.data.get(&entity_id).unwrap();
             let sampler_updates = &[vk::DescriptorImageInfo::builder()
                 .image_view(marker.image_view.handle)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -156,7 +126,7 @@ impl<'a> System<'a> for SynchronizeBaseColorTextures {
                                 .handle,
                         )
                         .dst_binding(0)
-                        .dst_array_element(entity.id())
+                        .dst_array_element(entity_id)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(sampler_updates)
                         .build()],

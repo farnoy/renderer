@@ -1,9 +1,8 @@
-use super::components::*;
+use super::{components::*, custom::*};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
-use specs::prelude::*;
 use std::{sync::Arc, time::Instant};
 use winit::{
     self, dpi::LogicalSize, DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode,
@@ -14,46 +13,30 @@ use crate::renderer::{forward_vector, right_vector, up_vector, GltfMesh, RenderF
 
 pub struct ModelMatrixCalculation;
 
-impl<'a> System<'a> for ModelMatrixCalculation {
-    #[allow(clippy::type_complexity)]
-    type SystemData = (
-        Entities<'a>,
-        ReadStorage<'a, Position>,
-        ReadStorage<'a, Rotation>,
-        ReadStorage<'a, Scale>,
-        WriteStorage<'a, ModelMatrix>,
-    );
-
-    fn run(
-        &mut self,
-        (entities, positions, rotations, scales, mut model_matrices): Self::SystemData,
+impl ModelMatrixCalculation {
+    pub fn exec(
+        entities: &EntitiesStorage,
+        positions: &ComponentStorage<na::Point3<f32>>,
+        rotations: &ComponentStorage<na::UnitQuaternion<f32>>,
+        scales: &ComponentStorage<f32>,
+        model_matrices: &mut ComponentStorage<glm::Mat4>,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "model matrix calculation");
-        let mut entities_to_update = vec![];
-        for (entity_id, _, _, _, ()) in (
-            &*entities,
-            &positions,
-            &rotations,
-            &scales,
-            !&model_matrices,
-        )
-            .join()
-        {
-            entities_to_update.push(entity_id);
+        model_matrices.alive =
+            &entities.alive & &positions.alive & &rotations.alive & &scales.alive;
+
+        for entity_id in model_matrices.alive.iter() {
+            let pos = positions.data.get(&entity_id).unwrap();
+            let rot = rotations.data.get(&entity_id).unwrap();
+            let scale = scales.data.get(&entity_id).unwrap();
+            *model_matrices
+                .data
+                .entry(entity_id)
+                .or_insert_with(glm::Mat4::identity) = glm::translation(&pos.coords)
+                * rot.to_homogeneous()
+                * glm::scaling(&glm::Vec3::repeat(*scale));
         }
-        for entity_id in entities_to_update.into_iter() {
-            model_matrices
-                .insert(entity_id, ModelMatrix::one())
-                .expect("failed to insert missing matrices");
-        }
-        (&positions, &rotations, &scales, &mut model_matrices)
-            .par_join()
-            .for_each(|(pos, rot, scale, mut model)| {
-                model.0 = glm::translation(&pos.0.coords)
-                    * rot.0.to_homogeneous()
-                    * glm::scaling(&glm::Vec3::repeat(scale.0));
-            });
     }
 }
 
@@ -90,10 +73,8 @@ pub struct InputHandler {
     pub move_mouse: bool,
 }
 
-impl<'a> System<'a> for InputHandler {
-    type SystemData = (Write<'a, InputState>, Write<'a, Camera>);
-
-    fn run(&mut self, (mut input_state, mut camera): Self::SystemData) {
+impl InputHandler {
+    pub fn exec(&mut self, input_state: &mut InputState, camera: &mut Camera) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "input handler");
         let quit_handle = Arc::clone(&self.quit_handle);
@@ -162,10 +143,8 @@ impl<'a> System<'a> for InputHandler {
 
 pub struct ProjectCamera;
 
-impl<'a> System<'a> for ProjectCamera {
-    type SystemData = (ReadExpect<'a, RenderFrame>, Write<'a, Camera>);
-
-    fn run(&mut self, (renderer, mut camera): Self::SystemData) {
+impl ProjectCamera {
+    pub fn exec(renderer: &RenderFrame, camera: &mut Camera) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "project camera");
         let near = 0.1;
@@ -209,10 +188,8 @@ impl Default for FrameTiming {
 
 pub struct CalculateFrameTiming;
 
-impl<'a> System<'a> for CalculateFrameTiming {
-    type SystemData = Write<'a, FrameTiming>;
-
-    fn run(&mut self, mut frame_timing: Self::SystemData) {
+impl CalculateFrameTiming {
+    pub fn exec(frame_timing: &mut FrameTiming) {
         let now = Instant::now();
         let duration = now - frame_timing.previous_frame;
         frame_timing.time_delta =
@@ -223,19 +200,21 @@ impl<'a> System<'a> for CalculateFrameTiming {
 
 pub struct AABBCalculation;
 
-impl<'a> System<'a> for AABBCalculation {
-    type SystemData = (
-        Entities<'a>,
-        ReadStorage<'a, ModelMatrix>,
-        ReadStorage<'a, GltfMesh>,
-        WriteStorage<'a, AABB>,
-    );
-
-    fn run(&mut self, (entities, model_matrices, mesh, mut aabb): Self::SystemData) {
+impl AABBCalculation {
+    pub fn exec(
+        entities: &EntitiesStorage,
+        model_matrices: &ComponentStorage<glm::Mat4>,
+        meshes: &ComponentStorage<GltfMesh>,
+        aabb: &mut ComponentStorage<AABB>,
+    ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "aabb calculation");
         use std::f32::{MAX, MIN};
-        for (entity_id, model_matrix, mesh) in (&*entities, &model_matrices, &mesh).join() {
+        let desired = &entities.alive & &model_matrices.alive & &meshes.alive;
+        aabb.alive = desired.clone();
+        for entity_id in desired.iter() {
+            let model_matrix = model_matrices.data.get(&entity_id).unwrap();
+            let mesh = meshes.data.get(&entity_id).unwrap();
             let min = mesh.aabb_c - mesh.aabb_h;
             let max = mesh.aabb_c + mesh.aabb_h;
             let (min, max) = [
@@ -251,7 +230,7 @@ impl<'a> System<'a> for AABBCalculation {
                 na::Point3::new(max.x, max.y, max.z),
             ]
             .iter()
-            .map(|vertex| model_matrix.0 * vertex.to_homogeneous())
+            .map(|vertex| model_matrix * vertex.to_homogeneous())
             .map(|vertex| vertex.xyz() / vertex.w)
             .fold(
                 ((MAX, MAX, MAX), (MIN, MIN, MIN)),
@@ -264,14 +243,13 @@ impl<'a> System<'a> for AABBCalculation {
             );
             let min = na::Vector3::new(min.0, min.1, min.2);
             let max = na::Vector3::new(max.0, max.1, max.2);
-            aabb.insert(
+            aabb.data.insert(
                 entity_id,
                 AABB {
                     c: (max + min) / 2.0,
                     h: (max - min) / 2.0,
                 },
-            )
-            .expect("Failed to insert AABB");
+            );
         }
     }
 }
@@ -321,14 +299,8 @@ impl Default for FlyCamera {
     }
 }
 
-impl<'a> System<'a> for FlyCamera {
-    type SystemData = (
-        Read<'a, InputState>,
-        Read<'a, FrameTiming>,
-        Write<'a, Camera>,
-    );
-
-    fn run(&mut self, (input, frame_timing, mut camera): Self::SystemData) {
+impl FlyCamera {
+    pub fn exec(&mut self, input: &InputState, frame_timing: &FrameTiming, camera: &mut Camera) {
         for key in &input.key_presses {
             match key {
                 Some(VirtualKeyCode::W) => {

@@ -2,7 +2,6 @@ use ash::{version::DeviceV1_0, vk};
 use gltf;
 use image;
 use meshopt;
-use specs::prelude::*;
 use std::{mem::size_of, path::Path, u64};
 
 use super::{
@@ -31,9 +30,11 @@ impl meshopt::DecodePosition for Pos {
     }
 }
 
-pub fn load(world: &mut World, path: &str) -> LoadedMesh {
-    let (renderer, graphics_command_pool) =
-        world.system_data::<(ReadExpect<RenderFrame>, ReadExpect<GraphicsCommandPool>)>();
+pub fn load(
+    renderer: &RenderFrame,
+    graphics_command_pool: &GraphicsCommandPool,
+    path: &str,
+) -> LoadedMesh {
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded
         .meshes()

@@ -1,8 +1,11 @@
-use crate::renderer::{
-    alloc,
-    device::{Buffer, CommandBuffer, DoubleBuffered, Fence, Semaphore},
-    systems::present::ImageIndex,
-    GltfMesh, GraphicsCommandPool, RenderFrame,
+use crate::{
+    ecs::custom::ComponentStorage,
+    renderer::{
+        alloc,
+        device::{Buffer, CommandBuffer, DoubleBuffered, Fence, Semaphore},
+        systems::present::ImageIndex,
+        GltfMesh, GraphicsCommandPool, RenderFrame,
+    },
 };
 use ash::{
     version::DeviceV1_0,
@@ -11,7 +14,6 @@ use ash::{
 use hashbrown::{hash_map::Entry, HashMap};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
-use specs::prelude::*;
 use std::{mem::size_of, u64};
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
@@ -48,13 +50,8 @@ pub struct ConsolidateMeshBuffers;
 // TODO: dynamic unloading of meshes
 // TODO: use actual transfer queue for the transfers
 
-impl specs::shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuffers {
-    fn setup(world: &mut World) {
-        if world.has_value::<ConsolidateMeshBuffers>() {
-            return;
-        }
-
-        let renderer = world.fetch::<RenderFrame>();
+impl ConsolidatedMeshBuffers {
+    pub fn new(renderer: &RenderFrame) -> ConsolidatedMeshBuffers {
         let vertex_offsets = HashMap::new();
         let index_offsets = HashMap::new();
 
@@ -89,9 +86,7 @@ impl specs::shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuf
             "Consolidate vertex buffers sync point fence",
         );
 
-        drop(renderer);
-
-        world.insert(ConsolidatedMeshBuffers {
+        ConsolidatedMeshBuffers {
             vertex_offsets,
             next_vertex_offset: 0,
             index_offsets,
@@ -103,27 +98,21 @@ impl specs::shred::SetupHandler<ConsolidatedMeshBuffers> for ConsolidatedMeshBuf
             sync_point,
             previous_run_command_buffer: None,
             sync_point_fence,
-        });
+        }
     }
 }
 
-impl<'a> System<'a> for ConsolidateMeshBuffers {
-    #[allow(clippy::type_complexity)]
-    type SystemData = (
-        ReadExpect<'a, RenderFrame>,
-        Read<'a, GraphicsCommandPool, GraphicsCommandPool>,
-        ReadStorage<'a, GltfMesh>,
-        Read<'a, ImageIndex>,
-        Write<'a, ConsolidatedMeshBuffers, ConsolidatedMeshBuffers>,
-    );
-
-    fn run(
-        &mut self,
-        (renderer, graphics_command_pool, meshes, image_index, mut consolidate_mesh_buffers): Self::SystemData,
+impl ConsolidateMeshBuffers {
+    pub fn exec(
+        renderer: &RenderFrame,
+        graphics_command_pool: &GraphicsCommandPool,
+        meshes: &ComponentStorage<GltfMesh>,
+        image_index: &ImageIndex,
+        consolidated_mesh_buffers: &mut ConsolidatedMeshBuffers,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "consolidate mesh buffers");
-        if consolidate_mesh_buffers
+        if consolidated_mesh_buffers
             .previous_run_command_buffer
             .is_some()
         {
@@ -131,7 +120,7 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
                 renderer
                     .device
                     .wait_for_fences(
-                        &[consolidate_mesh_buffers.sync_point_fence.handle],
+                        &[consolidated_mesh_buffers.sync_point_fence.handle],
                         true,
                         u64::MAX,
                     )
@@ -141,13 +130,14 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
         unsafe {
             renderer
                 .device
-                .reset_fences(&[consolidate_mesh_buffers.sync_point_fence.handle])
+                .reset_fences(&[consolidated_mesh_buffers.sync_point_fence.handle])
                 .expect("failed to reset consolidate vertex buffers sync point fence");
         }
 
         let mut needs_transfer = false;
         let command_buffer = graphics_command_pool.0.record_one_time(|command_buffer| {
-            for mesh in (&meshes).join() {
+            for ix in meshes.alive.iter() {
+                let mesh = meshes.data.get(&ix).unwrap();
                 let ConsolidatedMeshBuffers {
                     ref mut next_vertex_offset,
                     ref mut next_index_offset,
@@ -158,7 +148,7 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
                     ref mut vertex_offsets,
                     ref mut index_offsets,
                     ..
-                } = *consolidate_mesh_buffers;
+                } = *consolidated_mesh_buffers;
 
                 if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
                     v.insert(*next_vertex_offset);
@@ -244,10 +234,10 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
                 .signal_semaphores(signal_semaphores)
                 .build();
 
-            *consolidate_mesh_buffers
+            *consolidated_mesh_buffers
                 .sync_point
                 .current_mut(image_index.0) = Some(semaphore);
-            consolidate_mesh_buffers.previous_run_command_buffer = Some(command_buffer); // potentially destroys the previous one
+            consolidated_mesh_buffers.previous_run_command_buffer = Some(command_buffer); // potentially destroys the previous one
 
             let queue = renderer.device.graphics_queue.lock();
 
@@ -257,15 +247,15 @@ impl<'a> System<'a> for ConsolidateMeshBuffers {
                     .queue_submit(
                         *queue,
                         &[submit],
-                        consolidate_mesh_buffers.sync_point_fence.handle,
+                        consolidated_mesh_buffers.sync_point_fence.handle,
                     )
                     .unwrap();
             }
         } else {
-            *consolidate_mesh_buffers
+            *consolidated_mesh_buffers
                 .sync_point
                 .current_mut(image_index.0) = None;
-            consolidate_mesh_buffers.previous_run_command_buffer = None; // potentially destroys the previous one
+            consolidated_mesh_buffers.previous_run_command_buffer = None; // potentially destroys the previous one
         }
     }
 }

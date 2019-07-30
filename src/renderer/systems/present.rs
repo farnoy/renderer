@@ -5,7 +5,6 @@ use super::super::{
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
-use specs::prelude::*;
 use std::u64;
 
 pub struct PresentData {
@@ -28,13 +27,8 @@ pub struct AcquireFramebuffer;
 
 pub struct PresentFramebuffer;
 
-impl specs::shred::SetupHandler<PresentData> for PresentData {
-    fn setup(world: &mut World) {
-        if world.has_value::<PresentData>() {
-            return;
-        }
-
-        let renderer = world.fetch::<RenderFrame>();
+impl PresentData {
+    pub fn new(renderer: &RenderFrame) -> PresentData {
         let render_complete_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
             render_complete_semaphore.handle,
@@ -56,25 +50,17 @@ impl specs::shred::SetupHandler<PresentData> for PresentData {
 
         let render_command_buffer = renderer.new_buffered(|_| None);
 
-        drop(renderer);
-
-        world.insert(PresentData {
+        PresentData {
             render_complete_semaphore,
             present_semaphore,
             render_command_buffer,
             render_complete_fence,
-        });
+        }
     }
 }
 
-impl<'a> System<'a> for AcquireFramebuffer {
-    type SystemData = (
-        ReadExpect<'a, RenderFrame>,
-        Read<'a, PresentData, PresentData>,
-        Write<'a, ImageIndex>,
-    );
-
-    fn run(&mut self, (renderer, present_data, mut image_index): Self::SystemData) {
+impl AcquireFramebuffer {
+    pub fn exec(renderer: &RenderFrame, present_data: &PresentData, image_index: &mut ImageIndex) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "present");
         if present_data
@@ -122,32 +108,24 @@ impl<'a> System<'a> for AcquireFramebuffer {
     }
 }
 
-impl<'a> System<'a> for PresentFramebuffer {
-    type SystemData = (
-        ReadExpect<'a, RenderFrame>,
-        Read<'a, PresentData, PresentData>,
-        Read<'a, ImageIndex>,
-    );
+impl PresentFramebuffer {
+    pub fn exec(renderer: &RenderFrame, present_data: &PresentData, image_index: &ImageIndex) {
+        let wait_semaphores = &[present_data.render_complete_semaphore.handle];
+        let swapchains = &[renderer.swapchain.handle.swapchain];
+        let image_indices = &[image_index.0];
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(wait_semaphores)
+            .swapchains(swapchains)
+            .image_indices(image_indices);
 
-    fn run(&mut self, (renderer, present_data, image_index): Self::SystemData) {
-        {
-            let wait_semaphores = &[present_data.render_complete_semaphore.handle];
-            let swapchains = &[renderer.swapchain.handle.swapchain];
-            let image_indices = &[image_index.0];
-            let present_info = vk::PresentInfoKHR::builder()
-                .wait_semaphores(wait_semaphores)
-                .swapchains(swapchains)
-                .image_indices(image_indices);
-
-            let queue = renderer.device.graphics_queue.lock();
-            unsafe {
-                renderer
-                    .swapchain
-                    .handle
-                    .ext
-                    .queue_present(*queue, &present_info)
-                    .unwrap();
-            }
+        let queue = renderer.device.graphics_queue.lock();
+        unsafe {
+            renderer
+                .swapchain
+                .handle
+                .ext
+                .queue_present(*queue, &present_info)
+                .unwrap();
         }
     }
 }
