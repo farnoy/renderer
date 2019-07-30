@@ -123,11 +123,11 @@ fn main() {
 
     position_storage
         .data
-        .insert(0, na::Point3::new(-6.0, 50.0, 0.0));
+        .insert(0, na::Point3::new(30.0, 20.0, -40.1));
     rotation_storage.data.insert(
         0,
         na::UnitQuaternion::look_at_lh(
-            &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(-6.0, 50.0, 0.0)),
+            &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(30.0, 20.0, -40.1)),
             &up_vector(),
         ),
     );
@@ -136,11 +136,11 @@ fn main() {
 
     position_storage
         .data
-        .insert(1, na::Point3::new(0.1, 50.0, 0.1));
+        .insert(1, na::Point3::new(0.1, 17.0, 0.1));
     rotation_storage.data.insert(
         1,
         na::UnitQuaternion::look_at_lh(
-            &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(0.1, 50.0, 0.1)),
+            &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(0.1, 17.0, 0.1)),
             &up_vector(),
         ),
     );
@@ -267,11 +267,11 @@ fn main() {
 
         position_storage
             .data
-            .insert(6, na::Point3::new(0.0, -50.0, 0.0));
+            .insert(6, na::Point3::new(0.0, -29.0, 0.0));
         rotation_storage
             .data
             .insert(6, na::UnitQuaternion::identity());
-        scale_storage.data.insert(6, 100.0);
+        scale_storage.data.insert(6, 50.0);
         meshes_storage.data.insert(
             6,
             GltfMesh {

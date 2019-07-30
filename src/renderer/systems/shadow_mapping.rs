@@ -305,7 +305,7 @@ impl ShadowMappingMVPCalculation {
             let light_matrix = light_matrices.data.entry(entity_id).or_insert_with(|| {
                 let matrices_buffer = DoubleBuffered::new(|ix| {
                     let b = renderer.device.new_buffer(
-                        vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
                         size_of::<LightMatrices>() as vk::DeviceSize,
                     );
@@ -336,16 +336,13 @@ impl ShadowMappingMVPCalculation {
                     matrices_set,
                 }
             });
-            let near = 1.0;
-            let far = 80.0;
+            let near = 10.0;
+            let far = 400.0;
             let projection =
                 glm::perspective_lh_zo(1.0, glm::radians(&glm::vec1(70.0)).x, near, far);
 
-            let view = na::Isometry3::from_parts(
-                na::Translation3::from(light_rotation * (-light_position.coords)),
-                *light_rotation,
-            );
-
+            let view = glm::translation(&(light_rotation * (-light_position.coords)))
+                * light_rotation.to_homogeneous();
             let mut matrices_mapped = light_matrix
                 .matrices_buffer
                 .current_mut(image_index.0)
@@ -353,7 +350,7 @@ impl ShadowMappingMVPCalculation {
                 .expect("failed to map Light matrices buffer");
             matrices_mapped[0] = LightMatrices {
                 projection,
-                view: view.to_homogeneous(),
+                view: view,
                 position: light_position.coords.push(1.0),
             };
         }
@@ -577,7 +574,7 @@ impl PrepareShadowMaps {
                     .dst_set(shadow_mapping.user_set.current(image_index.0).set.handle)
                     .dst_binding(0)
                     .dst_array_element(ix as u32)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&mvp_updates[ix])
                     .build(),
             );

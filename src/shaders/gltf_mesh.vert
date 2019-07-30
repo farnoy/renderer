@@ -9,7 +9,7 @@ layout(set = 1, binding = 0) uniform CameraMatrices {
     mat4 view;
     vec4 position;
 } camera;
-layout(set = 2, binding = 0) buffer readonly LightMatrices {
+layout(set = 2, binding = 0) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
@@ -38,14 +38,10 @@ void main() {
         vec3 to_light = normalize(light_data[ix].position.xyz - o_world_pos);
         float cos_light = dot(to_light, normal);
         float slope_scale = clamp(1 - cos_light, 0.0, 1.0);
-        float normal_offset_scale = slope_scale;
-        vec3 shadow_position = o_world_pos + o_normal * normal_offset_scale;
+        // TODO: tweak these
+        float normal_offset = -1.;
+        float slope_offset = 10. * slope_scale;
+        vec3 shadow_position = o_world_pos + o_normal * (normal_offset + slope_offset);
         position_lightspace[ix] = light_data[ix].projection * light_data[ix].view * vec4(shadow_position, 1.0);
-        position_lightspace[ix] /= position_lightspace[ix].w;
-        // negative viewport height
-        position_lightspace[ix].y *= -1.;
-        // convert to NDC
-        position_lightspace[ix].xy *= .5;
-        position_lightspace[ix].xy += .5;
     }
 }

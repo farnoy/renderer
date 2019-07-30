@@ -730,7 +730,7 @@ impl GltfPassData {
                         .polygon_mode(vk::PolygonMode::FILL)
                         // magic
                         .depth_bias_enable(true)
-                        .depth_bias_constant_factor(-0.2)
+                        .depth_bias_constant_factor(-0.07)
                         .depth_bias_slope_factor(-1.0)
                         .build(),
                 )

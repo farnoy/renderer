@@ -479,7 +479,7 @@ make_descriptor_set!(
 
 make_descriptor_set!(
     shadow_map_set [
-        16, partially bound => light_data, CameraMatrices, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, vk::DescriptorType::STORAGE_BUFFER;
+        16, partially bound => light_data, CameraMatrices, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, vk::DescriptorType::UNIFORM_BUFFER;
         1 => shadow_maps, Null, vk::ShaderStageFlags::FRAGMENT, vk::DescriptorType::COMBINED_IMAGE_SAMPLER
     ]
 );

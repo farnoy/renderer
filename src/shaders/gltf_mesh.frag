@@ -4,7 +4,7 @@
 
 #extension GL_EXT_nonuniform_qualifier: require
 
-layout(set = 2, binding = 0) buffer readonly LightMatrices {
+layout(set = 2, binding = 0) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
@@ -23,16 +23,27 @@ void main() {
     o_color = texture(base_color[entity_id], uv);
 
     for (uint ix = 0; ix < 2; ix++) {
-        vec3 light_pos = position_lightspace[ix].xyz;
+        // NOTE: Order of these next few operations around light_pos is critical
+        vec3 light_pos = position_lightspace[ix].xyz / position_lightspace[ix].w;
+        // negative viewport height
+        light_pos.y *= -1.;
+        // convert to NDC
+        light_pos.xy *= .5;
+        light_pos.xy += .5;
+
+        // check frustum intersection while in NDC
+        bool use_shadow = light_pos == clamp(light_pos, vec3(0.0), vec3(1.0));
+
         // slice the shadow map atlas
+        // columns first, then rows of a square SHADOW_MAP_DIM x SHADOW_MAP_DIM texture
+        light_pos.x += float(ix % SHADOW_MAP_DIM);
+        light_pos.y += float(ix / SHADOW_MAP_DIM);
         light_pos.xy /= float(SHADOW_MAP_DIM);
-        light_pos.x += float(ix) / SHADOW_MAP_DIM;
 
         vec3 light_dir = normalize(light_data[ix].position.xyz - world_position);
         float diff = max(dot(light_dir, normal), 0.5) * 1.25;
-
-        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z)); //, light_pos.z - 0.2));
         o_color.rgb *= diff;
-        o_color.rgb *= depth < 1.0 ? 0.6 : 1.0;
+        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z));
+        o_color.rgb *= use_shadow && depth < 1.0 ? 0.6 : 1.0;
     }
 }
