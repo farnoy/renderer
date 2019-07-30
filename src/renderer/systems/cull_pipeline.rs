@@ -8,11 +8,7 @@ use super::{
     consolidate_mesh_buffers::ConsolidatedMeshBuffers,
     present::ImageIndex,
 };
-use crate::ecs::{
-    components::{AABB},
-    custom::*,
-    systems::Camera,
-};
+use crate::ecs::{components::AABB, custom::*, systems::Camera};
 use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},

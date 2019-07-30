@@ -10,7 +10,6 @@ pub mod ecs {
 }
 pub mod renderer;
 
-use renderer::*;
 use ash::version::DeviceV1_0;
 use ecs::{components::*, custom::*, systems::*};
 #[cfg(feature = "microprofile")]
@@ -18,6 +17,7 @@ use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
 use rayon;
+use renderer::*;
 use std::sync::Arc;
 
 fn main() {
@@ -439,5 +439,4 @@ fn main() {
     }
     #[cfg(feature = "profiling")]
     microprofile::shutdown!();
-
 }

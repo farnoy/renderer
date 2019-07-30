@@ -15,10 +15,7 @@ mod systems {
     pub mod textures;
 }
 
-use crate::ecs::{
-    custom::*,
-    systems::Camera,
-};
+use crate::ecs::{custom::*, systems::Camera};
 use ash::{version::DeviceV1_0, vk};
 use imgui::{self, im_str};
 #[cfg(feature = "microprofile")]
@@ -777,7 +774,6 @@ impl GltfPassData {
 }
 
 pub struct Renderer;
-
 
 impl Renderer {
     #[allow(clippy::too_many_arguments)]

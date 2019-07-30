@@ -162,11 +162,7 @@ impl Device {
                 .map(|a| a.0)
                 .unwrap_or(graphics_queue_family),
             graphics_queue: Mutex::new(graphics_queue),
-            compute_queues: compute_queues
-                .iter()
-                .cloned()
-                .map(Mutex::new)
-                .collect(),
+            compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
