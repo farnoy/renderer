@@ -77,7 +77,7 @@ impl RenderFrame {
         device.set_object_name(device.handle(), "Device");
         let swapchain = new_swapchain(&instance, &device);
         let compute_command_pool = device.new_command_pool(
-            device.compute_queue_family,
+            QueueType::Compute,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
         let main_renderpass = {
@@ -361,7 +361,7 @@ pub struct GraphicsCommandPool(pub Arc<CommandPool>);
 impl GraphicsCommandPool {
     pub fn new(renderer: &RenderFrame) -> GraphicsCommandPool {
         let graphics_command_pool = renderer.device.new_command_pool(
-            renderer.device.graphics_queue_family,
+            QueueType::Graphics,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         );
 
@@ -961,7 +961,7 @@ impl Renderer {
                                     },
                                     1.0,
                                 );
-                                let alloc_stats = alloc::stats(renderer.device.allocator);
+                                let alloc_stats = renderer.device.allocation_stats();
                                 let s = format!("Alloc stats {:?}", alloc_stats.total);
                                 ui.window(im_str!("Renderer"))
                                     .size((500.0, 300.0), imgui::ImGuiCond::Always)

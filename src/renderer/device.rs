@@ -25,14 +25,19 @@ type AshDevice = ash::Device;
 
 pub struct Device {
     pub(super) device: AshDevice,
-    pub(super) instance: Arc<Instance>,
+    instance: Arc<Instance>,
     pub(super) physical_device: vk::PhysicalDevice,
-    pub(super) allocator: alloc::VmaAllocator,
-    pub(super) graphics_queue_family: u32,
-    pub(super) compute_queue_family: u32,
+    allocator: alloc::VmaAllocator,
+    graphics_queue_family: u32,
+    compute_queue_family: u32,
     pub(super) graphics_queue: Mutex<vk::Queue>,
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
+}
+
+pub enum QueueType {
+    Graphics,
+    Compute,
 }
 
 impl Device {
@@ -174,6 +179,10 @@ impl Device {
         Ok(device)
     }
 
+    pub fn allocation_stats(&self) -> alloc::VmaStats {
+        alloc::stats(self.allocator)
+    }
+
     pub fn new_descriptor_pool(
         self: &Arc<Self>,
         max_sets: u32,
@@ -196,12 +205,19 @@ impl Device {
         DescriptorSetLayout::new2(self, create_info)
     }
 
+    fn queue_family_for(&self, t: QueueType) -> u32 {
+        match t {
+            QueueType::Graphics => self.graphics_queue_family,
+            QueueType::Compute => self.compute_queue_family,
+        }
+    }
+
     pub fn new_command_pool(
         self: &Arc<Self>,
-        queue_family: u32,
+        queue_type: QueueType,
         flags: vk::CommandPoolCreateFlags,
     ) -> CommandPool {
-        CommandPool::new(self, queue_family, flags)
+        CommandPool::new(self, self.queue_family_for(queue_type), flags)
     }
 
     pub fn new_semaphore(self: &Arc<Self>) -> Semaphore {
