@@ -21,64 +21,43 @@ struct Renderer {
 }
 
 #[macro_export]
-macro_rules! deref {
-    ($w:ident root) => {
-        &$w
-    };
-    ($w:ident nested) => {
-        &$w
-    };
-}
-
-#[macro_export]
-macro_rules! deref_mut {
-    ($w:ident root) => {
-        &mut $w
-    };
-    ($w:ident nested) => {
-        &mut *$w
-    };
-}
-
-#[macro_export]
 macro_rules! par_custom {
-    (@join write [$($write:ident)*] read [$($read:ident)*] $nested:ident => $do:block) => {
+    (@join write [$($write:ident)*] read [$($read:ident)*] => $do:block) => {
         {
             $(
-                #[allow(unused_mut)]
-                let mut $write = deref_mut!($write $nested);
+                let $write = $write.borrow_mut();
             )*
             $(
-                let $read = deref!($read $nested);
+                let $read = &$read;
             )*
             move || { $do; () }
         }
     };
-    (@join write [$($head_write:ident)*] read [$($head_read:ident)*] $head_nested:ident => $head_do:block write [$($tail_write:ident)*] read [$($tail_read:ident)*] $tail_nested:ident => $tail_do:block) => {
+    (@join write [$($head_write:ident)*] read [$($head_read:ident)*] => $head_do:block write [$($tail_write:ident)*] read [$($tail_read:ident)*] => $tail_do:block) => {
         rayon::join(
-            par_custom!(@join write [$($head_write)*] read [$($head_read)*] $head_nested => $head_do),
-            par_custom!(@join write [$($tail_write)*] read [$($tail_read)*] $tail_nested => $tail_do),
+            par_custom!(@join write [$($head_write)*] read [$($head_read)*] => $head_do),
+            par_custom!(@join write [$($tail_write)*] read [$($tail_read)*] => $tail_do),
         );
     };
-    (@join write [$($first_write:ident)*] read [$($first_read:ident)*] $first_nested:ident => $first_do:block write [$($second_write:ident)*] read [$($second_read:ident)*] $second_nested:ident => $second_do:block $(write [$($tail_write:ident)*] read [$($tail_read:ident)*] $tail_nested:ident => $tail_do:block),+) => {
+    (@join write [$($first_write:ident)*] read [$($first_read:ident)*] => $first_do:block write [$($second_write:ident)*] read [$($second_read:ident)*] => $second_do:block $(write [$($tail_write:ident)*] read [$($tail_read:ident)*] => $tail_do:block),+) => {
         rayon::join(
-            par_custom!(@join write [$($first_write)*] read [$($first_read)*] $first_nested => $first_do),
-            move || { par_custom!(@join write [$($second_write)*] read [$($second_read)*] $second_nested => $second_do $( write [$($tail_write)*] read [$($tail_read)*] $tail_nested => $tail_do),+) },
+            par_custom!(@join write [$($first_write)*] read [$($first_read)*] => $first_do),
+            move || { par_custom!(@join write [$($second_write)*] read [$($second_read)*] => $second_do $( write [$($tail_write)*] read [$($tail_read)*] => $tail_do),+) },
         );
     };
     // TODO: should not accept a single job to run
-    ($(write [$($write:ident)*] read [$($read:ident)*] $nested:ident => $do:block)+) => {
-        par_custom!(@join $(write [$($write)*] read [$($read)*] $nested => $do)+);
+    ($(write [$($write:ident)*] read [$($read:ident)*] => $do:block)+) => {
+        par_custom!(@join $(write [$($write)*] read [$($read)*] => $do)+);
     };
 }
 
 #[macro_export]
 macro_rules! seq_custom {
-    ($(write [$($write:ident)*] read [$($read:ident)*] $nested:ident => $do:tt)*) => {
+    ($(write [$($write:ident)*] read [$($read:ident)*] => $do:tt)*) => {
         $(
             {
-                $(#[allow(unused_mut)] let mut $write = deref_mut!($write $nested);)*
-                $(let $read = deref!($read $nested);)*
+                $(let $write = $write.borrow_mut();)*
+                $(let $read = &$read;)*
                 $do;
             }
         )*
@@ -125,12 +104,18 @@ fn test_components() {
     positions.alive.add_many(&[0, 3, 4, 8]);
 
     seq_custom! {
-        write [velocity timedelta] read [entities] root => {
+        write [velocity timedelta] read [entities] => {
+            *timedelta = 3.0;
             par_custom! {
-                write [timedelta] read [] nested => {
-                    *timedelta = 5.0;
+                write [timedelta] read [] => {
+                    *timedelta = 3.0;
+                    seq_custom! {
+                        write [timedelta] read [] => {
+                            *timedelta = 5.0;
+                        }
+                    }
                 }
-                write [velocity] read [entities] nested => {
+                write [velocity] read [entities] => {
                     for x in entities.alive.iter() {
                         velocity.alive.add(x);
                         velocity.data.insert(x, glm::vec3(10.0, 20.0, 0.0));
@@ -138,7 +123,7 @@ fn test_components() {
                 }
             }
         }
-        write [positions] read [velocity entities timedelta] root => {
+        write [positions] read [velocity entities timedelta] => {
             for ix in (&positions.alive & &velocity.alive & &entities.alive).iter() {
                 *positions.data.entry(ix).or_insert(na::zero()) += velocity.data.get(&ix).unwrap() * *timedelta;
             }

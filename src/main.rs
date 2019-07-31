@@ -18,7 +18,7 @@ use na::RealField;
 use parking_lot::Mutex;
 use rayon;
 use renderer::*;
-use std::sync::Arc;
+use std::{borrow::BorrowMut, sync::Arc};
 
 fn main() {
     #[cfg(feature = "profiling")]
@@ -331,83 +331,83 @@ fn main() {
             microprofile::scope!("game-loop", "ecs");
             // TODO: par_custom! needs to work with custom rayon threadpool
             seq_custom! {
-                write [image_index] read [renderer present_data] root => {
+                write [image_index] read [renderer present_data] => {
                     AcquireFramebuffer::exec(renderer, present_data, image_index);
                 }
-                write [frame_timing] read [] root => {
+                write [frame_timing] read [] => {
                     CalculateFrameTiming::exec(frame_timing);
                 }
-                write [input_state camera] read [] root => {
+                write [input_state camera] read [] => {
                     input_handler.exec(input_state, camera);
                 }
-                write [fly_camera consolidated_mesh_buffers camera] read [renderer input_state frame_timing meshes_storage image_index] root => {
+                write [fly_camera consolidated_mesh_buffers camera] read [renderer input_state frame_timing meshes_storage image_index] => {
                     par_custom! {
-                        write [fly_camera camera] read [renderer input_state frame_timing] nested => {
+                        write [fly_camera camera] read [renderer input_state frame_timing] => {
                             seq_custom! {
-                                write [camera] read [input_state frame_timing] nested => {
+                                write [camera] read [input_state frame_timing] => {
                                     fly_camera.exec(input_state, frame_timing, camera);
                                 }
-                                write [camera] read [renderer] nested => {
+                                write [camera] read [renderer] => {
                                     ProjectCamera::exec(renderer, camera);
                                 }
                             }
                         }
-                        write [consolidated_mesh_buffers] read [renderer graphics_command_pool meshes_storage image_index] nested => {
+                        write [consolidated_mesh_buffers] read [renderer graphics_command_pool meshes_storage image_index] => {
                             ConsolidateMeshBuffers::exec(renderer, graphics_command_pool, meshes_storage, image_index, consolidated_mesh_buffers);
                         }
                     }
                 }
-                write [model_matrices_storage aabb_storage shadow_mapping_light_matrices_storage] read [entities position_storage rotation_storage scale_storage meshes_storage] root => {
+                write [model_matrices_storage aabb_storage shadow_mapping_light_matrices_storage] read [entities position_storage rotation_storage scale_storage meshes_storage] => {
                     par_custom! {
-                        write [model_matrices_storage aabb_storage] read [entities position_storage rotation_storage scale_storage meshes_storage] nested => {
+                        write [model_matrices_storage aabb_storage] read [entities position_storage rotation_storage scale_storage meshes_storage] => {
                             seq_custom! {
-                                write [model_matrices_storage] read [entities position_storage rotation_storage scale_storage] nested => {
+                                write [model_matrices_storage] read [entities position_storage rotation_storage scale_storage] => {
                                     ModelMatrixCalculation::exec(entities, position_storage, rotation_storage, scale_storage, model_matrices_storage);
                                 }
-                                write [aabb_storage] read [entities model_matrices_storage meshes_storage] nested => {
+                                write [aabb_storage] read [entities model_matrices_storage meshes_storage] => {
                                     AABBCalculation::exec(entities, model_matrices_storage, meshes_storage, aabb_storage);
                                 }
                             }
                         }
-                        write [shadow_mapping_light_matrices_storage] read [renderer light_storage image_index main_descriptor_pool camera_matrices] nested => {
+                        write [shadow_mapping_light_matrices_storage] read [renderer light_storage image_index main_descriptor_pool camera_matrices] => {
                             ShadowMappingMVPCalculation::exec(renderer, entities, position_storage, rotation_storage, shadow_mapping_light_matrices_storage, light_storage, image_index, main_descriptor_pool, camera_matrices);
                         }
                     }
                 }
-                write [coarse_culled_storage] read [entities aabb_storage camera] root => {
+                write [coarse_culled_storage] read [entities aabb_storage camera] => {
                     CoarseCulling::exec(entities, aabb_storage, camera, coarse_culled_storage);
                 }
-                write [base_color_visited_storage] read [entities renderer base_color_descriptor_set base_color_texture_storage image_index] root => {
+                write [base_color_visited_storage] read [entities renderer base_color_descriptor_set base_color_texture_storage image_index] => {
                     SynchronizeBaseColorTextures::exec(entities, renderer, base_color_descriptor_set, base_color_texture_storage, image_index, base_color_visited_storage);
                 }
-                write [model_data camera_matrices] read [image_index camera] root => {
+                write [model_data camera_matrices] read [image_index camera] => {
                     par_custom! {
-                        write [camera_matrices] read [image_index camera] nested => {
+                        write [camera_matrices] read [image_index camera] => {
                             CameraMatricesUpload::exec(image_index, camera, camera_matrices);
                         }
-                        write [model_data] read [model_matrices_storage] nested => {
+                        write [model_data] read [model_matrices_storage] => {
                             ModelMatricesUpload::exec(model_matrices_storage, image_index, model_data);
                         }
                     }
                 }
-                write [cull_pass_data_private graphics_command_pool shadow_mapping_data depth_pass_data] read [entities renderer image_index meshes_storage model_data present_data shadow_mapping_light_matrices_storage light_storage] root => {
+                write [cull_pass_data_private graphics_command_pool shadow_mapping_data depth_pass_data] read [entities renderer image_index meshes_storage model_data present_data shadow_mapping_light_matrices_storage light_storage] => {
                     par_custom! {
-                        write [cull_pass_data_private] read [entities renderer cull_pass_data meshes_storage image_index consolidated_mesh_buffers position_storage camera model_data camera_matrices] nested => {
+                        write [cull_pass_data_private] read [entities renderer cull_pass_data meshes_storage image_index consolidated_mesh_buffers position_storage camera model_data camera_matrices] => {
                             CullPass::exec(entities, renderer, cull_pass_data, cull_pass_data_private, meshes_storage, image_index, consolidated_mesh_buffers, position_storage, camera, model_data, camera_matrices);
                         }
-                        write [graphics_command_pool shadow_mapping_data depth_pass_data] read [camera camera_matrices  position_storage present_data shadow_mapping_light_matrices_storage light_storage] nested => {
+                        write [graphics_command_pool shadow_mapping_data depth_pass_data] read [camera camera_matrices  position_storage present_data shadow_mapping_light_matrices_storage light_storage] => {
                             seq_custom! {
-                                write [graphics_command_pool shadow_mapping_data] read [entities renderer depth_pass_data image_index meshes_storage light_storage shadow_mapping_light_matrices_storage present_data model_data] nested => {
+                                write [graphics_command_pool shadow_mapping_data] read [entities renderer depth_pass_data image_index meshes_storage light_storage shadow_mapping_light_matrices_storage present_data model_data] => {
                                     PrepareShadowMaps::exec(entities, renderer, depth_pass_data, image_index, graphics_command_pool, shadow_mapping_data, meshes_storage, light_storage, shadow_mapping_light_matrices_storage, present_data, model_data);
                                 }
-                                write [depth_pass_data] read [camera camera_matrices position_storage] nested => {
+                                write [depth_pass_data] read [camera camera_matrices position_storage] => {
                                     DepthOnlyPass::exec(renderer, image_index, meshes_storage, position_storage, camera, camera_matrices, depth_pass_data, model_data, graphics_command_pool, shadow_mapping_data);
                                 }
                             }
                         }
                     }
                 }
-                write [gui present_data graphics_command_pool] read [renderer main_framebuffer base_color_descriptor_set consolidated_mesh_buffers cull_pass_data image_index depth_pass_data model_data gltf_pass shadow_mapping_data camera_matrices] root => {
+                write [gui present_data graphics_command_pool] read [renderer main_framebuffer base_color_descriptor_set consolidated_mesh_buffers cull_pass_data image_index depth_pass_data model_data gltf_pass shadow_mapping_data camera_matrices] => {
                     Renderer::exec(
                         renderer,
                         main_framebuffer,
@@ -425,7 +425,7 @@ fn main() {
                         camera_matrices,
                     );
                 }
-                write [] read [renderer present_data image_index] root => {
+                write [] read [renderer present_data image_index] => {
                     PresentFramebuffer::exec(renderer, present_data, image_index);
                 }
             }
