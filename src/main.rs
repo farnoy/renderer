@@ -201,64 +201,62 @@ fn main() {
     );
     base_color_texture_storage.insert(4, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
-    {
-        let LoadedMesh {
-            vertex_buffer,
-            normal_buffer,
-            uv_buffer,
-            index_buffers,
+    let LoadedMesh {
+        vertex_buffer,
+        normal_buffer,
+        uv_buffer,
+        index_buffers,
+        vertex_len,
+        aabb_c,
+        aabb_h,
+        base_color,
+    } = {
+        load_gltf(
+            &renderer,
+            &graphics_command_pool,
+            "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+        )
+    };
+
+    let vertex_buffer = Arc::new(vertex_buffer);
+    let normal_buffer = Arc::new(normal_buffer);
+    let uv_buffer = Arc::new(uv_buffer);
+    let index_buffers = Arc::new(index_buffers);
+    let base_color = Arc::new(base_color);
+
+    position_storage.insert(5, na::Point3::new(5.0, 3.0, 2.0));
+    rotation_storage.insert(5, na::UnitQuaternion::identity());
+    scale_storage.insert(5, 1.0);
+    meshes_storage.insert(
+        5,
+        GltfMesh {
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
+            index_buffers: Arc::clone(&index_buffers),
             vertex_len,
             aabb_c,
             aabb_h,
-            base_color,
-        } = {
-            load_gltf(
-                &renderer,
-                &graphics_command_pool,
-                "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
-            )
-        };
+        },
+    );
+    base_color_texture_storage.insert(5, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
-        let vertex_buffer = Arc::new(vertex_buffer);
-        let normal_buffer = Arc::new(normal_buffer);
-        let uv_buffer = Arc::new(uv_buffer);
-        let index_buffers = Arc::new(index_buffers);
-        let base_color = Arc::new(base_color);
-
-        position_storage.insert(5, na::Point3::new(5.0, 3.0, 2.0));
-        rotation_storage.insert(5, na::UnitQuaternion::identity());
-        scale_storage.insert(5, 1.0);
-        meshes_storage.insert(
-            5,
-            GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb_c,
-                aabb_h,
-            },
-        );
-        base_color_texture_storage.insert(5, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
-
-        position_storage.insert(6, na::Point3::new(0.0, -29.0, 0.0));
-        rotation_storage.insert(6, na::UnitQuaternion::identity());
-        scale_storage.insert(6, 50.0);
-        meshes_storage.insert(
-            6,
-            GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb_c,
-                aabb_h,
-            },
-        );
-        base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
-    }
+    position_storage.insert(6, na::Point3::new(0.0, -29.0, 0.0));
+    rotation_storage.insert(6, na::UnitQuaternion::identity());
+    scale_storage.insert(6, 50.0);
+    meshes_storage.insert(
+        6,
+        GltfMesh {
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
+            index_buffers: Arc::clone(&index_buffers),
+            vertex_len,
+            aabb_c,
+            aabb_h,
+        },
+    );
+    base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
     for ix in 7..207 {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;

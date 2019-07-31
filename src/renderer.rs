@@ -951,69 +951,68 @@ impl Renderer {
                                     0,
                                     vk::IndexType::UINT16,
                                 );
-                                let ui = imgui.frame(
+                                imgui.io_mut().display_size = [
+                                    renderer.instance.window_width as f32,
+                                    renderer.instance.window_height as f32,
+                                ];
+                                let ui = imgui.frame();
+                                /*
                                     imgui::FrameSize {
                                         logical_size: (
-                                            f64::from(renderer.instance.window_width),
-                                            f64::from(renderer.instance.window_height),
                                         ),
                                         hidpi_factor: 1.0,
                                     },
                                     1.0,
                                 );
+                                */
                                 let alloc_stats = renderer.device.allocation_stats();
                                 let s = format!("Alloc stats {:?}", alloc_stats.total);
                                 ui.window(im_str!("Renderer"))
-                                    .size((500.0, 300.0), imgui::ImGuiCond::Always)
+                                    .size([500.0, 300.0], imgui::Condition::Always)
                                     .build(|| {
-                                        ui.text_wrapped(im_str!("{}", s));
+                                        ui.text_wrapped(&im_str!("{}", s));
                                     });
-                                ui.render(|ui, draw_data| {
-                                    let (x, y) = ui.imgui().display_size();
-                                    {
-                                        pipeline_layout.push_constants(
-                                            &renderer.device,
-                                            command_buffer,
-                                            &shaders::ImguiPushConstants {
-                                                scale: glm::vec2(2.0 / x, 2.0 / y),
-                                                translate: glm::vec2(-1.0, -1.0),
-                                            },
-                                        );
-                                    }
-                                    let mut vertex_offset = 0;
-                                    let mut index_offset = 0;
-                                    {
-                                        let mut vertex_slice = vertex_buffer
-                                            .map::<imgui::ImDrawVert>()
-                                            .expect("Failed to map gui vertex buffer");
-                                        let mut index_slice = index_buffer
-                                            .map::<imgui::ImDrawIdx>()
-                                            .expect("Failed to map gui index buffer");
-                                        for draw_list in draw_data.into_iter() {
-                                            index_slice[0..draw_list.idx_buffer.len()]
-                                                .copy_from_slice(draw_list.idx_buffer);
-                                            vertex_slice[0..draw_list.vtx_buffer.len()]
-                                                .copy_from_slice(draw_list.vtx_buffer);
-                                            for draw_cmd in draw_list.cmd_buffer {
-                                                renderer.device.cmd_draw_indexed(
-                                                    command_buffer,
-                                                    draw_cmd.elem_count,
-                                                    1,
-                                                    index_offset,
-                                                    vertex_offset,
-                                                    0,
-                                                );
-                                                index_offset += draw_cmd.elem_count as u32;
+                                let draw_data = ui.render();
+                                let [x, y] = draw_data.display_size;
+                                {
+                                    pipeline_layout.push_constants(
+                                        &renderer.device,
+                                        command_buffer,
+                                        &shaders::ImguiPushConstants {
+                                            scale: glm::vec2(2.0 / x, 2.0 / y),
+                                            translate: glm::vec2(-1.0, -1.0),
+                                        },
+                                    );
+                                }
+                                {
+                                    let mut vertex_slice = vertex_buffer
+                                        .map::<imgui::DrawVert>()
+                                        .expect("Failed to map gui vertex buffer");
+                                    let mut index_slice = index_buffer
+                                        .map::<imgui::DrawIdx>()
+                                        .expect("Failed to map gui index buffer");
+                                    for draw_list in draw_data.draw_lists() {
+                                        index_slice[0..draw_list.idx_buffer().len()]
+                                            .copy_from_slice(draw_list.idx_buffer());
+                                        vertex_slice[0..draw_list.vtx_buffer().len()]
+                                            .copy_from_slice(draw_list.vtx_buffer());
+                                        for draw_cmd in draw_list.commands() {
+                                            match draw_cmd {
+                                                imgui::DrawCmd::Elements { count, cmd_params } => {
+                                                    renderer.device.cmd_draw_indexed(
+                                                        command_buffer,
+                                                        count as u32,
+                                                        1,
+                                                        cmd_params.idx_offset as u32,
+                                                        cmd_params.vtx_offset as i32,
+                                                        0,
+                                                    );
+                                                }
+                                                _ => panic!("le wtf"),
                                             }
-                                            vertex_offset += draw_list.vtx_buffer.len() as i32;
                                         }
                                     }
-                                    if false {
-                                        return Err(3i8);
-                                    }
-                                    Ok(())
-                                })
-                                .expect("failed rendering ui");
+                                }
                             },
                         );
                         renderer.device.cmd_end_render_pass(command_buffer);
@@ -1067,7 +1066,7 @@ impl Renderer {
 }
 
 pub struct Gui {
-    pub imgui: imgui::ImGui,
+    pub imgui: imgui::Context,
     pub vertex_buffer: Buffer,
     pub index_buffer: Buffer,
     pub texture: Image,
@@ -1082,23 +1081,25 @@ pub struct Gui {
 
 impl Gui {
     pub fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> Gui {
-        let mut imgui = imgui::ImGui::init();
+        let mut imgui = imgui::Context::create();
         let vertex_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4096 * size_of::<imgui::ImDrawVert>() as vk::DeviceSize,
+            4096 * size_of::<imgui::DrawVert>() as vk::DeviceSize,
         );
         let index_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::INDEX_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4096 * size_of::<imgui::ImDrawIdx>() as vk::DeviceSize,
+            4096 * size_of::<imgui::DrawIdx>() as vk::DeviceSize,
         );
-        let texture = imgui.prepare_texture(|handle| {
+        let texture = {
+            let mut fonts = imgui.fonts();
+            let imgui_texture = fonts.build_rgba32_texture();
             let texture = renderer.device.new_image(
                 vk::Format::R8G8B8A8_UNORM,
                 vk::Extent3D {
-                    width: handle.width,
-                    height: handle.height,
+                    width: imgui_texture.width,
+                    height: imgui_texture.height,
                     depth: 1,
                 },
                 vk::SampleCountFlags::TYPE_1,
@@ -1111,10 +1112,10 @@ impl Gui {
                 let mut texture_data = texture
                     .map::<c_uchar>()
                     .expect("failed to map imgui texture");
-                texture_data[0..handle.pixels.len()].copy_from_slice(handle.pixels);
+                texture_data[0..imgui_texture.data.len()].copy_from_slice(imgui_texture.data);
             }
             texture
-        });
+        };
         let sampler = new_sampler(
             renderer.device.clone(),
             &vk::SamplerCreateInfo::builder()
@@ -1174,7 +1175,7 @@ impl Gui {
                         ])
                         .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
                             binding: 0,
-                            stride: size_of::<imgui::ImDrawVert>() as u32,
+                            stride: size_of::<imgui::DrawVert>() as u32,
                             input_rate: vk::VertexInputRate::VERTEX,
                         }])
                         .build(),
