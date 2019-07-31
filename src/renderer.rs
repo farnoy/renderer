@@ -305,8 +305,8 @@ impl MainAttachments {
                 .map(|handle| SwapchainImage { handle })
                 .collect(),
             swapchain_image_views: image_views,
-            depth_images: depth_images,
-            depth_image_views: depth_image_views,
+            depth_images,
+            depth_image_views,
         }
     }
 }

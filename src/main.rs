@@ -35,12 +35,10 @@ fn main() {
     let mut coarse_culled_storage = ComponentStorage::<CoarseCulled>::new();
     let mut shadow_mapping_light_matrices_storage =
         ComponentStorage::<ShadowMappingLightMatrices>::new();
-    let _rayon_threadpool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(8)
-            .build_global()
-            .unwrap(),
-    );
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build_global()
+        .unwrap();
     let (renderer, events_loop) = RenderFrame::new();
 
     let quit_handle = Arc::new(Mutex::new(false));

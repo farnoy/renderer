@@ -350,7 +350,7 @@ impl ShadowMappingMVPCalculation {
                 .expect("failed to map Light matrices buffer");
             matrices_mapped[0] = LightMatrices {
                 projection,
-                view: view,
+                view,
                 position: light_position.coords.push(1.0),
             };
         }
