@@ -74,12 +74,12 @@ impl SynchronizeBaseColorTextures {
         image_index: &ImageIndex,
         visited_markers: &mut ComponentStorage<BaseColorVisitedMarker>,
     ) {
-        let to_update = (&entities.alive & &base_color_textures.alive) - &visited_markers.alive;
+        let to_update = (entities.mask() & base_color_textures.mask()) - visited_markers.mask();
 
-        visited_markers.alive |= to_update.clone();
+        visited_markers.replace_mask(&(visited_markers.mask() | &to_update));
 
         for entity_id in to_update.iter() {
-            let base_color = base_color_textures.data.get(&entity_id).unwrap();
+            let base_color = base_color_textures.get(entity_id).unwrap();
             let image_view = helpers::new_image_view(
                 renderer.device.clone(),
                 &vk::ImageViewCreateInfo::builder()
@@ -102,14 +102,12 @@ impl SynchronizeBaseColorTextures {
                         layer_count: 1,
                     }),
             );
-            let res = visited_markers
-                .data
-                .insert(entity_id, BaseColorVisitedMarker { image_view });
+            let res = visited_markers.insert(entity_id, BaseColorVisitedMarker { image_view });
             assert!(res.is_none()); // double check that there was nothing there
         }
 
-        for entity_id in visited_markers.alive.iter() {
-            let marker = visited_markers.data.get(&entity_id).unwrap();
+        for entity_id in visited_markers.mask().iter() {
+            let marker = visited_markers.get(entity_id).unwrap();
             let sampler_updates = &[vk::DescriptorImageInfo::builder()
                 .image_view(marker.image_view.handle)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)

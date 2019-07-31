@@ -57,8 +57,8 @@ impl CoarseCulling {
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "coarse culling");
-        for entity_id in (&entities.alive & &aabbs.alive).iter() {
-            let aabb = aabbs.data.get(&entity_id).unwrap();
+        for entity_id in (entities.mask() & aabbs.mask()).iter() {
+            let aabb = aabbs.get(entity_id).unwrap();
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
                 let e = aabb.h.dot(&plane.xyz().abs());
@@ -69,7 +69,7 @@ impl CoarseCulling {
                     break 'per_plane;
                 }
             }
-            coarse_culled.data.insert(entity_id, CoarseCulled(outside));
+            coarse_culled.insert(entity_id, CoarseCulled(outside));
         }
     }
 }
@@ -279,10 +279,10 @@ impl CullPass {
                             &camera_matrices.set.current(image_index.0),
                             &cull_pass_data.cull_set.current(image_index.0),
                         );
-                        for entity_id in (&entities.alive & &meshes.alive & &positions.alive).iter()
+                        for entity_id in (entities.mask() & meshes.mask() & positions.mask()).iter()
                         {
-                            let mesh = meshes.data.get(&entity_id).unwrap();
-                            let mesh_position = positions.data.get(&entity_id).unwrap();
+                            let mesh = meshes.get(entity_id).unwrap();
+                            let mesh_position = positions.get(entity_id).unwrap();
                             let vertex_offset = consolidate_mesh_buffers
                                 .vertex_offsets
                                 .get(&mesh.vertex_buffer.handle.as_raw())

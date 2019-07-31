@@ -59,9 +59,7 @@ fn main() {
     let mut consolidated_mesh_buffers = ConsolidatedMeshBuffers::new(&renderer);
     let mut graphics_command_pool = GraphicsCommandPool::new(&renderer);
 
-    let mut entities = EntitiesStorage {
-        alive: croaring::Bitmap::create(),
-    };
+    let mut entities = EntitiesStorage::new();
 
     let mut main_descriptor_pool = MainDescriptorPool::new(&renderer);
     let mut camera_matrices = CameraMatrices::new(&renderer, &main_descriptor_pool);
@@ -114,47 +112,44 @@ fn main() {
     let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
 
-    entities.alive.add_range(0..207);
-    position_storage.alive.add_range(0..207);
-    rotation_storage.alive.add_range(0..207);
-    scale_storage.alive.add_range(2..207);
-    meshes_storage.alive.add_range(2..207);
-    base_color_texture_storage.alive.add_range(2..207);
+    let ixes = entities.allocate_mask(207);
+    debug_assert_eq!(ixes.to_vec(), (0..207).collect::<Vec<_>>());
 
-    position_storage
-        .data
-        .insert(0, na::Point3::new(30.0, 20.0, -40.1));
-    rotation_storage.data.insert(
+    position_storage.replace_mask(&ixes);
+    rotation_storage.replace_mask(&ixes);
+
+    let mut light_only = croaring::Bitmap::create();
+    light_only.add_many(&[0, 1]);
+    light_storage.replace_mask(&light_only);
+    let rest = ixes - light_only;
+    scale_storage.replace_mask(&rest);
+    meshes_storage.replace_mask(&rest);
+    base_color_texture_storage.replace_mask(&rest);
+
+    position_storage.insert(0, na::Point3::new(30.0, 20.0, -40.1));
+    rotation_storage.insert(
         0,
         na::UnitQuaternion::look_at_lh(
             &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(30.0, 20.0, -40.1)),
             &up_vector(),
         ),
     );
-    light_storage.alive.add(0);
-    light_storage.data.insert(0, Light { strength: 1.0 });
+    light_storage.insert(0, Light { strength: 1.0 });
 
-    position_storage
-        .data
-        .insert(1, na::Point3::new(0.1, 17.0, 0.1));
-    rotation_storage.data.insert(
+    position_storage.insert(1, na::Point3::new(0.1, 17.0, 0.1));
+    rotation_storage.insert(
         1,
         na::UnitQuaternion::look_at_lh(
             &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(0.1, 17.0, 0.1)),
             &up_vector(),
         ),
     );
-    light_storage.alive.add(1);
-    light_storage.data.insert(1, Light { strength: 0.7 });
+    light_storage.insert(1, Light { strength: 0.7 });
 
-    position_storage
-        .data
-        .insert(2, na::Point3::new(0.0, 5.0, 0.0));
-    rotation_storage
-        .data
-        .insert(2, na::UnitQuaternion::identity());
-    scale_storage.data.insert(2, 1.0);
-    meshes_storage.data.insert(
+    position_storage.insert(2, na::Point3::new(0.0, 5.0, 0.0));
+    rotation_storage.insert(2, na::UnitQuaternion::identity());
+    scale_storage.insert(2, 1.0);
+    meshes_storage.insert(
         2,
         GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
@@ -166,19 +161,15 @@ fn main() {
             aabb_h,
         },
     );
-    base_color_texture_storage
-        .data
-        .insert(2, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+    base_color_texture_storage.insert(2, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
-    position_storage
-        .data
-        .insert(3, na::Point3::new(0.0, 5.0, 5.0));
-    rotation_storage.data.insert(
+    position_storage.insert(3, na::Point3::new(0.0, 5.0, 5.0));
+    rotation_storage.insert(
         3,
         na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 2.0),
     );
-    scale_storage.data.insert(3, 1.0);
-    meshes_storage.data.insert(
+    scale_storage.insert(3, 1.0);
+    meshes_storage.insert(
         3,
         GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
@@ -190,19 +181,15 @@ fn main() {
             aabb_h,
         },
     );
-    base_color_texture_storage
-        .data
-        .insert(3, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+    base_color_texture_storage.insert(3, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
-    position_storage
-        .data
-        .insert(4, na::Point3::new(-5.0, 5.0, 0.0));
-    rotation_storage.data.insert(
+    position_storage.insert(4, na::Point3::new(-5.0, 5.0, 0.0));
+    rotation_storage.insert(
         4,
         na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 3.0),
     );
-    scale_storage.data.insert(4, 1.0);
-    meshes_storage.data.insert(
+    scale_storage.insert(4, 1.0);
+    meshes_storage.insert(
         4,
         GltfMesh {
             vertex_buffer: Arc::clone(&vertex_buffer),
@@ -214,9 +201,7 @@ fn main() {
             aabb_h,
         },
     );
-    base_color_texture_storage
-        .data
-        .insert(4, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+    base_color_texture_storage.insert(4, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
     {
         let LoadedMesh {
@@ -242,14 +227,10 @@ fn main() {
         let index_buffers = Arc::new(index_buffers);
         let base_color = Arc::new(base_color);
 
-        position_storage
-            .data
-            .insert(5, na::Point3::new(5.0, 3.0, 2.0));
-        rotation_storage
-            .data
-            .insert(5, na::UnitQuaternion::identity());
-        scale_storage.data.insert(5, 1.0);
-        meshes_storage.data.insert(
+        position_storage.insert(5, na::Point3::new(5.0, 3.0, 2.0));
+        rotation_storage.insert(5, na::UnitQuaternion::identity());
+        scale_storage.insert(5, 1.0);
+        meshes_storage.insert(
             5,
             GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
@@ -261,18 +242,12 @@ fn main() {
                 aabb_h,
             },
         );
-        base_color_texture_storage
-            .data
-            .insert(5, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+        base_color_texture_storage.insert(5, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
-        position_storage
-            .data
-            .insert(6, na::Point3::new(0.0, -29.0, 0.0));
-        rotation_storage
-            .data
-            .insert(6, na::UnitQuaternion::identity());
-        scale_storage.data.insert(6, 50.0);
-        meshes_storage.data.insert(
+        position_storage.insert(6, na::Point3::new(0.0, -29.0, 0.0));
+        rotation_storage.insert(6, na::UnitQuaternion::identity());
+        scale_storage.insert(6, 50.0);
+        meshes_storage.insert(
             6,
             GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
@@ -284,9 +259,7 @@ fn main() {
                 aabb_h,
             },
         );
-        base_color_texture_storage
-            .data
-            .insert(6, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+        base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
     }
 
     for ix in 7..207 {
@@ -298,13 +271,13 @@ fn main() {
             5.0 + (ix / 10) as f32,
         ));
 
-        position_storage.data.insert(ix, pos);
-        rotation_storage.data.insert(
+        position_storage.insert(ix, pos);
+        rotation_storage.insert(
             ix,
             na::UnitQuaternion::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle),
         );
-        scale_storage.data.insert(ix, 0.6);
-        meshes_storage.data.insert(
+        scale_storage.insert(ix, 0.6);
+        meshes_storage.insert(
             ix,
             GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
@@ -316,9 +289,7 @@ fn main() {
                 aabb_h,
             },
         );
-        base_color_texture_storage
-            .data
-            .insert(ix, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+        base_color_texture_storage.insert(ix, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
     }
 
     'frame: loop {

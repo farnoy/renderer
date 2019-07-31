@@ -297,12 +297,12 @@ impl ShadowMappingMVPCalculation {
         debug_assert_eq!(size_of::<LightMatrices>(), 144);
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "shadow mapping light matrices calculation");
-        let desired = &entities.alive & &positions.alive & &lights.alive & &rotations.alive;
-        light_matrices.alive = desired.clone();
+        let desired = entities.mask() & positions.mask() & lights.mask() & rotations.mask();
+        light_matrices.replace_mask(&desired);
         for entity_id in desired.iter() {
-            let light_position = positions.data.get(&entity_id).unwrap();
-            let light_rotation = rotations.data.get(&entity_id).unwrap();
-            let light_matrix = light_matrices.data.entry(entity_id).or_insert_with(|| {
+            let light_position = positions.get(entity_id).unwrap();
+            let light_rotation = rotations.get(entity_id).unwrap();
+            let light_matrix = light_matrices.entry(entity_id).or_insert_with(|| {
                 let matrices_buffer = DoubleBuffered::new(|ix| {
                     let b = renderer.device.new_buffer(
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -431,9 +431,9 @@ impl PrepareShadowMaps {
                         );
 
                         for (ix, light_entity_id) in
-                            (&lights.alive & &shadow_matrices.alive).iter().enumerate()
+                            (lights.mask() & shadow_matrices.mask()).iter().enumerate()
                         {
-                            let shadow_mvp = shadow_matrices.data.get(&light_entity_id).unwrap();
+                            let shadow_mvp = shadow_matrices.get(light_entity_id).unwrap();
                             depth_pass.depth_pipeline_layout.bind_descriptor_sets(
                                 &renderer.device,
                                 command_buffer,
@@ -498,8 +498,8 @@ impl PrepareShadowMaps {
                                     .build()],
                             );
 
-                            for entity_id in (&entities.alive & &meshes.alive).iter() {
-                                let mesh = meshes.data.get(&entity_id).unwrap();
+                            for entity_id in (entities.mask() & meshes.mask()).iter() {
+                                let mesh = meshes.get(entity_id).unwrap();
                                 let (index_buffer, index_count) =
                                     mesh.index_buffers.last().unwrap();
                                 renderer.device.cmd_bind_index_buffer(
@@ -562,8 +562,8 @@ impl PrepareShadowMaps {
         let mut mvp_updates =
             vec![[vk::DescriptorBufferInfo::default(); 1]; DIM as usize * DIM as usize];
         let mut write_descriptors = vec![];
-        for (ix, entity_id) in (&lights.alive & &shadow_matrices.alive).iter().enumerate() {
-            let shadow_mvp = shadow_matrices.data.get(&entity_id).unwrap();
+        for (ix, entity_id) in (lights.mask() & shadow_matrices.mask()).iter().enumerate() {
+            let shadow_mvp = shadow_matrices.get(entity_id).unwrap();
             mvp_updates[ix] = [vk::DescriptorBufferInfo {
                 buffer: shadow_mvp.matrices_buffer.current(image_index.0).handle,
                 offset: 0,

@@ -3,7 +3,8 @@
 use rayon;
 use std::{
     borrow::BorrowMut,
-    collections::BTreeMap,
+    collections::btree_map,
+    mem::swap,
     ops::{Deref, DerefMut},
 };
 
@@ -65,20 +66,174 @@ macro_rules! seq_custom {
 }
 
 pub struct EntitiesStorage {
-    pub alive: croaring::Bitmap,
+    mask: croaring::Bitmap,
+    deleted: croaring::Bitmap,
+}
+
+const MAX_ENTITIES: u32 = 1024;
+
+impl EntitiesStorage {
+    pub fn new() -> EntitiesStorage {
+        let mut mask = croaring::Bitmap::create();
+        mask.add(MAX_ENTITIES);
+        EntitiesStorage {
+            mask: mask,
+            deleted: croaring::Bitmap::create(),
+        }
+    }
+
+    pub fn mask(&self) -> &croaring::Bitmap {
+        &self.mask
+    }
+
+    pub fn allocate(&mut self) -> u32 {
+        let free_slots = self.mask.flip(0..MAX_ENTITIES as u64) - &self.deleted;
+        let free = free_slots
+            .iter()
+            .next()
+            .expect("no space to allocate entities");
+        self.mask.add(free);
+        free
+    }
+
+    pub fn allocate_many(&mut self, n: u32) -> Vec<u32> {
+        let free_slots = self.mask.flip(0..MAX_ENTITIES as u64) - &self.deleted;
+        let free_ids = free_slots.iter().take(n as usize).collect::<Vec<u32>>();
+        self.mask.add_many(&free_ids);
+        free_ids
+    }
+
+    pub fn allocate_mask(&mut self, n: u32) -> croaring::Bitmap {
+        let free_slots = self.mask.flip(0..MAX_ENTITIES as u64) - &self.deleted;
+        let free_ids = free_slots.iter().take(n as usize).collect::<Vec<u32>>();
+        let mut mask = croaring::Bitmap::create();
+        mask.add_many(&free_ids);
+        self.mask.or_inplace(&mask);
+        mask
+    }
+
+    pub fn remove(&mut self, ix: u32) {
+        self.mask.remove(ix);
+        self.deleted.add(ix);
+    }
+
+    pub fn maintain(&mut self) -> croaring::Bitmap {
+        let mut x = croaring::Bitmap::create();
+        swap(&mut self.deleted, &mut x);
+        x
+    }
 }
 
 pub struct ComponentStorage<T> {
-    pub alive: croaring::Bitmap,
-    pub data: BTreeMap<u32, T>,
+    mask: croaring::Bitmap,
+    data: btree_map::BTreeMap<u32, T>,
 }
 
 impl<T> ComponentStorage<T> {
     pub fn new() -> ComponentStorage<T> {
         ComponentStorage {
-            alive: croaring::Bitmap::create(),
-            data: BTreeMap::new(),
+            mask: croaring::Bitmap::create(),
+            data: btree_map::BTreeMap::new(),
         }
+    }
+
+    pub fn mask(&self) -> &croaring::Bitmap {
+        &self.mask
+    }
+
+    pub fn allocate_mask(&mut self, mask: &croaring::Bitmap) {
+        debug_assert_eq!(
+            self.mask.and_cardinality(mask),
+            0,
+            "ComponentStorage::allocate_mask() interescts with stored components"
+        );
+        self.mask.or_inplace(mask);
+    }
+
+    pub fn replace_mask(&mut self, mask: &croaring::Bitmap) {
+        self.mask.clone_from(mask);
+    }
+
+    pub fn allocate_many(&mut self, ixes: &[u32]) {
+        debug_assert_eq!(
+            {
+                let mut temp = croaring::Bitmap::create();
+                temp.add_many(ixes);
+                self.mask.and_cardinality(&temp)
+            },
+            0,
+            "ComponentStorage::allocate_many() interescts with stored components"
+        );
+        self.mask.add_many(ixes);
+    }
+
+    pub fn get<'a>(&'a self, ix: u32) -> Option<&'a T> {
+        debug_assert!(self.mask.contains(ix), "fetching dead component");
+        self.data.get(&ix)
+    }
+
+    pub fn entry<'a>(&'a mut self, ix: u32) -> ComponentEntry<'a, T> {
+        ComponentEntry {
+            key: ix,
+            btree_entry: self.data.entry(ix),
+            mask: &mut self.mask,
+        }
+    }
+
+    pub fn insert<'a>(&'a mut self, ix: u32, val: T) -> Option<T> {
+        self.mask.add(ix);
+        self.data.insert(ix, val)
+    }
+
+    pub fn maintain(&mut self, freed: &croaring::Bitmap) {
+        for x in freed.iter() {
+            self.data.remove(&x);
+        }
+    }
+}
+
+pub struct ComponentEntry<'a, T> {
+    key: u32,
+    btree_entry: btree_map::Entry<'a, u32, T>,
+    mask: &'a mut croaring::Bitmap,
+}
+
+impl<'a, T> ComponentEntry<'a, T> {
+    pub fn remove(self) {
+        self.mask.remove(self.key);
+        match self.btree_entry {
+            btree_map::Entry::Occupied(slot) => {
+                slot.remove();
+                ()
+            }
+            btree_map::Entry::Vacant(_) => (),
+        }
+    }
+
+    pub fn or_insert(self, fallback: T) -> &'a mut T {
+        self.mask.add(self.key);
+        self.btree_entry.or_insert(fallback)
+    }
+
+    pub fn or_insert_with<F: FnOnce() -> T>(self, inserter: F) -> &'a mut T {
+        self.mask.add(self.key);
+        self.btree_entry.or_insert_with(inserter)
+    }
+}
+
+pub struct FlagStorage {
+    pub present: croaring::Bitmap,
+}
+
+impl FlagStorage {
+    pub fn new() -> FlagStorage {
+        FlagStorage {
+            present: croaring::Bitmap::create(),
+        }
+    }
+
+    pub fn invert(&self) -> croaring::Bitmap {
+        self.present.flip(0..self.present.maximum() as u64 + 1)
     }
 }
 
@@ -86,22 +241,45 @@ impl<T> ComponentStorage<T> {
 struct Position(glm::Vec3);
 
 #[test]
+fn test_flags() {
+    let mut x = FlagStorage::new();
+    x.present.add_range(0..40);
+    x.present.add_range(45..60);
+    x.present.add_range(63..80);
+    assert_eq!(
+        (40..45).chain(60..63).collect::<Vec<_>>(),
+        x.invert().iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_no_reuse() {
+    let mut entities = EntitiesStorage::new();
+    let first = entities.allocate();
+    let second = entities.allocate();
+    entities.remove(first);
+    assert_eq!(entities.allocate(), second + 1);
+}
+
+#[test]
+fn test_reuse_after_maintain() {
+    let mut entities = EntitiesStorage::new();
+    let first = entities.allocate();
+    let second = entities.allocate();
+    entities.remove(first);
+    assert_eq!(entities.maintain().to_vec(), vec![first]);
+    assert_eq!(entities.allocate(), first);
+}
+
+#[test]
 fn test_components() {
-    let mut entities = EntitiesStorage {
-        alive: croaring::Bitmap::create(),
-    };
-    let mut positions = ComponentStorage::<glm::Vec3> {
-        alive: croaring::Bitmap::create(),
-        data: BTreeMap::new(),
-    };
-    let mut velocity = ComponentStorage::<glm::Vec3> {
-        alive: croaring::Bitmap::create(),
-        data: BTreeMap::new(),
-    };
+    let mut entities = EntitiesStorage::new();
+    let mut positions = ComponentStorage::<glm::Vec3>::new();
+    let mut velocity = ComponentStorage::<glm::Vec3>::new();
     let mut timedelta = 0.0f32;
 
-    entities.alive.add_range(0..5);
-    positions.alive.add_many(&[0, 3, 4, 8]);
+    let ixes = entities.allocate_many(5);
+    positions.allocate_many(&[ixes[0], ixes[3], ixes[4], 8]);
 
     seq_custom! {
         write [velocity timedelta] read [entities] => {
@@ -116,16 +294,16 @@ fn test_components() {
                     }
                 }
                 write [velocity] read [entities] => {
-                    for x in entities.alive.iter() {
-                        velocity.alive.add(x);
-                        velocity.data.insert(x, glm::vec3(10.0, 20.0, 0.0));
+                    velocity.allocate_mask(entities.mask());
+                    for x in entities.mask().iter() {
+                        *velocity.entry(x).or_insert(na::zero()) = glm::vec3(10.0, 20.0, 0.0);
                     }
                 }
             }
         }
         write [positions] read [velocity entities timedelta] => {
-            for ix in (&positions.alive & &velocity.alive & &entities.alive).iter() {
-                *positions.data.entry(ix).or_insert(na::zero()) += velocity.data.get(&ix).unwrap() * *timedelta;
+            for ix in (positions.mask() & velocity.mask() & entities.mask()).iter() {
+                *positions.entry(ix).or_insert(na::zero()) += velocity.data.get(&ix).unwrap() * *timedelta;
             }
         }
     }

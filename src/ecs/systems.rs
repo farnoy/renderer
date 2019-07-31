@@ -23,17 +23,16 @@ impl ModelMatrixCalculation {
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "model matrix calculation");
-        model_matrices.alive =
-            &entities.alive & &positions.alive & &rotations.alive & &scales.alive;
+        model_matrices
+            .replace_mask(&(entities.mask() & positions.mask() & rotations.mask() & scales.mask()));
 
-        for entity_id in model_matrices.alive.iter() {
-            let pos = positions.data.get(&entity_id).unwrap();
-            let rot = rotations.data.get(&entity_id).unwrap();
-            let scale = scales.data.get(&entity_id).unwrap();
+        for entity_id in model_matrices.mask().clone().iter() {
+            let pos = positions.get(entity_id).unwrap();
+            let rot = rotations.get(entity_id).unwrap();
+            let scale = scales.get(entity_id).unwrap();
             *model_matrices
-                .data
                 .entry(entity_id)
-                .or_insert_with(glm::Mat4::identity) = glm::translation(&pos.coords)
+                .or_insert(glm::Mat4::identity()) = glm::translation(&pos.coords)
                 * rot.to_homogeneous()
                 * glm::scaling(&glm::Vec3::repeat(*scale));
         }
@@ -210,11 +209,11 @@ impl AABBCalculation {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "aabb calculation");
         use std::f32::{MAX, MIN};
-        let desired = &entities.alive & &model_matrices.alive & &meshes.alive;
-        aabb.alive = desired.clone();
+        let desired = entities.mask() & model_matrices.mask() & meshes.mask();
+        aabb.replace_mask(&desired);
         for entity_id in desired.iter() {
-            let model_matrix = model_matrices.data.get(&entity_id).unwrap();
-            let mesh = meshes.data.get(&entity_id).unwrap();
+            let model_matrix = model_matrices.get(entity_id).unwrap();
+            let mesh = meshes.get(entity_id).unwrap();
             let min = mesh.aabb_c - mesh.aabb_h;
             let max = mesh.aabb_c + mesh.aabb_h;
             let (min, max) = [
@@ -243,13 +242,14 @@ impl AABBCalculation {
             );
             let min = na::Vector3::new(min.0, min.1, min.2);
             let max = na::Vector3::new(max.0, max.1, max.2);
-            aabb.data.insert(
-                entity_id,
-                AABB {
-                    c: (max + min) / 2.0,
-                    h: (max - min) / 2.0,
-                },
-            );
+            let new = AABB {
+                c: (max + min) / 2.0,
+                h: (max - min) / 2.0,
+            };
+            *aabb.entry(entity_id).or_insert(AABB {
+                c: na::zero(),
+                h: na::zero(),
+            }) = new;
         }
     }
 }

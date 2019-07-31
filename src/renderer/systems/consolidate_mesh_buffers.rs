@@ -136,8 +136,8 @@ impl ConsolidateMeshBuffers {
 
         let mut needs_transfer = false;
         let command_buffer = graphics_command_pool.0.record_one_time(|command_buffer| {
-            for ix in meshes.alive.iter() {
-                let mesh = meshes.data.get(&ix).unwrap();
+            for ix in meshes.mask().iter() {
+                let mesh = meshes.get(ix).unwrap();
                 let ConsolidatedMeshBuffers {
                     ref mut next_vertex_offset,
                     ref mut next_index_offset,

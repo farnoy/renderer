@@ -1308,8 +1308,8 @@ impl ModelMatricesUpload {
             .current_mut(image_index.0)
             .map::<glm::Mat4>()
             .expect("failed to map Model buffer");
-        for entity_id in model_matrices.alive.iter() {
-            model_mapped[entity_id as usize] = *model_matrices.data.get(&entity_id).unwrap();
+        for entity_id in model_matrices.mask().iter() {
+            model_mapped[entity_id as usize] = *model_matrices.get(entity_id).unwrap();
         }
     }
 }
@@ -1392,9 +1392,9 @@ impl DepthOnlyPass {
                             &model_data.model_set.current(image_index.0),
                             &camera_matrices.set.current(image_index.0),
                         );
-                        for entity_id in (&meshes.alive & &positions.alive).iter() {
-                            let mesh = meshes.data.get(&entity_id).unwrap();
-                            let mesh_position = positions.data.get(&entity_id).unwrap();
+                        for entity_id in (meshes.mask() & positions.mask()).iter() {
+                            let mesh = meshes.get(entity_id).unwrap();
+                            let mesh_position = positions.get(entity_id).unwrap();
                             let (index_buffer, index_count) =
                                 pick_lod(&mesh.index_buffers, camera.position, *mesh_position);
                             renderer.device.cmd_bind_index_buffer(
