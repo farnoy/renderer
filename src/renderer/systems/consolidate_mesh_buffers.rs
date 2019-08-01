@@ -1,5 +1,5 @@
 use crate::{
-    ecs::custom::ComponentStorage,
+    ecs::custom::{ComponentStorage, EntitiesStorage},
     renderer::{
         alloc,
         device::{Buffer, CommandBuffer, DoubleBuffered, Fence, Semaphore},
@@ -105,6 +105,7 @@ impl ConsolidatedMeshBuffers {
 impl ConsolidateMeshBuffers {
     pub fn exec(
         renderer: &RenderFrame,
+        entities: &EntitiesStorage,
         graphics_command_pool: &GraphicsCommandPool,
         meshes: &ComponentStorage<GltfMesh>,
         image_index: &ImageIndex,
@@ -136,7 +137,7 @@ impl ConsolidateMeshBuffers {
 
         let mut needs_transfer = false;
         let command_buffer = graphics_command_pool.0.record_one_time(|command_buffer| {
-            for ix in meshes.mask().iter() {
+            for ix in (entities.mask() & meshes.mask()).iter() {
                 let mesh = meshes.get(ix).unwrap();
                 let ConsolidatedMeshBuffers {
                     ref mut next_vertex_offset,

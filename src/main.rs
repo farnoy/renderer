@@ -201,28 +201,44 @@ fn main() {
     );
     base_color_texture_storage.insert(4, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
 
-    let LoadedMesh {
-        vertex_buffer,
-        normal_buffer,
-        uv_buffer,
-        index_buffers,
-        vertex_len,
-        aabb_c,
-        aabb_h,
-        base_color,
-    } = {
-        load_gltf(
-            &renderer,
-            &graphics_command_pool,
-            "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+    let (
+        box_vertex_buffer,
+        box_normal_buffer,
+        box_uv_buffer,
+        box_index_buffers,
+        box_base_color,
+        box_vertex_len,
+        box_aabb_c,
+        box_aabb_h,
+    ) = {
+        let LoadedMesh {
+            vertex_buffer,
+            normal_buffer,
+            uv_buffer,
+            index_buffers,
+            vertex_len,
+            aabb_c,
+            aabb_h,
+            base_color,
+        } = {
+            load_gltf(
+                &renderer,
+                &graphics_command_pool,
+                "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+            )
+        };
+
+        (
+            Arc::new(vertex_buffer),
+            Arc::new(normal_buffer),
+            Arc::new(uv_buffer),
+            Arc::new(index_buffers),
+            Arc::new(base_color),
+            vertex_len,
+            aabb_c,
+            aabb_h,
         )
     };
-
-    let vertex_buffer = Arc::new(vertex_buffer);
-    let normal_buffer = Arc::new(normal_buffer);
-    let uv_buffer = Arc::new(uv_buffer);
-    let index_buffers = Arc::new(index_buffers);
-    let base_color = Arc::new(base_color);
 
     position_storage.insert(5, na::Point3::new(5.0, 3.0, 2.0));
     rotation_storage.insert(5, na::UnitQuaternion::identity());
@@ -230,16 +246,16 @@ fn main() {
     meshes_storage.insert(
         5,
         GltfMesh {
-            vertex_buffer: Arc::clone(&vertex_buffer),
-            normal_buffer: Arc::clone(&normal_buffer),
-            uv_buffer: Arc::clone(&uv_buffer),
-            index_buffers: Arc::clone(&index_buffers),
-            vertex_len,
-            aabb_c,
-            aabb_h,
+            vertex_buffer: Arc::clone(&box_vertex_buffer),
+            normal_buffer: Arc::clone(&box_normal_buffer),
+            uv_buffer: Arc::clone(&box_uv_buffer),
+            index_buffers: Arc::clone(&box_index_buffers),
+            vertex_len: box_vertex_len,
+            aabb_c: box_aabb_c,
+            aabb_h: box_aabb_h,
         },
     );
-    base_color_texture_storage.insert(5, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+    base_color_texture_storage.insert(5, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
 
     position_storage.insert(6, na::Point3::new(0.0, -29.0, 0.0));
     rotation_storage.insert(6, na::UnitQuaternion::identity());
@@ -247,16 +263,16 @@ fn main() {
     meshes_storage.insert(
         6,
         GltfMesh {
-            vertex_buffer: Arc::clone(&vertex_buffer),
-            normal_buffer: Arc::clone(&normal_buffer),
-            uv_buffer: Arc::clone(&uv_buffer),
-            index_buffers: Arc::clone(&index_buffers),
-            vertex_len,
-            aabb_c,
-            aabb_h,
+            vertex_buffer: Arc::clone(&box_vertex_buffer),
+            normal_buffer: Arc::clone(&box_normal_buffer),
+            uv_buffer: Arc::clone(&box_uv_buffer),
+            index_buffers: Arc::clone(&box_index_buffers),
+            vertex_len: box_vertex_len,
+            aabb_c: box_aabb_c,
+            aabb_h: box_aabb_h,
         },
     );
-    base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
+    base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
 
     for ix in 7..207 {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
@@ -288,6 +304,7 @@ fn main() {
         base_color_texture_storage.insert(ix, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
     }
 
+    let mut idx = 0usize;
     'frame: loop {
         #[cfg(feature = "profiling")]
         microprofile::flip!();
@@ -298,6 +315,29 @@ fn main() {
             microprofile::scope!("game-loop", "ecs");
             // TODO: par_custom! needs to work with custom rayon threadpool
             seq_custom! {
+                write [idx position_storage meshes_storage  rotation_storage scale_storage entities] read [] => {
+                    let entity_id = entities.allocate();
+                    position_storage.insert(entity_id, na::Point3::new(0.0, 0.0, *idx as f32 * 0.05));
+                    rotation_storage.insert(entity_id, na::UnitQuaternion::identity());
+                    scale_storage.insert(entity_id, 1.0);
+                    meshes_storage.insert(
+                        entity_id,
+                        GltfMesh {
+                            vertex_buffer: Arc::clone(&box_vertex_buffer),
+                            normal_buffer: Arc::clone(&box_normal_buffer),
+                            uv_buffer: Arc::clone(&box_uv_buffer),
+                            index_buffers: Arc::clone(&box_index_buffers),
+                            vertex_len: box_vertex_len,
+                            aabb_c: box_aabb_c,
+                            aabb_h: box_aabb_h,
+                        },
+                    );
+                    base_color_texture_storage.insert(entity_id, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
+                    if entity_id >= 500 {
+                        entities.remove(500);
+                    }
+                    *idx += 1;
+                }
                 write [image_index] read [renderer present_data] => {
                     AcquireFramebuffer::exec(renderer, present_data, image_index);
                 }
@@ -319,8 +359,8 @@ fn main() {
                                 }
                             }
                         }
-                        write [consolidated_mesh_buffers] read [renderer graphics_command_pool meshes_storage image_index] => {
-                            ConsolidateMeshBuffers::exec(renderer, graphics_command_pool, meshes_storage, image_index, consolidated_mesh_buffers);
+                        write [consolidated_mesh_buffers] read [entities renderer graphics_command_pool meshes_storage image_index] => {
+                            ConsolidateMeshBuffers::exec(renderer, entities, graphics_command_pool, meshes_storage, image_index, consolidated_mesh_buffers);
                         }
                     }
                 }
@@ -367,8 +407,8 @@ fn main() {
                                 write [graphics_command_pool shadow_mapping_data] read [entities renderer depth_pass_data image_index meshes_storage light_storage shadow_mapping_light_matrices_storage present_data model_data] => {
                                     PrepareShadowMaps::exec(entities, renderer, depth_pass_data, image_index, graphics_command_pool, shadow_mapping_data, meshes_storage, light_storage, shadow_mapping_light_matrices_storage, present_data, model_data);
                                 }
-                                write [depth_pass_data] read [camera camera_matrices position_storage] => {
-                                    DepthOnlyPass::exec(renderer, image_index, meshes_storage, position_storage, camera, camera_matrices, depth_pass_data, model_data, graphics_command_pool, shadow_mapping_data);
+                                write [depth_pass_data] read [entities camera camera_matrices position_storage] => {
+                                    DepthOnlyPass::exec(renderer, entities, image_index, meshes_storage, position_storage, camera, camera_matrices, depth_pass_data, model_data, graphics_command_pool, shadow_mapping_data);
                                 }
                             }
                         }
@@ -394,6 +434,13 @@ fn main() {
                 }
                 write [] read [renderer present_data image_index] => {
                     PresentFramebuffer::exec(renderer, present_data, image_index);
+                }
+                write [entities meshes_storage position_storage rotation_storage scale_storage] read [] => {
+                    let maintain_mask = entities.maintain();
+                    meshes_storage.maintain(&maintain_mask);
+                    position_storage.maintain(&maintain_mask);
+                    rotation_storage.maintain(&maintain_mask);
+                    scale_storage.maintain(&maintain_mask);
                 }
             }
         }

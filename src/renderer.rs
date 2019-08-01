@@ -1340,6 +1340,7 @@ impl DepthOnlyPass {
     #[allow(clippy::too_many_arguments)]
     pub fn exec(
         renderer: &RenderFrame,
+        entities: &EntitiesStorage,
         image_index: &ImageIndex,
         meshes: &ComponentStorage<GltfMesh>,
         positions: &ComponentStorage<na::Point3<f32>>,
@@ -1393,7 +1394,8 @@ impl DepthOnlyPass {
                             &model_data.model_set.current(image_index.0),
                             &camera_matrices.set.current(image_index.0),
                         );
-                        for entity_id in (meshes.mask() & positions.mask()).iter() {
+                        for entity_id in (entities.mask() & meshes.mask() & positions.mask()).iter()
+                        {
                             let mesh = meshes.get(entity_id).unwrap();
                             let mesh_position = positions.get(entity_id).unwrap();
                             let (index_buffer, index_count) =

@@ -70,12 +70,11 @@ pub struct EntitiesStorage {
     deleted: croaring::Bitmap,
 }
 
-const MAX_ENTITIES: u32 = 1024;
+const MAX_ENTITIES: u32 = 512;
 
 impl EntitiesStorage {
     pub fn new() -> EntitiesStorage {
         let mut mask = croaring::Bitmap::create();
-        mask.add(MAX_ENTITIES);
         EntitiesStorage {
             mask: mask,
             deleted: croaring::Bitmap::create(),
