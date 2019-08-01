@@ -150,7 +150,11 @@ impl<T> ComponentStorage<T> {
     }
 
     pub fn replace_mask(&mut self, mask: &croaring::Bitmap) {
+        let diff = self.mask.andnot(mask);
         self.mask.clone_from(mask);
+        for ix in diff.iter() {
+            self.data.remove(&ix);
+        }
     }
 
     pub fn allocate_many(&mut self, ixes: &[u32]) {
@@ -188,6 +192,7 @@ impl<T> ComponentStorage<T> {
         for x in freed.iter() {
             self.data.remove(&x);
         }
+        self.mask.andnot_inplace(freed);
     }
 }
 

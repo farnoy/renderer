@@ -333,8 +333,9 @@ fn main() {
                         },
                     );
                     base_color_texture_storage.insert(entity_id, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
-                    if entity_id >= 500 {
-                        entities.remove(500);
+                    if entity_id >= 400 {
+                        entities.remove(std::cmp::max(250, entity_id - 200));
+                        entities.remove(std::cmp::min(500, entity_id + 50));
                     }
                     *idx += 1;
                 }
