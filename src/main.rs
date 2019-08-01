@@ -313,7 +313,6 @@ fn main() {
         {
             #[cfg(feature = "profiling")]
             microprofile::scope!("game-loop", "ecs");
-            // TODO: par_custom! needs to work with custom rayon threadpool
             {
                 let entity_id = entities.allocate();
                 position_storage.insert(entity_id, na::Point3::new(0.0, 0.0, *idx as f32 * 0.05));
@@ -344,24 +343,52 @@ fn main() {
             AcquireFramebuffer::exec(renderer, present_data, image_index);
             CalculateFrameTiming::exec(frame_timing);
             input_handler.exec(input_state, camera);
-            par_custom! {
-                {
+            rayon::join(
+                || {
                     fly_camera.exec(input_state, frame_timing, camera);
                     ProjectCamera::exec(renderer, camera);
-                }
-                {
-                    ConsolidateMeshBuffers::exec(renderer, entities, graphics_command_pool, meshes_storage, image_index, consolidated_mesh_buffers);
-                }
-            }
-            par_custom! {
-                {
-                    ModelMatrixCalculation::exec(entities, position_storage, rotation_storage, scale_storage, model_matrices_storage);
-                    AABBCalculation::exec(entities, model_matrices_storage, meshes_storage, aabb_storage);
-                }
-                {
-                    ShadowMappingMVPCalculation::exec(renderer, entities, position_storage, rotation_storage, shadow_mapping_light_matrices_storage, light_storage, image_index, main_descriptor_pool, camera_matrices);
-                }
-            }
+                },
+                || {
+                    ConsolidateMeshBuffers::exec(
+                        renderer,
+                        entities,
+                        graphics_command_pool,
+                        meshes_storage,
+                        image_index,
+                        consolidated_mesh_buffers,
+                    )
+                },
+            );
+            rayon::join(
+                || {
+                    ModelMatrixCalculation::exec(
+                        entities,
+                        position_storage,
+                        rotation_storage,
+                        scale_storage,
+                        model_matrices_storage,
+                    );
+                    AABBCalculation::exec(
+                        entities,
+                        model_matrices_storage,
+                        meshes_storage,
+                        aabb_storage,
+                    );
+                },
+                || {
+                    ShadowMappingMVPCalculation::exec(
+                        renderer,
+                        entities,
+                        position_storage,
+                        rotation_storage,
+                        shadow_mapping_light_matrices_storage,
+                        light_storage,
+                        image_index,
+                        main_descriptor_pool,
+                        camera_matrices,
+                    )
+                },
+            );
             CoarseCulling::exec(entities, aabb_storage, camera, coarse_culled_storage);
             SynchronizeBaseColorTextures::exec(
                 entities,
@@ -371,23 +398,55 @@ fn main() {
                 image_index,
                 base_color_visited_storage,
             );
-            par_custom! {
-                {
-                    CameraMatricesUpload::exec(image_index, camera, camera_matrices);
-                }
-                {
-                    ModelMatricesUpload::exec(model_matrices_storage, image_index, model_data);
-                }
-            }
-            par_custom! {
-                {
-                    CullPass::exec(entities, renderer, cull_pass_data, cull_pass_data_private, meshes_storage, image_index, consolidated_mesh_buffers, position_storage, camera, model_data, camera_matrices);
-                }
-                {
-                    PrepareShadowMaps::exec(entities, renderer, depth_pass_data, image_index, graphics_command_pool, shadow_mapping_data, meshes_storage, light_storage, shadow_mapping_light_matrices_storage, present_data, model_data);
-                    DepthOnlyPass::exec(renderer, entities, image_index, meshes_storage, position_storage, camera, camera_matrices, depth_pass_data, model_data, graphics_command_pool, shadow_mapping_data);
-                }
-            }
+            rayon::join(
+                || CameraMatricesUpload::exec(image_index, camera, camera_matrices),
+                || ModelMatricesUpload::exec(model_matrices_storage, image_index, model_data),
+            );
+            rayon::join(
+                || {
+                    CullPass::exec(
+                        entities,
+                        renderer,
+                        cull_pass_data,
+                        cull_pass_data_private,
+                        meshes_storage,
+                        image_index,
+                        consolidated_mesh_buffers,
+                        position_storage,
+                        camera,
+                        model_data,
+                        camera_matrices,
+                    )
+                },
+                || {
+                    PrepareShadowMaps::exec(
+                        entities,
+                        renderer,
+                        depth_pass_data,
+                        image_index,
+                        graphics_command_pool,
+                        shadow_mapping_data,
+                        meshes_storage,
+                        light_storage,
+                        shadow_mapping_light_matrices_storage,
+                        present_data,
+                        model_data,
+                    );
+                    DepthOnlyPass::exec(
+                        renderer,
+                        entities,
+                        image_index,
+                        meshes_storage,
+                        position_storage,
+                        camera,
+                        camera_matrices,
+                        depth_pass_data,
+                        model_data,
+                        graphics_command_pool,
+                        shadow_mapping_data,
+                    );
+                },
+            );
             Renderer::exec(
                 renderer,
                 main_framebuffer,

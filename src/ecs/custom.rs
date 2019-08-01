@@ -8,35 +8,6 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-#[derive(PartialEq, Eq, Debug)]
-struct Device(pub u32);
-#[derive(PartialEq, Eq, Debug)]
-struct DepthImage(pub u32);
-#[derive(PartialEq, Eq, Debug)]
-struct Set(pub u32);
-
-struct Renderer {
-    device: Device,
-    depth_image: DepthImage,
-    set: Set,
-}
-
-#[macro_export]
-macro_rules! par_custom {
-    ($first:block $second:block $($tail:block)+) => {
-        rayon::join(
-            || $first,
-            || { par_custom!($second $($tail)+) },
-        );
-    };
-    ($first:block $second:block) => {
-        rayon::join(
-            || $first,
-            || $second,
-        );
-    };
-}
-
 pub struct EntitiesStorage {
     mask: croaring::Bitmap,
     deleted: croaring::Bitmap,
@@ -258,18 +229,17 @@ fn test_components() {
     positions.allocate_many(&[ixes[0], ixes[3], ixes[4], 8]);
 
     *timedelta = 3.0;
-    par_custom! {
-        {
-            *timedelta = 3.0;
-                    *timedelta = 5.0;
-        }
-        {
+    rayon::join(
+        || {
+            *timedelta = 5.0;
+        },
+        || {
             velocity.allocate_mask(entities.mask());
             for x in entities.mask().iter() {
                 *velocity.entry(x).or_insert(na::zero()) = glm::vec3(10.0, 20.0, 0.0);
             }
-        }
-    }
+        },
+    );
     for ix in (positions.mask() & velocity.mask() & entities.mask()).iter() {
         *positions.entry(ix).or_insert(na::zero()) += velocity.data.get(&ix).unwrap() * *timedelta;
     }
