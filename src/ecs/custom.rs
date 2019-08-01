@@ -23,45 +23,17 @@ struct Renderer {
 
 #[macro_export]
 macro_rules! par_custom {
-    (@join write [$($write:ident)*] read [$($read:ident)*] => $do:block) => {
-        {
-            $(
-                let $write = $write.borrow_mut();
-            )*
-            $(
-                let $read = &$read;
-            )*
-            move || { $do; () }
-        }
-    };
-    (@join write [$($head_write:ident)*] read [$($head_read:ident)*] => $head_do:block write [$($tail_write:ident)*] read [$($tail_read:ident)*] => $tail_do:block) => {
+    ($first:block $second:block $($tail:block)+) => {
         rayon::join(
-            par_custom!(@join write [$($head_write)*] read [$($head_read)*] => $head_do),
-            par_custom!(@join write [$($tail_write)*] read [$($tail_read)*] => $tail_do),
+            || $first,
+            || { par_custom!($second $($tail)+) },
         );
     };
-    (@join write [$($first_write:ident)*] read [$($first_read:ident)*] => $first_do:block write [$($second_write:ident)*] read [$($second_read:ident)*] => $second_do:block $(write [$($tail_write:ident)*] read [$($tail_read:ident)*] => $tail_do:block),+) => {
+    ($first:block $second:block) => {
         rayon::join(
-            par_custom!(@join write [$($first_write)*] read [$($first_read)*] => $first_do),
-            move || { par_custom!(@join write [$($second_write)*] read [$($second_read)*] => $second_do $( write [$($tail_write)*] read [$($tail_read)*] => $tail_do),+) },
+            || $first,
+            || $second,
         );
-    };
-    // TODO: should not accept a single job to run
-    ($(write [$($write:ident)*] read [$($read:ident)*] => $do:block)+) => {
-        par_custom!(@join $(write [$($write)*] read [$($read)*] => $do)+);
-    };
-}
-
-#[macro_export]
-macro_rules! seq_custom {
-    ($(write [$($write:ident)*] read [$($read:ident)*] => $do:tt)*) => {
-        $(
-            {
-                $(let $write = $write.borrow_mut();)*
-                $(let $read = &$read;)*
-                $do;
-            }
-        )*
     };
 }
 
@@ -277,41 +249,31 @@ fn test_reuse_after_maintain() {
 
 #[test]
 fn test_components() {
-    let mut entities = EntitiesStorage::new();
-    let mut positions = ComponentStorage::<glm::Vec3>::new();
-    let mut velocity = ComponentStorage::<glm::Vec3>::new();
-    let mut timedelta = 0.0f32;
+    let entities = &mut EntitiesStorage::new();
+    let positions = &mut ComponentStorage::<glm::Vec3>::new();
+    let velocity = &mut ComponentStorage::<glm::Vec3>::new();
+    let timedelta = &mut 0.0f32;
 
     let ixes = entities.allocate_many(5);
     positions.allocate_many(&[ixes[0], ixes[3], ixes[4], 8]);
 
-    seq_custom! {
-        write [velocity timedelta] read [entities] => {
+    *timedelta = 3.0;
+    par_custom! {
+        {
             *timedelta = 3.0;
-            par_custom! {
-                write [timedelta] read [] => {
-                    *timedelta = 3.0;
-                    seq_custom! {
-                        write [timedelta] read [] => {
-                            *timedelta = 5.0;
-                        }
-                    }
-                }
-                write [velocity] read [entities] => {
-                    velocity.allocate_mask(entities.mask());
-                    for x in entities.mask().iter() {
-                        *velocity.entry(x).or_insert(na::zero()) = glm::vec3(10.0, 20.0, 0.0);
-                    }
-                }
-            }
+                    *timedelta = 5.0;
         }
-        write [positions] read [velocity entities timedelta] => {
-            for ix in (positions.mask() & velocity.mask() & entities.mask()).iter() {
-                *positions.entry(ix).or_insert(na::zero()) += velocity.data.get(&ix).unwrap() * *timedelta;
+        {
+            velocity.allocate_mask(entities.mask());
+            for x in entities.mask().iter() {
+                *velocity.entry(x).or_insert(na::zero()) = glm::vec3(10.0, 20.0, 0.0);
             }
         }
     }
+    for ix in (positions.mask() & velocity.mask() & entities.mask()).iter() {
+        *positions.entry(ix).or_insert(na::zero()) += velocity.data.get(&ix).unwrap() * *timedelta;
+    }
 
-    assert_eq!(timedelta, 5.0);
+    assert_eq!(*timedelta, 5.0);
     assert_eq!(positions.data.get(&3), Some(&glm::vec3(50.0, 100.0, 0.0)));
 }
