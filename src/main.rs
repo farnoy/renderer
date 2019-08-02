@@ -62,7 +62,8 @@ fn main() {
     let mut main_descriptor_pool = MainDescriptorPool::new(&renderer);
     let mut camera_matrices = CameraMatrices::new(&renderer, &main_descriptor_pool);
 
-    let base_color_descriptor_set = BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
+    let base_color_descriptor_set =
+        BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
     let mut model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
     let cull_pass_data = CullPassData::new(
@@ -349,58 +350,87 @@ fn main() {
                     ProjectCamera::exec(&renderer, &mut camera);
                 },
                 || {
-                    ConsolidateMeshBuffers::exec(
-                        &renderer,
-                        &entities,
-                        &graphics_command_pool,
-                        &meshes_storage,
-                        &image_index,
-                        &mut consolidated_mesh_buffers,
-                    )
+                    rayon::join(
+                        || {
+                            ConsolidateMeshBuffers::exec(
+                                &renderer,
+                                &entities,
+                                &graphics_command_pool,
+                                &meshes_storage,
+                                &image_index,
+                                &mut consolidated_mesh_buffers,
+                            )
+                        },
+                        || {
+                            rayon::join(
+                                || {
+                                    ModelMatrixCalculation::exec(
+                                        &entities,
+                                        &position_storage,
+                                        &rotation_storage,
+                                        &scale_storage,
+                                        &mut model_matrices_storage,
+                                    );
+                                    AABBCalculation::exec(
+                                        &entities,
+                                        &model_matrices_storage,
+                                        &meshes_storage,
+                                        &mut aabb_storage,
+                                    );
+                                },
+                                || {
+                                    ShadowMappingMVPCalculation::exec(
+                                        &renderer,
+                                        &entities,
+                                        &position_storage,
+                                        &rotation_storage,
+                                        &mut shadow_mapping_light_matrices_storage,
+                                        &light_storage,
+                                        &image_index,
+                                        &main_descriptor_pool,
+                                        &camera_matrices,
+                                    );
+                                },
+                            )
+                        },
+                    );
                 },
             );
             rayon::join(
                 || {
-                    ModelMatrixCalculation::exec(
-                        &entities,
-                        &position_storage,
-                        &rotation_storage,
-                        &scale_storage,
-                        &mut model_matrices_storage,
-                    );
-                    AABBCalculation::exec(
-                        &entities,
-                        &model_matrices_storage,
-                        &meshes_storage,
-                        &mut aabb_storage,
+                    rayon::join(
+                        || {
+                            CoarseCulling::exec(
+                                &entities,
+                                &aabb_storage,
+                                &camera,
+                                &mut coarse_culled_storage,
+                            )
+                        },
+                        || {
+                            SynchronizeBaseColorTextures::exec(
+                                &entities,
+                                &renderer,
+                                &base_color_descriptor_set,
+                                &base_color_texture_storage,
+                                &image_index,
+                                &mut base_color_visited_storage,
+                            )
+                        },
                     );
                 },
                 || {
-                    ShadowMappingMVPCalculation::exec(
-                        &renderer,
-                        &entities,
-                        &position_storage,
-                        &rotation_storage,
-                        &mut shadow_mapping_light_matrices_storage,
-                        &light_storage,
-                        &image_index,
-                        &main_descriptor_pool,
-                        &camera_matrices,
-                    )
+                    rayon::join(
+                        || CameraMatricesUpload::exec(&image_index, &camera, &mut camera_matrices),
+                        || {
+                            ModelMatricesUpload::exec(
+                                &mut model_matrices_storage,
+                                &image_index,
+                                &mut model_data,
+                            )
+                        },
+                    );
                 },
-            );
-            CoarseCulling::exec(&entities, &aabb_storage, &camera, &mut coarse_culled_storage);
-            SynchronizeBaseColorTextures::exec(
-                &entities,
-                &renderer,
-                &base_color_descriptor_set,
-                &base_color_texture_storage,
-                &image_index,
-                &mut base_color_visited_storage,
-            );
-            rayon::join(
-                || CameraMatricesUpload::exec(&image_index, &camera, &mut camera_matrices),
-                || ModelMatricesUpload::exec(&mut model_matrices_storage, &image_index, &mut model_data),
             );
             rayon::join(
                 || {
