@@ -23,63 +23,62 @@ use std::sync::Arc;
 fn main() {
     #[cfg(feature = "profiling")]
     microprofile::init!();
-    let position_storage = &mut ComponentStorage::<na::Point3<f32>>::new();
-    let rotation_storage = &mut ComponentStorage::<na::UnitQuaternion<f32>>::new();
-    let scale_storage = &mut ComponentStorage::<f32>::new();
-    let model_matrices_storage = &mut ComponentStorage::<glm::Mat4>::new();
-    let aabb_storage = &mut ComponentStorage::<AABB>::new();
-    let meshes_storage = &mut ComponentStorage::<GltfMesh>::new();
-    let light_storage = &mut ComponentStorage::<Light>::new();
-    let base_color_texture_storage = &mut ComponentStorage::<GltfMeshBaseColorTexture>::new();
-    let base_color_visited_storage = &mut ComponentStorage::<BaseColorVisitedMarker>::new();
-    let coarse_culled_storage = &mut ComponentStorage::<CoarseCulled>::new();
-    let shadow_mapping_light_matrices_storage =
-        &mut ComponentStorage::<ShadowMappingLightMatrices>::new();
+    let mut position_storage = ComponentStorage::<na::Point3<f32>>::new();
+    let mut rotation_storage = ComponentStorage::<na::UnitQuaternion<f32>>::new();
+    let mut scale_storage = ComponentStorage::<f32>::new();
+    let mut model_matrices_storage = ComponentStorage::<glm::Mat4>::new();
+    let mut aabb_storage = ComponentStorage::<AABB>::new();
+    let mut meshes_storage = ComponentStorage::<GltfMesh>::new();
+    let mut light_storage = ComponentStorage::<Light>::new();
+    let mut base_color_texture_storage = ComponentStorage::<GltfMeshBaseColorTexture>::new();
+    let mut base_color_visited_storage = ComponentStorage::<BaseColorVisitedMarker>::new();
+    let mut coarse_culled_storage = ComponentStorage::<CoarseCulled>::new();
+    let mut shadow_mapping_light_matrices_storage =
+        ComponentStorage::<ShadowMappingLightMatrices>::new();
     rayon::ThreadPoolBuilder::new()
         .num_threads(8)
         .build_global()
         .unwrap();
-    let (mut renderer, events_loop) = RenderFrame::new();
-    let renderer = &mut renderer;
+    let (renderer, events_loop) = RenderFrame::new();
 
     let quit_handle = Arc::new(Mutex::new(false));
 
-    let present_data = &mut PresentData::new(&renderer);
-    let image_index = &mut ImageIndex::default();
-    let frame_timing = &mut FrameTiming::default();
-    let input_handler = &mut InputHandler {
+    let mut present_data = PresentData::new(&renderer);
+    let mut image_index = ImageIndex::default();
+    let mut frame_timing = FrameTiming::default();
+    let mut input_handler = InputHandler {
         events_loop,
         quit_handle: quit_handle.clone(),
         move_mouse: true,
     };
-    let input_state = &mut InputState::default();
-    let camera = &mut Camera::default();
-    let fly_camera = &mut FlyCamera::default();
-    let consolidated_mesh_buffers = &mut ConsolidatedMeshBuffers::new(&renderer);
-    let graphics_command_pool = &mut GraphicsCommandPool::new(&renderer);
+    let mut input_state = InputState::default();
+    let mut camera = Camera::default();
+    let mut fly_camera = FlyCamera::default();
+    let mut consolidated_mesh_buffers = ConsolidatedMeshBuffers::new(&renderer);
+    let mut graphics_command_pool = GraphicsCommandPool::new(&renderer);
 
-    let entities = &mut EntitiesStorage::new();
+    let mut entities = EntitiesStorage::new();
 
-    let main_descriptor_pool = &mut MainDescriptorPool::new(&renderer);
-    let camera_matrices = &mut CameraMatrices::new(&renderer, &main_descriptor_pool);
+    let mut main_descriptor_pool = MainDescriptorPool::new(&renderer);
+    let mut camera_matrices = CameraMatrices::new(&renderer, &main_descriptor_pool);
 
-    let base_color_descriptor_set = &BaseColorDescriptorSet::new(&renderer, main_descriptor_pool);
-    let model_data = &mut ModelData::new(&renderer, &main_descriptor_pool);
+    let base_color_descriptor_set = BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
+    let mut model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
-    let cull_pass_data = &CullPassData::new(
+    let cull_pass_data = CullPassData::new(
         &renderer,
         &model_data,
-        main_descriptor_pool,
+        &mut main_descriptor_pool,
         &camera_matrices,
     );
-    let cull_pass_data_private = &mut CullPassDataPrivate::new(&renderer);
-    let main_attachments = &MainAttachments::new(&renderer);
-    let depth_pass_data =
-        &mut DepthPassData::new(&renderer, &model_data, &main_attachments, &camera_matrices);
-    let shadow_mapping_data =
-        &mut ShadowMappingData::new(&renderer, &depth_pass_data, main_descriptor_pool);
-    let gui = &mut Gui::new(&renderer, &main_descriptor_pool);
-    let gltf_pass = &GltfPassData::new(
+    let mut cull_pass_data_private = CullPassDataPrivate::new(&renderer);
+    let main_attachments = MainAttachments::new(&renderer);
+    let mut depth_pass_data =
+        DepthPassData::new(&renderer, &model_data, &main_attachments, &camera_matrices);
+    let mut shadow_mapping_data =
+        ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
+    let mut gui = Gui::new(&renderer, &main_descriptor_pool);
+    let gltf_pass = GltfPassData::new(
         &renderer,
         &model_data,
         &base_color_descriptor_set,
@@ -87,7 +86,7 @@ fn main() {
         &camera_matrices,
     );
 
-    let main_framebuffer = &MainFramebuffer::new(&renderer, &main_attachments);
+    let main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments);
 
     let LoadedMesh {
         vertex_buffer,
@@ -304,7 +303,7 @@ fn main() {
         base_color_texture_storage.insert(ix, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
     }
 
-    let idx = &mut 0usize;
+    let mut idx = 0usize;
     'frame: loop {
         #[cfg(feature = "profiling")]
         microprofile::flip!();
@@ -314,6 +313,7 @@ fn main() {
             #[cfg(feature = "profiling")]
             microprofile::scope!("game-loop", "ecs");
             {
+                let idx = &mut idx;
                 let entity_id = entities.allocate();
                 position_storage.insert(entity_id, na::Point3::new(0.0, 0.0, *idx as f32 * 0.05));
                 rotation_storage.insert(entity_id, na::UnitQuaternion::identity());
@@ -340,130 +340,130 @@ fn main() {
                 }
                 *idx += 1;
             }
-            AcquireFramebuffer::exec(renderer, present_data, image_index);
-            CalculateFrameTiming::exec(frame_timing);
-            input_handler.exec(input_state, camera);
+            AcquireFramebuffer::exec(&renderer, &present_data, &mut image_index);
+            CalculateFrameTiming::exec(&mut frame_timing);
+            input_handler.exec(&mut input_state, &mut camera);
             rayon::join(
                 || {
-                    fly_camera.exec(input_state, frame_timing, camera);
-                    ProjectCamera::exec(renderer, camera);
+                    fly_camera.exec(&input_state, &frame_timing, &mut camera);
+                    ProjectCamera::exec(&renderer, &mut camera);
                 },
                 || {
                     ConsolidateMeshBuffers::exec(
-                        renderer,
-                        entities,
-                        graphics_command_pool,
-                        meshes_storage,
-                        image_index,
-                        consolidated_mesh_buffers,
+                        &renderer,
+                        &entities,
+                        &graphics_command_pool,
+                        &meshes_storage,
+                        &image_index,
+                        &mut consolidated_mesh_buffers,
                     )
                 },
             );
             rayon::join(
                 || {
                     ModelMatrixCalculation::exec(
-                        entities,
-                        position_storage,
-                        rotation_storage,
-                        scale_storage,
-                        model_matrices_storage,
+                        &entities,
+                        &position_storage,
+                        &rotation_storage,
+                        &scale_storage,
+                        &mut model_matrices_storage,
                     );
                     AABBCalculation::exec(
-                        entities,
-                        model_matrices_storage,
-                        meshes_storage,
-                        aabb_storage,
+                        &entities,
+                        &model_matrices_storage,
+                        &meshes_storage,
+                        &mut aabb_storage,
                     );
                 },
                 || {
                     ShadowMappingMVPCalculation::exec(
-                        renderer,
-                        entities,
-                        position_storage,
-                        rotation_storage,
-                        shadow_mapping_light_matrices_storage,
-                        light_storage,
-                        image_index,
-                        main_descriptor_pool,
-                        camera_matrices,
+                        &renderer,
+                        &entities,
+                        &position_storage,
+                        &rotation_storage,
+                        &mut shadow_mapping_light_matrices_storage,
+                        &light_storage,
+                        &image_index,
+                        &main_descriptor_pool,
+                        &camera_matrices,
                     )
                 },
             );
-            CoarseCulling::exec(entities, aabb_storage, camera, coarse_culled_storage);
+            CoarseCulling::exec(&entities, &aabb_storage, &camera, &mut coarse_culled_storage);
             SynchronizeBaseColorTextures::exec(
-                entities,
-                renderer,
-                base_color_descriptor_set,
-                base_color_texture_storage,
-                image_index,
-                base_color_visited_storage,
+                &entities,
+                &renderer,
+                &base_color_descriptor_set,
+                &base_color_texture_storage,
+                &image_index,
+                &mut base_color_visited_storage,
             );
             rayon::join(
-                || CameraMatricesUpload::exec(image_index, camera, camera_matrices),
-                || ModelMatricesUpload::exec(model_matrices_storage, image_index, model_data),
+                || CameraMatricesUpload::exec(&image_index, &camera, &mut camera_matrices),
+                || ModelMatricesUpload::exec(&mut model_matrices_storage, &image_index, &mut model_data),
             );
             rayon::join(
                 || {
                     CullPass::exec(
-                        entities,
-                        renderer,
-                        cull_pass_data,
-                        cull_pass_data_private,
-                        meshes_storage,
-                        image_index,
-                        consolidated_mesh_buffers,
-                        position_storage,
-                        camera,
-                        model_data,
-                        camera_matrices,
+                        &entities,
+                        &renderer,
+                        &cull_pass_data,
+                        &mut cull_pass_data_private,
+                        &meshes_storage,
+                        &image_index,
+                        &consolidated_mesh_buffers,
+                        &position_storage,
+                        &camera,
+                        &model_data,
+                        &camera_matrices,
                     )
                 },
                 || {
                     PrepareShadowMaps::exec(
-                        entities,
-                        renderer,
-                        depth_pass_data,
-                        image_index,
-                        graphics_command_pool,
-                        shadow_mapping_data,
-                        meshes_storage,
-                        light_storage,
-                        shadow_mapping_light_matrices_storage,
-                        present_data,
-                        model_data,
+                        &entities,
+                        &renderer,
+                        &depth_pass_data,
+                        &image_index,
+                        &mut graphics_command_pool,
+                        &mut shadow_mapping_data,
+                        &meshes_storage,
+                        &light_storage,
+                        &shadow_mapping_light_matrices_storage,
+                        &present_data,
+                        &model_data,
                     );
                     DepthOnlyPass::exec(
-                        renderer,
-                        entities,
-                        image_index,
-                        meshes_storage,
-                        position_storage,
-                        camera,
-                        camera_matrices,
-                        depth_pass_data,
-                        model_data,
-                        graphics_command_pool,
-                        shadow_mapping_data,
+                        &renderer,
+                        &entities,
+                        &image_index,
+                        &meshes_storage,
+                        &position_storage,
+                        &camera,
+                        &camera_matrices,
+                        &mut depth_pass_data,
+                        &model_data,
+                        &mut graphics_command_pool,
+                        &shadow_mapping_data,
                     );
                 },
             );
             Renderer::exec(
-                renderer,
-                main_framebuffer,
-                gui,
-                base_color_descriptor_set,
-                consolidated_mesh_buffers,
-                cull_pass_data,
-                present_data,
-                image_index,
-                depth_pass_data,
-                model_data,
-                gltf_pass,
-                graphics_command_pool,
-                shadow_mapping_data,
-                camera_matrices,
+                &renderer,
+                &main_framebuffer,
+                &mut gui,
+                &base_color_descriptor_set,
+                &consolidated_mesh_buffers,
+                &cull_pass_data,
+                &mut present_data,
+                &image_index,
+                &depth_pass_data,
+                &model_data,
+                &gltf_pass,
+                &mut graphics_command_pool,
+                &shadow_mapping_data,
+                &camera_matrices,
             );
-            PresentFramebuffer::exec(renderer, present_data, image_index);
+            PresentFramebuffer::exec(&renderer, &present_data, &image_index);
             {
                 let maintain_mask = entities.maintain();
                 meshes_storage.maintain(&maintain_mask);
