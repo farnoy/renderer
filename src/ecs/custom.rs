@@ -8,6 +8,8 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use hashbrown::{hash_map, HashMap};
+
 pub struct EntitiesStorage {
     mask: croaring::Bitmap,
     deleted: croaring::Bitmap,
@@ -68,14 +70,14 @@ impl EntitiesStorage {
 
 pub struct ComponentStorage<T> {
     mask: croaring::Bitmap,
-    data: btree_map::BTreeMap<u32, T>,
+    data: HashMap<u32, T>,
 }
 
 impl<T> ComponentStorage<T> {
     pub fn new() -> ComponentStorage<T> {
         ComponentStorage {
             mask: croaring::Bitmap::create(),
-            data: btree_map::BTreeMap::new(),
+            data: HashMap::new(),
         }
     }
 
@@ -141,7 +143,7 @@ impl<T> ComponentStorage<T> {
 
 pub struct ComponentEntry<'a, T> {
     key: u32,
-    btree_entry: btree_map::Entry<'a, u32, T>,
+    btree_entry: hash_map::Entry<'a, u32, T, hash_map::DefaultHashBuilder>,
     mask: &'a mut croaring::Bitmap,
 }
 
@@ -149,11 +151,11 @@ impl<'a, T> ComponentEntry<'a, T> {
     pub fn remove(self) {
         self.mask.remove(self.key);
         match self.btree_entry {
-            btree_map::Entry::Occupied(slot) => {
+            hash_map::Entry::Occupied(slot) => {
                 slot.remove();
                 ()
             }
-            btree_map::Entry::Vacant(_) => (),
+            hash_map::Entry::Vacant(_) => (),
         }
     }
 
@@ -256,4 +258,70 @@ fn test_components() {
 
     assert_eq!(*timedelta, 5.0);
     assert_eq!(positions.data.get(&3), Some(&glm::vec3(50.0, 100.0, 0.0)));
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate test;
+    use super::*;
+    use test::Bencher;
+    use std::collections::BTreeMap;
+
+    #[bench]
+    fn bench_btree(b: &mut Bencher) {
+        let mut m = BTreeMap::<u32, na::Vector3<u32>>::new();
+        for x in 0..5000 {
+            m.insert(x, na::Vector3::new(x, 0, 0));
+        }
+        b.iter(|| {
+            let mut sum = 0;
+            for x in 0..5000 {
+                sum += m.get(&x).unwrap().x;
+            }
+            assert_eq!(sum, (0..5000).sum::<u32>());
+            test::black_box(sum);
+        });
+    }
+
+    #[bench]
+    fn bench_hashmap(b: &mut Bencher) {
+        let mut m = HashMap::<u32, na::Vector3<u32>>::new();
+        for x in 0..5000 {
+            m.insert(x, na::Vector3::new(x, 0, 0));
+        }
+        b.iter(|| {
+            let mut sum = 0;
+            for x in 0..5000 {
+                sum += m.get(&x).unwrap().x;
+            }
+            assert_eq!(sum, (0..5000).sum::<u32>());
+            test::black_box(sum);
+        });
+    }
+
+    #[bench]
+    fn bench_btree_values(b: &mut Bencher) {
+        let mut m = HashMap::<u32, na::Vector3<u32>>::new();
+        for x in 0..5000 {
+            m.insert(x, na::Vector3::new(x, 0, 0));
+        }
+        b.iter(|| {
+            let sum =  m.values().map(|v| v.x).sum::<u32>();
+            assert_eq!(sum, (0..5000).sum::<u32>());
+            test::black_box(sum);
+        });
+    }
+
+    #[bench]
+    fn bench_hashmap_values(b: &mut Bencher) {
+        let mut m = HashMap::<u32, na::Vector3<u32>>::new();
+        for x in 0..5000 {
+            m.insert(x, na::Vector3::new(x, 0, 0));
+        }
+        b.iter(|| {
+            let sum =  m.values().map(|v| v.x).sum::<u32>();
+            assert_eq!(sum, (0..5000).sum::<u32>());
+            test::black_box(sum);
+        });
+    }
 }

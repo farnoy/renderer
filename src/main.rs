@@ -1,3 +1,4 @@
+#![feature(test)]
 #![feature(arbitrary_self_types)]
 
 extern crate nalgebra as na;
