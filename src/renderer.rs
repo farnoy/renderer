@@ -23,14 +23,7 @@ use microprofile::scope;
 use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, sync::Arc};
 use winit;
 
-use self::{
-    device::{
-        Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout,
-        Device, DoubleBuffered, Image, RenderPass, Semaphore,
-    },
-    helpers::*,
-    instance::Instance,
-};
+use self::{helpers::*, instance::Instance};
 
 pub use self::{
     device::*,
@@ -50,6 +43,7 @@ pub fn right_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::x())
 }
 
+#[derive(Clone)]
 pub struct GltfMesh {
     pub vertex_buffer: Arc<Buffer>,
     pub normal_buffer: Arc<Buffer>,

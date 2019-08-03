@@ -6,12 +6,13 @@ extern crate nalgebra_glm as glm;
 pub mod ecs {
     pub mod components;
     pub mod custom;
+    pub mod resources;
     pub mod systems;
 }
 pub mod renderer;
 
 use ash::version::DeviceV1_0;
-use ecs::{components::*, custom::*, systems::*};
+use ecs::{components::*, custom::*, resources::*, systems::*};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
@@ -30,6 +31,8 @@ fn main() {
     let mut aabb_storage = ComponentStorage::<AABB>::new();
     let mut meshes_storage = ComponentStorage::<GltfMesh>::new();
     let mut light_storage = ComponentStorage::<Light>::new();
+    let mut projectile_velocities_storage = ComponentStorage::<f32>::new();
+    let mut projectile_target_storage = ComponentStorage::<na::Point3<f32>>::new();
     let mut base_color_texture_storage = ComponentStorage::<GltfMeshBaseColorTexture>::new();
     let mut base_color_visited_storage = ComponentStorage::<BaseColorVisitedMarker>::new();
     let mut coarse_culled_storage = ComponentStorage::<CoarseCulled>::new();
@@ -240,6 +243,19 @@ fn main() {
         )
     };
 
+    let mesh_library = MeshLibrary {
+        projectile: GltfMesh {
+            vertex_buffer: Arc::clone(&box_vertex_buffer),
+            normal_buffer: Arc::clone(&box_normal_buffer),
+            uv_buffer: Arc::clone(&box_uv_buffer),
+            index_buffers: Arc::clone(&box_index_buffers),
+            vertex_len: box_vertex_len,
+            aabb_c: box_aabb_c,
+            aabb_h: box_aabb_h,
+        },
+        projectile_texture: Arc::clone(&box_base_color),
+    };
+
     position_storage.insert(5, na::Point3::new(5.0, 3.0, 2.0));
     rotation_storage.insert(5, na::UnitQuaternion::identity());
     scale_storage.insert(5, 1.0);
@@ -304,7 +320,6 @@ fn main() {
         base_color_texture_storage.insert(ix, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
     }
 
-    let mut idx = 0usize;
     'frame: loop {
         #[cfg(feature = "profiling")]
         microprofile::flip!();
@@ -313,87 +328,74 @@ fn main() {
         {
             #[cfg(feature = "profiling")]
             microprofile::scope!("game-loop", "ecs");
-            {
-                let idx = &mut idx;
-                let entity_id = entities.allocate();
-                position_storage.insert(entity_id, na::Point3::new(0.0, 0.0, *idx as f32 * 0.05));
-                rotation_storage.insert(entity_id, na::UnitQuaternion::identity());
-                scale_storage.insert(entity_id, 1.0);
-                meshes_storage.insert(
-                    entity_id,
-                    GltfMesh {
-                        vertex_buffer: Arc::clone(&box_vertex_buffer),
-                        normal_buffer: Arc::clone(&box_normal_buffer),
-                        uv_buffer: Arc::clone(&box_uv_buffer),
-                        index_buffers: Arc::clone(&box_index_buffers),
-                        vertex_len: box_vertex_len,
-                        aabb_c: box_aabb_c,
-                        aabb_h: box_aabb_h,
-                    },
-                );
-                base_color_texture_storage.insert(
-                    entity_id,
-                    GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
-                );
-                if entity_id >= 400 {
-                    entities.remove(std::cmp::max(250, entity_id - 200));
-                    entities.remove(std::cmp::min(500, entity_id + 50));
-                }
-                *idx += 1;
-            }
             AcquireFramebuffer::exec(&renderer, &present_data, &mut image_index);
             CalculateFrameTiming::exec(&mut frame_timing);
             input_handler.exec(&mut input_state, &mut camera);
+            fly_camera.exec(&input_state, &frame_timing, &mut camera);
+            ProjectCamera::exec(&renderer, &mut camera);
+            LaunchProjectileTest::exec(
+                &mut entities,
+                &mut position_storage,
+                &mut rotation_storage,
+                &mut scale_storage,
+                &mut meshes_storage,
+                &mut base_color_texture_storage,
+                &mut projectile_target_storage,
+                &mut projectile_velocities_storage,
+                &mut camera,
+                &mesh_library,
+                &input_state,
+            );
+            UpdateProjectiles::exec(
+                &mut entities,
+                &mut position_storage,
+                &rotation_storage,
+                &projectile_target_storage,
+                &mut projectile_velocities_storage,
+                &frame_timing,
+            );
             rayon::join(
                 || {
-                    fly_camera.exec(&input_state, &frame_timing, &mut camera);
-                    ProjectCamera::exec(&renderer, &mut camera);
+                    ConsolidateMeshBuffers::exec(
+                        &renderer,
+                        &entities,
+                        &graphics_command_pool,
+                        &meshes_storage,
+                        &image_index,
+                        &mut consolidated_mesh_buffers,
+                    )
                 },
                 || {
                     rayon::join(
                         || {
-                            ConsolidateMeshBuffers::exec(
-                                &renderer,
+                            ModelMatrixCalculation::exec(
                                 &entities,
-                                &graphics_command_pool,
+                                &position_storage,
+                                &rotation_storage,
+                                &scale_storage,
+                                &mut model_matrices_storage,
+                            );
+                            AABBCalculation::exec(
+                                &entities,
+                                &model_matrices_storage,
                                 &meshes_storage,
-                                &image_index,
-                                &mut consolidated_mesh_buffers,
-                            )
+                                &mut aabb_storage,
+                            );
                         },
                         || {
-                            rayon::join(
-                                || {
-                                    ModelMatrixCalculation::exec(
-                                        &entities,
-                                        &position_storage,
-                                        &rotation_storage,
-                                        &scale_storage,
-                                        &mut model_matrices_storage,
-                                    );
-                                    AABBCalculation::exec(
-                                        &entities,
-                                        &model_matrices_storage,
-                                        &meshes_storage,
-                                        &mut aabb_storage,
-                                    );
-                                },
-                                || {
-                                    ShadowMappingMVPCalculation::exec(
-                                        &renderer,
-                                        &entities,
-                                        &position_storage,
-                                        &rotation_storage,
-                                        &mut shadow_mapping_light_matrices_storage,
-                                        &light_storage,
-                                        &image_index,
-                                        &main_descriptor_pool,
-                                        &camera_matrices,
-                                    );
-                                },
-                            )
+                            ShadowMappingMVPCalculation::exec(
+                                &renderer,
+                                &entities,
+                                &position_storage,
+                                &rotation_storage,
+                                &mut shadow_mapping_light_matrices_storage,
+                                &light_storage,
+                                &image_index,
+                                &main_descriptor_pool,
+                                &camera_matrices,
+                            );
                         },
-                    );
+                    )
                 },
             );
             rayon::join(
@@ -424,7 +426,7 @@ fn main() {
                         || CameraMatricesUpload::exec(&image_index, &camera, &mut camera_matrices),
                         || {
                             ModelMatricesUpload::exec(
-                                &mut model_matrices_storage,
+                                &model_matrices_storage,
                                 &image_index,
                                 &mut model_data,
                             )

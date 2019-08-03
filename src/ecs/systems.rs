@@ -1,4 +1,4 @@
-use super::{components::*, custom::*};
+use super::{components::*, custom::*, resources::*};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
@@ -9,7 +9,9 @@ use winit::{
     WindowEvent,
 };
 
-use crate::renderer::{forward_vector, right_vector, up_vector, GltfMesh, RenderFrame};
+use crate::renderer::{
+    forward_vector, right_vector, up_vector, GltfMesh, GltfMeshBaseColorTexture, RenderFrame,
+};
 
 pub struct ModelMatrixCalculation;
 
@@ -129,6 +131,16 @@ impl InputHandler {
                 camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
                 camera.rotation =
                     na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
+            }
+            Event::DeviceEvent {
+                event:
+                    DeviceEvent::Button {
+                        button,
+                        state: ElementState::Pressed,
+                    },
+                ..
+            } => {
+                input_state.button_presses.push(button);
             }
             _ => (),
         });
@@ -257,20 +269,23 @@ impl AABBCalculation {
 pub struct InputState {
     key_presses: Vec<Option<winit::VirtualKeyCode>>,
     key_releases: Vec<Option<winit::VirtualKeyCode>>,
+    button_presses: Vec<winit::ButtonId>,
 }
 
 impl InputState {
     fn clear(&mut self) {
         self.key_presses.clear();
         self.key_releases.clear();
+        self.button_presses.clear();
     }
 }
 
 impl Default for InputState {
     fn default() -> InputState {
         InputState {
-            key_presses: Vec::new(),
-            key_releases: Vec::new(),
+            key_presses: vec![],
+            key_releases: vec![],
+            button_presses: vec![],
         }
     }
 }
@@ -376,5 +391,71 @@ impl FlyCamera {
         }
 
         camera.position += increment;
+    }
+}
+
+pub struct LaunchProjectileTest;
+
+impl LaunchProjectileTest {
+    #[allow(clippy::too_many_arguments)]
+    pub fn exec(
+        entities: &mut EntitiesStorage,
+        position_storage: &mut ComponentStorage<na::Point3<f32>>,
+        rotation_storage: &mut ComponentStorage<na::UnitQuaternion<f32>>,
+        scale_storage: &mut ComponentStorage<f32>,
+        meshes_storage: &mut ComponentStorage<GltfMesh>,
+        textures_storage: &mut ComponentStorage<GltfMeshBaseColorTexture>,
+        projectile_target_storage: &mut ComponentStorage<na::Point3<f32>>,
+        projectile_velocities_storage: &mut ComponentStorage<f32>,
+        camera: &mut Camera,
+        mesh_library: &MeshLibrary,
+        input_state: &InputState,
+    ) {
+        if input_state.button_presses.iter().any(|p| *p == 1) {
+            let projectile = entities.allocate();
+            position_storage.insert(projectile, camera.position);
+            rotation_storage.insert(projectile, camera.rotation);
+            scale_storage.insert(projectile, 1.0);
+            let target =
+                camera.position + camera.rotation * (100.0 * (&forward_vector().into_inner()));
+            projectile_target_storage.insert(projectile, target);
+            projectile_velocities_storage.insert(projectile, 20.0);
+            meshes_storage.insert(projectile, mesh_library.projectile.clone());
+            textures_storage.insert(
+                projectile,
+                GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_texture)),
+            );
+        }
+    }
+}
+
+pub struct UpdateProjectiles;
+
+impl UpdateProjectiles {
+    pub fn exec(
+        entities: &mut EntitiesStorage,
+        position_storage: &mut ComponentStorage<na::Point3<f32>>,
+        rotation_storage: &ComponentStorage<na::UnitQuaternion<f32>>,
+        projectile_target_storage: &ComponentStorage<na::Point3<f32>>,
+        projectile_velocities_storage: &mut ComponentStorage<f32>,
+        frame_timing: &FrameTiming,
+    ) {
+        let projectiles = entities.mask()
+            & rotation_storage.mask()
+            & projectile_target_storage.mask()
+            & projectile_velocities_storage.mask();
+        for projectile in projectiles.iter() {
+            let position = position_storage.entry(projectile).assume();
+            let target = projectile_target_storage.get(projectile).unwrap();
+            if na::distance(position, target) < 0.1 {
+                entities.remove(projectile);
+                continue;
+            }
+            let rotation = rotation_storage.get(projectile).unwrap();
+            let velocity = projectile_velocities_storage.get(projectile).unwrap();
+            let velocity_scaled = velocity * frame_timing.time_delta;
+            let increment = velocity_scaled * (rotation * forward_vector().into_inner());
+            *position += increment;
+        }
     }
 }

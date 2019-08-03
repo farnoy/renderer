@@ -166,6 +166,16 @@ impl<'a, T> ComponentEntry<'a, T> {
         self.mask.add(self.key);
         self.btree_entry.or_insert_with(inserter)
     }
+
+    pub fn assume(self) -> &'a mut T {
+        debug_assert!(
+            self.mask.contains(self.key),
+            "ComponentEntry::assume was wrong"
+        );
+        // TODO: optimize with assume intrinsics for production builds
+        self.btree_entry
+            .or_insert_with(|| panic!("ComponentEntry::assume assumed no insertion was needed"))
+    }
 }
 
 pub struct FlagStorage {
