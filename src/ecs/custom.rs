@@ -192,7 +192,11 @@ impl FlagStorage {
     }
 
     pub fn invert(&self) -> croaring::Bitmap {
-        self.present.flip(0..self.present.maximum() as u64 + 1)
+        if let Some(max) = self.present.maximum() {
+            self.present.flip(0..max as u64 + 1)
+        } else {
+            croaring::Bitmap::create()
+        }
     }
 }
 
