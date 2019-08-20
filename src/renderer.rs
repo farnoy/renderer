@@ -962,9 +962,23 @@ impl Renderer {
                                 let alloc_stats = renderer.device.allocation_stats();
                                 let s = format!("Alloc stats {:?}", alloc_stats.total);
                                 ui.window(im_str!("Renderer"))
-                                    .size([500.0, 300.0], imgui::Condition::Always)
+                                    .size([500.0, 300.0], imgui::Condition::FirstUseEver)
                                     .build(|| {
                                         ui.text_wrapped(&im_str!("{}", s));
+                                    });
+
+                                ui.window(im_str!("Renderer 2"))
+                                    .position([600.0, 100.0], imgui::Condition::FirstUseEver)
+                                    .size([200.0, 300.0], imgui::Condition::FirstUseEver)
+                                    .build(|| {
+                                        ui.text_wrapped(&im_str!("kek"));
+                                    });
+
+                                ui.window(im_str!("Renderer 3"))
+                                    .position([300.0, 400.0], imgui::Condition::FirstUseEver)
+                                    .size([200.0, 300.0], imgui::Condition::FirstUseEver)
+                                    .build(|| {
+                                        ui.text_wrapped(&im_str!("kek"));
                                     });
                                 let draw_data = ui.render();
                                 let [x, y] = draw_data.display_size;
@@ -979,6 +993,8 @@ impl Renderer {
                                     );
                                 }
                                 {
+                                    let mut vertex_offset_coarse: usize = 0;
+                                    let mut index_offset_coarse: usize = 0;
                                     let mut vertex_slice = vertex_buffer
                                         .map::<imgui::DrawVert>()
                                         .expect("Failed to map gui vertex buffer");
@@ -986,9 +1002,13 @@ impl Renderer {
                                         .map::<imgui::DrawIdx>()
                                         .expect("Failed to map gui index buffer");
                                     for draw_list in draw_data.draw_lists() {
-                                        index_slice[0..draw_list.idx_buffer().len()]
+                                        let index_len = draw_list.idx_buffer().len();
+                                        index_slice
+                                            [index_offset_coarse..index_offset_coarse + index_len]
                                             .copy_from_slice(draw_list.idx_buffer());
-                                        vertex_slice[0..draw_list.vtx_buffer().len()]
+                                        let vertex_len = draw_list.vtx_buffer().len();
+                                        vertex_slice[vertex_offset_coarse
+                                            ..vertex_offset_coarse + vertex_len]
                                             .copy_from_slice(draw_list.vtx_buffer());
                                         for draw_cmd in draw_list.commands() {
                                             match draw_cmd {
@@ -997,14 +1017,20 @@ impl Renderer {
                                                         command_buffer,
                                                         count as u32,
                                                         1,
-                                                        cmd_params.idx_offset as u32,
-                                                        cmd_params.vtx_offset as i32,
+                                                        (index_offset_coarse
+                                                            + cmd_params.idx_offset)
+                                                            as u32,
+                                                        (vertex_offset_coarse
+                                                            + cmd_params.vtx_offset)
+                                                            as i32,
                                                         0,
                                                     );
                                                 }
                                                 _ => panic!("le wtf"),
                                             }
                                         }
+                                        index_offset_coarse += index_len;
+                                        vertex_offset_coarse += vertex_len;
                                     }
                                 }
                             },
