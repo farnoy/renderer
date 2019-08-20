@@ -1,4 +1,5 @@
 use super::{components::*, custom::*, resources::*};
+use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
@@ -72,83 +73,105 @@ pub struct InputHandler {
     pub events_loop: winit::EventsLoop,
     pub quit_handle: Arc<Mutex<bool>>,
     pub move_mouse: bool,
+    pub imgui_platform: WinitPlatform,
 }
 
 impl InputHandler {
-    pub fn exec(&mut self, input_state: &mut InputState, camera: &mut Camera) {
+    pub fn exec(
+        &mut self,
+        window: &winit::Window,
+        gui: &mut imgui::Context,
+        input_state: &mut InputState,
+        camera: &mut Camera,
+    ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "input handler");
         let quit_handle = Arc::clone(&self.quit_handle);
         input_state.clear();
         let move_mouse = self.move_mouse;
+        let platform = &mut self.imgui_platform;
         let mut toggle_move_mouse = false;
-        self.events_loop.poll_events(|event| match event {
-            Event::WindowEvent {
-                event: WindowEvent::Resized(LogicalSize { width, height }),
-                ..
-            } => {
-                println!("The window was resized to {}x{}", width, height);
-            }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                *quit_handle.lock() = true;
-            }
-            Event::WindowEvent {
-                event:
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                state,
-                                virtual_keycode,
-                                ..
-                            },
-                        ..
-                    },
-                ..
-            } => {
-                match state {
-                    ElementState::Pressed => input_state.key_presses.push(virtual_keycode),
-                    ElementState::Released => input_state.key_releases.push(virtual_keycode),
+        self.events_loop.poll_events(|event| {
+            match event {
+                Event::WindowEvent {
+                    event: WindowEvent::Resized(LogicalSize { width, height }),
+                    ..
+                } => {
+                    println!("The window was resized to {}x{}", width, height);
                 }
-                match virtual_keycode {
-                    Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
-                        toggle_move_mouse = true;
-                    }
-                    Some(VirtualKeyCode::Escape) => {
-                        *quit_handle.lock() = true;
-                    }
-                    _ => (),
+                Event::WindowEvent {
+                    event: WindowEvent::HiDpiFactorChanged(f),
+                    ..
+                } => {
+                    println!("DPI factor changed {}", f);
                 }
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    *quit_handle.lock() = true;
+                }
+                Event::WindowEvent {
+                    event:
+                        WindowEvent::KeyboardInput {
+                            input:
+                                KeyboardInput {
+                                    state,
+                                    virtual_keycode,
+                                    ..
+                                },
+                            ..
+                        },
+                    ..
+                } => {
+                    match state {
+                        ElementState::Pressed => input_state.key_presses.push(virtual_keycode),
+                        ElementState::Released => input_state.key_releases.push(virtual_keycode),
+                    }
+                    match virtual_keycode {
+                        Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
+                            toggle_move_mouse = true;
+                        }
+                        Some(VirtualKeyCode::Escape) => {
+                            *quit_handle.lock() = true;
+                        }
+                        _ => (),
+                    }
+                }
+                Event::DeviceEvent {
+                    event: DeviceEvent::MouseMotion { delta: (x, y), .. },
+                    ..
+                } if move_mouse => {
+                    let y_angle = f32::pi() / 180.0 * y as f32;
+                    let x_angle = f32::pi() / 180.0 * x as f32;
+                    camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
+                    camera.rotation =
+                        na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
+                }
+                Event::DeviceEvent {
+                    event:
+                        DeviceEvent::Button {
+                            button,
+                            state: ElementState::Pressed,
+                        },
+                    ..
+                } => {
+                    input_state.button_presses.push(button);
+                }
+                _ => (),
+            };
+            if !move_mouse {
+                platform.handle_event(gui.io_mut(), &window, &event);
             }
-            Event::DeviceEvent {
-                event: DeviceEvent::MouseMotion { delta: (x, y), .. },
-                ..
-            } if move_mouse => {
-                let y_angle = f32::pi() / 180.0 * y as f32;
-                let x_angle = f32::pi() / 180.0 * x as f32;
-                camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
-                camera.rotation =
-                    na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
-            }
-            Event::DeviceEvent {
-                event:
-                    DeviceEvent::Button {
-                        button,
-                        state: ElementState::Pressed,
-                    },
-                ..
-            } => {
-                input_state.button_presses.push(button);
-            }
-            _ => (),
         });
         self.move_mouse = if toggle_move_mouse {
             !self.move_mouse
         } else {
             self.move_mouse
         };
+        platform
+            .prepare_frame(gui.io_mut(), &window)
+            .expect("Failed to prepare frame");
     }
 }
 

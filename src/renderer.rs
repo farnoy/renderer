@@ -15,7 +15,7 @@ mod systems {
     pub mod textures;
 }
 
-use crate::ecs::{custom::*, systems::Camera};
+use crate::ecs::{custom::*, systems::*};
 use ash::{version::DeviceV1_0, vk};
 use imgui::{self, im_str};
 #[cfg(feature = "microprofile")]
@@ -775,6 +775,7 @@ impl Renderer {
         renderer: &RenderFrame,
         main_framebuffer: &MainFramebuffer,
         gui: &mut Gui,
+        input_handler: &InputHandler,
         base_color_descriptor_set: &BaseColorDescriptorSet,
         consolidated_mesh_buffers: &ConsolidatedMeshBuffers,
         cull_pass_data: &CullPassData,
@@ -980,6 +981,9 @@ impl Renderer {
                                     .build(|| {
                                         ui.text_wrapped(&im_str!("kek"));
                                     });
+                                input_handler
+                                    .imgui_platform
+                                    .prepare_render(&ui, &renderer.instance.window);
                                 let draw_data = ui.render();
                                 let [x, y] = draw_data.display_size;
                                 {

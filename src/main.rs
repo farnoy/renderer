@@ -13,6 +13,7 @@ pub mod renderer;
 
 use ash::version::DeviceV1_0;
 use ecs::{components::*, custom::*, resources::*, systems::*};
+use imgui_winit_support::{HiDpiMode, WinitPlatform};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
@@ -49,11 +50,6 @@ fn main() {
     let mut present_data = PresentData::new(&renderer);
     let mut image_index = ImageIndex::default();
     let mut frame_timing = FrameTiming::default();
-    let mut input_handler = InputHandler {
-        events_loop,
-        quit_handle: quit_handle.clone(),
-        move_mouse: true,
-    };
     let mut input_state = InputState::default();
     let mut camera = Camera::default();
     let mut fly_camera = FlyCamera::default();
@@ -82,6 +78,20 @@ fn main() {
     let mut shadow_mapping_data =
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
     let mut gui = Gui::new(&renderer, &main_descriptor_pool);
+
+    let mut imgui_platform = WinitPlatform::init(&mut gui.imgui);
+    imgui_platform.attach_window(
+        gui.imgui.io_mut(),
+        &renderer.instance.window,
+        HiDpiMode::Locked(1.0), // TODO: Revert this to Default if we can make the app obey winit DPI
+    );
+    let mut input_handler = InputHandler {
+        events_loop,
+        quit_handle: quit_handle.clone(),
+        move_mouse: false,
+        imgui_platform,
+    };
+
     let gltf_pass = GltfPassData::new(
         &renderer,
         &model_data,
@@ -330,7 +340,12 @@ fn main() {
             microprofile::scope!("game-loop", "ecs");
             AcquireFramebuffer::exec(&renderer, &present_data, &mut image_index);
             CalculateFrameTiming::exec(&mut frame_timing);
-            input_handler.exec(&mut input_state, &mut camera);
+            input_handler.exec(
+                &renderer.instance.window,
+                &mut gui.imgui,
+                &mut input_state,
+                &mut camera,
+            );
             fly_camera.exec(&input_state, &frame_timing, &mut camera);
             ProjectCamera::exec(&renderer, &mut camera);
             LaunchProjectileTest::exec(
@@ -483,6 +498,7 @@ fn main() {
                 &renderer,
                 &main_framebuffer,
                 &mut gui,
+                &input_handler,
                 &base_color_descriptor_set,
                 &consolidated_mesh_buffers,
                 &cull_pass_data,
