@@ -1,8 +1,7 @@
 #[cfg(target = "windows")]
 use ash::extensions::Win32Surface;
 use ash::{
-    self,
-    extensions::khr::{Surface, Swapchain},
+    self, extensions,
     version::{DeviceV1_0, InstanceV1_0},
     vk,
 };
@@ -17,7 +16,7 @@ mod image;
 mod mapping;
 mod sync;
 
-use super::{alloc, Instance};
+use super::{alloc, Instance, Surface};
 
 pub use self::{buffer::*, commands::*, descriptors::*, double_buffered::*, image::*, sync::*};
 
@@ -41,20 +40,14 @@ pub enum QueueType {
 }
 
 impl Device {
-    pub fn new(instance: &Arc<Instance>) -> Result<Device, vk::Result> {
-        let Instance {
-            ref entry,
-            // ref instance,
-            surface,
-            ..
-        } = **instance;
+    pub fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
+        let Instance { ref entry, .. } = **instance;
 
         let pdevices = unsafe {
             instance
                 .enumerate_physical_devices()
                 .expect("Physical device error")
         };
-        let surface_loader = Surface::new(entry.vk(), &***instance);
 
         let physical_device = pdevices[0];
         let queue_families =
@@ -65,12 +58,12 @@ impl Device {
                 .enumerate()
                 .filter_map(|(ix, info)| unsafe {
                     let supports_graphic_and_surface =
-                        info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                            && surface_loader.get_physical_device_surface_support(
-                                physical_device,
-                                ix as u32,
-                                surface,
-                            );
+                        info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
+                    &&surface.ext.get_physical_device_surface_support(
+                        physical_device,
+                        ix as u32,
+                        surface.surface,
+                    );
                     if supports_graphic_and_surface {
                         Some(ix as u32)
                     } else {
@@ -105,7 +98,7 @@ impl Device {
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
             let device_extension_names_raw = [
-                Swapchain::name().as_ptr(),
+                extensions::khr::Swapchain::name().as_ptr(),
                 vk::ExtDescriptorIndexingFn::name().as_ptr(),
             ];
             let features = vk::PhysicalDeviceFeatures {

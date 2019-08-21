@@ -7,9 +7,8 @@ use ash::{
 #[cfg(feature = "validation")]
 use std::borrow::Cow;
 use std::{ffi::CString, ops::Deref, sync::Arc};
-use winit;
 
-use super::{entry::Entry, helpers::create_surface};
+use super::entry::Entry;
 
 pub type AshInstance = ash::Instance;
 
@@ -17,9 +16,6 @@ pub struct Instance {
     handle: AshInstance,
     pub entry: Arc<Entry>,
     pub window: winit::Window,
-    pub surface: vk::SurfaceKHR,
-    pub window_width: u32,
-    pub window_height: u32,
     #[allow(dead_code)]
     debug: Debug,
 }
@@ -34,17 +30,12 @@ struct Debug {
 struct Debug;
 
 impl Instance {
-    pub fn new(
-        window_width: u32,
-        window_height: u32,
-    ) -> Result<(Instance, winit::EventsLoop), ash::InstanceError> {
+    pub fn new() -> Result<(Instance, winit::EventsLoop), ash::InstanceError> {
         let events_loop = winit::EventsLoop::new();
         let window = winit::WindowBuilder::new()
             .with_title("Renderer v3")
-            .with_dimensions((window_width, window_height).into())
             .build(&events_loop)
             .unwrap();
-        let (window_width, window_height) = window.get_inner_size().unwrap().into();
 
         let entry = Entry::new().unwrap();
 
@@ -69,8 +60,6 @@ impl Instance {
             .enabled_layer_names(&layers_names_raw)
             .enabled_extension_names(&extension_names_raw);
         let instance = unsafe { entry.create_instance(&create_info, None)? };
-
-        let surface = unsafe { create_surface(entry.vk(), &instance, &window).unwrap() };
 
         #[cfg(feature = "validation")]
         {
@@ -141,10 +130,7 @@ impl Instance {
                 Instance {
                     handle: instance,
                     window,
-                    surface,
                     entry: Arc::new(entry),
-                    window_width,
-                    window_height,
                     debug: Debug {
                         utils: debug_utils,
                         messenger: debug_messenger,
@@ -160,10 +146,7 @@ impl Instance {
                 Instance {
                     handle: instance,
                     window,
-                    surface,
                     entry: Arc::new(entry),
-                    window_width,
-                    window_height,
                     debug: Debug,
                 },
                 events_loop,

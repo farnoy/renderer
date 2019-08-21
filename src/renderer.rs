@@ -28,6 +28,7 @@ use self::{helpers::*, instance::Instance};
 pub use self::{
     device::*,
     gltf_mesh::{load as load_gltf, LoadedMesh},
+    swapchain::*,
     systems::{
         consolidate_mesh_buffers::*, cull_pipeline::*, present::*, shadow_mapping::*, textures::*,
     },
@@ -58,18 +59,18 @@ pub struct GltfMesh {
 pub struct RenderFrame {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
-    pub swapchain: Swapchain,
     pub compute_command_pool: Arc<CommandPool>,
     pub renderpass: RenderPass,
 }
 
 impl RenderFrame {
-    pub fn new() -> (RenderFrame, winit::EventsLoop) {
-        let (instance, events_loop) = Instance::new(1920, 1080).expect("Failed to create instance");
+    pub fn new() -> (RenderFrame, Swapchain, winit::EventsLoop) {
+        let (instance, events_loop) = Instance::new().expect("Failed to create instance");
         let instance = Arc::new(instance);
-        let device = Arc::new(Device::new(&instance).expect("Failed to create device"));
+        let surface = Surface::new(&instance);
+        let device = Arc::new(Device::new(&instance, &surface).expect("Failed to create device"));
         device.set_object_name(device.handle(), "Device");
-        let swapchain = new_swapchain(&instance, &device);
+        let swapchain = Swapchain::new(&instance, &device, surface);
         let compute_command_pool = device.new_command_pool(
             QueueType::Compute,
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
@@ -89,7 +90,7 @@ impl RenderFrame {
                     .attachments(unsafe {
                         &*(&[
                             vk::AttachmentDescription::builder()
-                                .format(swapchain.surface_format.format)
+                                .format(swapchain.surface.surface_format.format)
                                 .samples(vk::SampleCountFlags::TYPE_1)
                                 .load_op(vk::AttachmentLoadOp::CLEAR)
                                 .store_op(vk::AttachmentStoreOp::STORE)
@@ -142,8 +143,8 @@ impl RenderFrame {
                 device: Arc::clone(&device),
                 compute_command_pool: Arc::new(compute_command_pool),
                 renderpass: main_renderpass,
-                swapchain,
             },
+            swapchain,
             events_loop,
         )
     }
@@ -190,18 +191,7 @@ pub struct MainAttachments {
 }
 
 impl MainAttachments {
-    pub fn new(renderer: &RenderFrame) -> MainAttachments {
-        let Swapchain {
-            handle: ref swapchain,
-            ref surface_format,
-            ..
-        } = renderer.swapchain;
-        let Instance {
-            window_width,
-            window_height,
-            ..
-        } = *renderer.instance;
-
+    pub fn new(renderer: &RenderFrame, swapchain: &Swapchain) -> MainAttachments {
         let images = unsafe {
             swapchain
                 .ext
@@ -214,8 +204,8 @@ impl MainAttachments {
                 renderer.device.new_image(
                     vk::Format::D32_SFLOAT,
                     vk::Extent3D {
-                        width: window_width,
-                        height: window_height,
+                        width: swapchain.width,
+                        height: swapchain.height,
                         depth: 1,
                     },
                     vk::SampleCountFlags::TYPE_1,
@@ -231,7 +221,7 @@ impl MainAttachments {
             .map(|&image| {
                 let create_view_info = vk::ImageViewCreateInfo::builder()
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(surface_format.format)
+                    .format(swapchain.surface.surface_format.format)
                     .components(vk::ComponentMapping {
                         r: vk::ComponentSwizzle::R,
                         g: vk::ComponentSwizzle::G,
@@ -310,13 +300,11 @@ pub struct MainFramebuffer {
 }
 
 impl MainFramebuffer {
-    pub fn new(renderer: &RenderFrame, main_attachments: &MainAttachments) -> MainFramebuffer {
-        let Instance {
-            window_width,
-            window_height,
-            ..
-        } = *renderer.instance;
-
+    pub fn new(
+        renderer: &RenderFrame,
+        main_attachments: &MainAttachments,
+        swapchain: &Swapchain,
+    ) -> MainFramebuffer {
         let handles = main_attachments
             .swapchain_image_views
             .iter()
@@ -327,8 +315,8 @@ impl MainFramebuffer {
                 let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
                     .render_pass(renderer.renderpass.handle)
                     .attachments(&framebuffer_attachments)
-                    .width(window_width)
-                    .height(window_height)
+                    .width(swapchain.width)
+                    .height(swapchain.height)
                     .layers(1);
                 let handle = unsafe {
                     renderer
@@ -460,10 +448,10 @@ impl DepthPassData {
         renderer: &RenderFrame,
         model_data: &ModelData,
         main_attachments: &MainAttachments,
+        swapchain: &Swapchain,
         camera_matrices: &CameraMatrices,
     ) -> DepthPassData {
         let device = &renderer.device;
-        let instance = &renderer.instance;
 
         let renderpass = device.new_renderpass(
             &vk::RenderPassCreateInfo::builder()
@@ -532,23 +520,14 @@ impl DepthPassData {
                         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
                         .build(),
                 )
+                .dynamic_state(
+                    &vk::PipelineDynamicStateCreateInfo::builder()
+                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
+                )
                 .viewport_state(
                     &vk::PipelineViewportStateCreateInfo::builder()
-                        .scissors(&[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: instance.window_width,
-                                height: instance.window_height,
-                            },
-                        }])
-                        .viewports(&[vk::Viewport {
-                            x: 0.0,
-                            y: instance.window_height as f32,
-                            width: instance.window_width as f32,
-                            height: -(instance.window_height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }])
+                        .viewport_count(1)
+                        .scissor_count(1)
                         .build(),
                 )
                 .rasterization_state(
@@ -605,8 +584,8 @@ impl DepthPassData {
                 let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
                     .render_pass(renderpass.handle)
                     .attachments(&framebuffer_attachments)
-                    .width(renderer.instance.window_width)
-                    .height(renderer.instance.window_height)
+                    .width(swapchain.width)
+                    .height(swapchain.height)
                     .layers(1);
                 let handle = unsafe {
                     renderer
@@ -659,7 +638,6 @@ impl GltfPassData {
         camera_matrices: &CameraMatrices,
     ) -> GltfPassData {
         let device = &renderer.device;
-        let instance = &renderer.instance;
 
         let gltf_pipeline_layout = shaders::gltf_mesh::PipelineLayout::new(
             &renderer.device,
@@ -694,23 +672,14 @@ impl GltfPassData {
                         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
                         .build(),
                 )
+                .dynamic_state(
+                    &vk::PipelineDynamicStateCreateInfo::builder()
+                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
+                )
                 .viewport_state(
                     &vk::PipelineViewportStateCreateInfo::builder()
-                        .scissors(&[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: instance.window_width,
-                                height: instance.window_height,
-                            },
-                        }])
-                        .viewports(&[vk::Viewport {
-                            x: 0.0,
-                            y: instance.window_height as f32,
-                            width: instance.window_width as f32,
-                            height: -(instance.window_height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }])
+                        .viewport_count(1)
+                        .scissor_count(1)
                         .build(),
                 )
                 .rasterization_state(
@@ -774,6 +743,7 @@ impl Renderer {
     pub fn exec(
         renderer: &RenderFrame,
         main_framebuffer: &MainFramebuffer,
+        swapchain: &Swapchain,
         gui: &mut Gui,
         input_handler: &InputHandler,
         base_color_descriptor_set: &BaseColorDescriptorSet,
@@ -843,8 +813,8 @@ impl Renderer {
                     .render_area(vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
                         extent: vk::Extent2D {
-                            width: renderer.instance.window_width,
-                            height: renderer.instance.window_height,
+                            width: swapchain.width,
+                            height: swapchain.height,
                         },
                     })
                     .clear_values(clear_values);
@@ -858,6 +828,29 @@ impl Renderer {
                             command_buffer,
                             &begin_info,
                             vk::SubpassContents::INLINE,
+                        );
+                        renderer.device.cmd_set_viewport(
+                            command_buffer,
+                            0,
+                            &[vk::Viewport {
+                                x: 0.0,
+                                y: swapchain.height as f32,
+                                width: swapchain.width as f32,
+                                height: -(swapchain.height as f32),
+                                min_depth: 0.0,
+                                max_depth: 1.0,
+                            }],
+                        );
+                        renderer.device.cmd_set_scissor(
+                            command_buffer,
+                            0,
+                            &[vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: vk::Extent2D {
+                                    width: swapchain.width,
+                                    height: swapchain.height,
+                                },
+                            }],
                         );
                         renderer.device.debug_marker_around(
                             command_buffer,
@@ -946,10 +939,8 @@ impl Renderer {
                                     0,
                                     vk::IndexType::UINT16,
                                 );
-                                imgui.io_mut().display_size = [
-                                    renderer.instance.window_width as f32,
-                                    renderer.instance.window_height as f32,
-                                ];
+                                imgui.io_mut().display_size =
+                                    [swapchain.width as f32, swapchain.height as f32];
                                 let ui = imgui.frame();
                                 /*
                                     imgui::FrameSize {
@@ -1209,23 +1200,14 @@ impl Gui {
                         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
                         .build(),
                 )
+                .dynamic_state(
+                    &vk::PipelineDynamicStateCreateInfo::builder()
+                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
+                )
                 .viewport_state(
                     &vk::PipelineViewportStateCreateInfo::builder()
-                        .scissors(&[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: renderer.instance.window_width,
-                                height: renderer.instance.window_height,
-                            },
-                        }])
-                        .viewports(&[vk::Viewport {
-                            x: 0.0,
-                            y: renderer.instance.window_height as f32,
-                            width: renderer.instance.window_width as f32,
-                            height: -(renderer.instance.window_height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }])
+                        .viewport_count(1)
+                        .scissor_count(1)
                         .build(),
                 )
                 .rasterization_state(
@@ -1371,6 +1353,7 @@ impl DepthOnlyPass {
         camera: &Camera,
         camera_matrices: &CameraMatrices,
         depth_pass: &mut DepthPassData,
+        swapchain: &Swapchain,
         model_data: &ModelData,
         graphics_command_pool: &mut GraphicsCommandPool,
         shadow_mapping_data: &ShadowMappingData,
@@ -1395,8 +1378,8 @@ impl DepthOnlyPass {
                                 .render_area(vk::Rect2D {
                                     offset: vk::Offset2D { x: 0, y: 0 },
                                     extent: vk::Extent2D {
-                                        width: renderer.instance.window_width,
-                                        height: renderer.instance.window_height,
+                                        width: swapchain.width,
+                                        height: swapchain.height,
                                     },
                                 })
                                 .clear_values(&[vk::ClearValue {
@@ -1406,6 +1389,29 @@ impl DepthOnlyPass {
                                     },
                                 }]),
                             vk::SubpassContents::INLINE,
+                        );
+                        renderer.device.cmd_set_viewport(
+                            command_buffer,
+                            0,
+                            &[vk::Viewport {
+                                x: 0.0,
+                                y: swapchain.height as f32,
+                                width: swapchain.width as f32,
+                                height: -(swapchain.height as f32),
+                                min_depth: 0.0,
+                                max_depth: 1.0,
+                            }],
+                        );
+                        renderer.device.cmd_set_scissor(
+                            command_buffer,
+                            0,
+                            &[vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: vk::Extent2D {
+                                    width: swapchain.width,
+                                    height: swapchain.height,
+                                },
+                            }],
                         );
                         renderer.device.cmd_bind_pipeline(
                             command_buffer,

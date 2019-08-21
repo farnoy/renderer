@@ -1,6 +1,6 @@
 use super::super::{
     device::{CommandBuffer, DoubleBuffered, Fence, Semaphore},
-    RenderFrame,
+    RenderFrame, Swapchain,
 };
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
@@ -60,7 +60,13 @@ impl PresentData {
 }
 
 impl AcquireFramebuffer {
-    pub fn exec(renderer: &RenderFrame, present_data: &PresentData, image_index: &mut ImageIndex) {
+    /// Returns true if framebuffer and swapchain need to be recreated
+    pub fn exec(
+        renderer: &RenderFrame,
+        present_data: &PresentData,
+        swapchain: &Swapchain,
+        image_index: &mut ImageIndex,
+    ) -> bool {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "present");
         if present_data
@@ -91,27 +97,40 @@ impl AcquireFramebuffer {
                     .handle])
                 .expect("failed to reset render complete fence");
         }
-        image_index.0 = unsafe {
-            renderer
-                .swapchain
-                .handle
-                .ext
-                .acquire_next_image(
-                    renderer.swapchain.handle.swapchain,
-                    u64::MAX,
-                    present_data.present_semaphore.handle,
-                    vk::Fence::null(),
-                )
-                .unwrap()
-                .0 // TODO: 2nd argument is boolean describing surface optimality
+        let result = unsafe {
+            swapchain.ext.acquire_next_image(
+                swapchain.swapchain,
+                u64::MAX,
+                present_data.present_semaphore.handle,
+                vk::Fence::null(),
+            )
         };
+        match result {
+            Ok((ix, false)) => image_index.0 = ix,
+            Ok((ix, true)) => {
+                image_index.0 = ix;
+                println!("AcquireFramebuffer image suboptimal");
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                println!("out of date in AcquireFramebuffer");
+                return true;
+            }
+            _ => panic!("unknown condition in AcquireFramebuffer"),
+        }
+
+        false
     }
 }
 
 impl PresentFramebuffer {
-    pub fn exec(renderer: &RenderFrame, present_data: &PresentData, image_index: &ImageIndex) {
+    pub fn exec(
+        renderer: &RenderFrame,
+        present_data: &PresentData,
+        swapchain: &Swapchain,
+        image_index: &ImageIndex,
+    ) {
         let wait_semaphores = &[present_data.render_complete_semaphore.handle];
-        let swapchains = &[renderer.swapchain.handle.swapchain];
+        let swapchains = &[swapchain.swapchain];
         let image_indices = &[image_index.0];
         let present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(wait_semaphores)
@@ -119,13 +138,13 @@ impl PresentFramebuffer {
             .image_indices(image_indices);
 
         let queue = renderer.device.graphics_queue.lock();
-        unsafe {
-            renderer
-                .swapchain
-                .handle
-                .ext
-                .queue_present(*queue, &present_info)
-                .unwrap();
+        let result = unsafe { swapchain.ext.queue_present(*queue, &present_info) };
+        match result {
+            Ok(false) => (),
+            Ok(true) => println!("PresentFramebuffer image suboptimal"),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => println!("out of date in PresentFramebuffer"),
+            Err(vk::Result::ERROR_DEVICE_LOST) => panic!("device lost in PresentFramebuffer"),
+            _ => panic!("unknown condition in PresentFramebuffer"),
         }
     }
 }

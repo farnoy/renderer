@@ -43,7 +43,7 @@ fn main() {
         .num_threads(8)
         .build_global()
         .unwrap();
-    let (renderer, events_loop) = RenderFrame::new();
+    let (renderer, mut swapchain, events_loop) = RenderFrame::new();
 
     let quit_handle = Arc::new(Mutex::new(false));
 
@@ -72,9 +72,14 @@ fn main() {
         &camera_matrices,
     );
     let mut cull_pass_data_private = CullPassDataPrivate::new(&renderer);
-    let main_attachments = MainAttachments::new(&renderer);
-    let mut depth_pass_data =
-        DepthPassData::new(&renderer, &model_data, &main_attachments, &camera_matrices);
+    let mut main_attachments = MainAttachments::new(&renderer, &swapchain);
+    let mut depth_pass_data = DepthPassData::new(
+        &renderer,
+        &model_data,
+        &main_attachments,
+        &swapchain,
+        &camera_matrices,
+    );
     let mut shadow_mapping_data =
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
     let mut gui = Gui::new(&renderer, &main_descriptor_pool);
@@ -100,7 +105,7 @@ fn main() {
         &camera_matrices,
     );
 
-    let main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments);
+    let mut main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
 
     let LoadedMesh {
         vertex_buffer,
@@ -338,16 +343,53 @@ fn main() {
         {
             #[cfg(feature = "profiling")]
             microprofile::scope!("game-loop", "ecs");
-            AcquireFramebuffer::exec(&renderer, &present_data, &mut image_index);
-            CalculateFrameTiming::exec(&mut frame_timing);
-            input_handler.exec(
+            let window_resized = input_handler.exec(
                 &renderer.instance.window,
                 &mut gui.imgui,
                 &mut input_state,
                 &mut camera,
             );
+
+            if window_resized {
+                unsafe {
+                    renderer.device.device_wait_idle().unwrap();
+                }
+                swapchain.resize_to_fit();
+                main_attachments = MainAttachments::new(&renderer, &swapchain);
+                depth_pass_data = DepthPassData::new(
+                    &renderer,
+                    &model_data,
+                    &main_attachments,
+                    &swapchain,
+                    &camera_matrices,
+                );
+                main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
+                present_data = PresentData::new(&renderer);
+            }
+
+            let swapchain_needs_recreating =
+                AcquireFramebuffer::exec(&renderer, &present_data, &swapchain, &mut image_index);
+            if swapchain_needs_recreating {
+                unsafe {
+                    renderer.device.device_wait_idle().unwrap();
+                }
+                swapchain.resize_to_fit();
+                main_attachments = MainAttachments::new(&renderer, &swapchain);
+                depth_pass_data = DepthPassData::new(
+                    &renderer,
+                    &model_data,
+                    &main_attachments,
+                    &swapchain,
+                    &camera_matrices,
+                );
+                main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
+                present_data = PresentData::new(&renderer);
+                AcquireFramebuffer::exec(&renderer, &present_data, &swapchain, &mut image_index);
+            }
+
+            CalculateFrameTiming::exec(&mut frame_timing);
             fly_camera.exec(&input_state, &frame_timing, &mut camera);
-            ProjectCamera::exec(&renderer, &mut camera);
+            ProjectCamera::exec(&swapchain, &mut camera);
             LaunchProjectileTest::exec(
                 &mut entities,
                 &mut position_storage,
@@ -488,6 +530,7 @@ fn main() {
                         &camera,
                         &camera_matrices,
                         &mut depth_pass_data,
+                        &swapchain,
                         &model_data,
                         &mut graphics_command_pool,
                         &shadow_mapping_data,
@@ -497,6 +540,7 @@ fn main() {
             Renderer::exec(
                 &renderer,
                 &main_framebuffer,
+                &swapchain,
                 &mut gui,
                 &input_handler,
                 &base_color_descriptor_set,
@@ -511,7 +555,7 @@ fn main() {
                 &shadow_mapping_data,
                 &camera_matrices,
             );
-            PresentFramebuffer::exec(&renderer, &present_data, &image_index);
+            PresentFramebuffer::exec(&renderer, &present_data, &swapchain, &image_index);
             {
                 let maintain_mask = entities.maintain();
                 meshes_storage.maintain(&maintain_mask);

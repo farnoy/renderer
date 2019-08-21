@@ -11,7 +11,7 @@ use winit::{
 };
 
 use crate::renderer::{
-    forward_vector, right_vector, up_vector, GltfMesh, GltfMeshBaseColorTexture, RenderFrame,
+    forward_vector, right_vector, up_vector, GltfMesh, GltfMeshBaseColorTexture, Swapchain,
 };
 
 pub struct ModelMatrixCalculation;
@@ -77,13 +77,14 @@ pub struct InputHandler {
 }
 
 impl InputHandler {
+    /// Returns true if resized
     pub fn exec(
         &mut self,
         window: &winit::Window,
         gui: &mut imgui::Context,
         input_state: &mut InputState,
         camera: &mut Camera,
-    ) {
+    ) -> bool {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "input handler");
         let quit_handle = Arc::clone(&self.quit_handle);
@@ -91,6 +92,7 @@ impl InputHandler {
         let move_mouse = self.move_mouse;
         let platform = &mut self.imgui_platform;
         let mut toggle_move_mouse = false;
+        let mut resized = false;
         self.events_loop.poll_events(|event| {
             match event {
                 Event::WindowEvent {
@@ -98,6 +100,7 @@ impl InputHandler {
                     ..
                 } => {
                     println!("The window was resized to {}x{}", width, height);
+                    resized = true;
                 }
                 Event::WindowEvent {
                     event: WindowEvent::HiDpiFactorChanged(f),
@@ -172,18 +175,20 @@ impl InputHandler {
         platform
             .prepare_frame(gui.io_mut(), &window)
             .expect("Failed to prepare frame");
+
+        resized
     }
 }
 
 pub struct ProjectCamera;
 
 impl ProjectCamera {
-    pub fn exec(renderer: &RenderFrame, camera: &mut Camera) {
+    pub fn exec(swapchain: &Swapchain, camera: &mut Camera) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "project camera");
         let near = 0.1;
         let far = 100.0;
-        let aspect = renderer.instance.window_width as f32 / renderer.instance.window_height as f32;
+        let aspect = swapchain.width as f32 / swapchain.height as f32;
         let fovy = glm::radians(&glm::vec1(70.0));
 
         camera.projection = glm::perspective_lh_zo(aspect, fovy.x, near, far);

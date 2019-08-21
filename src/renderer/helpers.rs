@@ -1,24 +1,8 @@
-use super::{device::DescriptorSetLayout, swapchain};
-#[cfg(windows)]
-use ash::extensions::khr::Win32Surface;
-#[cfg(all(unix, not(target_os = "android")))]
-use ash::extensions::khr::XlibSurface;
-use ash::{
-    extensions,
-    version::{DeviceV1_0, EntryV1_0},
-    vk, Instance as AshInstance,
-};
+use super::device::DescriptorSetLayout;
+use ash::{version::DeviceV1_0, vk};
 use std::{ffi::CString, fs::File, io::Read, path::PathBuf, sync::Arc, u32};
-#[cfg(windows)]
-use winapi;
-use winit;
 
-use super::{device::Device, instance::Instance};
-
-pub struct Swapchain {
-    pub handle: swapchain::Swapchain,
-    pub surface_format: vk::SurfaceFormatKHR,
-}
+use super::device::Device;
 
 pub struct SwapchainImage {
     pub handle: vk::Image,
@@ -86,92 +70,6 @@ impl Drop for PipelineLayout {
 impl Drop for Pipeline {
     fn drop(&mut self) {
         unsafe { self.device.device.destroy_pipeline(self.handle, None) }
-    }
-}
-
-pub fn new_swapchain(instance: &Instance, device: &Device) -> Swapchain {
-    let Instance {
-        ref entry,
-        surface,
-        window_width,
-        window_height,
-        ..
-    } = *instance;
-    let Device {
-        physical_device, ..
-    } = *device;
-
-    let surface_loader = extensions::khr::Surface::new(entry.vk(), instance.vk());
-    let present_mode = vk::PresentModeKHR::FIFO;
-    let surface_formats = unsafe {
-        surface_loader
-            .get_physical_device_surface_formats(physical_device, surface)
-            .unwrap()
-    };
-    let surface_format = surface_formats
-        .iter()
-        .map(|sfmt| match sfmt.format {
-            vk::Format::UNDEFINED => vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8_UNORM,
-                color_space: sfmt.color_space,
-            },
-            _ => *sfmt,
-        })
-        .nth(0)
-        .expect("Unable to find suitable surface format.");
-    let surface_capabilities = unsafe {
-        surface_loader
-            .get_physical_device_surface_capabilities(physical_device, surface)
-            .unwrap()
-    };
-    let mut desired_image_count = surface_capabilities.min_image_count + 1;
-    if surface_capabilities.max_image_count > 0
-        && desired_image_count > surface_capabilities.max_image_count
-    {
-        desired_image_count = surface_capabilities.max_image_count;
-    }
-    let surface_resolution = match surface_capabilities.current_extent.width {
-        u32::MAX => vk::Extent2D {
-            width: window_width,
-            height: window_height,
-        },
-        _ => surface_capabilities.current_extent,
-    };
-    let pre_transform = if surface_capabilities
-        .supported_transforms
-        .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-    {
-        vk::SurfaceTransformFlagsKHR::IDENTITY
-    } else {
-        surface_capabilities.current_transform
-    };
-
-    let swapchain_loader = extensions::khr::Swapchain::new(instance.vk(), device.vk());
-    let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
-        .surface(surface)
-        .min_image_count(desired_image_count)
-        .image_color_space(surface_format.color_space)
-        .image_format(surface_format.format)
-        .image_extent(surface_resolution)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .pre_transform(pre_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(present_mode)
-        .clipped(true)
-        .image_array_layers(1);
-    let swapchain = unsafe {
-        swapchain_loader
-            .create_swapchain(&swapchain_create_info, None)
-            .unwrap()
-    };
-
-    device.set_object_name(swapchain, "Window surface");
-
-    let swapchain = swapchain::Swapchain::new(swapchain_loader, swapchain);
-    Swapchain {
-        handle: swapchain,
-        surface_format,
     }
 }
 
@@ -317,39 +215,6 @@ pub fn new_compute_pipeline(
         handle: pipelines[0],
         device,
     }
-}
-
-#[cfg(all(unix, not(target_os = "android")))]
-pub unsafe fn create_surface<E: EntryV1_0>(
-    entry: &E,
-    instance: &AshInstance,
-    window: &winit::Window,
-) -> Result<vk::SurfaceKHR, vk::Result> {
-    use winit::os::unix::WindowExt;
-    let x11_display = window.get_xlib_display().unwrap();
-    let x11_window = window.get_xlib_window().unwrap();
-    let x11_create_info = vk::XlibSurfaceCreateInfoKHR::builder()
-        .window(x11_window as vk::Window)
-        .dpy(x11_display as *mut vk::Display);
-    let xlib_surface_loader = XlibSurface::new(entry, instance);
-    xlib_surface_loader.create_xlib_surface(&x11_create_info, None)
-}
-
-#[cfg(windows)]
-pub unsafe fn create_surface<E: EntryV1_0>(
-    entry: &E,
-    instance: &AshInstance,
-    window: &winit::Window,
-) -> Result<vk::SurfaceKHR, vk::Result> {
-    use std::ffi::c_void;
-    use winit::os::windows::WindowExt;
-    let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
-    let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const c_void;
-    let win32_create_info = vk::Win32SurfaceCreateInfoKHR::builder()
-        .hinstance(hinstance)
-        .hwnd(hwnd as *const c_void);
-    let win32_surface_loader = Win32Surface::new(entry, instance);
-    win32_surface_loader.create_win32_surface(&win32_create_info, None)
 }
 
 pub fn pick_lod<T>(lods: &[T], camera_pos: na::Point3<f32>, mesh_pos: na::Point3<f32>) -> &T {
