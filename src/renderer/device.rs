@@ -58,12 +58,12 @@ impl Device {
                 .enumerate()
                 .filter_map(|(ix, info)| unsafe {
                     let supports_graphic_and_surface =
-                        info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-                    &&surface.ext.get_physical_device_surface_support(
-                        physical_device,
-                        ix as u32,
-                        surface.surface,
-                    );
+                        info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                            && surface.ext.get_physical_device_surface_support(
+                                physical_device,
+                                ix as u32,
+                                surface.surface,
+                            );
                     if supports_graphic_and_surface {
                         Some(ix as u32)
                     } else {

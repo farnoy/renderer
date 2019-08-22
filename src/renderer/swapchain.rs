@@ -67,11 +67,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn new(
-        instance: &Arc<Instance>,
-        device: &Arc<Device>,
-        surface: Surface,
-    ) -> Swapchain {
+    pub fn new(instance: &Arc<Instance>, device: &Arc<Device>, surface: Surface) -> Swapchain {
         let surface_capabilities = unsafe {
             surface
                 .ext
@@ -122,7 +118,7 @@ impl Swapchain {
         Swapchain {
             swapchain,
             ext: swapchain_loader,
-            surface: surface,
+            surface,
             device: Arc::clone(&device),
             width: surface_resolution.width,
             height: surface_resolution.height,
