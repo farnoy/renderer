@@ -16,8 +16,7 @@ pub struct LoadedMesh {
     pub uv_buffer: Buffer,
     pub index_buffers: Vec<(Buffer, u64)>,
     pub vertex_len: u64,
-    pub aabb_c: na::Vector3<f32>,
-    pub aabb_h: na::Vector3<f32>,
+    pub aabb: ncollide3d::bounding_volume::AABB<f32>,
     pub base_color: Image,
 }
 
@@ -56,8 +55,10 @@ pub fn load(
         .into_f32()
         .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
-    let aabb_c = (na::Vector3::from(bounding_box.max) + na::Vector3::from(bounding_box.min)) / 2.0;
-    let aabb_h = (na::Vector3::from(bounding_box.max) - na::Vector3::from(bounding_box.min)) / 2.0;
+    let aabb = ncollide3d::bounding_volume::AABB::new(
+        na::Point3::from(bounding_box.min),
+        na::Point3::from(bounding_box.max),
+    );
     let normals = reader
         .read_normals()
         .expect("failed to load normals")
@@ -428,8 +429,7 @@ pub fn load(
         uv_buffer,
         index_buffers,
         vertex_len,
-        aabb_c,
-        aabb_h,
+        aabb,
         base_color: base_color_vkimage,
     }
 }

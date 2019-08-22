@@ -29,7 +29,7 @@ fn main() {
     let mut rotation_storage = ComponentStorage::<na::UnitQuaternion<f32>>::new();
     let mut scale_storage = ComponentStorage::<f32>::new();
     let mut model_matrices_storage = ComponentStorage::<glm::Mat4>::new();
-    let mut aabb_storage = ComponentStorage::<AABB>::new();
+    let mut aabb_storage = ComponentStorage::<ncollide3d::bounding_volume::AABB<f32>>::new();
     let mut meshes_storage = ComponentStorage::<GltfMesh>::new();
     let mut light_storage = ComponentStorage::<Light>::new();
     let mut projectile_velocities_storage = ComponentStorage::<f32>::new();
@@ -113,8 +113,7 @@ fn main() {
         uv_buffer,
         index_buffers,
         vertex_len,
-        aabb_c,
-        aabb_h,
+        aabb,
         base_color,
     } = load_gltf(
         &renderer,
@@ -173,8 +172,7 @@ fn main() {
             uv_buffer: Arc::clone(&uv_buffer),
             index_buffers: Arc::clone(&index_buffers),
             vertex_len,
-            aabb_c,
-            aabb_h,
+            aabb: aabb.clone(),
         },
     );
     base_color_texture_storage.insert(2, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
@@ -193,8 +191,7 @@ fn main() {
             uv_buffer: Arc::clone(&uv_buffer),
             index_buffers: Arc::clone(&index_buffers),
             vertex_len,
-            aabb_c,
-            aabb_h,
+            aabb: aabb.clone(),
         },
     );
     base_color_texture_storage.insert(3, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
@@ -213,8 +210,7 @@ fn main() {
             uv_buffer: Arc::clone(&uv_buffer),
             index_buffers: Arc::clone(&index_buffers),
             vertex_len,
-            aabb_c,
-            aabb_h,
+            aabb: aabb.clone(),
         },
     );
     base_color_texture_storage.insert(4, GltfMeshBaseColorTexture(Arc::clone(&base_color)));
@@ -226,8 +222,7 @@ fn main() {
         box_index_buffers,
         box_base_color,
         box_vertex_len,
-        box_aabb_c,
-        box_aabb_h,
+        box_aabb,
     ) = {
         let LoadedMesh {
             vertex_buffer,
@@ -235,8 +230,7 @@ fn main() {
             uv_buffer,
             index_buffers,
             vertex_len,
-            aabb_c,
-            aabb_h,
+            aabb,
             base_color,
         } = {
             load_gltf(
@@ -253,8 +247,7 @@ fn main() {
             Arc::new(index_buffers),
             Arc::new(base_color),
             vertex_len,
-            aabb_c,
-            aabb_h,
+            aabb,
         )
     };
 
@@ -265,8 +258,7 @@ fn main() {
             uv_buffer: Arc::clone(&box_uv_buffer),
             index_buffers: Arc::clone(&box_index_buffers),
             vertex_len: box_vertex_len,
-            aabb_c: box_aabb_c,
-            aabb_h: box_aabb_h,
+            aabb: box_aabb.clone(),
         },
         projectile_texture: Arc::clone(&box_base_color),
     };
@@ -282,8 +274,7 @@ fn main() {
             uv_buffer: Arc::clone(&box_uv_buffer),
             index_buffers: Arc::clone(&box_index_buffers),
             vertex_len: box_vertex_len,
-            aabb_c: box_aabb_c,
-            aabb_h: box_aabb_h,
+            aabb: box_aabb.clone(),
         },
     );
     base_color_texture_storage.insert(5, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
@@ -299,8 +290,7 @@ fn main() {
             uv_buffer: Arc::clone(&box_uv_buffer),
             index_buffers: Arc::clone(&box_index_buffers),
             vertex_len: box_vertex_len,
-            aabb_c: box_aabb_c,
-            aabb_h: box_aabb_h,
+            aabb: box_aabb.clone(),
         },
     );
     base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
@@ -328,8 +318,7 @@ fn main() {
                 uv_buffer: Arc::clone(&uv_buffer),
                 index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
-                aabb_c,
-                aabb_h,
+                aabb: aabb.clone(),
             },
         );
         base_color_texture_storage.insert(ix, GltfMeshBaseColorTexture(Arc::clone(&base_color)));

@@ -1,4 +1,4 @@
-use super::{components::*, custom::*, resources::*};
+use super::{custom::*, resources::*};
 use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
@@ -244,7 +244,7 @@ impl AABBCalculation {
         entities: &EntitiesStorage,
         model_matrices: &ComponentStorage<glm::Mat4>,
         meshes: &ComponentStorage<GltfMesh>,
-        aabb: &mut ComponentStorage<AABB>,
+        aabb: &mut ComponentStorage<ncollide3d::bounding_volume::AABB<f32>>,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "aabb calculation");
@@ -254,8 +254,8 @@ impl AABBCalculation {
         for entity_id in desired.iter() {
             let model_matrix = model_matrices.get(entity_id).unwrap();
             let mesh = meshes.get(entity_id).unwrap();
-            let min = mesh.aabb_c - mesh.aabb_h;
-            let max = mesh.aabb_c + mesh.aabb_h;
+            let min = mesh.aabb.mins();
+            let max = mesh.aabb.maxs();
             let (min, max) = [
                 // bottom half (min y)
                 na::Point3::new(min.x, min.y, min.z),
@@ -282,14 +282,16 @@ impl AABBCalculation {
             );
             let min = na::Vector3::new(min.0, min.1, min.2);
             let max = na::Vector3::new(max.0, max.1, max.2);
-            let new = AABB {
-                c: (max + min) / 2.0,
-                h: (max - min) / 2.0,
-            };
-            *aabb.entry(entity_id).or_insert(AABB {
-                c: na::zero(),
-                h: na::zero(),
-            }) = new;
+            let new = ncollide3d::bounding_volume::AABB::from_half_extents(
+                na::Point3::from((max + min) / 2.0),
+                (max - min) / 2.0,
+            );
+            *aabb.entry(entity_id).or_insert(
+                ncollide3d::bounding_volume::AABB::from_half_extents(
+                    na::Point3::origin(),
+                    na::zero(),
+                ),
+            ) = new;
         }
     }
 }

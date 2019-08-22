@@ -51,8 +51,7 @@ pub struct GltfMesh {
     pub uv_buffer: Arc<Buffer>,
     pub index_buffers: Arc<Vec<(Buffer, u64)>>,
     pub vertex_len: u64,
-    pub aabb_c: na::Vector3<f32>,
-    pub aabb_h: na::Vector3<f32>,
+    pub aabb: ncollide3d::bounding_volume::AABB<f32>,
 }
 
 // TODO: rename

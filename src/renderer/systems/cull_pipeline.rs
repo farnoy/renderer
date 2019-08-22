@@ -8,7 +8,7 @@ use super::{
     consolidate_mesh_buffers::ConsolidatedMeshBuffers,
     present::ImageIndex,
 };
-use crate::ecs::{components::AABB, custom::*, systems::Camera};
+use crate::ecs::{custom::*, systems::Camera};
 use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},
@@ -51,7 +51,7 @@ pub struct CullPassEvent {
 impl CoarseCulling {
     pub fn exec(
         entities: &EntitiesStorage,
-        aabbs: &ComponentStorage<AABB>,
+        aabbs: &ComponentStorage<ncollide3d::bounding_volume::AABB<f32>>,
         camera: &Camera,
         coarse_culled: &mut ComponentStorage<CoarseCulled>,
     ) {
@@ -61,9 +61,9 @@ impl CoarseCulling {
             let aabb = aabbs.get(entity_id).unwrap();
             let mut outside = false;
             'per_plane: for plane in camera.frustum_planes.iter() {
-                let e = aabb.h.dot(&plane.xyz().abs());
+                let e = aabb.half_extents().dot(&plane.xyz().abs());
 
-                let s = plane.dot(&aabb.c.push(1.0));
+                let s = plane.dot(&aabb.center().to_homogeneous());
                 if s - e > 0.0 {
                     outside = true;
                     break 'per_plane;
