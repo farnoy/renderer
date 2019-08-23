@@ -10,6 +10,7 @@ mod swapchain;
 mod systems {
     pub mod consolidate_mesh_buffers;
     pub mod cull_pipeline;
+    pub mod debug_aabb_renderer;
     pub mod present;
     pub mod shadow_mapping;
     pub mod textures;
@@ -29,7 +30,8 @@ pub use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     swapchain::*,
     systems::{
-        consolidate_mesh_buffers::*, cull_pipeline::*, present::*, shadow_mapping::*, textures::*,
+        consolidate_mesh_buffers::*, cull_pipeline::*, debug_aabb_renderer::*, present::*,
+        shadow_mapping::*, textures::*,
     },
 };
 
@@ -740,8 +742,12 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn exec(
         renderer: &RenderFrame,
+        runtime_config: &RuntimeConfiguration,
         main_framebuffer: &MainFramebuffer,
         swapchain: &Swapchain,
+        entities: &EntitiesStorage,
+        debug_aabb_pass_data: &DebugAABBPassData,
+        aabbs: &ComponentStorage<ncollide3d::bounding_volume::AABB<f32>>,
         gui_render: &mut GuiRender,
         gui_draw_data: &imgui::DrawData,
         base_color_descriptor_set: &BaseColorDescriptorSet,
@@ -850,56 +856,68 @@ impl Renderer {
                                 },
                             }],
                         );
-                        renderer.device.debug_marker_around(
-                            command_buffer,
-                            "gltf meshes",
-                            [1.0, 0.0, 0.0, 1.0],
-                            || {
-                                // gltf mesh
-                                renderer.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    gltf_pass.gltf_pipeline.handle,
-                                );
-                                gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
-                                    &renderer.device,
-                                    command_buffer,
-                                    &model_data.model_set.current(image_index.0),
-                                    &camera_matrices.set.current(image_index.0),
-                                    shadow_mapping_data.user_set.current(image_index.0),
-                                    base_color_descriptor_set.set.current(image_index.0),
-                                );
-                                renderer.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    cull_pass_data
-                                        .culled_index_buffer
-                                        .current(image_index.0)
-                                        .handle,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                renderer.device.cmd_bind_vertex_buffers(
-                                    command_buffer,
-                                    0,
-                                    &[
-                                        consolidated_mesh_buffers.position_buffer.handle,
-                                        consolidated_mesh_buffers.normal_buffer.handle,
-                                        consolidated_mesh_buffers.uv_buffer.handle,
-                                    ],
-                                    &[0, 0, 0],
-                                );
-                                renderer.device.cmd_draw_indexed_indirect(
-                                    command_buffer,
-                                    cull_pass_data
-                                        .culled_commands_buffer
-                                        .current(image_index.0)
-                                        .handle,
-                                    0,
-                                    total,
-                                    size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                                );
-                            },
-                        );
+                        if runtime_config.debug_aabbs {
+                            DebugAABBPass::exec(
+                                &entities,
+                                &renderer,
+                                command_buffer,
+                                &debug_aabb_pass_data,
+                                &aabbs,
+                                &image_index,
+                                &camera_matrices,
+                            );
+                        } else {
+                            renderer.device.debug_marker_around(
+                                command_buffer,
+                                "gltf meshes",
+                                [1.0, 0.0, 0.0, 1.0],
+                                || {
+                                    // gltf mesh
+                                    renderer.device.cmd_bind_pipeline(
+                                        command_buffer,
+                                        vk::PipelineBindPoint::GRAPHICS,
+                                        gltf_pass.gltf_pipeline.handle,
+                                    );
+                                    gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
+                                        &renderer.device,
+                                        command_buffer,
+                                        &model_data.model_set.current(image_index.0),
+                                        &camera_matrices.set.current(image_index.0),
+                                        shadow_mapping_data.user_set.current(image_index.0),
+                                        base_color_descriptor_set.set.current(image_index.0),
+                                    );
+                                    renderer.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        cull_pass_data
+                                            .culled_index_buffer
+                                            .current(image_index.0)
+                                            .handle,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    renderer.device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[
+                                            consolidated_mesh_buffers.position_buffer.handle,
+                                            consolidated_mesh_buffers.normal_buffer.handle,
+                                            consolidated_mesh_buffers.uv_buffer.handle,
+                                        ],
+                                        &[0, 0, 0],
+                                    );
+                                    renderer.device.cmd_draw_indexed_indirect(
+                                        command_buffer,
+                                        cull_pass_data
+                                            .culled_commands_buffer
+                                            .current(image_index.0)
+                                            .handle,
+                                        0,
+                                        total,
+                                        size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                                    );
+                                },
+                            );
+                        }
                         renderer.device.debug_marker_around(
                             command_buffer,
                             "GUI",
@@ -1330,6 +1348,7 @@ impl DepthOnlyPass {
     #[allow(clippy::too_many_arguments)]
     pub fn exec(
         renderer: &RenderFrame,
+        runtime_config: &RuntimeConfiguration,
         entities: &EntitiesStorage,
         image_index: &ImageIndex,
         meshes: &ComponentStorage<GltfMesh>,
@@ -1374,66 +1393,69 @@ impl DepthOnlyPass {
                                 }]),
                             vk::SubpassContents::INLINE,
                         );
-                        renderer.device.cmd_set_viewport(
-                            command_buffer,
-                            0,
-                            &[vk::Viewport {
-                                x: 0.0,
-                                y: swapchain.height as f32,
-                                width: swapchain.width as f32,
-                                height: -(swapchain.height as f32),
-                                min_depth: 0.0,
-                                max_depth: 1.0,
-                            }],
-                        );
-                        renderer.device.cmd_set_scissor(
-                            command_buffer,
-                            0,
-                            &[vk::Rect2D {
-                                offset: vk::Offset2D { x: 0, y: 0 },
-                                extent: vk::Extent2D {
-                                    width: swapchain.width,
-                                    height: swapchain.height,
-                                },
-                            }],
-                        );
-                        renderer.device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            depth_pass.depth_pipeline.handle,
-                        );
-                        depth_pass.depth_pipeline_layout.bind_descriptor_sets(
-                            &renderer.device,
-                            command_buffer,
-                            &model_data.model_set.current(image_index.0),
-                            &camera_matrices.set.current(image_index.0),
-                        );
-                        for entity_id in (entities.mask() & meshes.mask() & positions.mask()).iter()
-                        {
-                            let mesh = meshes.get(entity_id).unwrap();
-                            let mesh_position = positions.get(entity_id).unwrap();
-                            let (index_buffer, index_count) =
-                                pick_lod(&mesh.index_buffers, camera.position, *mesh_position);
-                            renderer.device.cmd_bind_index_buffer(
-                                command_buffer,
-                                index_buffer.handle,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
-                            renderer.device.cmd_bind_vertex_buffers(
+                        if !runtime_config.debug_aabbs {
+                            renderer.device.cmd_set_viewport(
                                 command_buffer,
                                 0,
-                                &[mesh.vertex_buffer.handle],
-                                &[0],
+                                &[vk::Viewport {
+                                    x: 0.0,
+                                    y: swapchain.height as f32,
+                                    width: swapchain.width as f32,
+                                    height: -(swapchain.height as f32),
+                                    min_depth: 0.0,
+                                    max_depth: 1.0,
+                                }],
                             );
-                            renderer.device.cmd_draw_indexed(
+                            renderer.device.cmd_set_scissor(
                                 command_buffer,
-                                (*index_count).try_into().unwrap(),
-                                1,
                                 0,
-                                0,
-                                entity_id,
+                                &[vk::Rect2D {
+                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                    extent: vk::Extent2D {
+                                        width: swapchain.width,
+                                        height: swapchain.height,
+                                    },
+                                }],
                             );
+                            renderer.device.cmd_bind_pipeline(
+                                command_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                depth_pass.depth_pipeline.handle,
+                            );
+                            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                                &renderer.device,
+                                command_buffer,
+                                &model_data.model_set.current(image_index.0),
+                                &camera_matrices.set.current(image_index.0),
+                            );
+                            for entity_id in
+                                (entities.mask() & meshes.mask() & positions.mask()).iter()
+                            {
+                                let mesh = meshes.get(entity_id).unwrap();
+                                let mesh_position = positions.get(entity_id).unwrap();
+                                let (index_buffer, index_count) =
+                                    pick_lod(&mesh.index_buffers, camera.position, *mesh_position);
+                                renderer.device.cmd_bind_index_buffer(
+                                    command_buffer,
+                                    index_buffer.handle,
+                                    0,
+                                    vk::IndexType::UINT32,
+                                );
+                                renderer.device.cmd_bind_vertex_buffers(
+                                    command_buffer,
+                                    0,
+                                    &[mesh.vertex_buffer.handle],
+                                    &[0],
+                                );
+                                renderer.device.cmd_draw_indexed(
+                                    command_buffer,
+                                    (*index_count).try_into().unwrap(),
+                                    1,
+                                    0,
+                                    0,
+                                    entity_id,
+                                );
+                            }
                         }
                         renderer.device.cmd_end_render_pass(command_buffer);
                     },

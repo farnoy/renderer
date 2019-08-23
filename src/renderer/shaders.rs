@@ -526,3 +526,15 @@ make_pipe!(imgui_pipe {
     descriptors: [imgui_set],
     push_constants: ImguiPushConstants
 });
+
+#[repr(C)]
+pub struct DebugAABBPushConstants {
+    pub center: glm::Vec4,
+    pub half_extent: glm::Vec4,
+}
+
+make_pipe!(debug_aabb {
+    vertex_inputs: [],
+    descriptors: [camera_set],
+    push_constants: DebugAABBPushConstants
+});

@@ -109,6 +109,8 @@ fn main() {
         &camera_matrices,
     );
 
+    let debug_aabb_pass_data = DebugAABBPassData::new(&renderer, &camera_matrices);
+
     let mut main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
 
     let LoadedMesh {
@@ -520,6 +522,7 @@ fn main() {
                     );
                     DepthOnlyPass::exec(
                         &renderer,
+                        &runtime_config,
                         &entities,
                         &image_index,
                         &meshes_storage,
@@ -543,8 +546,12 @@ fn main() {
             );
             Renderer::exec(
                 &renderer,
+                &runtime_config,
                 &main_framebuffer,
                 &swapchain,
+                &entities,
+                &debug_aabb_pass_data,
+                &aabb_storage,
                 &mut gui_render,
                 &gui_draw_data,
                 &base_color_descriptor_set,

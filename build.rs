@@ -9,6 +9,8 @@ fn main() {
     let dest = env::var("OUT_DIR").unwrap();
     let dest = Path::new(&dest);
     let shaders = [
+        "debug_aabb.frag",
+        "debug_aabb.vert",
         "depth_prepass.vert",
         "generate_work.comp",
         "gltf_mesh.frag",
