@@ -98,7 +98,6 @@ fn main() {
     let mut input_handler = InputHandler {
         events_loop,
         quit_handle: quit_handle.clone(),
-        move_mouse: false,
         imgui_platform,
     };
 
@@ -345,6 +344,7 @@ fn main() {
                 &mut gui.imgui,
                 &mut input_state,
                 &mut camera,
+                &mut runtime_config,
             );
 
             if window_resized {
@@ -385,7 +385,7 @@ fn main() {
             }
 
             CalculateFrameTiming::exec(&mut frame_timing);
-            fly_camera.exec(&input_state, &frame_timing, &mut camera);
+            fly_camera.exec(&input_state, &frame_timing, &runtime_config, &mut camera);
             ProjectCamera::exec(&swapchain, &mut camera);
             LaunchProjectileTest::exec(
                 &mut entities,
@@ -534,8 +534,13 @@ fn main() {
                     );
                 },
             );
-            let gui_draw_data =
-                gui.update(&renderer, &input_handler, &swapchain, &mut runtime_config);
+            let gui_draw_data = gui.update(
+                &renderer,
+                &input_handler,
+                &swapchain,
+                &camera,
+                &mut runtime_config,
+            );
             Renderer::exec(
                 &renderer,
                 &main_framebuffer,

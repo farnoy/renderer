@@ -73,7 +73,6 @@ impl Default for Camera {
 pub struct InputHandler {
     pub events_loop: winit::EventsLoop,
     pub quit_handle: Arc<Mutex<bool>>,
-    pub move_mouse: bool,
     pub imgui_platform: WinitPlatform,
 }
 
@@ -85,16 +84,18 @@ impl InputHandler {
         gui: &mut imgui::Context,
         input_state: &mut InputState,
         camera: &mut Camera,
+        runtime_config: &mut RuntimeConfiguration,
     ) -> bool {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "input handler");
         let quit_handle = Arc::clone(&self.quit_handle);
         input_state.clear();
-        let move_mouse = self.move_mouse;
+        let fly_mode = runtime_config.fly_mode;
         let platform = &mut self.imgui_platform;
-        let mut toggle_move_mouse = false;
+        let mut toggle_fly_mode = false;
         let mut resized = false;
         self.events_loop.poll_events(|event| {
+            platform.handle_event(gui.io_mut(), &window, &event);
             match event {
                 Event::WindowEvent {
                     event: WindowEvent::Resized(LogicalSize { width, height }),
@@ -134,7 +135,7 @@ impl InputHandler {
                     }
                     match virtual_keycode {
                         Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
-                            toggle_move_mouse = true;
+                            toggle_fly_mode = true;
                         }
                         Some(VirtualKeyCode::Escape) => {
                             *quit_handle.lock() = true;
@@ -145,7 +146,7 @@ impl InputHandler {
                 Event::DeviceEvent {
                     event: DeviceEvent::MouseMotion { delta: (x, y), .. },
                     ..
-                } if move_mouse => {
+                } if fly_mode => {
                     let y_angle = f32::pi() / 180.0 * y as f32;
                     let x_angle = f32::pi() / 180.0 * x as f32;
                     camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
@@ -164,15 +165,8 @@ impl InputHandler {
                 }
                 _ => (),
             };
-            if !move_mouse {
-                platform.handle_event(gui.io_mut(), &window, &event);
-            }
         });
-        self.move_mouse = if toggle_move_mouse {
-            !self.move_mouse
-        } else {
-            self.move_mouse
-        };
+        runtime_config.fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
         platform
             .prepare_frame(gui.io_mut(), &window)
             .expect("Failed to prepare frame");
@@ -346,7 +340,17 @@ impl Default for FlyCamera {
 }
 
 impl FlyCamera {
-    pub fn exec(&mut self, input: &InputState, frame_timing: &FrameTiming, camera: &mut Camera) {
+    pub fn exec(
+        &mut self,
+        input: &InputState,
+        frame_timing: &FrameTiming,
+        runtime_config: &RuntimeConfiguration,
+        camera: &mut Camera,
+    ) {
+        if !runtime_config.fly_mode {
+            return;
+        }
+
         for key in &input.key_presses {
             match key {
                 Some(VirtualKeyCode::W) => {
@@ -491,13 +495,18 @@ impl UpdateProjectiles {
     }
 }
 
+/// Grab-bag for renderer and player controller variables for now
 pub struct RuntimeConfiguration {
     pub debug_aabbs: bool,
+    pub fly_mode: bool,
 }
 
 impl RuntimeConfiguration {
     pub fn new() -> RuntimeConfiguration {
-        RuntimeConfiguration { debug_aabbs: false }
+        RuntimeConfiguration {
+            debug_aabbs: false,
+            fly_mode: false,
+        }
     }
 }
 
@@ -520,6 +529,7 @@ impl Gui {
         renderer: &RenderFrame,
         input_handler: &InputHandler,
         swapchain: &Swapchain,
+        camera: &Camera,
         runtime_config: &mut RuntimeConfiguration,
     ) -> &'a imgui::DrawData {
         let imgui = &mut self.imgui;
@@ -544,7 +554,34 @@ impl Gui {
                 ui.bullet_text(&im_str!("used bytes: {} {}", used.0, used.1,));
                 let unused = unbytify::bytify(alloc_stats.total.unusedBytes);
                 ui.bullet_text(&im_str!("unused bytes: {} {}", unused.0, unused.1,));
-                ui.separator();
+
+                ui.spacing();
+
+                if ui
+                    .collapsing_header(&im_str!("Camera"))
+                    .default_open(true)
+                    .build()
+                {
+                    ui.text(&im_str!("Camera:"));
+                    let x = camera.position.x;
+                    let y = camera.position.y;
+                    let z = camera.position.z;
+                    let s = format!("position: x={:.2} y={:.2} z={:.2}", x, y, z);
+                    ui.bullet_text(&im_str!("{}", s));
+                    let (x, y, z) = camera.rotation.euler_angles();
+                    let (x, y, z) = (
+                        x * 180.0 / f32::pi(),
+                        y * 180.0 / f32::pi(),
+                        z * 180.0 / f32::pi(),
+                    );
+                    let s = format!("rotation: x={:5.2} y={:5.2} z={:5.2}", x, y, z);
+                    ui.bullet_text(&im_str!("{}", s));
+                    ui.checkbox(
+                        &im_str!("[G] Camera fly mode"),
+                        &mut runtime_config.fly_mode,
+                    );
+                    ui.spacing();
+                }
                 ui.checkbox(
                     &im_str!("Debug collision AABBs"),
                     &mut runtime_config.debug_aabbs,
