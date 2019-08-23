@@ -1,4 +1,5 @@
-use super::{custom::*, resources::*};
+use super::{super::renderer::*, custom::*, resources::*};
+use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
@@ -487,5 +488,73 @@ impl UpdateProjectiles {
             let increment = velocity_scaled * (rotation * forward_vector().into_inner());
             *position += increment;
         }
+    }
+}
+
+pub struct RuntimeConfiguration {
+    pub debug_aabbs: bool,
+}
+
+impl RuntimeConfiguration {
+    pub fn new() -> RuntimeConfiguration {
+        RuntimeConfiguration { debug_aabbs: false }
+    }
+}
+
+pub struct Gui {
+    pub imgui: imgui::Context,
+}
+
+impl Gui {
+    pub fn new() -> Gui {
+        let mut imgui = imgui::Context::create();
+
+        imgui.style_mut().frame_border_size = 1.0;
+        imgui.style_mut().frame_rounding = 4.0;
+
+        Gui { imgui }
+    }
+
+    pub fn update<'a>(
+        &'a mut self,
+        renderer: &RenderFrame,
+        input_handler: &InputHandler,
+        swapchain: &Swapchain,
+        runtime_config: &mut RuntimeConfiguration,
+    ) -> &'a imgui::DrawData {
+        let imgui = &mut self.imgui;
+        imgui.io_mut().display_size = [swapchain.width as f32, swapchain.height as f32];
+        input_handler
+            .imgui_platform
+            .prepare_frame(imgui.io_mut(), &renderer.instance.window)
+            .unwrap();
+        let ui = imgui.frame();
+
+        let alloc_stats = renderer.device.allocation_stats();
+        ui.window(im_str!("Debug"))
+            .always_auto_resize(true)
+            .build(|| {
+                ui.text(&im_str!("Allocation stats:"));
+                ui.bullet_text(&im_str!("block count: {}", alloc_stats.total.blockCount));
+                ui.bullet_text(&im_str!(
+                    "alloc count: {}",
+                    alloc_stats.total.allocationCount
+                ));
+                let used = unbytify::bytify(alloc_stats.total.usedBytes);
+                ui.bullet_text(&im_str!("used bytes: {} {}", used.0, used.1,));
+                let unused = unbytify::bytify(alloc_stats.total.unusedBytes);
+                ui.bullet_text(&im_str!("unused bytes: {} {}", unused.0, unused.1,));
+                ui.separator();
+                ui.checkbox(
+                    &im_str!("Debug collision AABBs"),
+                    &mut runtime_config.debug_aabbs,
+                );
+            });
+
+        input_handler
+            .imgui_platform
+            .prepare_render(&ui, &renderer.instance.window);
+
+        ui.render()
     }
 }

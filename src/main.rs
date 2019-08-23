@@ -1,4 +1,5 @@
 #![feature(arbitrary_self_types)]
+#![allow(clippy::new_without_default)]
 
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
@@ -82,14 +83,18 @@ fn main() {
     );
     let mut shadow_mapping_data =
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
-    let mut gui = Gui::new(&renderer, &main_descriptor_pool);
 
+    let mut runtime_config = RuntimeConfiguration::new();
+
+    let mut gui = Gui::new();
+    let mut gui_render = GuiRender::new(&renderer, &main_descriptor_pool, &mut gui);
     let mut imgui_platform = WinitPlatform::init(&mut gui.imgui);
     imgui_platform.attach_window(
         gui.imgui.io_mut(),
         &renderer.instance.window,
         HiDpiMode::Locked(1.0), // TODO: Revert this to Default if we can make the app obey winit DPI
     );
+
     let mut input_handler = InputHandler {
         events_loop,
         quit_handle: quit_handle.clone(),
@@ -127,8 +132,11 @@ fn main() {
     let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
 
-    let ixes = entities.allocate_mask(207);
-    debug_assert_eq!(ixes.to_vec(), (0..207).collect::<Vec<_>>());
+    let max_entities = 207;
+    debug_assert!(max_entities > 7); // 7 static ones
+
+    let ixes = entities.allocate_mask(max_entities);
+    debug_assert_eq!(ixes.to_vec(), (0..max_entities).collect::<Vec<_>>());
 
     position_storage.replace_mask(&ixes);
     rotation_storage.replace_mask(&ixes);
@@ -295,7 +303,7 @@ fn main() {
     );
     base_color_texture_storage.insert(6, GltfMeshBaseColorTexture(Arc::clone(&box_base_color)));
 
-    for ix in 7..207 {
+    for ix in 7..max_entities {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
         let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
         let pos = rot.transform_point(&na::Point3::new(
@@ -526,12 +534,14 @@ fn main() {
                     );
                 },
             );
+            let gui_draw_data =
+                gui.update(&renderer, &input_handler, &swapchain, &mut runtime_config);
             Renderer::exec(
                 &renderer,
                 &main_framebuffer,
                 &swapchain,
-                &mut gui,
-                &input_handler,
+                &mut gui_render,
+                &gui_draw_data,
                 &base_color_descriptor_set,
                 &consolidated_mesh_buffers,
                 &cull_pass_data,

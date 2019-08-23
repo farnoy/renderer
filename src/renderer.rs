@@ -17,7 +17,6 @@ mod systems {
 
 use crate::ecs::{custom::*, systems::*};
 use ash::{version::DeviceV1_0, vk};
-use imgui::{self, im_str};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, sync::Arc};
@@ -743,8 +742,8 @@ impl Renderer {
         renderer: &RenderFrame,
         main_framebuffer: &MainFramebuffer,
         swapchain: &Swapchain,
-        gui: &mut Gui,
-        input_handler: &InputHandler,
+        gui_render: &mut GuiRender,
+        gui_draw_data: &imgui::DrawData,
         base_color_descriptor_set: &BaseColorDescriptorSet,
         consolidated_mesh_buffers: &ConsolidatedMeshBuffers,
         cull_pass_data: &CullPassData,
@@ -768,7 +767,7 @@ impl Renderer {
             let image_index = &image_index;
             let cull_pass_data = &cull_pass_data;
             move |command_buffer| unsafe {
-                if !gui.transitioned {
+                if !gui_render.transitioned {
                     renderer.device.cmd_pipeline_barrier(
                         command_buffer,
                         vk::PipelineStageFlags::HOST,
@@ -777,7 +776,7 @@ impl Renderer {
                         &[],
                         &[],
                         &[vk::ImageMemoryBarrier::builder()
-                            .image(gui.texture.handle)
+                            .image(gui_render.texture.handle)
                             .subresource_range(vk::ImageSubresourceRange {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
                                 base_mip_level: 0,
@@ -794,7 +793,7 @@ impl Renderer {
                             .build()],
                     );
                 }
-                gui.transitioned = true;
+                gui_render.transitioned = true;
                 let clear_values = &[
                     vk::ClearValue {
                         color: vk::ClearColorValue { float32: [0.0; 4] },
@@ -907,15 +906,14 @@ impl Renderer {
                             [1.0, 1.0, 0.0, 1.0],
                             || {
                                 // Split lifetimes
-                                let Gui {
-                                    ref mut imgui,
+                                let GuiRender {
                                     ref vertex_buffer,
                                     ref index_buffer,
                                     ref pipeline_layout,
                                     ref pipeline,
                                     ref descriptor_set,
                                     ..
-                                } = *gui;
+                                } = *gui_render;
                                 pipeline_layout.bind_descriptor_sets(
                                     &renderer.device,
                                     command_buffer,
@@ -938,44 +936,7 @@ impl Renderer {
                                     0,
                                     vk::IndexType::UINT16,
                                 );
-                                imgui.io_mut().display_size =
-                                    [swapchain.width as f32, swapchain.height as f32];
-                                let ui = imgui.frame();
-                                /*
-                                    imgui::FrameSize {
-                                        logical_size: (
-                                        ),
-                                        hidpi_factor: 1.0,
-                                    },
-                                    1.0,
-                                );
-                                */
-                                let alloc_stats = renderer.device.allocation_stats();
-                                let s = format!("Alloc stats {:?}", alloc_stats.total);
-                                ui.window(im_str!("Renderer"))
-                                    .size([500.0, 300.0], imgui::Condition::FirstUseEver)
-                                    .build(|| {
-                                        ui.text_wrapped(&im_str!("{}", s));
-                                    });
-
-                                ui.window(im_str!("Renderer 2"))
-                                    .position([600.0, 100.0], imgui::Condition::FirstUseEver)
-                                    .size([200.0, 300.0], imgui::Condition::FirstUseEver)
-                                    .build(|| {
-                                        ui.text_wrapped(&im_str!("kek"));
-                                    });
-
-                                ui.window(im_str!("Renderer 3"))
-                                    .position([300.0, 400.0], imgui::Condition::FirstUseEver)
-                                    .size([200.0, 300.0], imgui::Condition::FirstUseEver)
-                                    .build(|| {
-                                        ui.text_wrapped(&im_str!("kek"));
-                                    });
-                                input_handler
-                                    .imgui_platform
-                                    .prepare_render(&ui, &renderer.instance.window);
-                                let draw_data = ui.render();
-                                let [x, y] = draw_data.display_size;
+                                let [x, y] = gui_draw_data.display_size;
                                 {
                                     pipeline_layout.push_constants(
                                         &renderer.device,
@@ -995,7 +956,7 @@ impl Renderer {
                                     let mut index_slice = index_buffer
                                         .map::<imgui::DrawIdx>()
                                         .expect("Failed to map gui index buffer");
-                                    for draw_list in draw_data.draw_lists() {
+                                    for draw_list in gui_draw_data.draw_lists() {
                                         let index_len = draw_list.idx_buffer().len();
                                         index_slice
                                             [index_offset_coarse..index_offset_coarse + index_len]
@@ -1097,8 +1058,7 @@ impl Renderer {
     }
 }
 
-pub struct Gui {
-    pub imgui: imgui::Context,
+pub struct GuiRender {
     pub vertex_buffer: Buffer,
     pub index_buffer: Buffer,
     pub texture: Image,
@@ -1111,18 +1071,26 @@ pub struct Gui {
     pub transitioned: bool,
 }
 
-impl Gui {
-    pub fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> Gui {
-        let mut imgui = imgui::Context::create();
+impl GuiRender {
+    pub fn new(
+        renderer: &RenderFrame,
+        main_descriptor_pool: &MainDescriptorPool,
+        gui: &mut Gui,
+    ) -> GuiRender {
+        let imgui = &mut gui.imgui;
+        imgui
+            .io_mut()
+            .backend_flags
+            .insert(imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
         let vertex_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4096 * size_of::<imgui::DrawVert>() as vk::DeviceSize,
+            1024 * 1024 * size_of::<imgui::DrawVert>() as vk::DeviceSize,
         );
         let index_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::INDEX_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            4096 * size_of::<imgui::DrawIdx>() as vk::DeviceSize,
+            1024 * 1024 * size_of::<imgui::DrawIdx>() as vk::DeviceSize,
         );
         let texture = {
             let mut fonts = imgui.fonts();
@@ -1301,8 +1269,7 @@ impl Gui {
             );
         }
 
-        Gui {
-            imgui,
+        GuiRender {
             vertex_buffer,
             index_buffer,
             texture,
