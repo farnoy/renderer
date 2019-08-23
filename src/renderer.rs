@@ -1007,6 +1007,24 @@ impl Renderer {
                                         for draw_cmd in draw_list.commands() {
                                             match draw_cmd {
                                                 imgui::DrawCmd::Elements { count, cmd_params } => {
+                                                    renderer.device.cmd_set_scissor(
+                                                        command_buffer,
+                                                        0,
+                                                        &[vk::Rect2D {
+                                                            offset: vk::Offset2D {
+                                                                x: cmd_params.clip_rect[0] as i32,
+                                                                y: cmd_params.clip_rect[1] as i32,
+                                                            },
+                                                            extent: vk::Extent2D {
+                                                                width: (cmd_params.clip_rect[2]
+                                                                    - cmd_params.clip_rect[0])
+                                                                    as u32,
+                                                                height: (cmd_params.clip_rect[3]
+                                                                    - cmd_params.clip_rect[1])
+                                                                    as u32,
+                                                            },
+                                                        }],
+                                                    );
                                                     renderer.device.cmd_draw_indexed(
                                                         command_buffer,
                                                         count as u32,
