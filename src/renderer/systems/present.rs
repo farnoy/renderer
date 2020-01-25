@@ -1,5 +1,5 @@
 use super::super::{
-    device::{CommandBuffer, DoubleBuffered, Fence, Semaphore},
+    device::{CommandBuffer, DoubleBuffered, Semaphore},
     RenderFrame, Swapchain,
 };
 use ash::{version::DeviceV1_0, vk};
@@ -8,10 +8,9 @@ use microprofile::scope;
 use std::u64;
 
 pub struct PresentData {
-    pub(in super::super) render_complete_semaphore: Semaphore,
+    render_complete_semaphore: Semaphore,
     pub(in super::super) present_semaphore: Semaphore,
     pub(in super::super) render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
-    pub(in super::super) render_complete_fence: DoubleBuffered<Fence>,
 }
 
 pub struct ImageIndex(pub u32);
@@ -40,21 +39,12 @@ impl PresentData {
             .device
             .set_object_name(present_semaphore.handle, "Present semaphore");
 
-        let render_complete_fence = renderer.new_buffered(|ix| {
-            let f = renderer.device.new_fence();
-            renderer
-                .device
-                .set_object_name(f.handle, &format!("Render complete fence - {}", ix));
-            f
-        });
-
         let render_command_buffer = renderer.new_buffered(|_| None);
 
         PresentData {
             render_complete_semaphore,
             present_semaphore,
             render_command_buffer,
-            render_complete_fence,
         }
     }
 }
@@ -74,28 +64,19 @@ impl AcquireFramebuffer {
             .current(image_index.0 + 1)
             .is_some()
         {
-            unsafe {
-                renderer
-                    .device
-                    .wait_for_fences(
-                        &[present_data
-                            .render_complete_fence
-                            .current(image_index.0 + 1)
-                            .handle],
-                        true,
-                        u64::MAX,
-                    )
-                    .expect("Wait for fence failed.");
-            }
-        }
-        unsafe {
-            renderer
-                .device
-                .reset_fences(&[present_data
-                    .render_complete_fence
-                    .current(image_index.0 + 1)
-                    .handle])
-                .expect("failed to reset render complete fence");
+            // wait on last frame completion
+            let wait_ix = renderer.frame_number * 16;
+            let wait_ixes = &[wait_ix];
+            let wait_semaphores = &[renderer.timeline_semaphore.handle];
+            let wait_info = vk::SemaphoreWaitInfo::builder()
+                .semaphores(wait_semaphores)
+                .values(wait_ixes);
+            assert_eq!(
+                vk::Result::SUCCESS,
+                (renderer.device.wait_semaphores)(renderer.device.handle(), &*wait_info, u64::MAX),
+                "Wait for ix {} failed.",
+                wait_ix
+            );
         }
         let result = unsafe {
             swapchain.ext.acquire_next_image(
@@ -129,6 +110,31 @@ impl PresentFramebuffer {
         swapchain: &Swapchain,
         image_index: &ImageIndex,
     ) {
+        {
+            let wait_values = &[renderer.frame_number * 16 + 16];
+            let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+                .wait_semaphore_values(wait_values)
+                .signal_semaphore_values(wait_values); // only needed because validation layers segfault
+
+            let wait_semaphores = &[renderer.timeline_semaphore.handle];
+            let queue = renderer.device.graphics_queue.lock();
+            let signal_semaphores = &[present_data.render_complete_semaphore.handle];
+            let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE];
+            let submit = vk::SubmitInfo::builder()
+                .push_next(&mut wait_timeline)
+                .wait_semaphores(wait_semaphores)
+                .wait_dst_stage_mask(&dst_stage_masks)
+                .signal_semaphores(signal_semaphores)
+                .build();
+
+            unsafe {
+                renderer
+                    .device
+                    .queue_submit(*queue, &[submit], vk::Fence::null())
+                    .unwrap();
+            }
+        }
+
         let wait_semaphores = &[present_data.render_complete_semaphore.handle];
         let swapchains = &[swapchain.swapchain];
         let image_indices = &[image_index.0];

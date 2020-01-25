@@ -12,7 +12,6 @@ pub struct ShadowMappingData {
     depth_image: Image,
     _depth_image_view: ImageView,
     framebuffer: Framebuffer,
-    pub complete_semaphore: DoubleBuffered<Semaphore>,
     previous_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
     image_transitioned: bool,
     pub user_set_layout: super::super::shaders::shadow_map_set::DescriptorSetLayout,
@@ -185,15 +184,6 @@ impl ShadowMappingData {
             .device
             .set_object_name(framebuffer.handle, "Shadow mapping framebuffer");
 
-        let complete_semaphore = renderer.new_buffered(|ix| {
-            let s = renderer.device.new_semaphore();
-            renderer.device.set_object_name(
-                s.handle,
-                &format!("Shadow mapping complete semaphore - {}", ix),
-            );
-            s
-        });
-
         let previous_command_buffer = renderer.new_buffered(|_| None);
 
         let user_set_layout =
@@ -255,7 +245,6 @@ impl ShadowMappingData {
             _depth_image_view: depth_image_view,
             depth_pipeline,
             framebuffer,
-            complete_semaphore,
             previous_command_buffer,
             image_transitioned: false,
             user_set_layout,
@@ -532,21 +521,30 @@ impl PrepareShadowMaps {
 
         let queue = renderer.device.graphics_queue.lock();
 
+        let command_buffers = &[*command_buffer];
+        let wait_semaphores = &[present_data.present_semaphore.handle];
+        let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
+        let wait_semaphore_values = &[0];
+        let signal_semaphore_values = &[renderer.frame_number * 16 + 1];
+        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
+            .signal_semaphore_values(signal_semaphore_values)
+            .build();
+        let signal_semaphores = &[renderer.timeline_semaphore.handle];
+        let submit_info = vk::SubmitInfo::builder()
+            .command_buffers(command_buffers)
+            .push_next(&mut signal_timeline)
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_dst_stage_mask)
+            .signal_semaphores(signal_semaphores)
+            .build();
+
         unsafe {
             renderer
                 .device
                 .queue_submit(
                     *queue,
-                    &*(&[vk::SubmitInfo::builder()
-                        .command_buffers(&[*command_buffer])
-                        .wait_semaphores(&[present_data.present_semaphore.handle])
-                        .wait_dst_stage_mask(&[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS])
-                        .signal_semaphores(&[shadow_mapping
-                            .complete_semaphore
-                            .current(image_index.0)
-                            .handle])]
-                        as *const [vk::SubmitInfoBuilder<'_>; 1]
-                        as *const [vk::SubmitInfo; 1]),
+                    &[submit_info],
                     vk::Fence::null(),
                 )
                 .unwrap();

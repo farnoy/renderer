@@ -44,7 +44,7 @@ fn main() {
         .num_threads(8)
         .build_global()
         .unwrap();
-    let (renderer, mut swapchain, events_loop) = RenderFrame::new();
+    let (mut renderer, mut swapchain, events_loop) = RenderFrame::new();
 
     let quit_handle = Arc::new(Mutex::new(false));
 
@@ -533,7 +533,6 @@ fn main() {
                         &swapchain,
                         &model_data,
                         &mut graphics_command_pool,
-                        &shadow_mapping_data,
                     );
                 },
             );
@@ -559,7 +558,6 @@ fn main() {
                 &cull_pass_data,
                 &mut present_data,
                 &image_index,
-                &depth_pass_data,
                 &model_data,
                 &gltf_pass,
                 &mut graphics_command_pool,
@@ -574,6 +572,7 @@ fn main() {
                 rotation_storage.maintain(&maintain_mask);
                 scale_storage.maintain(&maintain_mask);
             }
+            renderer.frame_number += 1;
         }
         if *quit_handle.lock() {
             unsafe {

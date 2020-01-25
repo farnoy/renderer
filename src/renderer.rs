@@ -61,6 +61,8 @@ pub struct RenderFrame {
     pub device: Arc<Device>,
     pub compute_command_pool: Arc<CommandPool>,
     pub renderpass: RenderPass,
+    pub timeline_semaphore: Semaphore,
+    pub frame_number: u64,
 }
 
 impl RenderFrame {
@@ -137,12 +139,17 @@ impl RenderFrame {
         };
         device.set_object_name(main_renderpass.handle, "Main pass RenderPass");
 
+        let timeline_semaphore = device::Semaphore::new_timeline(&device);
+        device.set_object_name(timeline_semaphore.handle, "Main timeline semaphore");
+
         (
             RenderFrame {
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
                 compute_command_pool: Arc::new(compute_command_pool),
                 renderpass: main_renderpass,
+                timeline_semaphore,
+                frame_number: 0,
             },
             swapchain,
             events_loop,
@@ -439,7 +446,6 @@ pub struct DepthPassData {
     pub depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
     pub renderpass: RenderPass,
     pub framebuffer: Vec<Framebuffer>,
-    pub complete_semaphore: DoubleBuffered<Semaphore>,
     pub previous_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
 }
 
@@ -603,14 +609,6 @@ impl DepthPassData {
             })
             .collect();
 
-        let complete_semaphore = renderer.new_buffered(|ix| {
-            let s = renderer.device.new_semaphore();
-            renderer
-                .device
-                .set_object_name(s.handle, &format!("Depth complete semaphore - {}", ix));
-            s
-        });
-
         let previous_command_buffer = renderer.new_buffered(|_| None);
 
         DepthPassData {
@@ -618,7 +616,6 @@ impl DepthPassData {
             depth_pipeline,
             renderpass,
             framebuffer,
-            complete_semaphore,
             previous_command_buffer,
         }
     }
@@ -755,7 +752,6 @@ impl Renderer {
         cull_pass_data: &CullPassData,
         present_data: &mut PresentData,
         image_index: &ImageIndex,
-        depth_pass: &DepthPassData,
         model_data: &ModelData,
         gltf_pass: &GltfPassData,
         graphics_command_pool: &mut GraphicsCommandPool,
@@ -1032,7 +1028,7 @@ impl Renderer {
             }
         });
         let mut wait_semaphores = vec![
-            depth_pass.complete_semaphore.current(image_index.0).handle,
+            renderer.timeline_semaphore.handle,
             cull_pass_data
                 .cull_complete_semaphore
                 .current(image_index.0)
@@ -1046,10 +1042,17 @@ impl Renderer {
             wait_semaphores.push(semaphore.handle);
             dst_stage_masks.push(vk::PipelineStageFlags::COMPUTE_SHADER);
         }
-        let signal_semaphores = &[present_data.render_complete_semaphore.handle];
+        let signal_semaphores = &[renderer.timeline_semaphore.handle];
         let command_buffers = &[*command_buffer];
+        let wait_semaphore_values = vec![renderer.frame_number * 16 + 2; wait_semaphores.len()]; // next frame
+        let signal_semaphore_values = &[renderer.frame_number * 16 + 16]; // next frame
+        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(&wait_semaphore_values)
+            .signal_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
+            .build();
         let submit = vk::SubmitInfo::builder()
             .wait_semaphores(&wait_semaphores)
+            .push_next(&mut signal_timeline)
             .wait_dst_stage_mask(&dst_stage_masks)
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores)
@@ -1059,14 +1062,7 @@ impl Renderer {
         unsafe {
             renderer
                 .device
-                .queue_submit(
-                    *queue,
-                    &[submit],
-                    present_data
-                        .render_complete_fence
-                        .current(image_index.0)
-                        .handle,
-                )
+                .queue_submit(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
 
@@ -1359,7 +1355,6 @@ impl DepthOnlyPass {
         swapchain: &Swapchain,
         model_data: &ModelData,
         graphics_command_pool: &mut GraphicsCommandPool,
-        shadow_mapping_data: &ShadowMappingData,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "depth-pass");
@@ -1462,14 +1457,18 @@ impl DepthOnlyPass {
                 );
             }
         });
-        let wait_semaphores = &[shadow_mapping_data
-            .complete_semaphore
-            .current(image_index.0)
-            .handle];
+        let wait_semaphores = &[renderer.timeline_semaphore.handle];
+        let wait_semaphore_values = &[renderer.frame_number * 16 + 1];
         let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = &[depth_pass.complete_semaphore.current(image_index.0).handle];
+        let signal_semaphores = &[renderer.timeline_semaphore.handle];
+        let signal_semaphore_values = &[renderer.frame_number * 16 + 2];
         let command_buffers = &[*command_buffer];
+        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
+            .signal_semaphore_values(signal_semaphore_values)
+            .build();
         let submit = vk::SubmitInfo::builder()
+        .push_next(&mut signal_timeline)
             .wait_semaphores(wait_semaphores)
             .wait_dst_stage_mask(dst_stage_masks)
             .command_buffers(command_buffers)

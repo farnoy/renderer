@@ -27,6 +27,18 @@ impl Semaphore {
             device: Arc::clone(device),
         }
     }
+
+    pub fn new_timeline(device: &Arc<Device>) -> Semaphore {
+        let mut create_type_info =
+            vk::SemaphoreTypeCreateInfo::builder().semaphore_type(vk::SemaphoreType::TIMELINE);
+        let create_info = vk::SemaphoreCreateInfo::builder().push_next(&mut create_type_info);
+        let semaphore = unsafe { device.create_semaphore(&create_info, None).unwrap() };
+
+        Semaphore {
+            handle: semaphore,
+            device: Arc::clone(device),
+        }
+    }
 }
 
 impl Fence {

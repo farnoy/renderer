@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use std::{sync::Arc, time::Instant};
 use winit::{
     self,
-    dpi::{LogicalSize, PhysicalSize},
+    dpi::PhysicalSize,
     event::{
         ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent,
     },

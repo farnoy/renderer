@@ -31,6 +31,8 @@ pub struct Device {
     compute_queue_family: u32,
     pub(super) graphics_queue: Mutex<vk::Queue>,
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
+    pub get_semaphore_counter_value: vk::PFN_vkGetSemaphoreCounterValue,
+    pub wait_semaphores: vk::PFN_vkWaitSemaphores,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -59,11 +61,14 @@ impl Device {
                 .filter_map(|(ix, info)| unsafe {
                     let supports_graphic_and_surface =
                         info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                            && surface.ext.get_physical_device_surface_support(
-                                physical_device,
-                                ix as u32,
-                                surface.surface,
-                            ).unwrap();
+                            && surface
+                                .ext
+                                .get_physical_device_surface_support(
+                                    physical_device,
+                                    ix as u32,
+                                    surface.surface,
+                                )
+                                .unwrap();
                     if supports_graphic_and_surface {
                         Some(ix as u32)
                     } else {
@@ -115,6 +120,9 @@ impl Device {
                 shader_storage_buffer_array_dynamic_indexing: 1,
                 ..Default::default()
             };
+            let mut timeline_semaphore_features =
+                vk::PhysicalDeviceTimelineSemaphoreFeatures::builder().timeline_semaphore(true);
+            let mut features2 = vk::PhysicalDeviceFeatures2::builder().features(features);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()
@@ -136,7 +144,8 @@ impl Device {
             let mut device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
-                .enabled_features(&features);
+                .push_next(&mut features2)
+                .push_next(&mut timeline_semaphore_features);
 
             device_create_info = device_create_info.push_next(&mut descriptor_indexing_features);
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
@@ -152,6 +161,18 @@ impl Device {
             None => vec![graphics_queue],
         };
 
+        let name = b"vkGetSemaphoreCounterValueKHR\0";
+        let name_c = unsafe { CStr::from_bytes_with_nul_unchecked(name).as_ptr() };
+        let addr = unsafe { instance.get_device_proc_addr(device.handle(), name_c) };
+        let get_semaphore_counter_value: vk::PFN_vkGetSemaphoreCounterValue =
+            unsafe { std::mem::transmute(addr.unwrap()) };
+
+        let name = b"vkWaitSemaphoresKHR\0";
+        let name_c = unsafe { CStr::from_bytes_with_nul_unchecked(name).as_ptr() };
+        let addr = unsafe { instance.get_device_proc_addr(device.handle(), name_c) };
+        let wait_semaphores: vk::PFN_vkWaitSemaphores =
+            unsafe { std::mem::transmute(addr.unwrap()) };
+
         let device = Device {
             device,
             instance: Arc::clone(instance),
@@ -163,6 +184,8 @@ impl Device {
                 .unwrap_or(graphics_queue_family),
             graphics_queue: Mutex::new(graphics_queue),
             compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
+            get_semaphore_counter_value,
+            wait_semaphores,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
