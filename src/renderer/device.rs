@@ -6,7 +6,7 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
-use std::{ops::Deref, sync::Arc};
+use std::{ffi::CStr, ops::Deref, sync::Arc};
 
 mod buffer;
 mod commands;
@@ -63,7 +63,7 @@ impl Device {
                                 physical_device,
                                 ix as u32,
                                 surface.surface,
-                            );
+                            ).unwrap();
                     if supports_graphic_and_surface {
                         Some(ix as u32)
                     } else {
@@ -97,9 +97,11 @@ impl Device {
         };
         let device = {
             // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
+            let timeline_semaphore_name = b"VK_KHR_timeline_semaphore\0";
             let device_extension_names_raw = [
                 extensions::khr::Swapchain::name().as_ptr(),
                 vk::ExtDescriptorIndexingFn::name().as_ptr(),
+                unsafe { CStr::from_bytes_with_nul_unchecked(timeline_semaphore_name).as_ptr() },
             ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,

@@ -5,7 +5,7 @@ build = "build.rs"
 edition = "2018"
 
 [dependencies]
-ash = "0.29.0"
+ash = { git = "https://github.com/Friz64/ash", branch = "vulkan-1-2-high-level" }
 croaring = "0.4.0"
 parking_lot = "0.10.0"
 gltf = "0.15.0"

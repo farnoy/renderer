@@ -54,7 +54,7 @@ impl Instance {
             .application_name(&name)
             .application_version(0)
             .engine_name(&name)
-            .api_version(ash::vk_make_version!(1, 1, 0));
+            .api_version(vk::make_version(1, 1, 0));
         let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&appinfo)
             .enabled_layer_names(&layers_names_raw)
