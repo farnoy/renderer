@@ -306,7 +306,7 @@ pub fn load(
                 &[vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
-                    size: vertex_upload_buffer.size(),
+                    size: vertex_size,
                 }],
             );
             device.device.cmd_copy_buffer(
@@ -316,7 +316,7 @@ pub fn load(
                 &[vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
-                    size: normal_upload_buffer.size(),
+                    size: normals_size,
                 }],
             );
             device.device.cmd_copy_buffer(
@@ -326,10 +326,11 @@ pub fn load(
                 &[vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
-                    size: uv_upload_buffer.size(),
+                    size: uvs_size,
                 }],
             );
-            for (index_buffer, index_upload_buffer, _) in index_buffers.iter() {
+            for (index_buffer, index_upload_buffer, index_len) in index_buffers.iter() {
+                let index_size = size_of::<u32>() as u64 * index_len;
                 device.device.cmd_copy_buffer(
                     command_buffer,
                     index_upload_buffer.handle,
@@ -337,7 +338,7 @@ pub fn load(
                     &[vk::BufferCopy {
                         src_offset: 0,
                         dst_offset: 0,
-                        size: index_upload_buffer.size(),
+                        size: index_size,
                     }],
                 );
             }
