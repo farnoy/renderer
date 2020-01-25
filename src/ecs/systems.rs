@@ -7,8 +7,12 @@ use na::RealField;
 use parking_lot::Mutex;
 use std::{sync::Arc, time::Instant};
 use winit::{
-    self, dpi::LogicalSize, DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode,
-    WindowEvent,
+    self,
+    dpi::{LogicalSize, PhysicalSize},
+    event::{
+        ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent,
+    },
+    platform::desktop::EventLoopExtDesktop,
 };
 
 use crate::renderer::{
@@ -71,7 +75,7 @@ impl Default for Camera {
 }
 
 pub struct InputHandler {
-    pub events_loop: winit::EventsLoop,
+    pub events_loop: winit::event_loop::EventLoop<()>,
     pub quit_handle: Arc<Mutex<bool>>,
     pub imgui_platform: WinitPlatform,
 }
@@ -80,7 +84,7 @@ impl InputHandler {
     /// Returns true if resized
     pub fn exec(
         &mut self,
-        window: &winit::Window,
+        window: &winit::window::Window,
         gui: &mut imgui::Context,
         input_state: &mut InputState,
         camera: &mut Camera,
@@ -94,78 +98,88 @@ impl InputHandler {
         let platform = &mut self.imgui_platform;
         let mut toggle_fly_mode = false;
         let mut resized = false;
-        self.events_loop.poll_events(|event| {
-            platform.handle_event(gui.io_mut(), &window, &event);
-            match event {
-                Event::WindowEvent {
-                    event: WindowEvent::Resized(LogicalSize { width, height }),
-                    ..
-                } => {
-                    println!("The window was resized to {}x{}", width, height);
-                    resized = true;
-                }
-                Event::WindowEvent {
-                    event: WindowEvent::HiDpiFactorChanged(f),
-                    ..
-                } => {
-                    println!("DPI factor changed {}", f);
-                }
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    *quit_handle.lock() = true;
-                }
-                Event::WindowEvent {
-                    event:
-                        WindowEvent::KeyboardInput {
-                            input:
-                                KeyboardInput {
-                                    state,
-                                    virtual_keycode,
-                                    ..
-                                },
-                            ..
-                        },
-                    ..
-                } => {
-                    match state {
-                        ElementState::Pressed => input_state.key_presses.push(virtual_keycode),
-                        ElementState::Released => input_state.key_releases.push(virtual_keycode),
+        // println!("event loop run_return");
+        self.events_loop
+            .run_return(|event, window_target, control_flow| {
+                // dbg!(&event);
+                // platform.handle_event(gui.io_mut(), &window, &event);
+                // println!("imgui handled event");
+                match event {
+                    Event::WindowEvent {
+                        event: WindowEvent::Resized(PhysicalSize { width, height }),
+                        ..
+                    } => {
+                        println!("The window was resized to {}x{}", width, height);
+                        // hangs for now
+                        // let logical_size = PhysicalSize { width, height }.to_logical::<f32>(window.scale_factor());
+                        // println!("logical {:?}", logical_size);
+                        resized = true;
                     }
-                    match virtual_keycode {
-                        Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
-                            toggle_fly_mode = true;
-                        }
-                        Some(VirtualKeyCode::Escape) => {
-                            *quit_handle.lock() = true;
-                        }
-                        _ => (),
+                    Event::WindowEvent {
+                        event: WindowEvent::ScaleFactorChanged { scale_factor, .. },
+                        ..
+                    } => {
+                        println!("Scale factor changed {}", scale_factor);
                     }
-                }
-                Event::DeviceEvent {
-                    event: DeviceEvent::MouseMotion { delta: (x, y), .. },
-                    ..
-                } if fly_mode => {
-                    let y_angle = f32::pi() / 180.0 * y as f32;
-                    let x_angle = f32::pi() / 180.0 * x as f32;
-                    camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
-                    camera.rotation =
-                        na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
-                }
-                Event::DeviceEvent {
-                    event:
-                        DeviceEvent::Button {
-                            button,
-                            state: ElementState::Pressed,
-                        },
-                    ..
-                } => {
-                    input_state.button_presses.push(button);
-                }
-                _ => (),
-            };
-        });
+                    Event::WindowEvent {
+                        event: WindowEvent::CloseRequested,
+                        ..
+                    } => {
+                        *quit_handle.lock() = true;
+                    }
+                    Event::WindowEvent {
+                        event:
+                            WindowEvent::KeyboardInput {
+                                input:
+                                    KeyboardInput {
+                                        state,
+                                        virtual_keycode,
+                                        ..
+                                    },
+                                ..
+                            },
+                        ..
+                    } => {
+                        match state {
+                            ElementState::Pressed => input_state.key_presses.push(virtual_keycode),
+                            ElementState::Released => {
+                                input_state.key_releases.push(virtual_keycode)
+                            }
+                        }
+                        match virtual_keycode {
+                            Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
+                                toggle_fly_mode = true;
+                            }
+                            Some(VirtualKeyCode::Escape) => {
+                                *quit_handle.lock() = true;
+                            }
+                            _ => (),
+                        }
+                    }
+                    Event::DeviceEvent {
+                        event: DeviceEvent::MouseMotion { delta: (x, y), .. },
+                        ..
+                    } if fly_mode => {
+                        let y_angle = f32::pi() / 180.0 * y as f32;
+                        let x_angle = f32::pi() / 180.0 * x as f32;
+                        camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
+                        camera.rotation =
+                            na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
+                    }
+                    Event::DeviceEvent {
+                        event:
+                            DeviceEvent::Button {
+                                button,
+                                state: ElementState::Pressed,
+                            },
+                        ..
+                    } => {
+                        input_state.button_presses.push(button);
+                    }
+                    _ => (),
+                };
+                *control_flow = winit::event_loop::ControlFlow::Exit;
+            });
         runtime_config.fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
         platform
             .prepare_frame(gui.io_mut(), &window)
@@ -292,9 +306,9 @@ impl AABBCalculation {
 }
 
 pub struct InputState {
-    key_presses: Vec<Option<winit::VirtualKeyCode>>,
-    key_releases: Vec<Option<winit::VirtualKeyCode>>,
-    button_presses: Vec<winit::ButtonId>,
+    key_presses: Vec<Option<VirtualKeyCode>>,
+    key_releases: Vec<Option<VirtualKeyCode>>,
+    button_presses: Vec<ButtonId>,
 }
 
 impl InputState {
@@ -541,9 +555,9 @@ impl Gui {
         let ui = imgui.frame();
 
         let alloc_stats = renderer.device.allocation_stats();
-        ui.window(im_str!("Debug"))
+        imgui::Window::new(im_str!("Debug"))
             .always_auto_resize(true)
-            .build(|| {
+            .build(&ui, || {
                 ui.text(&im_str!("Allocation stats:"));
                 ui.bullet_text(&im_str!("block count: {}", alloc_stats.total.blockCount));
                 ui.bullet_text(&im_str!(

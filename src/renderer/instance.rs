@@ -15,7 +15,7 @@ pub type AshInstance = ash::Instance;
 pub struct Instance {
     handle: AshInstance,
     pub entry: Arc<Entry>,
-    pub window: winit::Window,
+    pub window: winit::window::Window,
     #[allow(dead_code)]
     debug: Debug,
 }
@@ -30,9 +30,9 @@ struct Debug {
 struct Debug;
 
 impl Instance {
-    pub fn new() -> Result<(Instance, winit::EventsLoop), ash::InstanceError> {
-        let events_loop = winit::EventsLoop::new();
-        let window = winit::WindowBuilder::new()
+    pub fn new() -> Result<(Instance, winit::event_loop::EventLoop<()>), ash::InstanceError> {
+        let events_loop = winit::event_loop::EventLoop::new();
+        let window = winit::window::WindowBuilder::new()
             .with_title("Renderer v3")
             .build(&events_loop)
             .unwrap();

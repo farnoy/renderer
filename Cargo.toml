@@ -7,29 +7,30 @@ edition = "2018"
 [dependencies]
 ash = "0.29.0"
 croaring = "0.4.0"
-parking_lot = "0.9.0"
-gltf = "0.13.0"
+parking_lot = "0.10.0"
+gltf = "0.15.0"
 hashbrown = "0.6.0"
 image = "0.22"
-imgui = "0.1.0"
-imgui-winit-support = "0.1.0"
+# imgui = "0.2.1"
+imgui = { git = "https://github.com/Gekkio/imgui-rs", package = "imgui" }
+imgui-winit-support = { git = "https://github.com/Gekkio/imgui-rs", package = "imgui-winit-support", default-features = false, features = ['winit-20'] }
 meshopt = "0.1.3"
 microprofile = { version = "0.2.0", optional = true }
-nalgebra = "0.18.0"
-nalgebra-glm = "0.4.0"
-ncollide3d = "0.20.1"
+nalgebra = "0.19.0"
+nalgebra-glm = "0.5.0"
+ncollide3d = "0.21.0"
 num-traits = "0.2.6"
 rayon = "1.1.0"
 spirv_headers = "1.3.4"
 spirv-reflect = "0.2.1"
 unbytify = "0.2.0"
-winit = "0.19.0"
+winit = "0.20.0"
 
 [build-dependencies]
-bindgen = "0.51.0"
+bindgen = "0.52.0"
 
 [dev-dependencies]
-criterion = "0.2"
+criterion = "0.3"
 
 [[bench]]
 name = "component_storage"

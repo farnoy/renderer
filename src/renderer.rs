@@ -64,7 +64,7 @@ pub struct RenderFrame {
 }
 
 impl RenderFrame {
-    pub fn new() -> (RenderFrame, Swapchain, winit::EventsLoop) {
+    pub fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
         let (instance, events_loop) = Instance::new().expect("Failed to create instance");
         let instance = Arc::new(instance);
         let surface = Surface::new(&instance);

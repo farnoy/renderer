@@ -57,6 +57,12 @@ impl Surface {
     }
 }
 
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe { self.ext.destroy_surface(self.surface, None) }
+    }
+}
+
 pub struct Swapchain {
     pub ext: ash::extensions::khr::Swapchain,
     pub swapchain: vk::SwapchainKHR,
@@ -188,11 +194,11 @@ impl Drop for Swapchain {
 unsafe fn create_surface<E: EntryV1_0>(
     entry: &E,
     instance: &ash::Instance,
-    window: &winit::Window,
+    window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
-    use winit::os::unix::WindowExt;
-    let x11_display = window.get_xlib_display().unwrap();
-    let x11_window = window.get_xlib_window().unwrap();
+    use winit::platform::unix::WindowExtUnix;
+    let x11_display = window.xlib_display().unwrap();
+    let x11_window = window.xlib_window().unwrap();
     let x11_create_info = vk::XlibSurfaceCreateInfoKHR::builder()
         .window(x11_window as vk::Window)
         .dpy(x11_display as *mut vk::Display);
@@ -204,7 +210,7 @@ unsafe fn create_surface<E: EntryV1_0>(
 unsafe fn create_surface<E: EntryV1_0>(
     entry: &E,
     instance: &ash::Instance,
-    window: &winit::Window,
+    window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use std::ffi::c_void;
     use winit::os::windows::WindowExt;
