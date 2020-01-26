@@ -1,4 +1,5 @@
 #![feature(arbitrary_self_types)]
+#![feature(backtrace)]
 #![allow(clippy::new_without_default)]
 
 extern crate nalgebra as na;
@@ -133,7 +134,7 @@ fn main() {
     let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
 
-    let max_entities = 207;
+    let max_entities = 30;
     debug_assert!(max_entities > 7); // 7 static ones
 
     let ixes = entities.allocate_mask(max_entities);
@@ -410,132 +411,127 @@ fn main() {
                 &mut projectile_velocities_storage,
                 &frame_timing,
             );
-            rayon::join(
-                || {
-                    ConsolidateMeshBuffers::exec(
-                        &renderer,
-                        &entities,
-                        &graphics_command_pool,
-                        &meshes_storage,
-                        &image_index,
-                        &mut consolidated_mesh_buffers,
-                    )
-                },
-                || {
-                    rayon::join(
-                        || {
-                            ModelMatrixCalculation::exec(
-                                &entities,
-                                &position_storage,
-                                &rotation_storage,
-                                &scale_storage,
-                                &mut model_matrices_storage,
-                            );
-                            AABBCalculation::exec(
-                                &entities,
-                                &model_matrices_storage,
-                                &meshes_storage,
-                                &mut aabb_storage,
-                            );
-                        },
-                        || {
-                            ShadowMappingMVPCalculation::exec(
-                                &renderer,
-                                &entities,
-                                &position_storage,
-                                &rotation_storage,
-                                &mut shadow_mapping_light_matrices_storage,
-                                &light_storage,
-                                &image_index,
-                                &main_descriptor_pool,
-                                &camera_matrices,
-                            );
-                        },
-                    )
-                },
+            //rayon::join(
+            //|| {
+            ConsolidateMeshBuffers::exec(
+                &renderer,
+                &entities,
+                &graphics_command_pool,
+                &meshes_storage,
+                &image_index,
+                &mut consolidated_mesh_buffers,
             );
-            rayon::join(
-                || {
-                    rayon::join(
-                        || {
-                            CoarseCulling::exec(
-                                &entities,
-                                &aabb_storage,
-                                &camera,
-                                &mut coarse_culled_storage,
-                            )
-                        },
-                        || {
-                            SynchronizeBaseColorTextures::exec(
-                                &entities,
-                                &renderer,
-                                &base_color_descriptor_set,
-                                &base_color_texture_storage,
-                                &image_index,
-                                &mut base_color_visited_storage,
-                            )
-                        },
-                    );
-                },
-                || {
-                    rayon::join(
-                        || CameraMatricesUpload::exec(&image_index, &camera, &mut camera_matrices),
-                        || {
-                            ModelMatricesUpload::exec(
-                                &model_matrices_storage,
-                                &image_index,
-                                &mut model_data,
-                            )
-                        },
-                    );
-                },
+            //},
+            //|| {
+            //rayon::join(
+            //|| {
+            ModelMatrixCalculation::exec(
+                &entities,
+                &position_storage,
+                &rotation_storage,
+                &scale_storage,
+                &mut model_matrices_storage,
             );
-            rayon::join(
-                || {
-                    CullPass::exec(
-                        &entities,
-                        &renderer,
-                        &cull_pass_data,
-                        &mut cull_pass_data_private,
-                        &meshes_storage,
-                        &image_index,
-                        &consolidated_mesh_buffers,
-                        &position_storage,
-                        &camera,
-                        &model_data,
-                        &camera_matrices,
-                    )
-                },
-                || {
-                    PrepareShadowMaps::exec(
-                        &entities,
-                        &renderer,
-                        &depth_pass_data,
-                        &image_index,
-                        &mut graphics_command_pool,
-                        &mut shadow_mapping_data,
-                        &meshes_storage,
-                        &light_storage,
-                        &shadow_mapping_light_matrices_storage,
-                        &present_data,
-                        &model_data,
-                    );
-                    DepthOnlyPass::exec(
-                        &renderer,
-                        &runtime_config,
-                        &entities,
-                        &image_index,
-                        &meshes_storage,
-                        &position_storage,
-                        &camera,
-                        &camera_matrices,
-                        &mut depth_pass_data,
-                        &swapchain,
-                        &model_data,
-                        &mut graphics_command_pool,
-                    );
-                },
+            AABBCalculation::exec(
+                &entities,
+                &model_matrices_storage,
+                &meshes_storage,
+                &mut aabb_storage,
             );
+            //},
+            //|| {
+            ShadowMappingMVPCalculation::exec(
+                &renderer,
+                &entities,
+                &position_storage,
+                &rotation_storage,
+                &mut shadow_mapping_light_matrices_storage,
+                &light_storage,
+                &image_index,
+                &main_descriptor_pool,
+                &camera_matrices,
+            );
+            //},
+            //)
+            //},
+            //);
+            // rayon::join(
+            // || {
+            // rayon::join(
+            // || {
+            CoarseCulling::exec(
+                &entities,
+                &aabb_storage,
+                &camera,
+                &mut coarse_culled_storage,
+            );
+            // },
+            // || {
+            SynchronizeBaseColorTextures::exec(
+                &entities,
+                &renderer,
+                &base_color_descriptor_set,
+                &base_color_texture_storage,
+                &image_index,
+                &mut base_color_visited_storage,
+            );
+            // },
+            // );
+            // },
+            // || {
+            // rayon::join(
+            CameraMatricesUpload::exec(&image_index, &camera, &mut camera_matrices);
+            //|| {
+            ModelMatricesUpload::exec(&model_matrices_storage, &image_index, &mut model_data);
+            //},
+            //);
+            //},
+            //);
+            // rayon::join(
+            // || {
+            CullPass::exec(
+                &entities,
+                &renderer,
+                &cull_pass_data,
+                &mut cull_pass_data_private,
+                &meshes_storage,
+                &image_index,
+                &consolidated_mesh_buffers,
+                &position_storage,
+                &camera,
+                &model_data,
+                &camera_matrices,
+            );
+            // },
+            // || {
+            PrepareShadowMaps::exec(
+                &entities,
+                &renderer,
+                &depth_pass_data,
+                &image_index,
+                &mut graphics_command_pool,
+                &mut shadow_mapping_data,
+                &meshes_storage,
+                &light_storage,
+                &shadow_mapping_light_matrices_storage,
+                &model_data,
+            );
+            DepthOnlyPass::exec(
+                &renderer,
+                &runtime_config,
+                &entities,
+                &image_index,
+                &meshes_storage,
+                &position_storage,
+                &camera,
+                &camera_matrices,
+                &mut depth_pass_data,
+                &swapchain,
+                &model_data,
+                &mut graphics_command_pool,
+            );
+            // },
+            // );
             let gui_draw_data = gui.update(
                 &renderer,
                 &input_handler,
@@ -574,7 +570,7 @@ fn main() {
             }
             renderer.frame_number += 1;
         }
-        if *quit_handle.lock() {
+        if renderer.frame_number > 2 {
             unsafe {
                 renderer.device.device_wait_idle().unwrap();
             }

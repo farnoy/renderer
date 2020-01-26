@@ -33,6 +33,7 @@ pub struct Device {
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
     pub get_semaphore_counter_value: vk::PFN_vkGetSemaphoreCounterValue,
     pub wait_semaphores: vk::PFN_vkWaitSemaphores,
+    pub signal_semaphore: vk::PFN_vkSignalSemaphore,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -139,15 +140,16 @@ impl Device {
                 vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
                     .runtime_descriptor_array(true)
                     .shader_storage_buffer_array_non_uniform_indexing(true)
-                    .descriptor_binding_partially_bound(true);
+                    .descriptor_binding_partially_bound(true)
+                    .descriptor_binding_update_unused_while_pending(true);
 
-            let mut device_create_info = vk::DeviceCreateInfo::builder()
+            let device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
                 .push_next(&mut features2)
-                .push_next(&mut timeline_semaphore_features);
+                .push_next(&mut timeline_semaphore_features)
+                .push_next(&mut descriptor_indexing_features);
 
-            device_create_info = device_create_info.push_next(&mut descriptor_indexing_features);
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
@@ -173,6 +175,12 @@ impl Device {
         let wait_semaphores: vk::PFN_vkWaitSemaphores =
             unsafe { std::mem::transmute(addr.unwrap()) };
 
+        let name = b"vkSignalSemaphoreKHR\0";
+        let name_c = unsafe { CStr::from_bytes_with_nul_unchecked(name).as_ptr() };
+        let addr = unsafe { instance.get_device_proc_addr(device.handle(), name_c) };
+        let signal_semaphore: vk::PFN_vkSignalSemaphore =
+            unsafe { std::mem::transmute(addr.unwrap()) };
+
         let device = Device {
             device,
             instance: Arc::clone(instance),
@@ -186,6 +194,7 @@ impl Device {
             compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
             get_semaphore_counter_value,
             wait_semaphores,
+            signal_semaphore,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
@@ -240,6 +249,10 @@ impl Device {
 
     pub fn new_semaphore(self: &Arc<Self>) -> Semaphore {
         Semaphore::new(self)
+    }
+
+    pub fn new_semaphore_timeline(self: &Arc<Self>) -> Semaphore {
+        Semaphore::new_timeline(self)
     }
 
     pub fn new_fence(self: &Arc<Self>) -> Fence {

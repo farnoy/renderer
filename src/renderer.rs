@@ -61,7 +61,8 @@ pub struct RenderFrame {
     pub device: Arc<Device>,
     pub compute_command_pool: Arc<CommandPool>,
     pub renderpass: RenderPass,
-    pub timeline_semaphore: Semaphore,
+    pub graphics_timeline_semaphore: Semaphore,
+    pub compute_timeline_semaphore: Semaphore,
     pub frame_number: u64,
 }
 
@@ -139,8 +140,16 @@ impl RenderFrame {
         };
         device.set_object_name(main_renderpass.handle, "Main pass RenderPass");
 
-        let timeline_semaphore = device::Semaphore::new_timeline(&device);
-        device.set_object_name(timeline_semaphore.handle, "Main timeline semaphore");
+        let graphics_timeline_semaphore = device.new_semaphore_timeline();
+        device.set_object_name(
+            graphics_timeline_semaphore.handle,
+            "Graphics timeline semaphore",
+        );
+        let compute_timeline_semaphore = device.new_semaphore_timeline();
+        device.set_object_name(
+            compute_timeline_semaphore.handle,
+            "Compute timeline semaphore",
+        );
 
         (
             RenderFrame {
@@ -148,7 +157,8 @@ impl RenderFrame {
                 device: Arc::clone(&device),
                 compute_command_pool: Arc::new(compute_command_pool),
                 renderpass: main_renderpass,
-                timeline_semaphore,
+                graphics_timeline_semaphore,
+                compute_timeline_semaphore,
                 frame_number: 0,
             },
             swapchain,
@@ -763,7 +773,7 @@ impl Renderer {
         // TODO: count this? pack and defragment draw calls?
         let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
             / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
-        let command_buffer = graphics_command_pool.0.record_one_time({
+        let command_buffer = graphics_command_pool.0.record_one_time("renderer cb", {
             let renderer = &renderer;
             let consolidated_mesh_buffers = &consolidated_mesh_buffers;
             let image_index = &image_index;
@@ -1027,33 +1037,36 @@ impl Renderer {
                 );
             }
         });
-        let mut wait_semaphores = vec![
-            renderer.timeline_semaphore.handle,
-            cull_pass_data
-                .cull_complete_semaphore
-                .current(image_index.0)
-                .handle,
+        let wait_semaphores = &[
+            renderer.graphics_timeline_semaphore.handle,
+            renderer.compute_timeline_semaphore.handle,
+            consolidated_mesh_buffers.sync_timeline.handle,
         ];
-        let mut dst_stage_masks = vec![
+        let wait_semaphore_values = &[
+            renderer.frame_number * 16 + 2,
+            renderer.frame_number * 16 + 16, // all compute work done for this frame
+            renderer.frame_number * 16 + 16, // all consolidation work done
+        ];
+        dbg!(
+            renderer.compute_timeline_semaphore.handle,
+            renderer.frame_number * 16 + 16
+        );
+        let dst_stage_masks = &[
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
         ];
-        if let Some(ref semaphore) = consolidated_mesh_buffers.sync_point.current(image_index.0) {
-            wait_semaphores.push(semaphore.handle);
-            dst_stage_masks.push(vk::PipelineStageFlags::COMPUTE_SHADER);
-        }
-        let signal_semaphores = &[renderer.timeline_semaphore.handle];
+        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let command_buffers = &[*command_buffer];
-        let wait_semaphore_values = vec![renderer.frame_number * 16 + 2; wait_semaphores.len()]; // next frame
-        let signal_semaphore_values = &[renderer.frame_number * 16 + 16]; // next frame
+        let signal_semaphore_values = &[renderer.frame_number * 16 + 15]; // next frame
         let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(&wait_semaphore_values)
+            .wait_semaphore_values(wait_semaphore_values)
             .signal_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
             .build();
         let submit = vk::SubmitInfo::builder()
-            .wait_semaphores(&wait_semaphores)
+            .wait_semaphores(wait_semaphores)
             .push_next(&mut signal_timeline)
-            .wait_dst_stage_mask(&dst_stage_masks)
+            .wait_dst_stage_mask(dst_stage_masks)
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores)
             .build();
@@ -1069,6 +1082,50 @@ impl Renderer {
         *present_data
             .render_command_buffer
             .current_mut(image_index.0) = Some(command_buffer);
+
+        {
+            let t0 = std::time::Instant::now();
+            let mut counter: u64 = 0;
+            assert_eq!(
+                vk::Result::SUCCESS,
+                (renderer.device.get_semaphore_counter_value)(
+                    renderer.device.handle(),
+                    renderer.graphics_timeline_semaphore.handle,
+                    &mut counter
+                ),
+                "Get semaphore counter value failed",
+            );
+            dbg!("immediate wait on submitted render", counter);
+            let wait_ix = (renderer.frame_number * 16 + 15);
+            let wait_ixes = &[wait_ix];
+            let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+            let wait_info = vk::SemaphoreWaitInfo::builder()
+                .semaphores(wait_semaphores)
+                .values(wait_ixes);
+            assert_eq!(
+                vk::Result::SUCCESS,
+                (renderer.device.wait_semaphores)(
+                    renderer.device.handle(),
+                    &*wait_info,
+                    std::u64::MAX
+                ),
+                "Wait for ix {} failed.",
+                wait_ix
+            );
+            let elapsed = t0.elapsed();
+            let micros = elapsed.as_micros();
+            let millis = elapsed.as_millis();
+            assert_eq!(
+                vk::Result::SUCCESS,
+                (renderer.device.get_semaphore_counter_value)(
+                    renderer.device.handle(),
+                    renderer.graphics_timeline_semaphore.handle,
+                    &mut counter
+                ),
+                "Get semaphore counter value failed",
+            );
+            dbg!("WAIT DONE", micros, millis, counter);
+        }
     }
 }
 
@@ -1358,109 +1415,116 @@ impl DepthOnlyPass {
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "depth-pass");
-        let command_buffer = graphics_command_pool.0.record_one_time({
-            let renderer = &renderer;
-            let image_index = &image_index;
-            let depth_pass = &depth_pass;
-            move |command_buffer| unsafe {
-                renderer.device.debug_marker_around(
-                    command_buffer,
-                    "depth prepass",
-                    [0.3, 0.3, 0.3, 1.0],
-                    || {
-                        renderer.device.cmd_begin_render_pass(
-                            command_buffer,
-                            &vk::RenderPassBeginInfo::builder()
-                                .render_pass(depth_pass.renderpass.handle)
-                                .framebuffer(depth_pass.framebuffer[image_index.0 as usize].handle)
-                                .render_area(vk::Rect2D {
-                                    offset: vk::Offset2D { x: 0, y: 0 },
-                                    extent: vk::Extent2D {
-                                        width: swapchain.width,
-                                        height: swapchain.height,
-                                    },
-                                })
-                                .clear_values(&[vk::ClearValue {
-                                    depth_stencil: vk::ClearDepthStencilValue {
-                                        depth: 1.0,
-                                        stencil: 0,
-                                    },
-                                }]),
-                            vk::SubpassContents::INLINE,
-                        );
-                        if !runtime_config.debug_aabbs {
-                            renderer.device.cmd_set_viewport(
+        let command_buffer = graphics_command_pool
+            .0
+            .record_one_time("depth only pass cb", {
+                let renderer = &renderer;
+                let image_index = &image_index;
+                let depth_pass = &depth_pass;
+                move |command_buffer| unsafe {
+                    renderer.device.debug_marker_around(
+                        command_buffer,
+                        "depth prepass",
+                        [0.3, 0.3, 0.3, 1.0],
+                        || {
+                            renderer.device.cmd_begin_render_pass(
                                 command_buffer,
-                                0,
-                                &[vk::Viewport {
-                                    x: 0.0,
-                                    y: swapchain.height as f32,
-                                    width: swapchain.width as f32,
-                                    height: -(swapchain.height as f32),
-                                    min_depth: 0.0,
-                                    max_depth: 1.0,
-                                }],
+                                &vk::RenderPassBeginInfo::builder()
+                                    .render_pass(depth_pass.renderpass.handle)
+                                    .framebuffer(
+                                        depth_pass.framebuffer[image_index.0 as usize].handle,
+                                    )
+                                    .render_area(vk::Rect2D {
+                                        offset: vk::Offset2D { x: 0, y: 0 },
+                                        extent: vk::Extent2D {
+                                            width: swapchain.width,
+                                            height: swapchain.height,
+                                        },
+                                    })
+                                    .clear_values(&[vk::ClearValue {
+                                        depth_stencil: vk::ClearDepthStencilValue {
+                                            depth: 1.0,
+                                            stencil: 0,
+                                        },
+                                    }]),
+                                vk::SubpassContents::INLINE,
                             );
-                            renderer.device.cmd_set_scissor(
-                                command_buffer,
-                                0,
-                                &[vk::Rect2D {
-                                    offset: vk::Offset2D { x: 0, y: 0 },
-                                    extent: vk::Extent2D {
-                                        width: swapchain.width,
-                                        height: swapchain.height,
-                                    },
-                                }],
-                            );
-                            renderer.device.cmd_bind_pipeline(
-                                command_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                depth_pass.depth_pipeline.handle,
-                            );
-                            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
-                                &renderer.device,
-                                command_buffer,
-                                &model_data.model_set.current(image_index.0),
-                                &camera_matrices.set.current(image_index.0),
-                            );
-                            for entity_id in
-                                (entities.mask() & meshes.mask() & positions.mask()).iter()
-                            {
-                                let mesh = meshes.get(entity_id).unwrap();
-                                let mesh_position = positions.get(entity_id).unwrap();
-                                let (index_buffer, index_count) =
-                                    pick_lod(&mesh.index_buffers, camera.position, *mesh_position);
-                                renderer.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    index_buffer.handle,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                renderer.device.cmd_bind_vertex_buffers(
+                            if !runtime_config.debug_aabbs {
+                                renderer.device.cmd_set_viewport(
                                     command_buffer,
                                     0,
-                                    &[mesh.vertex_buffer.handle],
-                                    &[0],
+                                    &[vk::Viewport {
+                                        x: 0.0,
+                                        y: swapchain.height as f32,
+                                        width: swapchain.width as f32,
+                                        height: -(swapchain.height as f32),
+                                        min_depth: 0.0,
+                                        max_depth: 1.0,
+                                    }],
                                 );
-                                renderer.device.cmd_draw_indexed(
+                                renderer.device.cmd_set_scissor(
                                     command_buffer,
-                                    (*index_count).try_into().unwrap(),
-                                    1,
                                     0,
-                                    0,
-                                    entity_id,
+                                    &[vk::Rect2D {
+                                        offset: vk::Offset2D { x: 0, y: 0 },
+                                        extent: vk::Extent2D {
+                                            width: swapchain.width,
+                                            height: swapchain.height,
+                                        },
+                                    }],
                                 );
+                                renderer.device.cmd_bind_pipeline(
+                                    command_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    depth_pass.depth_pipeline.handle,
+                                );
+                                depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                                    &renderer.device,
+                                    command_buffer,
+                                    &model_data.model_set.current(image_index.0),
+                                    &camera_matrices.set.current(image_index.0),
+                                );
+                                for entity_id in
+                                    (entities.mask() & meshes.mask() & positions.mask()).iter()
+                                {
+                                    let mesh = meshes.get(entity_id).unwrap();
+                                    let mesh_position = positions.get(entity_id).unwrap();
+                                    let (index_buffer, index_count) = pick_lod(
+                                        &mesh.index_buffers,
+                                        camera.position,
+                                        *mesh_position,
+                                    );
+                                    renderer.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        index_buffer.handle,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    renderer.device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[mesh.vertex_buffer.handle],
+                                        &[0],
+                                    );
+                                    renderer.device.cmd_draw_indexed(
+                                        command_buffer,
+                                        (*index_count).try_into().unwrap(),
+                                        1,
+                                        0,
+                                        0,
+                                        entity_id,
+                                    );
+                                }
                             }
-                        }
-                        renderer.device.cmd_end_render_pass(command_buffer);
-                    },
-                );
-            }
-        });
-        let wait_semaphores = &[renderer.timeline_semaphore.handle];
+                            renderer.device.cmd_end_render_pass(command_buffer);
+                        },
+                    );
+                }
+            });
+        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let wait_semaphore_values = &[renderer.frame_number * 16 + 1];
         let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = &[renderer.timeline_semaphore.handle];
+        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let signal_semaphore_values = &[renderer.frame_number * 16 + 2];
         let command_buffers = &[*command_buffer];
         let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
@@ -1468,7 +1532,7 @@ impl DepthOnlyPass {
             .signal_semaphore_values(signal_semaphore_values)
             .build();
         let submit = vk::SubmitInfo::builder()
-        .push_next(&mut signal_timeline)
+            .push_next(&mut signal_timeline)
             .wait_semaphores(wait_semaphores)
             .wait_dst_stage_mask(dst_stage_masks)
             .command_buffers(command_buffers)

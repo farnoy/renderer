@@ -138,7 +138,7 @@ macro_rules! make_descriptor_set {
                                 let _x = $desc_count;
                                 vk::DescriptorBindingFlagsEXT::default() $( | {
                                     let _ = stringify!($partial);
-                                    vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND
+                                    vk::DescriptorBindingFlagsEXT::PARTIALLY_BOUND | vk::DescriptorBindingFlagsEXT::UPDATE_UNUSED_WHILE_PENDING
                                 })?
                             },
                         )*

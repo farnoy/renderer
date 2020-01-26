@@ -361,118 +361,97 @@ impl PrepareShadowMaps {
         meshes: &ComponentStorage<GltfMesh>,
         lights: &ComponentStorage<Light>,
         shadow_matrices: &ComponentStorage<ShadowMappingLightMatrices>,
-        present_data: &PresentData,
         model_data: &ModelData,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "shadow_mapping");
-        let command_buffer = graphics_command_pool
-            .0
-            .record_one_time(|command_buffer| unsafe {
-                if !shadow_mapping.image_transitioned {
-                    renderer.device.cmd_pipeline_barrier(
+        let command_buffer =
+            graphics_command_pool
+                .0
+                .record_one_time("shadow mapping cb", |command_buffer| unsafe {
+                    if !shadow_mapping.image_transitioned {
+                        renderer.device.cmd_pipeline_barrier(
+                            command_buffer,
+                            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                            vk::PipelineStageFlags::TOP_OF_PIPE,
+                            Default::default(),
+                            &[],
+                            &[],
+                            &[vk::ImageMemoryBarrier::builder()
+                                .image(shadow_mapping.depth_image.handle)
+                                .subresource_range(vk::ImageSubresourceRange {
+                                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                                    base_mip_level: 0,
+                                    level_count: 1,
+                                    base_array_layer: 0,
+                                    layer_count: 1,
+                                })
+                                .old_layout(vk::ImageLayout::PREINITIALIZED)
+                                .new_layout(
+                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                )
+                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .build()],
+                        );
+                        shadow_mapping.image_transitioned = true;
+                    }
+                    renderer.device.debug_marker_around(
                         command_buffer,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
-                        Default::default(),
-                        &[],
-                        &[],
-                        &[vk::ImageMemoryBarrier::builder()
-                            .image(shadow_mapping.depth_image.handle)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::DEPTH,
-                                base_mip_level: 0,
-                                level_count: 1,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                            })
-                            .old_layout(vk::ImageLayout::PREINITIALIZED)
-                            .new_layout(vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL)
-                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .build()],
-                    );
-                    shadow_mapping.image_transitioned = true;
-                }
-                renderer.device.debug_marker_around(
-                    command_buffer,
-                    "shadow mapping",
-                    [0.8, 0.1, 0.1, 1.0],
-                    || {
-                        renderer.device.cmd_begin_render_pass(
-                            command_buffer,
-                            &vk::RenderPassBeginInfo::builder()
-                                .render_pass(shadow_mapping.renderpass.handle)
-                                .framebuffer(shadow_mapping.framebuffer.handle)
-                                .render_area(vk::Rect2D {
-                                    offset: vk::Offset2D { x: 0, y: 0 },
-                                    extent: vk::Extent2D {
-                                        width: DIM * MAP_SIZE,
-                                        height: DIM * MAP_SIZE,
-                                    },
-                                }),
-                            vk::SubpassContents::INLINE,
-                        );
-                        renderer.device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            shadow_mapping.depth_pipeline.handle,
-                        );
-
-                        for (ix, light_entity_id) in
-                            (lights.mask() & shadow_matrices.mask()).iter().enumerate()
-                        {
-                            let shadow_mvp = shadow_matrices.get(light_entity_id).unwrap();
-                            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
-                                &renderer.device,
+                        "shadow mapping",
+                        [0.8, 0.1, 0.1, 1.0],
+                        || {
+                            renderer.device.cmd_begin_render_pass(
                                 command_buffer,
-                                &model_data.model_set.current(image_index.0),
-                                &shadow_mvp.matrices_set.current(image_index.0),
-                            );
-
-                            let row = ix as u32 / DIM;
-                            let column = ix as u32 % DIM;
-                            let x = MAP_SIZE * column;
-                            let y = MAP_SIZE * row;
-                            renderer.device.cmd_set_viewport(
-                                command_buffer,
-                                0,
-                                &[vk::Viewport {
-                                    x: x as f32,
-                                    y: (MAP_SIZE * (row + 1)) as f32,
-                                    width: MAP_SIZE as f32,
-                                    height: -(MAP_SIZE as f32),
-                                    min_depth: 0.0,
-                                    max_depth: 1.0,
-                                }],
-                            );
-                            renderer.device.cmd_set_scissor(
-                                command_buffer,
-                                0,
-                                &[vk::Rect2D {
-                                    offset: vk::Offset2D {
-                                        x: x as i32,
-                                        y: y as i32,
-                                    },
-                                    extent: vk::Extent2D {
-                                        width: MAP_SIZE,
-                                        height: MAP_SIZE,
-                                    },
-                                }],
-                            );
-                            renderer.device.cmd_clear_attachments(
-                                command_buffer,
-                                &[vk::ClearAttachment::builder()
-                                    .clear_value(vk::ClearValue {
-                                        depth_stencil: vk::ClearDepthStencilValue {
-                                            depth: 1.0,
-                                            stencil: 1,
+                                &vk::RenderPassBeginInfo::builder()
+                                    .render_pass(shadow_mapping.renderpass.handle)
+                                    .framebuffer(shadow_mapping.framebuffer.handle)
+                                    .render_area(vk::Rect2D {
+                                        offset: vk::Offset2D { x: 0, y: 0 },
+                                        extent: vk::Extent2D {
+                                            width: DIM * MAP_SIZE,
+                                            height: DIM * MAP_SIZE,
                                         },
-                                    })
-                                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                    .build()],
-                                &[vk::ClearRect::builder()
-                                    .rect(vk::Rect2D {
+                                    }),
+                                vk::SubpassContents::INLINE,
+                            );
+                            renderer.device.cmd_bind_pipeline(
+                                command_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                shadow_mapping.depth_pipeline.handle,
+                            );
+
+                            for (ix, light_entity_id) in
+                                (lights.mask() & shadow_matrices.mask()).iter().enumerate()
+                            {
+                                let shadow_mvp = shadow_matrices.get(light_entity_id).unwrap();
+                                depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                                    &renderer.device,
+                                    command_buffer,
+                                    &model_data.model_set.current(image_index.0),
+                                    &shadow_mvp.matrices_set.current(image_index.0),
+                                );
+
+                                let row = ix as u32 / DIM;
+                                let column = ix as u32 % DIM;
+                                let x = MAP_SIZE * column;
+                                let y = MAP_SIZE * row;
+                                renderer.device.cmd_set_viewport(
+                                    command_buffer,
+                                    0,
+                                    &[vk::Viewport {
+                                        x: x as f32,
+                                        y: (MAP_SIZE * (row + 1)) as f32,
+                                        width: MAP_SIZE as f32,
+                                        height: -(MAP_SIZE as f32),
+                                        min_depth: 0.0,
+                                        max_depth: 1.0,
+                                    }],
+                                );
+                                renderer.device.cmd_set_scissor(
+                                    command_buffer,
+                                    0,
+                                    &[vk::Rect2D {
                                         offset: vk::Offset2D {
                                             x: x as i32,
                                             y: y as i32,
@@ -481,56 +460,80 @@ impl PrepareShadowMaps {
                                             width: MAP_SIZE,
                                             height: MAP_SIZE,
                                         },
-                                    })
-                                    .layer_count(1)
-                                    .base_array_layer(0)
-                                    .build()],
-                            );
+                                    }],
+                                );
+                                renderer.device.cmd_clear_attachments(
+                                    command_buffer,
+                                    &[vk::ClearAttachment::builder()
+                                        .clear_value(vk::ClearValue {
+                                            depth_stencil: vk::ClearDepthStencilValue {
+                                                depth: 1.0,
+                                                stencil: 1,
+                                            },
+                                        })
+                                        .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                                        .build()],
+                                    &[vk::ClearRect::builder()
+                                        .rect(vk::Rect2D {
+                                            offset: vk::Offset2D {
+                                                x: x as i32,
+                                                y: y as i32,
+                                            },
+                                            extent: vk::Extent2D {
+                                                width: MAP_SIZE,
+                                                height: MAP_SIZE,
+                                            },
+                                        })
+                                        .layer_count(1)
+                                        .base_array_layer(0)
+                                        .build()],
+                                );
 
-                            for entity_id in (entities.mask() & meshes.mask()).iter() {
-                                let mesh = meshes.get(entity_id).unwrap();
-                                let (index_buffer, index_count) =
-                                    mesh.index_buffers.last().unwrap();
-                                renderer.device.cmd_bind_index_buffer(
-                                    command_buffer,
-                                    index_buffer.handle,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                renderer.device.cmd_bind_vertex_buffers(
-                                    command_buffer,
-                                    0,
-                                    &[mesh.vertex_buffer.handle],
-                                    &[0],
-                                );
-                                renderer.device.cmd_draw_indexed(
-                                    command_buffer,
-                                    (*index_count).try_into().unwrap(),
-                                    1,
-                                    0,
-                                    0,
-                                    entity_id,
-                                );
+                                for entity_id in (entities.mask() & meshes.mask()).iter() {
+                                    let mesh = meshes.get(entity_id).unwrap();
+                                    let (index_buffer, index_count) =
+                                        mesh.index_buffers.last().unwrap();
+                                    renderer.device.cmd_bind_index_buffer(
+                                        command_buffer,
+                                        index_buffer.handle,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    renderer.device.cmd_bind_vertex_buffers(
+                                        command_buffer,
+                                        0,
+                                        &[mesh.vertex_buffer.handle],
+                                        &[0],
+                                    );
+                                    renderer.device.cmd_draw_indexed(
+                                        command_buffer,
+                                        (*index_count).try_into().unwrap(),
+                                        1,
+                                        0,
+                                        0,
+                                        entity_id,
+                                    );
+                                }
                             }
-                        }
 
-                        renderer.device.cmd_end_render_pass(command_buffer);
-                    },
-                );
-            });
+                            renderer.device.cmd_end_render_pass(command_buffer);
+                        },
+                    );
+                });
 
         let queue = renderer.device.graphics_queue.lock();
 
+        dbg!(renderer.frame_number * 16);
         let command_buffers = &[*command_buffer];
-        let wait_semaphores = &[present_data.present_semaphore.handle];
+        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
-        let wait_semaphore_values = &[0];
+        let wait_semaphore_values = &[renderer.frame_number * 16];
         let signal_semaphore_values = &[renderer.frame_number * 16 + 1];
         let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
+            .wait_semaphore_values(wait_semaphore_values)
             .signal_semaphore_values(signal_semaphore_values)
             .build();
-        let signal_semaphores = &[renderer.timeline_semaphore.handle];
+        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let submit_info = vk::SubmitInfo::builder()
             .command_buffers(command_buffers)
             .push_next(&mut signal_timeline)
@@ -539,20 +542,113 @@ impl PrepareShadowMaps {
             .signal_semaphores(signal_semaphores)
             .build();
 
+        let x = renderer.device.new_fence();
+
+        let mut counter: u64 = 0;
+        assert_eq!(
+            vk::Result::SUCCESS,
+            (renderer.device.get_semaphore_counter_value)(
+                renderer.device.handle(),
+                renderer.graphics_timeline_semaphore.handle,
+                &mut counter
+            ),
+            "Get semaphore counter value failed",
+        );
+        dbg!(counter);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            vk::Result::SUCCESS,
+            (renderer.device.get_semaphore_counter_value)(
+                renderer.device.handle(),
+                renderer.graphics_timeline_semaphore.handle,
+                &mut counter
+            ),
+            "Get semaphore counter value failed",
+        );
+        dbg!(counter);
+
         unsafe {
             renderer
                 .device
-                .queue_submit(
-                    *queue,
-                    &[submit_info],
-                    vk::Fence::null(),
-                )
+                .queue_submit(*queue, &[submit_info], x.handle)
                 .unwrap();
         }
 
+        dbg!(shadow_mapping
+            .previous_command_buffer
+            .current(image_index.0)
+            .is_some());
+        assert_eq!(
+            vk::Result::SUCCESS,
+            (renderer.device.get_semaphore_counter_value)(
+                renderer.device.handle(),
+                renderer.graphics_timeline_semaphore.handle,
+                &mut counter
+            ),
+            "Get semaphore counter value failed",
+        );
+        dbg!(counter);
+        // wait on last frame completion
+        let t0 = std::time::Instant::now();
+        let wait_ix = renderer.frame_number * 16 + 1;
+        let wait_ixes = &[wait_ix];
+        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+        let wait_info = vk::SemaphoreWaitInfo::builder()
+            .semaphores(wait_semaphores)
+            .values(wait_ixes);
+        assert_eq!(
+            vk::Result::SUCCESS,
+            (renderer.device.wait_semaphores)(renderer.device.handle(), &*wait_info, 10u64 * 1_000_000),
+            "Wait for ix {} failed.",
+            wait_ix
+        );
+        let elapsed = t0.elapsed();
+        let micros = elapsed.as_micros();
+        let millis = elapsed.as_millis();
+        dbg!("wait_semaphores", micros, millis);
+        assert_eq!(
+            vk::Result::SUCCESS,
+            (renderer.device.get_semaphore_counter_value)(
+                renderer.device.handle(),
+                renderer.graphics_timeline_semaphore.handle,
+                &mut counter
+            ),
+            "Get semaphore counter value failed",
+        );
+        let elapsed = t0.elapsed();
+        let micros = elapsed.as_micros();
+        let millis = elapsed.as_millis();
+        dbg!("get counter value", micros, millis, counter);
+        unsafe {
+            renderer
+                .device
+                .wait_for_fences(&[x.handle], true, std::u64::MAX)
+                .expect("Wait for fence failed.");
+        }
+        let elapsed = t0.elapsed();
+        let micros = elapsed.as_micros();
+        let millis = elapsed.as_millis();
+        dbg!("wait_for_fences", micros, millis);
+        assert_eq!(
+            vk::Result::SUCCESS,
+            (renderer.device.get_semaphore_counter_value)(
+                renderer.device.handle(),
+                renderer.graphics_timeline_semaphore.handle,
+                &mut counter
+            ),
+            "Get semaphore counter value failed",
+        );
+        let elapsed = t0.elapsed();
+        let micros = elapsed.as_micros();
+        let millis = elapsed.as_millis();
+        dbg!("get counter value #2", micros, millis, counter);
         *shadow_mapping
             .previous_command_buffer
             .current_mut(image_index.0) = Some(command_buffer);
+        dbg!(shadow_mapping
+            .previous_command_buffer
+            .current(image_index.0)
+            .is_some());
 
         // TODO: extract to another stage?
         // Update descriptor sets so that users of lights have the latest info

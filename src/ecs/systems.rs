@@ -100,7 +100,7 @@ impl InputHandler {
         let mut resized = false;
         // println!("event loop run_return");
         self.events_loop
-            .run_return(|event, window_target, control_flow| {
+            .run_return(|event, _window_target, control_flow| {
                 // dbg!(&event);
                 // platform.handle_event(gui.io_mut(), &window, &event);
                 // println!("imgui handled event");

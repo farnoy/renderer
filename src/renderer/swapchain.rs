@@ -80,7 +80,7 @@ impl Swapchain {
                 .get_physical_device_surface_capabilities(device.physical_device, surface.surface)
                 .unwrap()
         };
-        let mut desired_image_count = surface_capabilities.min_image_count;
+        let mut desired_image_count = 2;
         if surface_capabilities.max_image_count > 0
             && desired_image_count > surface_capabilities.max_image_count
         {
@@ -142,7 +142,7 @@ impl Swapchain {
                 .unwrap()
         };
         println!("resizing surface capabilities {:?}", surface_capabilities);
-        let mut desired_image_count = surface_capabilities.min_image_count;
+        let mut desired_image_count = 2;
         if surface_capabilities.max_image_count > 0
             && desired_image_count > surface_capabilities.max_image_count
         {

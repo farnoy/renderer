@@ -28,7 +28,7 @@ impl Semaphore {
         }
     }
 
-    pub fn new_timeline(device: &Arc<Device>) -> Semaphore {
+    pub(super) fn new_timeline(device: &Arc<Device>) -> Semaphore {
         let mut create_type_info =
             vk::SemaphoreTypeCreateInfo::builder().semaphore_type(vk::SemaphoreType::TIMELINE);
         let create_info = vk::SemaphoreCreateInfo::builder().push_next(&mut create_type_info);
@@ -85,6 +85,7 @@ impl Event {
 impl Drop for Semaphore {
     fn drop(&mut self) {
         unsafe {
+            // dbg!(std::backtrace::Backtrace::force_capture());
             self.device.device.destroy_semaphore(self.handle, None);
         }
     }

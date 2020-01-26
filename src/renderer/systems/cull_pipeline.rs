@@ -1,7 +1,7 @@
 use super::{
     super::{
         alloc,
-        device::{Buffer, CommandBuffer, DoubleBuffered, Event, Fence, Semaphore},
+        device::{Buffer, CommandBuffer, DoubleBuffered, Event, Fence},
         helpers::{self, pick_lod, Pipeline},
         CameraMatrices, GltfMesh, MainDescriptorPool, ModelData, RenderFrame,
     },
@@ -35,7 +35,6 @@ pub struct CullPassData {
     pub cull_pipeline: Pipeline,
     pub cull_set_layout: super::super::shaders::cull_set::DescriptorSetLayout,
     pub cull_set: DoubleBuffered<super::super::shaders::cull_set::DescriptorSet>,
-    pub cull_complete_semaphore: DoubleBuffered<Semaphore>,
     pub cull_complete_fence: DoubleBuffered<Fence>,
 }
 
@@ -123,14 +122,6 @@ impl CullPassData {
             b
         });
 
-        let cull_complete_semaphore = renderer.new_buffered(|ix| {
-            let s = renderer.device.new_semaphore();
-            renderer
-                .device
-                .set_object_name(s.handle, &format!("Cull pass complete semaphore - {}", ix));
-            s
-        });
-
         let culled_commands_buffer = renderer.new_buffered(|ix| {
             let b = device.new_buffer(
                 vk::BufferUsageFlags::INDIRECT_BUFFER
@@ -169,7 +160,6 @@ impl CullPassData {
             cull_pipeline_layout,
             cull_set_layout,
             cull_set,
-            cull_complete_semaphore,
             cull_complete_fence,
         }
     }
@@ -232,9 +222,9 @@ impl CullPass {
 
         let mut index_offset_in_output = 0i32;
 
-        let cull_cb = renderer
-            .compute_command_pool
-            .record_one_time(|command_buffer| unsafe {
+        let cull_cb = renderer.compute_command_pool.record_one_time(
+            "cull pass cb",
+            |command_buffer| unsafe {
                 renderer.device.debug_marker_around(
                     command_buffer,
                     "cull pass",
@@ -320,19 +310,27 @@ impl CullPass {
                         // }
                     },
                 );
-            });
-        let wait_semaphores = &[];
-        let signal_semaphores = [cull_pass_data
-            .cull_complete_semaphore
-            .current(image_index.0)
-            .handle];
+            },
+        );
+        let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
+        let wait_semaphore_values = &[renderer.frame_number * 16];
+        dbg!(
+            renderer.compute_timeline_semaphore.handle,
+            renderer.frame_number * 16
+        );
+        let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
+        let signal_semaphore_values = &[renderer.frame_number * 16 + 16];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let command_buffers = &[*cull_cb];
+        let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(wait_semaphore_values)
+            .signal_semaphore_values(signal_semaphore_values);
         let submit = vk::SubmitInfo::builder()
+            .push_next(&mut wait_timeline)
             .wait_semaphores(wait_semaphores)
             .wait_dst_stage_mask(&dst_stage_masks)
             .command_buffers(command_buffers)
-            .signal_semaphores(&signal_semaphores)
+            .signal_semaphores(signal_semaphores)
             .build();
 
         let queue = renderer.device.compute_queues[0].lock();

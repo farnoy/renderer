@@ -55,10 +55,12 @@ impl CommandPool {
 
     pub fn record_one_time<F: FnOnce(vk::CommandBuffer)>(
         self: &Arc<CommandPool>,
+        name: &str,
         f: F,
     ) -> CommandBuffer {
         let mut pool_lock = self.handle.lock();
         let command_buffer = self.allocate_command_buffers(1, &mut *pool_lock).remove(0);
+        self.device.set_object_name(command_buffer, name);
 
         let begin_info = vk::CommandBufferBeginInfo::builder()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);

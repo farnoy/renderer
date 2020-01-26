@@ -111,7 +111,7 @@ impl SynchronizeBaseColorTextures {
             vk::Result::SUCCESS,
             (renderer.device.get_semaphore_counter_value)(
                 renderer.device.handle(),
-                renderer.timeline_semaphore.handle,
+                renderer.graphics_timeline_semaphore.handle,
                 &mut counter
             ),
             "Get semaphore counter value failed",
@@ -121,7 +121,7 @@ impl SynchronizeBaseColorTextures {
         // wait on last frame completion
         let wait_ix = renderer.frame_number * 16;
         let wait_ixes = &[wait_ix];
-        let wait_semaphores = &[renderer.timeline_semaphore.handle];
+        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let wait_info = vk::SemaphoreWaitInfo::builder()
             .semaphores(wait_semaphores)
             .values(wait_ixes);
@@ -131,6 +131,8 @@ impl SynchronizeBaseColorTextures {
             "Wait for ix {} failed.",
             wait_ix
         );
+
+        // unsafe { renderer.device.device_wait_idle().unwrap(); }
 
         for entity_id in visited_markers.mask().iter() {
             let marker = visited_markers.get(entity_id).unwrap();

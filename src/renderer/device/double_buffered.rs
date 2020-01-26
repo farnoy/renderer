@@ -1,5 +1,5 @@
 #[cfg(windows)]
-const SIZE: usize = 2;
+const SIZE: usize = 3;
 #[cfg(not(windows))]
 const SIZE: usize = 3;
 
@@ -11,7 +11,7 @@ impl<T> DoubleBuffered<T> {
     pub fn new<F: FnMut(u32) -> T>(mut creator: F) -> DoubleBuffered<T> {
         #[cfg(windows)]
         return DoubleBuffered {
-            data: [creator(0), creator(1)],
+            data: [creator(0), creator(1), creator(2)],
         };
 
         #[cfg(not(windows))]
