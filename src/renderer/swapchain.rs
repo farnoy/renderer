@@ -213,8 +213,8 @@ unsafe fn create_surface<E: EntryV1_0>(
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use std::ffi::c_void;
-    use winit::os::windows::WindowExt;
-    let hwnd = window.get_hwnd() as *mut winapi::shared::windef::HWND__;
+    use winit::platform::windows::WindowExtWindows;
+    let hwnd = window.hwnd() as *mut winapi::shared::windef::HWND__;
     let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const c_void;
     let win32_create_info = vk::Win32SurfaceCreateInfoKHR::builder()
         .hinstance(hinstance)
