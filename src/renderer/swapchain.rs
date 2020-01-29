@@ -80,12 +80,8 @@ impl Swapchain {
                 .get_physical_device_surface_capabilities(device.physical_device, surface.surface)
                 .unwrap()
         };
-        let mut desired_image_count = 2;
-        if surface_capabilities.max_image_count > 0
-            && desired_image_count > surface_capabilities.max_image_count
-        {
-            desired_image_count = surface_capabilities.max_image_count;
-        }
+        let desired_image_count =
+            na::clamp(2, surface_capabilities.min_image_count, surface_capabilities.max_image_count);
         let surface_resolution = match surface_capabilities.current_extent.width {
             u32::MAX => panic!("not expecting u32::MAX for surface capabilities current_extent"),
             _ => surface_capabilities.current_extent,
@@ -142,12 +138,8 @@ impl Swapchain {
                 .unwrap()
         };
         println!("resizing surface capabilities {:?}", surface_capabilities);
-        let mut desired_image_count = 2;
-        if surface_capabilities.max_image_count > 0
-            && desired_image_count > surface_capabilities.max_image_count
-        {
-            desired_image_count = surface_capabilities.max_image_count;
-        }
+        let desired_image_count =
+            na::clamp(2, surface_capabilities.min_image_count, surface_capabilities.max_image_count);
         let pre_transform = if surface_capabilities
             .supported_transforms
             .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)

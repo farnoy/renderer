@@ -292,7 +292,7 @@ impl ShadowMappingMVPCalculation {
             let light_position = positions.get(entity_id).unwrap();
             let light_rotation = rotations.get(entity_id).unwrap();
             let light_matrix = light_matrices.entry(entity_id).or_insert_with(|| {
-                let matrices_buffer = DoubleBuffered::new(|ix| {
+                let matrices_buffer = renderer.new_buffered(|ix| {
                     let b = renderer.device.new_buffer(
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
@@ -307,7 +307,7 @@ impl ShadowMappingMVPCalculation {
                     );
                     b
                 });
-                let matrices_set = DoubleBuffered::new(|ix| {
+                let matrices_set = renderer.new_buffered(|ix| {
                     let s = super::super::shaders::camera_set::DescriptorSet::new(
                         &main_descriptor_pool,
                         &camera_matrices.set_layout,

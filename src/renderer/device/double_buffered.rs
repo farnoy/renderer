@@ -1,31 +1,23 @@
-#[cfg(windows)]
-const SIZE: usize = 3;
-#[cfg(not(windows))]
-const SIZE: usize = 3;
+use smallvec::SmallVec;
 
 pub struct DoubleBuffered<T> {
-    data: [T; SIZE],
+    data: SmallVec<[T; 3]>,
 }
 
 impl<T> DoubleBuffered<T> {
-    pub fn new<F: FnMut(u32) -> T>(mut creator: F) -> DoubleBuffered<T> {
-        #[cfg(windows)]
-        return DoubleBuffered {
-            data: [creator(0), creator(1), creator(2)],
-        };
-
-        #[cfg(not(windows))]
-        return DoubleBuffered {
-            data: [creator(0), creator(1), creator(2)],
-        };
+    pub fn new<F: FnMut(u32) -> T>(count: usize, mut creator: F) -> DoubleBuffered<T> {
+        DoubleBuffered {
+            data: (0..count).map(|ix| creator(ix as u32)).collect(),
+        }
     }
 
     pub fn current(&self, ix: u32) -> &T {
-        &self.data[ix as usize % SIZE]
+        &self.data[ix as usize % self.data.len()]
     }
 
     pub fn current_mut(&mut self, ix: u32) -> &mut T {
-        &mut self.data[ix as usize % SIZE]
+        let len = self.data.len();
+        &mut self.data[ix as usize % len]
     }
 
     pub fn iter<'a>(&'a self) -> impl std::iter::Iterator<Item = &T> + 'a {

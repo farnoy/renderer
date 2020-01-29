@@ -64,6 +64,7 @@ pub struct RenderFrame {
     pub graphics_timeline_semaphore: Semaphore,
     pub compute_timeline_semaphore: Semaphore,
     pub frame_number: u64,
+    pub buffer_count: usize,
 }
 
 impl RenderFrame {
@@ -160,6 +161,7 @@ impl RenderFrame {
                 graphics_timeline_semaphore,
                 compute_timeline_semaphore,
                 frame_number: 0,
+                buffer_count: unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap().len() },
             },
             swapchain,
             events_loop,
@@ -167,7 +169,7 @@ impl RenderFrame {
     }
 
     pub fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
-        DoubleBuffered::new(creator)
+        DoubleBuffered::new(self.buffer_count, creator)
     }
 }
 
@@ -379,7 +381,7 @@ impl CameraMatrices {
         renderer: &RenderFrame,
         main_descriptor_pool: &MainDescriptorPool,
     ) -> CameraMatrices {
-        let buffer = DoubleBuffered::new(|ix| {
+        let buffer = renderer.new_buffered(|ix| {
             let b = renderer.device.new_buffer(
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
@@ -394,7 +396,7 @@ impl CameraMatrices {
         renderer
             .device
             .set_object_name(set_layout.layout.handle, "Camera matrices set layout");
-        let set = DoubleBuffered::new(|ix| {
+        let set = renderer.new_buffered(|ix| {
             let s = shaders::camera_set::DescriptorSet::new(&main_descriptor_pool, &set_layout);
             renderer
                 .device
@@ -426,7 +428,7 @@ impl ModelData {
         let model_set_layout = shaders::model_set::DescriptorSetLayout::new(&device);
         device.set_object_name(model_set_layout.layout.handle, "Model Set Layout");
 
-        let model_buffer = DoubleBuffered::new(|ix| {
+        let model_buffer = renderer.new_buffered(|ix| {
             let b = device.new_buffer(
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
@@ -435,7 +437,7 @@ impl ModelData {
             device.set_object_name(b.handle, &format!("Model Buffer - {}", ix));
             b
         });
-        let model_set = DoubleBuffered::new(|ix| {
+        let model_set = renderer.new_buffered(|ix| {
             let s =
                 shaders::model_set::DescriptorSet::new(&main_descriptor_pool, &model_set_layout);
             device.set_object_name(s.set.handle, &format!("Model Set - {}", ix));
