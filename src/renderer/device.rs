@@ -251,8 +251,8 @@ impl Device {
         Semaphore::new(self)
     }
 
-    pub fn new_semaphore_timeline(self: &Arc<Self>) -> Semaphore {
-        Semaphore::new_timeline(self)
+    pub fn new_semaphore_timeline(self: &Arc<Self>, initial_value: u64) -> TimelineSemaphore {
+        TimelineSemaphore::new(self, initial_value)
     }
 
     pub fn new_fence(self: &Arc<Self>) -> Fence {

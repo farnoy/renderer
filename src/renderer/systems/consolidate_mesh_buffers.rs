@@ -2,7 +2,7 @@ use crate::{
     ecs::custom::{ComponentStorage, EntitiesStorage},
     renderer::{
         alloc,
-        device::{Buffer, CommandBuffer, Fence, Semaphore},
+        device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
         systems::present::ImageIndex,
         GltfMesh, GraphicsCommandPool, RenderFrame,
     },
@@ -37,7 +37,7 @@ pub struct ConsolidatedMeshBuffers {
     pub index_buffer: Buffer,
     /// If this semaphore is present, a modification to the consolidated buffer has happened
     /// and the user must synchronize with it
-    pub sync_timeline: Semaphore,
+    pub sync_timeline: TimelineSemaphore,
     /// Holds the command buffer executed in the previous frame, to clean it up safely in the following frame
     previous_run_command_buffer: Option<CommandBuffer>,
     /// Holds the fence used to synchronize the transfer that occured in previous frame.
@@ -79,7 +79,7 @@ impl ConsolidatedMeshBuffers {
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             super::super::shaders::cull_set::bindings::index_buffer::SIZE,
         );
-        let sync_timeline = renderer.device.new_semaphore_timeline();
+        let sync_timeline = renderer.device.new_semaphore_timeline(renderer.frame_number * 16);
         renderer.device.set_object_name(
             sync_timeline.handle,
             "Consolidate mesh buffers sync timeline",

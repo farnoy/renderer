@@ -570,7 +570,7 @@ fn main() {
             }
             renderer.frame_number += 1;
         }
-        if renderer.frame_number > 2 {
+        if *quit_handle.lock() {
             unsafe {
                 renderer.device.device_wait_idle().unwrap();
             }

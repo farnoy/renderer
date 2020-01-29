@@ -61,8 +61,8 @@ pub struct RenderFrame {
     pub device: Arc<Device>,
     pub compute_command_pool: Arc<CommandPool>,
     pub renderpass: RenderPass,
-    pub graphics_timeline_semaphore: Semaphore,
-    pub compute_timeline_semaphore: Semaphore,
+    pub graphics_timeline_semaphore: TimelineSemaphore,
+    pub compute_timeline_semaphore: TimelineSemaphore,
     pub frame_number: u64,
     pub buffer_count: usize,
 }
@@ -141,12 +141,15 @@ impl RenderFrame {
         };
         device.set_object_name(main_renderpass.handle, "Main pass RenderPass");
 
-        let graphics_timeline_semaphore = device.new_semaphore_timeline();
+        // Stat frame number at 1 and semaphores at 16, because validation layers assert
+        // wait_semaphore_values at > 0
+        let frame_number = 1;
+        let graphics_timeline_semaphore = device.new_semaphore_timeline(16);
         device.set_object_name(
             graphics_timeline_semaphore.handle,
             "Graphics timeline semaphore",
         );
-        let compute_timeline_semaphore = device.new_semaphore_timeline();
+        let compute_timeline_semaphore = device.new_semaphore_timeline(16);
         device.set_object_name(
             compute_timeline_semaphore.handle,
             "Compute timeline semaphore",
@@ -160,8 +163,14 @@ impl RenderFrame {
                 renderpass: main_renderpass,
                 graphics_timeline_semaphore,
                 compute_timeline_semaphore,
-                frame_number: 0,
-                buffer_count: unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap().len() },
+                frame_number,
+                buffer_count: unsafe {
+                    swapchain
+                        .ext
+                        .get_swapchain_images(swapchain.swapchain)
+                        .unwrap()
+                        .len()
+                },
             },
             swapchain,
             events_loop,
@@ -1087,45 +1096,16 @@ impl Renderer {
 
         {
             let t0 = std::time::Instant::now();
-            let mut counter: u64 = 0;
-            assert_eq!(
-                vk::Result::SUCCESS,
-                (renderer.device.get_semaphore_counter_value)(
-                    renderer.device.handle(),
-                    renderer.graphics_timeline_semaphore.handle,
-                    &mut counter
-                ),
-                "Get semaphore counter value failed",
-            );
+            let counter = renderer.graphics_timeline_semaphore.value().unwrap();
             dbg!("immediate wait on submitted render", counter);
-            let wait_ix = (renderer.frame_number * 16 + 15);
-            let wait_ixes = &[wait_ix];
-            let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-            let wait_info = vk::SemaphoreWaitInfo::builder()
-                .semaphores(wait_semaphores)
-                .values(wait_ixes);
-            assert_eq!(
-                vk::Result::SUCCESS,
-                (renderer.device.wait_semaphores)(
-                    renderer.device.handle(),
-                    &*wait_info,
-                    std::u64::MAX
-                ),
-                "Wait for ix {} failed.",
-                wait_ix
-            );
+            renderer
+                .graphics_timeline_semaphore
+                .wait(renderer.frame_number * 16 + 15)
+                .unwrap();
             let elapsed = t0.elapsed();
             let micros = elapsed.as_micros();
             let millis = elapsed.as_millis();
-            assert_eq!(
-                vk::Result::SUCCESS,
-                (renderer.device.get_semaphore_counter_value)(
-                    renderer.device.handle(),
-                    renderer.graphics_timeline_semaphore.handle,
-                    &mut counter
-                ),
-                "Get semaphore counter value failed",
-            );
+            let counter = renderer.graphics_timeline_semaphore.value().unwrap();
             dbg!("WAIT DONE", micros, millis, counter);
         }
     }

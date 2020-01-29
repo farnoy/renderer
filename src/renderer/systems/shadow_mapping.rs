@@ -542,113 +542,28 @@ impl PrepareShadowMaps {
             .signal_semaphores(signal_semaphores)
             .build();
 
-        let x = renderer.device.new_fence();
-
-        let mut counter: u64 = 0;
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.get_semaphore_counter_value)(
-                renderer.device.handle(),
-                renderer.graphics_timeline_semaphore.handle,
-                &mut counter
-            ),
-            "Get semaphore counter value failed",
-        );
-        dbg!(counter);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.get_semaphore_counter_value)(
-                renderer.device.handle(),
-                renderer.graphics_timeline_semaphore.handle,
-                &mut counter
-            ),
-            "Get semaphore counter value failed",
-        );
-        dbg!(counter);
-
         unsafe {
             renderer
                 .device
-                .queue_submit(*queue, &[submit_info], x.handle)
+                .queue_submit(*queue, &[submit_info], vk::Fence::null())
                 .unwrap();
         }
 
-        dbg!(shadow_mapping
-            .previous_command_buffer
-            .current(image_index.0)
-            .is_some());
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.get_semaphore_counter_value)(
-                renderer.device.handle(),
-                renderer.graphics_timeline_semaphore.handle,
-                &mut counter
-            ),
-            "Get semaphore counter value failed",
-        );
-        dbg!(counter);
         // wait on last frame completion
         let t0 = std::time::Instant::now();
-        let wait_ix = renderer.frame_number * 16 + 1;
-        let wait_ixes = &[wait_ix];
-        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let wait_info = vk::SemaphoreWaitInfo::builder()
-            .semaphores(wait_semaphores)
-            .values(wait_ixes);
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.wait_semaphores)(renderer.device.handle(), &*wait_info, 10u64 * 1_000_000),
-            "Wait for ix {} failed.",
-            wait_ix
-        );
+        renderer.graphics_timeline_semaphore.wait(renderer.frame_number * 16 + 1).unwrap();
         let elapsed = t0.elapsed();
         let micros = elapsed.as_micros();
         let millis = elapsed.as_millis();
         dbg!("wait_semaphores", micros, millis);
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.get_semaphore_counter_value)(
-                renderer.device.handle(),
-                renderer.graphics_timeline_semaphore.handle,
-                &mut counter
-            ),
-            "Get semaphore counter value failed",
-        );
+        let counter = renderer.graphics_timeline_semaphore.value().unwrap();
         let elapsed = t0.elapsed();
         let micros = elapsed.as_micros();
         let millis = elapsed.as_millis();
         dbg!("get counter value", micros, millis, counter);
-        unsafe {
-            renderer
-                .device
-                .wait_for_fences(&[x.handle], true, std::u64::MAX)
-                .expect("Wait for fence failed.");
-        }
-        let elapsed = t0.elapsed();
-        let micros = elapsed.as_micros();
-        let millis = elapsed.as_millis();
-        dbg!("wait_for_fences", micros, millis);
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.get_semaphore_counter_value)(
-                renderer.device.handle(),
-                renderer.graphics_timeline_semaphore.handle,
-                &mut counter
-            ),
-            "Get semaphore counter value failed",
-        );
-        let elapsed = t0.elapsed();
-        let micros = elapsed.as_micros();
-        let millis = elapsed.as_millis();
-        dbg!("get counter value #2", micros, millis, counter);
         *shadow_mapping
             .previous_command_buffer
             .current_mut(image_index.0) = Some(command_buffer);
-        dbg!(shadow_mapping
-            .previous_command_buffer
-            .current(image_index.0)
-            .is_some());
 
         // TODO: extract to another stage?
         // Update descriptor sets so that users of lights have the latest info
