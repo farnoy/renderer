@@ -16,6 +16,7 @@ type VkBuffer = vk::Buffer;
 type VkBufferCreateInfo = vk::BufferCreateInfo;
 type VkImage = vk::Image;
 type VkImageCreateInfo = vk::ImageCreateInfo;
+type VkInstance = vk::Instance;
 type VkResult = vk::Result;
 type VkStructureType = vk::StructureType;
 type VkDeviceMemory = vk::DeviceMemory;
@@ -90,7 +91,7 @@ pub fn create(
             vkBindBufferMemory2KHR: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkBindBufferMemory2Khr\0")
+                    CStr::from_bytes_with_nul(b"vkBindBufferMemory2\0")
                         .unwrap()
                         .as_ptr(),
                 ),
@@ -106,7 +107,7 @@ pub fn create(
             vkBindImageMemory2KHR: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkBindImageMemory2KHR\0")
+                    CStr::from_bytes_with_nul(b"vkBindImageMemory2\0")
                         .unwrap()
                         .as_ptr(),
                 ),
@@ -199,6 +200,14 @@ pub fn create(
                         .as_ptr(),
                 ),
             ),
+            vkGetPhysicalDeviceMemoryProperties2KHR: transmute(
+                entry.get_instance_proc_addr(
+                    instance.handle(),
+                    CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceMemoryProperties2\0")
+                        .unwrap()
+                        .as_ptr(),
+                ),
+            ),
             vkGetPhysicalDeviceProperties: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
@@ -244,6 +253,8 @@ pub fn create(
     let create_info = VmaAllocatorCreateInfo {
         flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0
             as u32,
+        vulkanApiVersion: vk::make_version(1, 2, 0),
+        instance: instance.handle(),
         device: device,
         physicalDevice: pdevice,
         preferredLargeHeapBlockSize: 0,

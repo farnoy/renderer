@@ -89,13 +89,13 @@ fn main() {
         .blacklist_type("VkBufferCreateInfo")
         .blacklist_type("VkImage")
         .blacklist_type("VkImageCreateInfo")
+        .blacklist_type("VkInstance")
         .blacklist_type("VkFlags")
         .blacklist_type("VkResult")
         .blacklist_type("VkStructureType")
         .blacklist_type("VkDeviceMemory")
         .blacklist_type("VkDevice")
         .blacklist_type("VkPhysicalDevice")
-        .blacklist_type("VkImage")
         .generate()
         .expect("Unable to generate bindings");
 
