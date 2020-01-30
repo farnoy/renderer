@@ -551,7 +551,10 @@ impl PrepareShadowMaps {
 
         // wait on last frame completion
         let t0 = std::time::Instant::now();
-        renderer.graphics_timeline_semaphore.wait(renderer.frame_number * 16 + 1).unwrap();
+        renderer
+            .graphics_timeline_semaphore
+            .wait(renderer.frame_number * 16 + 1)
+            .unwrap();
         let elapsed = t0.elapsed();
         let micros = elapsed.as_micros();
         let millis = elapsed.as_millis();

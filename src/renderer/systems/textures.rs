@@ -106,33 +106,14 @@ impl SynchronizeBaseColorTextures {
             assert!(res.is_none()); // double check that there was nothing there
         }
 
-        let mut counter: u64 = 0;
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.get_semaphore_counter_value)(
-                renderer.device.handle(),
-                renderer.graphics_timeline_semaphore.handle,
-                &mut counter
-            ),
-            "Get semaphore counter value failed",
-        );
+        let counter = renderer.graphics_timeline_semaphore.value().unwrap();
         dbg!(counter, renderer.frame_number, renderer.frame_number * 16);
 
         // wait on last frame completion
-        let wait_ix = renderer.frame_number * 16;
-        let wait_ixes = &[wait_ix];
-        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let wait_info = vk::SemaphoreWaitInfo::builder()
-            .semaphores(wait_semaphores)
-            .values(wait_ixes);
-        assert_eq!(
-            vk::Result::SUCCESS,
-            (renderer.device.wait_semaphores)(renderer.device.handle(), &*wait_info, std::u64::MAX),
-            "Wait for ix {} failed.",
-            wait_ix
-        );
-
-        // unsafe { renderer.device.device_wait_idle().unwrap(); }
+        renderer
+            .graphics_timeline_semaphore
+            .wait(renderer.frame_number * 16)
+            .unwrap();
 
         for entity_id in visited_markers.mask().iter() {
             let marker = visited_markers.get(entity_id).unwrap();

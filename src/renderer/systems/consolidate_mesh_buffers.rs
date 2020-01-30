@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use ash::{
-    version::DeviceV1_0,
+    version::{DeviceV1_0, DeviceV1_2},
     vk::{self, Handle},
 };
 use hashbrown::{hash_map::Entry, HashMap};
@@ -79,7 +79,9 @@ impl ConsolidatedMeshBuffers {
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             super::super::shaders::cull_set::bindings::index_buffer::SIZE,
         );
-        let sync_timeline = renderer.device.new_semaphore_timeline(renderer.frame_number * 16);
+        let sync_timeline = renderer
+            .device
+            .new_semaphore_timeline(renderer.frame_number * 16);
         renderer.device.set_object_name(
             sync_timeline.handle,
             "Consolidate mesh buffers sync timeline",
@@ -263,7 +265,12 @@ impl ConsolidateMeshBuffers {
             let signal_info = vk::SemaphoreSignalInfo::builder()
                 .semaphore(consolidated_mesh_buffers.sync_timeline.handle)
                 .value(renderer.frame_number * 16 + 16);
-            (renderer.device.signal_semaphore)(renderer.device.handle(), &*signal_info);
+            unsafe {
+                renderer
+                    .device
+                    .signal_semaphore(renderer.device.handle(), &*signal_info)
+                    .unwrap();
+            }
             consolidated_mesh_buffers.previous_run_command_buffer = None; // potentially destroys the previous one
         }
     }

@@ -6,7 +6,7 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
-use std::{ffi::CStr, ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc};
 
 mod buffer;
 mod commands;
@@ -31,9 +31,6 @@ pub struct Device {
     compute_queue_family: u32,
     pub(super) graphics_queue: Mutex<vk::Queue>,
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
-    pub get_semaphore_counter_value: vk::PFN_vkGetSemaphoreCounterValue,
-    pub wait_semaphores: vk::PFN_vkWaitSemaphores,
-    pub signal_semaphore: vk::PFN_vkSignalSemaphore,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
 }
 
@@ -102,12 +99,9 @@ impl Device {
             None => vec![(graphics_queue_family, 1)],
         };
         let device = {
-            // static RASTER_ORDER: &str = "VK_AMD_rasterization_order\0";
-            let timeline_semaphore_name = b"VK_KHR_timeline_semaphore\0";
             let device_extension_names_raw = [
                 extensions::khr::Swapchain::name().as_ptr(),
                 vk::ExtDescriptorIndexingFn::name().as_ptr(),
-                unsafe { CStr::from_bytes_with_nul_unchecked(timeline_semaphore_name).as_ptr() },
             ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
@@ -121,9 +115,12 @@ impl Device {
                 shader_storage_buffer_array_dynamic_indexing: 1,
                 ..Default::default()
             };
-            let mut timeline_semaphore_features =
-                vk::PhysicalDeviceTimelineSemaphoreFeatures::builder().timeline_semaphore(true);
             let mut features2 = vk::PhysicalDeviceFeatures2::builder().features(features);
+            let mut features12 = vk::PhysicalDeviceVulkan12Features::builder()
+                .descriptor_binding_partially_bound(true)
+                .runtime_descriptor_array(true)
+                .shader_storage_buffer_array_non_uniform_indexing(true)
+                .timeline_semaphore(true);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()
@@ -136,19 +133,12 @@ impl Device {
                         .build()
                 })
                 .collect::<Vec<_>>();
-            let mut descriptor_indexing_features =
-                vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
-                    .runtime_descriptor_array(true)
-                    .shader_storage_buffer_array_non_uniform_indexing(true)
-                    .descriptor_binding_partially_bound(true)
-                    .descriptor_binding_update_unused_while_pending(true);
 
             let device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
                 .push_next(&mut features2)
-                .push_next(&mut timeline_semaphore_features)
-                .push_next(&mut descriptor_indexing_features);
+                .push_next(&mut features12);
 
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
@@ -163,24 +153,6 @@ impl Device {
             None => vec![graphics_queue],
         };
 
-        let name = b"vkGetSemaphoreCounterValueKHR\0";
-        let name_c = unsafe { CStr::from_bytes_with_nul_unchecked(name).as_ptr() };
-        let addr = unsafe { instance.get_device_proc_addr(device.handle(), name_c) };
-        let get_semaphore_counter_value: vk::PFN_vkGetSemaphoreCounterValue =
-            unsafe { std::mem::transmute(addr.unwrap()) };
-
-        let name = b"vkWaitSemaphoresKHR\0";
-        let name_c = unsafe { CStr::from_bytes_with_nul_unchecked(name).as_ptr() };
-        let addr = unsafe { instance.get_device_proc_addr(device.handle(), name_c) };
-        let wait_semaphores: vk::PFN_vkWaitSemaphores =
-            unsafe { std::mem::transmute(addr.unwrap()) };
-
-        let name = b"vkSignalSemaphoreKHR\0";
-        let name_c = unsafe { CStr::from_bytes_with_nul_unchecked(name).as_ptr() };
-        let addr = unsafe { instance.get_device_proc_addr(device.handle(), name_c) };
-        let signal_semaphore: vk::PFN_vkSignalSemaphore =
-            unsafe { std::mem::transmute(addr.unwrap()) };
-
         let device = Device {
             device,
             instance: Arc::clone(instance),
@@ -192,9 +164,6 @@ impl Device {
                 .unwrap_or(graphics_queue_family),
             graphics_queue: Mutex::new(graphics_queue),
             compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
-            get_semaphore_counter_value,
-            wait_semaphores,
-            signal_semaphore,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {

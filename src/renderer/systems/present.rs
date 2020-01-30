@@ -59,18 +59,10 @@ impl AcquireFramebuffer {
         {
             dbg!("waiting on last frame completion");
             // wait on last frame completion
-            let wait_ix = (renderer.frame_number * 16).saturating_sub(1);
-            let wait_ixes = &[wait_ix];
-            let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-            let wait_info = vk::SemaphoreWaitInfo::builder()
-                .semaphores(wait_semaphores)
-                .values(wait_ixes);
-            assert_eq!(
-                vk::Result::SUCCESS,
-                (renderer.device.wait_semaphores)(renderer.device.handle(), &*wait_info, u64::MAX),
-                "Wait for ix {} failed.",
-                wait_ix
-            );
+            renderer
+                .graphics_timeline_semaphore
+                .wait((renderer.frame_number * 16).saturating_sub(1))
+                .unwrap();
         } else {
             dbg!("not waiting on last frame");
         }
@@ -112,16 +104,7 @@ impl AcquireFramebuffer {
         }
 
         {
-            let mut counter: u64 = 0;
-            assert_eq!(
-                vk::Result::SUCCESS,
-                (renderer.device.get_semaphore_counter_value)(
-                    renderer.device.handle(),
-                    renderer.graphics_timeline_semaphore.handle,
-                    &mut counter
-                ),
-                "Get semaphore counter value failed",
-            );
+            let counter = renderer.graphics_timeline_semaphore.value().unwrap();
             dbg!(counter, renderer.frame_number, renderer.frame_number * 16);
             if counter < renderer.frame_number * 16 {
                 let signal_semaphore_values = &[renderer.frame_number * 16];

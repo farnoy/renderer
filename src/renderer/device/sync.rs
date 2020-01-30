@@ -1,5 +1,8 @@
 use super::Device;
-use ash::{version::DeviceV1_0, vk};
+use ash::{
+    version::{DeviceV1_0, DeviceV1_2},
+    vk,
+};
 use std::sync::Arc;
 
 pub struct Semaphore {
@@ -54,21 +57,16 @@ impl TimelineSemaphore {
         let wait_info = vk::SemaphoreWaitInfo::builder()
             .semaphores(wait_semaphores)
             .values(wait_ixes);
-        match (self.device.wait_semaphores)(self.device.handle(), &*wait_info, std::u64::MAX) {
-            vk::Result::SUCCESS => Ok(()),
-            a => Err(a),
+        unsafe {
+            self.device
+                .wait_semaphores(self.device.handle(), &wait_info, std::u64::MAX)
         }
     }
 
     pub fn value(&self) -> ash::prelude::VkResult<u64> {
-        let mut counter = 0;
-        match (self.device.get_semaphore_counter_value)(
-            self.device.handle(),
-            self.handle,
-            &mut counter,
-        ) {
-            vk::Result::SUCCESS => Ok(counter),
-            a => Err(a),
+        unsafe {
+            self.device
+                .get_semaphore_counter_value(self.device.handle(), self.handle)
         }
     }
 }
