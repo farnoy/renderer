@@ -106,13 +106,10 @@ impl SynchronizeBaseColorTextures {
             assert!(res.is_none()); // double check that there was nothing there
         }
 
-        let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-        dbg!(counter, renderer.frame_number, renderer.frame_number * 16);
-
         // wait on last frame completion
         renderer
             .graphics_timeline_semaphore
-            .wait(renderer.frame_number * 16)
+            .wait(renderer.frame_number.saturating_sub(1) * 16)
             .unwrap();
 
         for entity_id in visited_markers.mask().iter() {

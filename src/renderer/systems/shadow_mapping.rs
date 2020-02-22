@@ -523,7 +523,6 @@ impl PrepareShadowMaps {
 
         let queue = renderer.device.graphics_queue.lock();
 
-        dbg!(renderer.frame_number * 16);
         let command_buffers = &[*command_buffer];
         let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
@@ -549,21 +548,6 @@ impl PrepareShadowMaps {
                 .unwrap();
         }
 
-        // wait on last frame completion
-        let t0 = std::time::Instant::now();
-        renderer
-            .graphics_timeline_semaphore
-            .wait(renderer.frame_number * 16 + 1)
-            .unwrap();
-        let elapsed = t0.elapsed();
-        let micros = elapsed.as_micros();
-        let millis = elapsed.as_millis();
-        dbg!("wait_semaphores", micros, millis);
-        let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-        let elapsed = t0.elapsed();
-        let micros = elapsed.as_micros();
-        let millis = elapsed.as_millis();
-        dbg!("get counter value", micros, millis, counter);
         *shadow_mapping
             .previous_command_buffer
             .current_mut(image_index.0) = Some(command_buffer);

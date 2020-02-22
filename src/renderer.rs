@@ -1058,10 +1058,6 @@ impl Renderer {
             renderer.frame_number * 16 + 16, // all compute work done for this frame
             renderer.frame_number * 16 + 16, // all consolidation work done
         ];
-        dbg!(
-            renderer.compute_timeline_semaphore.handle,
-            renderer.frame_number * 16 + 16
-        );
         let dst_stage_masks = &[
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1093,21 +1089,6 @@ impl Renderer {
         *present_data
             .render_command_buffer
             .current_mut(image_index.0) = Some(command_buffer);
-
-        {
-            let t0 = std::time::Instant::now();
-            let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-            dbg!("immediate wait on submitted render", counter);
-            renderer
-                .graphics_timeline_semaphore
-                .wait(renderer.frame_number * 16 + 15)
-                .unwrap();
-            let elapsed = t0.elapsed();
-            let micros = elapsed.as_micros();
-            let millis = elapsed.as_millis();
-            let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-            dbg!("WAIT DONE", micros, millis, counter);
-        }
     }
 }
 

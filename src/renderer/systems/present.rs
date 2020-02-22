@@ -52,20 +52,6 @@ impl AcquireFramebuffer {
     ) -> bool {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "present");
-        if present_data
-            .render_command_buffer
-            .current(image_index.0.wrapping_sub(1))
-            .is_some()
-        {
-            dbg!("waiting on last frame completion");
-            // wait on last frame completion
-            renderer
-                .graphics_timeline_semaphore
-                .wait((renderer.frame_number * 16).saturating_sub(1))
-                .unwrap();
-        } else {
-            dbg!("not waiting on last frame");
-        }
         let image_acquired_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
             image_acquired_semaphore.handle,
@@ -83,13 +69,6 @@ impl AcquireFramebuffer {
 
         let device = renderer.device.clone();
 
-        // std::thread::spawn(move || unsafe {
-        dbg!("waiting");
-        unsafe {
-            device.wait_for_fences(&[x.handle], true, u64::MAX).unwrap();
-        }
-        dbg!("done");
-        // });
         match result {
             Ok((ix, false)) => image_index.0 = ix,
             Ok((ix, true)) => {
@@ -115,11 +94,11 @@ impl AcquireFramebuffer {
                 let wait_semaphores = &[image_acquired_semaphore.handle];
                 let queue = renderer.device.graphics_queue.lock();
                 let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE];
+                let dst_stage_masks = &[vk::PipelineStageFlags::TOP_OF_PIPE];
                 let submit = vk::SubmitInfo::builder()
                     .push_next(&mut wait_timeline)
                     .wait_semaphores(wait_semaphores)
-                    .wait_dst_stage_mask(&dst_stage_masks)
+                    .wait_dst_stage_mask(dst_stage_masks)
                     .signal_semaphores(signal_semaphores)
                     .build();
 
@@ -131,6 +110,14 @@ impl AcquireFramebuffer {
                 }
             }
         }
+
+        std::thread::spawn(move || {
+            unsafe {
+                device.wait_for_fences(&[x.handle], true, u64::MAX).unwrap();
+            }
+            // TODO: it seems to work without waiting to destroy vkSemaphore
+            drop(image_acquired_semaphore);
+        });
 
         false
     }

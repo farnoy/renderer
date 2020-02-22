@@ -314,15 +314,10 @@ impl CullPass {
         );
         let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
         let wait_semaphore_values = &[renderer.frame_number * 16];
-        dbg!(
-            renderer.compute_timeline_semaphore.handle,
-            renderer.frame_number * 16
-        );
         let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
         let signal_semaphore_values = &[renderer.frame_number * 16 + 16];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let command_buffers = &[*cull_cb];
-        dbg!(wait_semaphore_values, signal_semaphore_values);
         let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
             .wait_semaphore_values(wait_semaphore_values)
             .signal_semaphore_values(signal_semaphore_values);

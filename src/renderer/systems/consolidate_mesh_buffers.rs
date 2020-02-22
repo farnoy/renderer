@@ -233,7 +233,6 @@ impl ConsolidateMeshBuffers {
             },
         );
 
-        dbg!(needs_transfer, image_index.0);
         if needs_transfer {
             let command_buffers = &[*command_buffer];
             let signal_semaphores = &[consolidated_mesh_buffers.sync_timeline.handle];
