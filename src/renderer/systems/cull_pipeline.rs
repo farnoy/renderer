@@ -1,5 +1,5 @@
 use crate::{
-    ecs::systems::Camera,
+    ecs::{components::AABB, systems::Camera},
     renderer::{
         alloc,
         device::{Buffer, CommandBuffer, DoubleBuffered, Event, Fence},
@@ -51,17 +51,14 @@ impl CoarseCulling {
     pub fn exec_system() -> Box<(dyn Schedulable + 'static)> {
         SystemBuilder::<()>::new("CoarseCulling")
             .read_resource::<Camera>()
-            .with_query(<(
-                Read<ncollide3d::bounding_volume::AABB<f32>>,
-                Write<CoarseCulled>,
-            )>::query())
+            .with_query(<(Read<AABB>, Write<CoarseCulled>)>::query())
             .build(move |_commands, mut world, ref camera, query| {
                 for (ref aabb, ref mut coarse_culled) in query.iter_mut(&mut world) {
                     let mut outside = false;
                     'per_plane: for plane in camera.frustum_planes.iter() {
-                        let e = aabb.half_extents().dot(&plane.xyz().abs());
+                        let e = aabb.0.half_extents().dot(&plane.xyz().abs());
 
-                        let s = plane.dot(&aabb.center().to_homogeneous());
+                        let s = plane.dot(&aabb.0.center().to_homogeneous());
                         if s - e > 0.0 {
                             outside = true;
                             break 'per_plane;

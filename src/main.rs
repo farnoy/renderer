@@ -92,7 +92,7 @@ fn main() {
         &camera_matrices,
     );
 
-    // let debug_aabb_pass_data = DebugAABBPassData::new(&renderer, &camera_matrices);
+    let debug_aabb_pass_data = DebugAABBPassData::new(&renderer, &camera_matrices);
 
     let main_framebuffer =
         MainFramebuffer::new(&renderer, &main_attachments, &resources.get().unwrap());
@@ -364,6 +364,7 @@ fn main() {
     resources.insert(main_attachments);
     resources.insert(main_framebuffer);
     resources.insert(gltf_pass);
+    resources.insert(debug_aabb_pass_data);
 
     let mut schedule = Schedule::builder()
         .add_thread_local({

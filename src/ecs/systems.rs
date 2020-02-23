@@ -1,5 +1,5 @@
 use super::super::renderer::*;
-use crate::ecs::components::ModelMatrix;
+use crate::ecs::components::{ModelMatrix, AABB};
 use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
@@ -242,11 +242,7 @@ impl AABBCalculation {
     pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
         use legion::prelude::*;
         SystemBuilder::<()>::new("AABBCalculation - exec")
-            .with_query(<(
-                Read<ModelMatrix>,
-                Read<GltfMesh>,
-                Write<ncollide3d::bounding_volume::AABB<f32>>,
-            )>::query())
+            .with_query(<(Read<ModelMatrix>, Read<GltfMesh>, Write<AABB>)>::query())
             .build(move |_commands, mut world, _resources, ref mut query| {
                 #[cfg(feature = "profiling")]
                 microprofile::scope!("ecs", "aabb calculation");
@@ -284,7 +280,7 @@ impl AABBCalculation {
                         na::Point3::from((max + min) / 2.0),
                         (max - min) / 2.0,
                     );
-                    *aabb = new;
+                    aabb.0 = new;
                 }
             })
     }

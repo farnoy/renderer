@@ -1,14 +1,11 @@
-use super::super::{
-    helpers::{self, Pipeline},
+use crate::{
+    renderer::helpers::{self, Pipeline},
     shaders, CameraMatrices, RenderFrame,
 };
 use ash::vk;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use std::{path::PathBuf, sync::Arc};
-
-// Render AABB outlines
-pub struct DebugAABBPass;
 
 pub struct DebugAABBPassData {
     pub pipeline_layout: shaders::debug_aabb::PipelineLayout,
@@ -104,56 +101,3 @@ impl DebugAABBPassData {
         }
     }
 }
-
-/*
-impl DebugAABBPass {
-    #[allow(clippy::too_many_arguments)]
-    pub fn exec(
-        entities: &EntitiesStorage,
-        renderer: &RenderFrame,
-        command_buffer: vk::CommandBuffer,
-        debug_aabb_pass_data: &DebugAABBPassData,
-        aabbs: &ComponentStorage<ncollide3d::bounding_volume::AABB<f32>>,
-        image_index: &ImageIndex,
-        camera_matrices: &CameraMatrices,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "debug aabb pass");
-
-        renderer.device.debug_marker_around(
-            command_buffer,
-            "aabb debug",
-            [1.0, 0.0, 0.0, 1.0],
-            || {
-                unsafe {
-                    renderer.device.cmd_bind_pipeline(
-                        command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        debug_aabb_pass_data.pipeline.handle,
-                    );
-                }
-                debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
-                    &renderer.device,
-                    command_buffer,
-                    &camera_matrices.set.current(image_index.0),
-                );
-
-                for entity_id in (entities.mask() & aabbs.mask()).iter() {
-                    let aabb = aabbs.get(entity_id).unwrap();
-                    debug_aabb_pass_data.pipeline_layout.push_constants(
-                        &renderer.device,
-                        command_buffer,
-                        &shaders::DebugAABBPushConstants {
-                            center: aabb.center().to_homogeneous(),
-                            half_extent: aabb.half_extents().push(1.0),
-                        },
-                    );
-                    unsafe {
-                        renderer.device.cmd_draw(command_buffer, 36, 1, 0, 0);
-                    }
-                }
-            },
-        );
-    }
-}
-*/
