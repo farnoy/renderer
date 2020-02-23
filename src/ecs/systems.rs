@@ -91,12 +91,9 @@ impl InputHandler {
         let platform = &mut self.imgui_platform;
         let mut toggle_fly_mode = false;
         let mut resized = false;
-        // println!("event loop run_return");
         self.events_loop
             .run_return(|event, _window_target, control_flow| {
-                // dbg!(&event);
-                // platform.handle_event(gui.io_mut(), &window, &event);
-                // println!("imgui handled event");
+                platform.handle_event(gui.io_mut(), &window, &event);
                 match event {
                     Event::WindowEvent {
                         event: WindowEvent::Resized(PhysicalSize { width, height }),
