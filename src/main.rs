@@ -97,11 +97,8 @@ fn main() {
 
     // let debug_aabb_pass_data = DebugAABBPassData::new(&renderer, &camera_matrices);
 
-    let main_framebuffer = MainFramebuffer::new(
-        &renderer,
-        &main_attachments,
-        &resources.get().unwrap(),
-    );
+    let main_framebuffer =
+        MainFramebuffer::new(&renderer, &main_attachments, &resources.get().unwrap());
 
     let LoadedMesh {
         vertex_buffer,
@@ -140,7 +137,12 @@ fn main() {
                     &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(30.0, 20.0, -40.1)),
                     &up_vector(),
                 )),
-                ShadowMappingLightMatrices::new(&renderer, &main_descriptor_pool, &camera_matrices, 0),
+                ShadowMappingLightMatrices::new(
+                    &renderer,
+                    &main_descriptor_pool,
+                    &camera_matrices,
+                    0,
+                ),
             ),
             (
                 Light { strength: 0.7 },
@@ -149,7 +151,12 @@ fn main() {
                     &(na::Point3::new(0.0, 0.0, 0.0) - na::Point3::new(0.1, 17.0, 0.1)),
                     &up_vector(),
                 )),
-                ShadowMappingLightMatrices::new(&renderer, &main_descriptor_pool, &camera_matrices, 1),
+                ShadowMappingLightMatrices::new(
+                    &renderer,
+                    &main_descriptor_pool,
+                    &camera_matrices,
+                    1,
+                ),
             ),
         ],
     );
@@ -609,7 +616,7 @@ fn main() {
         }
         if *quit_handle.lock() {
             unsafe {
-                    resources
+                resources
                     .get::<RenderFrame>()
                     .unwrap()
                     .device

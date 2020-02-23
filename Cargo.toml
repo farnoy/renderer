@@ -9,9 +9,8 @@ ash = { git = "https://github.com/MaikKlein/ash" }
 croaring = "0.4.0"
 parking_lot = "0.10.0"
 gltf = "0.15.0"
-hashbrown = "0.6.0"
-image = "0.22"
-# imgui = "0.2.1"
+hashbrown = "0.7.0"
+image = "0.23"
 imgui = "0.3.0"
 imgui-winit-support = "0.3.0"
 legion = { git = "https://github.com/TomGillen/legion" } # "0.2.1"
@@ -26,10 +25,10 @@ smallvec = "1.2.0"
 spirv_headers = "1.3.4"
 spirv-reflect = "0.2.1"
 unbytify = "0.2.0"
-winit = "0.20.0"
+winit = "0.21.0"
 
 [build-dependencies]
-bindgen = "0.52.0"
+bindgen = "0.53.1"
 
 [dev-dependencies]
 criterion = "0.3"
