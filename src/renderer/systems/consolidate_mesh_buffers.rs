@@ -3,7 +3,6 @@ use crate::{
     renderer::{
         alloc,
         device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
-        systems::present::ImageIndex,
         GltfMesh, GraphicsCommandPool, RenderFrame,
     },
 };
@@ -114,7 +113,6 @@ impl ConsolidateMeshBuffers {
         entities: &EntitiesStorage,
         graphics_command_pool: &GraphicsCommandPool,
         meshes: &ComponentStorage<GltfMesh>,
-        image_index: &ImageIndex,
         consolidated_mesh_buffers: &mut ConsolidatedMeshBuffers,
     ) {
         #[cfg(feature = "profiling")]

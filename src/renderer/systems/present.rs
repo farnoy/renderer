@@ -46,7 +46,6 @@ impl AcquireFramebuffer {
     /// Returns true if framebuffer and swapchain need to be recreated
     pub fn exec(
         renderer: &RenderFrame,
-        present_data: &PresentData,
         swapchain: &Swapchain,
         image_index: &mut ImageIndex,
     ) -> bool {
