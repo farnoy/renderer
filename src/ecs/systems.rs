@@ -1,4 +1,4 @@
-use super::{super::renderer::*, custom::*, resources::*};
+use super::super::renderer::*;
 use crate::ecs::components::ModelMatrix;
 use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
@@ -16,9 +16,7 @@ use winit::{
     platform::desktop::EventLoopExtDesktop,
 };
 
-use crate::renderer::{
-    forward_vector, right_vector, up_vector, GltfMesh, GltfMeshBaseColorTexture, Swapchain,
-};
+use crate::renderer::{forward_vector, right_vector, up_vector, GltfMesh, Swapchain};
 
 pub struct ModelMatrixCalculation;
 
@@ -433,6 +431,7 @@ impl FlyCamera {
     }
 }
 
+/*
 pub struct LaunchProjectileTest;
 
 impl LaunchProjectileTest {
@@ -498,6 +497,7 @@ impl UpdateProjectiles {
         }
     }
 }
+*/
 
 /// Grab-bag for renderer and player controller variables for now
 pub struct RuntimeConfiguration {

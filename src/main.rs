@@ -7,14 +7,13 @@ extern crate nalgebra_glm as glm;
 
 pub mod ecs {
     pub mod components;
-    pub mod custom;
     pub mod resources;
     pub mod systems;
 }
 pub mod renderer;
 
 use ash::version::DeviceV1_0;
-use ecs::{components::*, custom::*, resources::*, systems::*};
+use ecs::{components::*, resources::*, systems::*};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use legion::prelude::*;
 #[cfg(feature = "microprofile")]
@@ -44,8 +43,6 @@ fn main() {
     let image_index = ImageIndex::default();
     let consolidated_mesh_buffers = ConsolidatedMeshBuffers::new(&renderer);
     let graphics_command_pool = GraphicsCommandPool::new(&renderer);
-
-    let mut entities = EntitiesStorage::new();
 
     let mut main_descriptor_pool = MainDescriptorPool::new(&renderer);
     let camera_matrices = CameraMatrices::new(&renderer, &main_descriptor_pool);
@@ -122,9 +119,6 @@ fn main() {
 
     let max_entities = 30;
     debug_assert!(max_entities > 7); // 7 static ones
-
-    let ixes = entities.allocate_mask(max_entities);
-    debug_assert_eq!(ixes.to_vec(), (0..max_entities).collect::<Vec<_>>());
 
     // lights
     world.insert(

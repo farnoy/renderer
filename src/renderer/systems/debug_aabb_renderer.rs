@@ -1,12 +1,8 @@
-use super::{
-    super::{
-        helpers::{self, Pipeline},
-        shaders, CameraMatrices, RenderFrame,
-    },
-    present::ImageIndex,
+use super::super::{
+    helpers::{self, Pipeline},
+    shaders, CameraMatrices, RenderFrame,
 };
-use crate::ecs::custom::*;
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use std::{path::PathBuf, sync::Arc};
@@ -109,6 +105,7 @@ impl DebugAABBPassData {
     }
 }
 
+/*
 impl DebugAABBPass {
     #[allow(clippy::too_many_arguments)]
     pub fn exec(
@@ -159,3 +156,4 @@ impl DebugAABBPass {
         );
     }
 }
+*/

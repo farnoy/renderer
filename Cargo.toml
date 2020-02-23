@@ -33,10 +33,6 @@ bindgen = "0.53.1"
 [dev-dependencies]
 criterion = "0.3"
 
-[[bench]]
-name = "component_storage"
-harness = false
-
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3.5"
 
