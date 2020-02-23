@@ -1,4 +1,3 @@
-use ash;
 use std::ops::Deref;
 
 type AshEntry = ash::Entry;

@@ -45,7 +45,7 @@ impl Surface {
                 },
                 _ => *sfmt,
             })
-            .nth(0)
+            .next()
             .expect("Unable to find suitable surface format.");
 
         Surface {

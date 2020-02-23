@@ -16,14 +16,16 @@ mod systems {
     pub mod textures;
 }
 
-use crate::ecs::{custom::*, systems::*};
+use crate::ecs::{components::ModelMatrix, systems::*};
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
-use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, sync::Arc};
-use winit;
+use std::{
+    cell::RefCell, convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, rc::Rc,
+    sync::Arc,
+};
 
-use self::{helpers::*, instance::Instance};
+pub use self::{helpers::*, instance::Instance};
 
 pub use self::{
     device::*,
@@ -54,6 +56,13 @@ pub struct GltfMesh {
     pub vertex_len: u64,
     pub aabb: ncollide3d::bounding_volume::AABB<f32>,
 }
+
+#[derive(Debug, Default)]
+pub(crate) struct DrawIndex(pub u32);
+
+pub(crate) struct Position(pub na::Point3<f32>);
+pub(crate) struct Rotation(pub na::UnitQuaternion<f32>);
+pub(crate) struct Scale(pub f32);
 
 // TODO: rename
 pub struct RenderFrame {
@@ -757,15 +766,81 @@ impl GltfPassData {
 pub struct Renderer;
 
 impl Renderer {
+    pub fn exec_system(
+        gui: Rc<RefCell<Gui>>,
+        input_handler: Rc<RefCell<InputHandler>>,
+        mut gui_render: GuiRender,
+    ) -> Box<(dyn legion::systems::schedule::Runnable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("Renderer")
+            .read_resource::<RenderFrame>()
+            .read_resource::<ImageIndex>()
+            .write_resource::<GraphicsCommandPool>()
+            .read_resource::<ModelData>()
+            .write_resource::<RuntimeConfiguration>()
+            .read_resource::<CameraMatrices>()
+            .read_resource::<Swapchain>()
+            .read_resource::<ConsolidatedMeshBuffers>()
+            .write_resource::<PresentData>()
+            .read_resource::<ShadowMappingData>()
+            .read_resource::<BaseColorDescriptorSet>()
+            .read_resource::<CullPassData>()
+            .read_resource::<Camera>()
+            .read_resource::<MainFramebuffer>()
+            .read_resource::<GltfPassData>()
+            .build_thread_local(move |_commands, _world, resources, _queries| {
+                let (
+                    ref renderer,
+                    ref image_index,
+                    ref mut graphics_command_pool,
+                    ref model_data,
+                    ref mut runtime_config,
+                    ref camera_matrices,
+                    ref swapchain,
+                    ref consolidated_mesh_buffers,
+                    ref mut present_data,
+                    ref shadow_mapping_data,
+                    ref base_color_descriptor_set,
+                    ref cull_pass_data,
+                    ref camera,
+                    ref main_framebuffer,
+                    ref gltf_pass,
+                ) = resources;
+                let mut gui = gui.borrow_mut();
+                let gui_draw_data = gui.update(
+                    &renderer,
+                    &input_handler.borrow(),
+                    &swapchain,
+                    &camera,
+                    &mut *runtime_config,
+                );
+                Renderer::exec(
+                    &renderer,
+                    &runtime_config,
+                    &main_framebuffer,
+                    &swapchain,
+                    &mut gui_render,
+                    &gui_draw_data,
+                    &base_color_descriptor_set,
+                    &consolidated_mesh_buffers,
+                    &cull_pass_data,
+                    &mut *present_data,
+                    &image_index,
+                    &model_data,
+                    &gltf_pass,
+                    &mut *graphics_command_pool,
+                    &*shadow_mapping_data,
+                    &*camera_matrices,
+                );
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn exec(
         renderer: &RenderFrame,
         runtime_config: &RuntimeConfiguration,
         main_framebuffer: &MainFramebuffer,
         swapchain: &Swapchain,
-        entities: &EntitiesStorage,
-        debug_aabb_pass_data: &DebugAABBPassData,
-        aabbs: &ComponentStorage<ncollide3d::bounding_volume::AABB<f32>>,
         gui_render: &mut GuiRender,
         gui_draw_data: &imgui::DrawData,
         base_color_descriptor_set: &BaseColorDescriptorSet,
@@ -874,15 +949,18 @@ impl Renderer {
                             }],
                         );
                         if runtime_config.debug_aabbs {
-                            DebugAABBPass::exec(
-                                &entities,
-                                &renderer,
-                                command_buffer,
-                                &debug_aabb_pass_data,
-                                &aabbs,
-                                &image_index,
-                                &camera_matrices,
-                            );
+                            panic!("AABB debug unimplemented in legion")
+                        /*
+                        DebugAABBPass::exec(
+                            &entities,
+                            &renderer,
+                            command_buffer,
+                            &debug_aabb_pass_data,
+                            &aabbs,
+                            &image_index,
+                            &camera_matrices,
+                        );
+                        */
                         } else {
                             renderer.device.debug_marker_around(
                                 command_buffer,
@@ -1321,197 +1399,218 @@ impl GuiRender {
 pub struct ModelMatricesUpload;
 
 impl ModelMatricesUpload {
-    pub fn exec(
-        model_matrices: &ComponentStorage<glm::Mat4>,
-        image_index: &ImageIndex,
-        model_data: &mut ModelData,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "model matrices upload");
-        let mut model_mapped = model_data
-            .model_buffer
-            .current_mut(image_index.0)
-            .map::<glm::Mat4>()
-            .expect("failed to map Model buffer");
-        for entity_id in model_matrices.mask().iter() {
-            model_mapped[entity_id as usize] = *model_matrices.get(entity_id).unwrap();
-        }
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("ModelMatricesUpload")
+            .read_resource::<ImageIndex>()
+            .write_resource::<ModelData>()
+            .with_query(<(Read<DrawIndex>, Write<ModelMatrix>)>::query())
+            .build(move |_commands, mut world, resources, query| {
+                let (ref image_index, ref mut model_data) = resources;
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "model matrices upload");
+                let mut model_mapped = model_data
+                    .model_buffer
+                    .current_mut(image_index.0)
+                    .map::<glm::Mat4>()
+                    .expect("failed to map Model buffer");
+                for (draw_index, model_matrix) in query.iter_mut(&mut world) {
+                    model_mapped[draw_index.0 as usize] = model_matrix.0;
+                }
+            })
     }
 }
 
 pub struct CameraMatricesUpload;
 
 impl CameraMatricesUpload {
-    pub fn exec(image_index: &ImageIndex, camera: &Camera, camera_matrices: &mut CameraMatrices) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "camera matrices upload");
-        let mut model_mapped = camera_matrices
-            .buffer
-            .current_mut(image_index.0)
-            .map::<shaders::camera_set::bindings::matrices::T>()
-            .expect("failed to map camera matrix buffer");
-        model_mapped[0] = shaders::camera_set::bindings::matrices::T {
-            projection: camera.projection,
-            view: camera.view,
-            position: camera.position.coords.push(1.0),
-        };
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("CameraMatricesUpload")
+            .read_resource::<ImageIndex>()
+            .read_resource::<Camera>()
+            .write_resource::<CameraMatrices>()
+            .build(move |_commands, _world, resources, _queries| {
+                let (ref image_index, ref camera, ref mut camera_matrices) = resources;
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "camera matrices upload");
+                let mut model_mapped = camera_matrices
+                    .buffer
+                    .current_mut(image_index.0)
+                    .map::<shaders::camera_set::bindings::matrices::T>()
+                    .expect("failed to map camera matrix buffer");
+                model_mapped[0] = shaders::camera_set::bindings::matrices::T {
+                    projection: camera.projection,
+                    view: camera.view,
+                    position: camera.position.coords.push(1.0),
+                };
+            })
     }
 }
 
 pub struct DepthOnlyPass;
 
 impl DepthOnlyPass {
-    #[allow(clippy::too_many_arguments)]
-    pub fn exec(
-        renderer: &RenderFrame,
-        runtime_config: &RuntimeConfiguration,
-        entities: &EntitiesStorage,
-        image_index: &ImageIndex,
-        meshes: &ComponentStorage<GltfMesh>,
-        positions: &ComponentStorage<na::Point3<f32>>,
-        camera: &Camera,
-        camera_matrices: &CameraMatrices,
-        depth_pass: &mut DepthPassData,
-        swapchain: &Swapchain,
-        model_data: &ModelData,
-        graphics_command_pool: &mut GraphicsCommandPool,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "depth-pass");
-        let command_buffer = graphics_command_pool
-            .0
-            .record_one_time("depth only pass cb", {
-                let renderer = &renderer;
-                let image_index = &image_index;
-                let depth_pass = &depth_pass;
-                move |command_buffer| unsafe {
-                    renderer.device.debug_marker_around(
-                        command_buffer,
-                        "depth prepass",
-                        [0.3, 0.3, 0.3, 1.0],
-                        || {
-                            renderer.device.cmd_begin_render_pass(
-                                command_buffer,
-                                &vk::RenderPassBeginInfo::builder()
-                                    .render_pass(depth_pass.renderpass.handle)
-                                    .framebuffer(
-                                        depth_pass.framebuffer[image_index.0 as usize].handle,
-                                    )
-                                    .render_area(vk::Rect2D {
-                                        offset: vk::Offset2D { x: 0, y: 0 },
-                                        extent: vk::Extent2D {
-                                            width: swapchain.width,
-                                            height: swapchain.height,
-                                        },
-                                    })
-                                    .clear_values(&[vk::ClearValue {
-                                        depth_stencil: vk::ClearDepthStencilValue {
-                                            depth: 1.0,
-                                            stencil: 0,
-                                        },
-                                    }]),
-                                vk::SubpassContents::INLINE,
-                            );
-                            if !runtime_config.debug_aabbs {
-                                renderer.device.cmd_set_viewport(
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("DepthOnlyPass")
+            .read_resource::<RenderFrame>()
+            .read_resource::<ImageIndex>()
+            .write_resource::<GraphicsCommandPool>()
+            .write_resource::<DepthPassData>()
+            .read_resource::<ModelData>()
+            .read_resource::<RuntimeConfiguration>()
+            .read_resource::<Camera>()
+            .read_resource::<CameraMatrices>()
+            .read_resource::<Swapchain>()
+            .with_query(<(Read<Position>, Read<DrawIndex>, Read<GltfMesh>)>::query())
+            .build(move |_commands, world, resources, query| {
+                let (
+                    ref renderer,
+                    ref image_index,
+                    ref mut graphics_command_pool,
+                    ref mut depth_pass,
+                    ref model_data,
+                    ref runtime_config,
+                    ref camera,
+                    ref camera_matrices,
+                    ref swapchain,
+                ) = resources;
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "depth-pass");
+                let command_buffer =
+                    graphics_command_pool
+                        .0
+                        .record_one_time("depth only pass cb", {
+                            let depth_pass = &depth_pass;
+                            move |command_buffer| unsafe {
+                                renderer.device.debug_marker_around(
                                     command_buffer,
-                                    0,
-                                    &[vk::Viewport {
-                                        x: 0.0,
-                                        y: swapchain.height as f32,
-                                        width: swapchain.width as f32,
-                                        height: -(swapchain.height as f32),
-                                        min_depth: 0.0,
-                                        max_depth: 1.0,
-                                    }],
+                                    "depth prepass",
+                                    [0.3, 0.3, 0.3, 1.0],
+                                    || {
+                                        renderer.device.cmd_begin_render_pass(
+                                            command_buffer,
+                                            &vk::RenderPassBeginInfo::builder()
+                                                .render_pass(depth_pass.renderpass.handle)
+                                                .framebuffer(
+                                                    depth_pass.framebuffer[image_index.0 as usize]
+                                                        .handle,
+                                                )
+                                                .render_area(vk::Rect2D {
+                                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                                    extent: vk::Extent2D {
+                                                        width: swapchain.width,
+                                                        height: swapchain.height,
+                                                    },
+                                                })
+                                                .clear_values(&[vk::ClearValue {
+                                                    depth_stencil: vk::ClearDepthStencilValue {
+                                                        depth: 1.0,
+                                                        stencil: 0,
+                                                    },
+                                                }]),
+                                            vk::SubpassContents::INLINE,
+                                        );
+                                        if !runtime_config.debug_aabbs {
+                                            renderer.device.cmd_set_viewport(
+                                                command_buffer,
+                                                0,
+                                                &[vk::Viewport {
+                                                    x: 0.0,
+                                                    y: swapchain.height as f32,
+                                                    width: swapchain.width as f32,
+                                                    height: -(swapchain.height as f32),
+                                                    min_depth: 0.0,
+                                                    max_depth: 1.0,
+                                                }],
+                                            );
+                                            renderer.device.cmd_set_scissor(
+                                                command_buffer,
+                                                0,
+                                                &[vk::Rect2D {
+                                                    offset: vk::Offset2D { x: 0, y: 0 },
+                                                    extent: vk::Extent2D {
+                                                        width: swapchain.width,
+                                                        height: swapchain.height,
+                                                    },
+                                                }],
+                                            );
+                                            renderer.device.cmd_bind_pipeline(
+                                                command_buffer,
+                                                vk::PipelineBindPoint::GRAPHICS,
+                                                depth_pass.depth_pipeline.handle,
+                                            );
+                                            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                                                &renderer.device,
+                                                command_buffer,
+                                                &model_data.model_set.current(image_index.0),
+                                                &camera_matrices.set.current(image_index.0),
+                                            );
+                                            for (mesh_position, draw_index, mesh) in
+                                                query.iter(&world)
+                                            {
+                                                let (index_buffer, index_count) = pick_lod(
+                                                    &mesh.index_buffers,
+                                                    camera.position,
+                                                    mesh_position.0,
+                                                );
+                                                renderer.device.cmd_bind_index_buffer(
+                                                    command_buffer,
+                                                    index_buffer.handle,
+                                                    0,
+                                                    vk::IndexType::UINT32,
+                                                );
+                                                renderer.device.cmd_bind_vertex_buffers(
+                                                    command_buffer,
+                                                    0,
+                                                    &[mesh.vertex_buffer.handle],
+                                                    &[0],
+                                                );
+                                                renderer.device.cmd_draw_indexed(
+                                                    command_buffer,
+                                                    (*index_count).try_into().unwrap(),
+                                                    1,
+                                                    0,
+                                                    0,
+                                                    draw_index.0,
+                                                );
+                                            }
+                                        }
+                                        renderer.device.cmd_end_render_pass(command_buffer);
+                                    },
                                 );
-                                renderer.device.cmd_set_scissor(
-                                    command_buffer,
-                                    0,
-                                    &[vk::Rect2D {
-                                        offset: vk::Offset2D { x: 0, y: 0 },
-                                        extent: vk::Extent2D {
-                                            width: swapchain.width,
-                                            height: swapchain.height,
-                                        },
-                                    }],
-                                );
-                                renderer.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::GRAPHICS,
-                                    depth_pass.depth_pipeline.handle,
-                                );
-                                depth_pass.depth_pipeline_layout.bind_descriptor_sets(
-                                    &renderer.device,
-                                    command_buffer,
-                                    &model_data.model_set.current(image_index.0),
-                                    &camera_matrices.set.current(image_index.0),
-                                );
-                                for entity_id in
-                                    (entities.mask() & meshes.mask() & positions.mask()).iter()
-                                {
-                                    let mesh = meshes.get(entity_id).unwrap();
-                                    let mesh_position = positions.get(entity_id).unwrap();
-                                    let (index_buffer, index_count) = pick_lod(
-                                        &mesh.index_buffers,
-                                        camera.position,
-                                        *mesh_position,
-                                    );
-                                    renderer.device.cmd_bind_index_buffer(
-                                        command_buffer,
-                                        index_buffer.handle,
-                                        0,
-                                        vk::IndexType::UINT32,
-                                    );
-                                    renderer.device.cmd_bind_vertex_buffers(
-                                        command_buffer,
-                                        0,
-                                        &[mesh.vertex_buffer.handle],
-                                        &[0],
-                                    );
-                                    renderer.device.cmd_draw_indexed(
-                                        command_buffer,
-                                        (*index_count).try_into().unwrap(),
-                                        1,
-                                        0,
-                                        0,
-                                        entity_id,
-                                    );
-                                }
                             }
-                            renderer.device.cmd_end_render_pass(command_buffer);
-                        },
-                    );
+                        });
+                let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+                let wait_semaphore_values = &[renderer.frame_number * 16 + 1];
+                let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+                let signal_semaphore_values = &[renderer.frame_number * 16 + 2];
+                let command_buffers = &[*command_buffer];
+                let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+                    .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
+                    .signal_semaphore_values(signal_semaphore_values)
+                    .build();
+                let submit = vk::SubmitInfo::builder()
+                    .push_next(&mut signal_timeline)
+                    .wait_semaphores(wait_semaphores)
+                    .wait_dst_stage_mask(dst_stage_masks)
+                    .command_buffers(command_buffers)
+                    .signal_semaphores(signal_semaphores)
+                    .build();
+                let queue = renderer.device.graphics_queue.lock();
+
+                unsafe {
+                    renderer
+                        .device
+                        .queue_submit(*queue, &[submit], vk::Fence::null())
+                        .unwrap();
                 }
-            });
-        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let wait_semaphore_values = &[renderer.frame_number * 16 + 1];
-        let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let signal_semaphore_values = &[renderer.frame_number * 16 + 2];
-        let command_buffers = &[*command_buffer];
-        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
-            .signal_semaphore_values(signal_semaphore_values)
-            .build();
-        let submit = vk::SubmitInfo::builder()
-            .push_next(&mut signal_timeline)
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(dst_stage_masks)
-            .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores)
-            .build();
-        let queue = renderer.device.graphics_queue.lock();
 
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &[submit], vk::Fence::null())
-                .unwrap();
-        }
-
-        *depth_pass
-            .previous_command_buffer
-            .current_mut(image_index.0) = Some(command_buffer);
+                *depth_pass
+                    .previous_command_buffer
+                    .current_mut(image_index.0) = Some(command_buffer);
+            })
     }
 }

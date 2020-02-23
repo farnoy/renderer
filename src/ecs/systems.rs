@@ -1,4 +1,5 @@
 use super::{super::renderer::*, custom::*, resources::*};
+use crate::ecs::components::ModelMatrix;
 use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
@@ -22,28 +23,22 @@ use crate::renderer::{
 pub struct ModelMatrixCalculation;
 
 impl ModelMatrixCalculation {
-    pub fn exec(
-        entities: &EntitiesStorage,
-        positions: &ComponentStorage<na::Point3<f32>>,
-        rotations: &ComponentStorage<na::UnitQuaternion<f32>>,
-        scales: &ComponentStorage<f32>,
-        model_matrices: &mut ComponentStorage<glm::Mat4>,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "model matrix calculation");
-        model_matrices
-            .replace_mask(&(entities.mask() & positions.mask() & rotations.mask() & scales.mask()));
-
-        for entity_id in model_matrices.mask().clone().iter() {
-            let pos = positions.get(entity_id).unwrap();
-            let rot = rotations.get(entity_id).unwrap();
-            let scale = scales.get(entity_id).unwrap();
-            *model_matrices
-                .entry(entity_id)
-                .or_insert(glm::Mat4::identity()) = glm::translation(&pos.coords)
-                * rot.to_homogeneous()
-                * glm::scaling(&glm::Vec3::repeat(*scale));
-        }
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("ModelMatrixCalculation - exec")
+            .with_query(<(
+                Read<Position>,
+                Read<Rotation>,
+                Read<Scale>,
+                Write<ModelMatrix>,
+            )>::query())
+            .build(move |_commands, mut world, _resources, ref mut query| {
+                for (pos, rot, scale, mut model_matrix) in query.iter_mut(&mut world) {
+                    model_matrix.0 = glm::translation(&pos.0.coords)
+                        * rot.0.to_homogeneous()
+                        * glm::scaling(&glm::Vec3::repeat(scale.0));
+                }
+            })
     }
 }
 
@@ -249,59 +244,54 @@ impl CalculateFrameTiming {
 pub struct AABBCalculation;
 
 impl AABBCalculation {
-    pub fn exec(
-        entities: &EntitiesStorage,
-        model_matrices: &ComponentStorage<glm::Mat4>,
-        meshes: &ComponentStorage<GltfMesh>,
-        aabb: &mut ComponentStorage<ncollide3d::bounding_volume::AABB<f32>>,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "aabb calculation");
-        use std::f32::{MAX, MIN};
-        let desired = entities.mask() & model_matrices.mask() & meshes.mask();
-        aabb.replace_mask(&desired);
-        for entity_id in desired.iter() {
-            let model_matrix = model_matrices.get(entity_id).unwrap();
-            let mesh = meshes.get(entity_id).unwrap();
-            let min = mesh.aabb.mins();
-            let max = mesh.aabb.maxs();
-            let (min, max) = [
-                // bottom half (min y)
-                na::Point3::new(min.x, min.y, min.z),
-                na::Point3::new(max.x, min.y, min.z),
-                na::Point3::new(min.x, min.y, max.z),
-                na::Point3::new(max.x, min.y, max.z),
-                // top half (max y)
-                na::Point3::new(min.x, max.y, min.z),
-                na::Point3::new(max.x, max.y, min.z),
-                na::Point3::new(min.x, max.y, max.z),
-                na::Point3::new(max.x, max.y, max.z),
-            ]
-            .iter()
-            .map(|vertex| model_matrix * vertex.to_homogeneous())
-            .map(|vertex| vertex.xyz() / vertex.w)
-            .fold(
-                ((MAX, MAX, MAX), (MIN, MIN, MIN)),
-                |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
-                    (
-                        (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
-                        (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
-                    )
-                },
-            );
-            let min = na::Vector3::new(min.0, min.1, min.2);
-            let max = na::Vector3::new(max.0, max.1, max.2);
-            let new = ncollide3d::bounding_volume::AABB::from_half_extents(
-                na::Point3::from((max + min) / 2.0),
-                (max - min) / 2.0,
-            );
-            *aabb.entry(entity_id).or_insert(
-                ncollide3d::bounding_volume::AABB::from_half_extents(
-                    na::Point3::origin(),
-                    na::zero(),
-                ),
-            ) = new;
-        }
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("AABBCalculation - exec")
+            .with_query(<(
+                Read<ModelMatrix>,
+                Read<GltfMesh>,
+                Write<ncollide3d::bounding_volume::AABB<f32>>,
+            )>::query())
+            .build(move |_commands, mut world, _resources, ref mut query| {
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "aabb calculation");
+                use std::f32::{MAX, MIN};
+                for (model_matrix, mesh, mut aabb) in query.iter_mut(&mut world) {
+                    let min = mesh.aabb.mins();
+                    let max = mesh.aabb.maxs();
+                    let (min, max) = [
+                        // bottom half (min y)
+                        na::Point3::new(min.x, min.y, min.z),
+                        na::Point3::new(max.x, min.y, min.z),
+                        na::Point3::new(min.x, min.y, max.z),
+                        na::Point3::new(max.x, min.y, max.z),
+                        // top half (max y)
+                        na::Point3::new(min.x, max.y, min.z),
+                        na::Point3::new(max.x, max.y, min.z),
+                        na::Point3::new(min.x, max.y, max.z),
+                        na::Point3::new(max.x, max.y, max.z),
+                    ]
+                    .iter()
+                    .map(|vertex| model_matrix.0 * vertex.to_homogeneous())
+                    .map(|vertex| vertex.xyz() / vertex.w)
+                    .fold(
+                        ((MAX, MAX, MAX), (MIN, MIN, MIN)),
+                        |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
+                            (
+                                (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
+                                (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
+                            )
+                        },
+                    );
+                    let min = na::Vector3::new(min.0, min.1, min.2);
+                    let max = na::Vector3::new(max.0, max.1, max.2);
+                    let new = ncollide3d::bounding_volume::AABB::from_half_extents(
+                        na::Point3::from((max + min) / 2.0),
+                        (max - min) / 2.0,
+                    );
+                    *aabb = new;
+                }
+            })
     }
 }
 

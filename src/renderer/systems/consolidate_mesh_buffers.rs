@@ -1,10 +1,7 @@
-use crate::{
-    ecs::custom::{ComponentStorage, EntitiesStorage},
-    renderer::{
-        alloc,
-        device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
-        GltfMesh, GraphicsCommandPool, RenderFrame,
-    },
+use crate::renderer::{
+    alloc,
+    device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
+    GltfMesh, GraphicsCommandPool, RenderFrame,
 };
 use ash::{
     version::{DeviceV1_0, DeviceV1_2},
@@ -108,167 +105,176 @@ impl ConsolidatedMeshBuffers {
 }
 
 impl ConsolidateMeshBuffers {
-    pub fn exec(
-        renderer: &RenderFrame,
-        entities: &EntitiesStorage,
-        graphics_command_pool: &GraphicsCommandPool,
-        meshes: &ComponentStorage<GltfMesh>,
-        consolidated_mesh_buffers: &mut ConsolidatedMeshBuffers,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "consolidate mesh buffers");
-        if consolidated_mesh_buffers
-            .previous_run_command_buffer
-            .is_some()
-        {
-            unsafe {
-                renderer
-                    .device
-                    .wait_for_fences(
-                        &[consolidated_mesh_buffers.sync_point_fence.handle],
-                        true,
-                        u64::MAX,
-                    )
-                    .expect("Wait for fence failed.");
-            }
-        }
-        unsafe {
-            renderer
-                .device
-                .reset_fences(&[consolidated_mesh_buffers.sync_point_fence.handle])
-                .expect("failed to reset consolidate vertex buffers sync point fence");
-        }
-
-        let mut needs_transfer = false;
-        let command_buffer = graphics_command_pool.0.record_one_time(
-            "consolidate mesh buffers cb",
-            |command_buffer| {
-                for ix in (entities.mask() & meshes.mask()).iter() {
-                    let mesh = meshes.get(ix).unwrap();
-                    let ConsolidatedMeshBuffers {
-                        ref mut next_vertex_offset,
-                        ref mut next_index_offset,
-                        ref position_buffer,
-                        ref normal_buffer,
-                        ref uv_buffer,
-                        ref index_buffer,
-                        ref mut vertex_offsets,
-                        ref mut index_offsets,
-                        ..
-                    } = *consolidated_mesh_buffers;
-
-                    if let Entry::Vacant(v) =
-                        vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw())
-                    {
-                        v.insert(*next_vertex_offset);
-                        let size_3 = mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
-                        let size_2 = mesh.vertex_len * size_of::<[f32; 2]>() as vk::DeviceSize;
-                        let offset_3 =
-                            *next_vertex_offset * size_of::<[f32; 3]>() as vk::DeviceSize;
-                        let offset_2 =
-                            *next_vertex_offset * size_of::<[f32; 2]>() as vk::DeviceSize;
-
-                        unsafe {
-                            // vertex
-                            renderer.device.cmd_copy_buffer(
-                                command_buffer,
-                                mesh.vertex_buffer.handle,
-                                position_buffer.handle,
-                                &[vk::BufferCopy::builder()
-                                    .size(size_3)
-                                    .dst_offset(offset_3)
-                                    .build()],
-                            );
-                            // normal
-                            renderer.device.cmd_copy_buffer(
-                                command_buffer,
-                                mesh.normal_buffer.handle,
-                                normal_buffer.handle,
-                                &[vk::BufferCopy::builder()
-                                    .size(size_3)
-                                    .dst_offset(offset_3)
-                                    .build()],
-                            );
-                            // uv
-                            renderer.device.cmd_copy_buffer(
-                                command_buffer,
-                                mesh.uv_buffer.handle,
-                                uv_buffer.handle,
-                                &[vk::BufferCopy::builder()
-                                    .size(size_2)
-                                    .dst_offset(offset_2)
-                                    .build()],
-                            );
-                        }
-                        *next_vertex_offset += mesh.vertex_len;
-                        needs_transfer = true;
-                    }
-
-                    for (lod_index_buffer, index_len) in mesh.index_buffers.iter() {
-                        if let Entry::Vacant(v) =
-                            index_offsets.entry(lod_index_buffer.handle.as_raw())
-                        {
-                            v.insert(*next_index_offset);
-
-                            unsafe {
-                                renderer.device.cmd_copy_buffer(
-                                    command_buffer,
-                                    lod_index_buffer.handle,
-                                    index_buffer.handle,
-                                    &[vk::BufferCopy::builder()
-                                        .size(index_len * size_of::<u32>() as vk::DeviceSize)
-                                        .dst_offset(
-                                            *next_index_offset * size_of::<u32>() as vk::DeviceSize,
-                                        )
-                                        .build()],
-                                );
-                            }
-                            *next_index_offset += index_len;
-                            needs_transfer = true;
-                        }
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("ConsolidateMeshBuffers exec")
+            .read_resource::<RenderFrame>()
+            .read_resource::<GraphicsCommandPool>()
+            .write_resource::<ConsolidatedMeshBuffers>()
+            .with_query(<(Read<GltfMesh>,)>::query())
+            .build(move |_commands, world, resources, query| {
+                let (ref renderer, ref graphics_command_pool, ref mut consolidated_mesh_buffers) =
+                    resources;
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "consolidate mesh buffers");
+                if consolidated_mesh_buffers
+                    .previous_run_command_buffer
+                    .is_some()
+                {
+                    unsafe {
+                        renderer
+                            .device
+                            .wait_for_fences(
+                                &[consolidated_mesh_buffers.sync_point_fence.handle],
+                                true,
+                                u64::MAX,
+                            )
+                            .expect("Wait for fence failed.");
                     }
                 }
-            },
-        );
+                unsafe {
+                    renderer
+                        .device
+                        .reset_fences(&[consolidated_mesh_buffers.sync_point_fence.handle])
+                        .expect("failed to reset consolidate vertex buffers sync point fence");
+                }
 
-        if needs_transfer {
-            let command_buffers = &[*command_buffer];
-            let signal_semaphores = &[consolidated_mesh_buffers.sync_timeline.handle];
-            let signal_semaphore_values = &[renderer.frame_number * 16 + 16];
-            let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
-                .signal_semaphore_values(signal_semaphore_values);
-            let submit = vk::SubmitInfo::builder()
-                .push_next(&mut wait_timeline)
-                .command_buffers(command_buffers)
-                .signal_semaphores(signal_semaphores)
-                .build();
+                let mut needs_transfer = false;
+                let command_buffer = graphics_command_pool.0.record_one_time(
+                    "consolidate mesh buffers cb",
+                    |command_buffer| {
+                        for (mesh,) in query.iter(&world) {
+                            let ConsolidatedMeshBuffers {
+                                ref mut next_vertex_offset,
+                                ref mut next_index_offset,
+                                ref position_buffer,
+                                ref normal_buffer,
+                                ref uv_buffer,
+                                ref index_buffer,
+                                ref mut vertex_offsets,
+                                ref mut index_offsets,
+                                ..
+                            } = **consolidated_mesh_buffers;
 
-            consolidated_mesh_buffers.previous_run_command_buffer = Some(command_buffer); // potentially destroys the previous one
+                            if let Entry::Vacant(v) =
+                                vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw())
+                            {
+                                v.insert(*next_vertex_offset);
+                                let size_3 =
+                                    mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
+                                let size_2 =
+                                    mesh.vertex_len * size_of::<[f32; 2]>() as vk::DeviceSize;
+                                let offset_3 =
+                                    *next_vertex_offset * size_of::<[f32; 3]>() as vk::DeviceSize;
+                                let offset_2 =
+                                    *next_vertex_offset * size_of::<[f32; 2]>() as vk::DeviceSize;
 
-            let queue = renderer.device.graphics_queue.lock();
+                                unsafe {
+                                    // vertex
+                                    renderer.device.cmd_copy_buffer(
+                                        command_buffer,
+                                        mesh.vertex_buffer.handle,
+                                        position_buffer.handle,
+                                        &[vk::BufferCopy::builder()
+                                            .size(size_3)
+                                            .dst_offset(offset_3)
+                                            .build()],
+                                    );
+                                    // normal
+                                    renderer.device.cmd_copy_buffer(
+                                        command_buffer,
+                                        mesh.normal_buffer.handle,
+                                        normal_buffer.handle,
+                                        &[vk::BufferCopy::builder()
+                                            .size(size_3)
+                                            .dst_offset(offset_3)
+                                            .build()],
+                                    );
+                                    // uv
+                                    renderer.device.cmd_copy_buffer(
+                                        command_buffer,
+                                        mesh.uv_buffer.handle,
+                                        uv_buffer.handle,
+                                        &[vk::BufferCopy::builder()
+                                            .size(size_2)
+                                            .dst_offset(offset_2)
+                                            .build()],
+                                    );
+                                }
+                                *next_vertex_offset += mesh.vertex_len;
+                                needs_transfer = true;
+                            }
 
-            unsafe {
-                renderer
-                    .device
-                    .queue_submit(
-                        *queue,
-                        &[submit],
-                        consolidated_mesh_buffers.sync_point_fence.handle,
-                    )
-                    .unwrap();
-            }
-        } else {
-            let signal_info = vk::SemaphoreSignalInfo::builder()
-                .semaphore(consolidated_mesh_buffers.sync_timeline.handle)
-                .value(renderer.frame_number * 16 + 16);
-            unsafe {
-                renderer
-                    .device
-                    .signal_semaphore(renderer.device.handle(), &*signal_info)
-                    .unwrap();
-            }
-            consolidated_mesh_buffers.previous_run_command_buffer = None; // potentially destroys the previous one
-        }
+                            for (lod_index_buffer, index_len) in mesh.index_buffers.iter() {
+                                if let Entry::Vacant(v) =
+                                    index_offsets.entry(lod_index_buffer.handle.as_raw())
+                                {
+                                    v.insert(*next_index_offset);
+
+                                    unsafe {
+                                        renderer.device.cmd_copy_buffer(
+                                            command_buffer,
+                                            lod_index_buffer.handle,
+                                            index_buffer.handle,
+                                            &[vk::BufferCopy::builder()
+                                                .size(
+                                                    index_len * size_of::<u32>() as vk::DeviceSize,
+                                                )
+                                                .dst_offset(
+                                                    *next_index_offset
+                                                        * size_of::<u32>() as vk::DeviceSize,
+                                                )
+                                                .build()],
+                                        );
+                                    }
+                                    *next_index_offset += index_len;
+                                    needs_transfer = true;
+                                }
+                            }
+                        }
+                    },
+                );
+
+                if needs_transfer {
+                    let command_buffers = &[*command_buffer];
+                    let signal_semaphores = &[consolidated_mesh_buffers.sync_timeline.handle];
+                    let signal_semaphore_values = &[renderer.frame_number * 16 + 16];
+                    let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+                        .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
+                        .signal_semaphore_values(signal_semaphore_values);
+                    let submit = vk::SubmitInfo::builder()
+                        .push_next(&mut wait_timeline)
+                        .command_buffers(command_buffers)
+                        .signal_semaphores(signal_semaphores)
+                        .build();
+
+                    consolidated_mesh_buffers.previous_run_command_buffer = Some(command_buffer); // potentially destroys the previous one
+
+                    let queue = renderer.device.graphics_queue.lock();
+
+                    unsafe {
+                        renderer
+                            .device
+                            .queue_submit(
+                                *queue,
+                                &[submit],
+                                consolidated_mesh_buffers.sync_point_fence.handle,
+                            )
+                            .unwrap();
+                    }
+                } else {
+                    let signal_info = vk::SemaphoreSignalInfo::builder()
+                        .semaphore(consolidated_mesh_buffers.sync_timeline.handle)
+                        .value(renderer.frame_number * 16 + 16);
+                    unsafe {
+                        renderer
+                            .device
+                            .signal_semaphore(renderer.device.handle(), &*signal_info)
+                            .unwrap();
+                    }
+                    consolidated_mesh_buffers.previous_run_command_buffer = None;
+                    // potentially destroys the previous one
+                }
+            })
     }
 }

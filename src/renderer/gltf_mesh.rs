@@ -1,7 +1,4 @@
 use ash::{version::DeviceV1_0, vk};
-use gltf;
-use image;
-use meshopt;
 use std::{mem::size_of, path::Path, u64};
 
 use super::{
