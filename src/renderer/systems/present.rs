@@ -83,7 +83,6 @@ impl AcquireFramebuffer {
 
         {
             let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-            dbg!(counter, renderer.frame_number, renderer.frame_number * 16);
             if counter < renderer.frame_number * 16 {
                 let signal_semaphore_values = &[renderer.frame_number * 16];
                 let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
