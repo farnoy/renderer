@@ -435,9 +435,9 @@ impl LaunchProjectileTest {
         SystemBuilder::<()>::new("LaunchProjectiles")
             .read_resource::<InputState>()
             .read_resource::<MeshLibrary>()
-            .write_resource::<Camera>()
+            .read_resource::<Camera>()
             .build(move |commands, _world, resources, _query| {
-                let (ref input_state, ref mesh_library, ref mut camera) = resources;
+                let (ref input_state, ref mesh_library, ref camera) = resources;
                 if input_state.button_presses.iter().any(|p| *p == 1) {
                     let target = camera.position
                         + camera.rotation * (100.0 * (&forward_vector().into_inner()));
