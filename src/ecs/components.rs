@@ -6,6 +6,9 @@ pub struct AABB(pub ncollide3d::bounding_volume::AABB<f32>);
 
 pub struct ModelMatrix(pub glm::Mat4);
 
+pub struct ProjectileTarget(pub na::Point3<f32>);
+pub struct ProjectileVelocity(pub f32);
+
 impl Default for AABB {
     fn default() -> AABB {
         AABB(ncollide3d::bounding_volume::AABB::<f32>::from_half_extents(

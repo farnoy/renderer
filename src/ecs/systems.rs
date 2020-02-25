@@ -1,5 +1,8 @@
 use super::super::renderer::*;
-use crate::ecs::components::{ModelMatrix, AABB};
+use crate::ecs::{
+    components::{ModelMatrix, ProjectileTarget, ProjectileVelocity, AABB},
+    resources::MeshLibrary,
+};
 use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
@@ -424,73 +427,68 @@ impl FlyCamera {
     }
 }
 
-/*
 pub struct LaunchProjectileTest;
 
 impl LaunchProjectileTest {
-    #[allow(clippy::too_many_arguments)]
-    pub fn exec(
-        entities: &mut EntitiesStorage,
-        position_storage: &mut ComponentStorage<na::Point3<f32>>,
-        rotation_storage: &mut ComponentStorage<na::UnitQuaternion<f32>>,
-        scale_storage: &mut ComponentStorage<f32>,
-        meshes_storage: &mut ComponentStorage<GltfMesh>,
-        textures_storage: &mut ComponentStorage<GltfMeshBaseColorTexture>,
-        projectile_target_storage: &mut ComponentStorage<na::Point3<f32>>,
-        projectile_velocities_storage: &mut ComponentStorage<f32>,
-        camera: &mut Camera,
-        mesh_library: &MeshLibrary,
-        input_state: &InputState,
-    ) {
-        if input_state.button_presses.iter().any(|p| *p == 1) {
-            let projectile = entities.allocate();
-            position_storage.insert(projectile, camera.position);
-            rotation_storage.insert(projectile, camera.rotation);
-            scale_storage.insert(projectile, 1.0);
-            let target =
-                camera.position + camera.rotation * (100.0 * (&forward_vector().into_inner()));
-            projectile_target_storage.insert(projectile, target);
-            projectile_velocities_storage.insert(projectile, 20.0);
-            meshes_storage.insert(projectile, mesh_library.projectile.clone());
-            textures_storage.insert(
-                projectile,
-                GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_texture)),
-            );
-        }
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("LaunchProjectiles")
+            .read_resource::<InputState>()
+            .read_resource::<MeshLibrary>()
+            .write_resource::<Camera>()
+            .build(move |commands, _world, resources, _query| {
+                let (ref input_state, ref mesh_library, ref mut camera) = resources;
+                if input_state.button_presses.iter().any(|p| *p == 1) {
+                    let target = camera.position
+                        + camera.rotation * (100.0 * (&forward_vector().into_inner()));
+                    commands.insert(
+                        (),
+                        Some((
+                            Position(camera.position),
+                            Rotation(camera.rotation),
+                            Scale(1.0),
+                            ModelMatrix::default(),
+                            GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_texture)),
+                            mesh_library.projectile.clone(),
+                            AABB::default(),
+                            CoarseCulled(false),
+                            DrawIndex::default(),
+                            ProjectileTarget(target),
+                            ProjectileVelocity(20.0),
+                        )),
+                    );
+                }
+            })
     }
 }
-
 pub struct UpdateProjectiles;
 
 impl UpdateProjectiles {
-    pub fn exec(
-        entities: &mut EntitiesStorage,
-        position_storage: &mut ComponentStorage<na::Point3<f32>>,
-        rotation_storage: &ComponentStorage<na::UnitQuaternion<f32>>,
-        projectile_target_storage: &ComponentStorage<na::Point3<f32>>,
-        projectile_velocities_storage: &mut ComponentStorage<f32>,
-        frame_timing: &FrameTiming,
-    ) {
-        let projectiles = entities.mask()
-            & rotation_storage.mask()
-            & projectile_target_storage.mask()
-            & projectile_velocities_storage.mask();
-        for projectile in projectiles.iter() {
-            let position = position_storage.entry(projectile).assume();
-            let target = projectile_target_storage.get(projectile).unwrap();
-            if na::distance(position, target) < 0.1 {
-                entities.remove(projectile);
-                continue;
-            }
-            let rotation = rotation_storage.get(projectile).unwrap();
-            let velocity = projectile_velocities_storage.get(projectile).unwrap();
-            let velocity_scaled = velocity * frame_timing.time_delta;
-            let increment = velocity_scaled * (rotation * forward_vector().into_inner());
-            *position += increment;
-        }
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("LaunchProjectiles")
+            .read_resource::<FrameTiming>()
+            .with_query(<(
+                Write<Position>,
+                Read<Rotation>,
+                Read<ProjectileTarget>,
+                Read<ProjectileVelocity>,
+            )>::query())
+            .build(move |commands, mut world, ref frame_timing, query| {
+                for (entity, (mut position, rotation, target, velocity)) in
+                    query.iter_entities_mut(&mut world)
+                {
+                    if na::distance(&position.0, &target.0) < 0.1 {
+                        commands.delete(entity);
+                        continue;
+                    }
+                    let velocity_scaled = velocity.0 * frame_timing.time_delta;
+                    let increment = velocity_scaled * (rotation.0 * forward_vector().into_inner());
+                    position.0 += increment;
+                }
+            })
     }
 }
-*/
 
 /// Grab-bag for renderer and player controller variables for now
 pub struct RuntimeConfiguration {

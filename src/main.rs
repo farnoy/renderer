@@ -488,77 +488,10 @@ fn main() {
                     ProjectCamera::exec(swapchain, &mut *camera);
                 }),
         )
-        /*
-        .add_system(
-            SystemBuilder::<()>::new("LaunchProjectileTest")
-                .write_resource::<EntitiesStorage>()
-                .write_resource::<PositionStorage>()
-                .write_resource::<RotationStorage>()
-                .write_resource::<ScaleStorage>()
-                .write_resource::<ProjectileTargetStorage>()
-                .write_resource::<ProjectileVelocityStorage>()
-                .write_resource::<ComponentStorage<GltfMesh>>()
-                .write_resource::<ComponentStorage<GltfMeshBaseColorTexture>>()
-                .write_resource::<Camera>()
-                .read_resource::<MeshLibrary>()
-                .read_resource::<InputState>()
-                .build(move |_commands, _world, resources, _queries| {
-                    let (
-                        ref mut entities,
-                        ref mut position_storage,
-                        ref mut rotation_storage,
-                        ref mut scale_storage,
-                        ref mut projectile_target_storage,
-                        ref mut projectile_velocity_storage,
-                        ref mut meshes_storage,
-                        ref mut base_color_texture_storage,
-                        ref mut camera,
-                        ref mesh_library,
-                        ref input_state,
-                    ) = resources;
-                    LaunchProjectileTest::exec(
-                        &mut *entities,
-                        &mut position_storage.0,
-                        &mut rotation_storage.0,
-                        &mut scale_storage.0,
-                        &mut *meshes_storage,
-                        &mut *base_color_texture_storage,
-                        &mut projectile_target_storage.0,
-                        &mut projectile_velocity_storage.0,
-                        &mut *camera,
-                        &mesh_library,
-                        &input_state,
-                    );
-                }),
-        )
-        .add_system(
-            SystemBuilder::<()>::new("UpdateProjectiles")
-                .write_resource::<EntitiesStorage>()
-                .write_resource::<PositionStorage>()
-                .write_resource::<RotationStorage>()
-                .write_resource::<ProjectileTargetStorage>()
-                .write_resource::<ProjectileVelocityStorage>()
-                .read_resource::<FrameTiming>()
-                .build(move |_commands, _world, resources, _queries| {
-                    let (
-                        ref mut entities,
-                        ref mut position_storage,
-                        ref mut rotation_storage,
-                        ref mut projectile_target_storage,
-                        ref mut projectile_velocity_storage,
-                        ref frame_timing,
-                    ) = resources;
-                    UpdateProjectiles::exec(
-                        &mut *entities,
-                        &mut position_storage.0,
-                        &mut rotation_storage.0,
-                        &mut projectile_target_storage.0,
-                        &mut projectile_velocity_storage.0,
-                        &frame_timing,
-                    );
-                }),
-        )
-        */
+        .add_system(LaunchProjectileTest::exec_system())
+        .flush()
+        .add_system(UpdateProjectiles::exec_system())
+        .flush()
         .add_system(ConsolidateMeshBuffers::exec_system())
         .add_system(ModelMatrixCalculation::exec_system())
         .add_system(AABBCalculation::exec_system())
