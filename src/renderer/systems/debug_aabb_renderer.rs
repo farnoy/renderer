@@ -54,8 +54,7 @@ impl DebugAABBPassData {
                 )
                 .rasterization_state(
                     &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::CLOCKWISE)
+                        .cull_mode(vk::CullModeFlags::NONE)
                         .line_width(1.0)
                         .polygon_mode(vk::PolygonMode::LINE)
                         .build(),
@@ -67,12 +66,6 @@ impl DebugAABBPassData {
                 )
                 .depth_stencil_state(
                     &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
-                        .depth_write_enable(true)
-                        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(false)
-                        .max_depth_bounds(1.0)
-                        .min_depth_bounds(0.0)
                         .build(),
                 )
                 .color_blend_state(
