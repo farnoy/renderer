@@ -489,7 +489,6 @@ fn main() {
                 }),
         )
         .add_system(LaunchProjectileTest::exec_system())
-        .flush()
         .add_system(UpdateProjectiles::exec_system())
         .flush()
         .add_system(ConsolidateMeshBuffers::exec_system())
