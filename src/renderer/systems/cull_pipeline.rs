@@ -1,5 +1,5 @@
 use crate::{
-    ecs::{components::AABB, systems::Camera},
+    ecs::{components::AABB, resources::Camera},
     renderer::{
         alloc,
         device::{Buffer, CommandBuffer, DoubleBuffered, Event, Fence},
@@ -259,6 +259,7 @@ impl CullPass {
                                             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                                             .dst_access_mask(vk::AccessFlags::SHADER_READ)
                                             .buffer(commands_buffer.handle)
+                                            .size(vk::WHOLE_SIZE)
                                             .build()],
                                         &[],
                                     );

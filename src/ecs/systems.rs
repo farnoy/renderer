@@ -1,7 +1,10 @@
+pub use camera_controller::{CameraController, Camera};
+pub use input::InputHandler;
+
 use super::super::renderer::*;
 use crate::ecs::{
     components::{ModelMatrix, ProjectileTarget, ProjectileVelocity, AABB},
-    resources::MeshLibrary,
+    resources::{InputActions, MeshLibrary},
 };
 use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
@@ -14,7 +17,8 @@ use winit::{
     self,
     dpi::PhysicalSize,
     event::{
-        ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent,
+        ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode,
+        WindowEvent,
     },
     platform::desktop::EventLoopExtDesktop,
 };
@@ -40,145 +44,6 @@ impl ModelMatrixCalculation {
                         * glm::scaling(&glm::Vec3::repeat(scale.0));
                 }
             })
-    }
-}
-
-pub struct Camera {
-    pub position: na::Point3<f32>,
-    pub rotation: na::UnitQuaternion<f32>,
-    pub projection: na::Matrix4<f32>,
-    pub view: na::Matrix4<f32>,
-    // left -> right -> bottom -> top -> near -> far
-    pub frustum_planes: [na::Vector4<f32>; 6],
-}
-
-impl Default for Camera {
-    fn default() -> Camera {
-        let position = na::Point3::new(0.0, 1.0, 2.0);
-        let projection = na::Matrix4::identity();
-        let view = na::Matrix4::identity();
-        let rotation = na::UnitQuaternion::identity();
-        let zero = na::Vector4::new(0.0, 0.0, 0.0, 0.0);
-
-        Camera {
-            position,
-            rotation,
-            projection,
-            view,
-            frustum_planes: [zero; 6],
-        }
-    }
-}
-
-pub struct InputHandler {
-    pub events_loop: winit::event_loop::EventLoop<()>,
-    pub quit_handle: Arc<Mutex<bool>>,
-    pub imgui_platform: WinitPlatform,
-}
-
-impl InputHandler {
-    /// Returns true if resized
-    pub fn exec(
-        &mut self,
-        window: &winit::window::Window,
-        gui: &mut imgui::Context,
-        input_state: &mut InputState,
-        camera: &mut Camera,
-        runtime_config: &mut RuntimeConfiguration,
-    ) -> bool {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "input handler");
-        let quit_handle = Arc::clone(&self.quit_handle);
-        input_state.clear();
-        let fly_mode = runtime_config.fly_mode;
-        let platform = &mut self.imgui_platform;
-        let mut toggle_fly_mode = false;
-        let mut resized = false;
-        self.events_loop
-            .run_return(|event, _window_target, control_flow| {
-                platform.handle_event(gui.io_mut(), &window, &event);
-                match event {
-                    Event::WindowEvent {
-                        event: WindowEvent::Resized(PhysicalSize { width, height }),
-                        ..
-                    } => {
-                        println!("The window was resized to {}x{}", width, height);
-                        // hangs for now
-                        // let logical_size = PhysicalSize { width, height }.to_logical::<f32>(window.scale_factor());
-                        // println!("logical {:?}", logical_size);
-                        resized = true;
-                    }
-                    Event::WindowEvent {
-                        event: WindowEvent::ScaleFactorChanged { scale_factor, .. },
-                        ..
-                    } => {
-                        println!("Scale factor changed {}", scale_factor);
-                    }
-                    Event::WindowEvent {
-                        event: WindowEvent::CloseRequested,
-                        ..
-                    } => {
-                        *quit_handle.lock() = true;
-                    }
-                    Event::WindowEvent {
-                        event:
-                            WindowEvent::KeyboardInput {
-                                input:
-                                    KeyboardInput {
-                                        state,
-                                        virtual_keycode,
-                                        ..
-                                    },
-                                ..
-                            },
-                        ..
-                    } => {
-                        match state {
-                            ElementState::Pressed => input_state.key_presses.push(virtual_keycode),
-                            ElementState::Released => {
-                                input_state.key_releases.push(virtual_keycode)
-                            }
-                        }
-                        match virtual_keycode {
-                            Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
-                                toggle_fly_mode = true;
-                            }
-                            Some(VirtualKeyCode::Escape) => {
-                                *quit_handle.lock() = true;
-                            }
-                            _ => (),
-                        }
-                    }
-                    Event::DeviceEvent {
-                        event: DeviceEvent::MouseMotion { delta: (x, y), .. },
-                        ..
-                    } if fly_mode => {
-                        let y_angle = f32::pi() / 180.0 * y as f32;
-                        let x_angle = f32::pi() / 180.0 * x as f32;
-                        camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
-                        camera.rotation =
-                            na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
-                    }
-                    Event::DeviceEvent {
-                        event:
-                            DeviceEvent::Button {
-                                button,
-                                state: ElementState::Pressed,
-                            },
-                        ..
-                    } => {
-                        input_state.button_presses.push(button);
-                    }
-                    _ => (),
-                };
-                *control_flow = winit::event_loop::ControlFlow::Exit;
-            });
-        runtime_config.fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
-        platform
-            .prepare_frame(gui.io_mut(), &window)
-            .expect("Failed to prepare frame");
-
-        resized
     }
 }
 
@@ -289,30 +154,6 @@ impl AABBCalculation {
     }
 }
 
-pub struct InputState {
-    key_presses: Vec<Option<VirtualKeyCode>>,
-    key_releases: Vec<Option<VirtualKeyCode>>,
-    button_presses: Vec<ButtonId>,
-}
-
-impl InputState {
-    fn clear(&mut self) {
-        self.key_presses.clear();
-        self.key_releases.clear();
-        self.button_presses.clear();
-    }
-}
-
-impl Default for InputState {
-    fn default() -> InputState {
-        InputState {
-            key_presses: vec![],
-            key_releases: vec![],
-            button_presses: vec![],
-        }
-    }
-}
-
 pub struct FlyCamera {
     forward: bool,
     backward: bool,
@@ -337,108 +178,18 @@ impl Default for FlyCamera {
     }
 }
 
-impl FlyCamera {
-    pub fn exec(
-        &mut self,
-        input: &InputState,
-        frame_timing: &FrameTiming,
-        runtime_config: &RuntimeConfiguration,
-        camera: &mut Camera,
-    ) {
-        if !runtime_config.fly_mode {
-            return;
-        }
-
-        for key in &input.key_presses {
-            match key {
-                Some(VirtualKeyCode::W) => {
-                    self.forward = true;
-                }
-                Some(VirtualKeyCode::S) => {
-                    self.backward = true;
-                }
-                Some(VirtualKeyCode::D) => {
-                    self.right = true;
-                }
-                Some(VirtualKeyCode::A) => {
-                    self.left = true;
-                }
-                Some(VirtualKeyCode::Space) => {
-                    self.up = true;
-                }
-                Some(VirtualKeyCode::LControl) => {
-                    self.down = true;
-                }
-                Some(VirtualKeyCode::LShift) => {
-                    self.fast = true;
-                }
-                _ => (),
-            }
-        }
-        for key in &input.key_releases {
-            match key {
-                Some(VirtualKeyCode::W) => {
-                    self.forward = false;
-                }
-                Some(VirtualKeyCode::S) => {
-                    self.backward = false;
-                }
-                Some(VirtualKeyCode::D) => {
-                    self.right = false;
-                }
-                Some(VirtualKeyCode::A) => {
-                    self.left = false;
-                }
-                Some(VirtualKeyCode::Space) => {
-                    self.up = false;
-                }
-                Some(VirtualKeyCode::LControl) => {
-                    self.down = false;
-                }
-                Some(VirtualKeyCode::LShift) => {
-                    self.fast = false;
-                }
-                _ => (),
-            }
-        }
-        let mut speed = if self.fast { 10.0 } else { 1.0 };
-        speed *= frame_timing.time_delta;
-        let mut increment: na::Vector3<f32> = na::zero();
-        if self.forward {
-            increment += speed * camera.rotation.transform_vector(&forward_vector())
-        }
-        if self.backward {
-            increment -= speed * camera.rotation.transform_vector(&forward_vector());
-        }
-        if self.up {
-            increment += speed * camera.rotation.transform_vector(&up_vector());
-        }
-        if self.down {
-            increment -= speed * camera.rotation.transform_vector(&up_vector());
-        }
-        if self.right {
-            increment += speed * camera.rotation.transform_vector(&right_vector());
-        }
-        if self.left {
-            increment -= speed * camera.rotation.transform_vector(&right_vector());
-        }
-
-        camera.position += increment;
-    }
-}
-
 pub struct LaunchProjectileTest;
 
 impl LaunchProjectileTest {
     pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
         use legion::prelude::*;
         SystemBuilder::<()>::new("LaunchProjectiles")
-            .read_resource::<InputState>()
+            .read_resource::<InputActions>()
             .read_resource::<MeshLibrary>()
             .read_resource::<Camera>()
             .build(move |commands, _world, resources, _query| {
-                let (ref input_state, ref mesh_library, ref camera) = resources;
-                if input_state.button_presses.iter().any(|p| *p == 1) {
+                let (ref input_actions, ref mesh_library, ref camera) = resources;
+                if input_actions.get_mouse_down(MouseButton::Left) {
                     let target = camera.position
                         + camera.rotation * (100.0 * (&forward_vector().into_inner()));
                     commands.insert(

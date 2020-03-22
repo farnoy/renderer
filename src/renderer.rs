@@ -18,6 +18,7 @@ mod systems {
 
 use crate::ecs::{
     components::{ModelMatrix, AABB},
+    resources::Camera,
     systems::*,
 };
 use ash::{version::DeviceV1_0, vk};
@@ -653,6 +654,8 @@ impl DepthPassData {
         }
     }
 }
+
+pub struct Resized(pub bool);
 
 pub struct GltfPassData {
     pub gltf_pipeline: Pipeline,

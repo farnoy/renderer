@@ -1,15 +1,12 @@
 #![feature(arbitrary_self_types)]
 #![feature(backtrace)]
+#![feature(vec_remove_item)]
 #![allow(clippy::new_without_default)]
 
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
 
-pub mod ecs {
-    pub mod components;
-    pub mod resources;
-    pub mod systems;
-}
+pub mod ecs;
 pub mod renderer;
 
 use ash::version::DeviceV1_0;
@@ -343,10 +340,11 @@ fn main() {
     );
 
     resources.insert(mesh_library);
+    resources.insert(Resized(false));
     resources.insert(FrameTiming::default());
     resources.insert(InputState::default());
+    resources.insert(InputActions::default());
     resources.insert(Camera::default());
-    resources.insert(FlyCamera::default());
     resources.insert(RuntimeConfiguration::new());
     resources.insert(renderer);
     resources.insert(graphics_command_pool);
@@ -368,6 +366,11 @@ fn main() {
 
     let mut schedule = Schedule::builder()
         .add_thread_local({
+            let input_handler = Rc::clone(&input_handler);
+            let gui = Rc::clone(&gui);
+            InputHandler::exec_system(input_handler, gui)
+        })
+        .add_thread_local({
             let gui = Rc::clone(&gui);
             let input_handler = Rc::clone(&input_handler);
             SystemBuilder::<()>::new("AcquireFramebuffer")
@@ -383,6 +386,7 @@ fn main() {
                 .read_resource::<CameraMatrices>()
                 .write_resource::<DepthPassData>()
                 .write_resource::<ImageIndex>()
+                .read_resource::<Resized>()
                 .build_thread_local(move |_commands, _world, resources, _queries| {
                     let (
                         ref renderer,
@@ -397,16 +401,10 @@ fn main() {
                         ref camera_matrices,
                         ref mut depth_pass_data,
                         ref mut image_index,
+                        ref resized,
                     ) = resources;
-                    let window_resized = input_handler.borrow_mut().exec(
-                        &renderer.instance.window,
-                        &mut gui.borrow_mut().imgui,
-                        &mut *input_state,
-                        &mut *camera,
-                        &mut *runtime_config,
-                    );
 
-                    if window_resized {
+                    if resized.0 {
                         unsafe {
                             renderer.device.device_wait_idle().unwrap();
                         }
@@ -466,19 +464,7 @@ fn main() {
                     }
                 }),
         )
-        .add_system(
-            SystemBuilder::<()>::new("FlyCamera")
-                .read_resource::<InputState>()
-                .read_resource::<FrameTiming>()
-                .read_resource::<RuntimeConfiguration>()
-                .write_resource::<Camera>()
-                .write_resource::<FlyCamera>()
-                .build(move |_commands, _world, resources, _queries| {
-                    let (input, frame_timing, runtime_config, ref mut camera, ref mut fly_camera) =
-                        resources;
-                    fly_camera.exec(input, frame_timing, runtime_config, &mut *camera);
-                }),
-        )
+        .add_system(CameraController::exec_system())
         .add_system(
             SystemBuilder::<()>::new("ProjectCamera")
                 .read_resource::<Swapchain>()

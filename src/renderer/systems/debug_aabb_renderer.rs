@@ -64,10 +64,7 @@ impl DebugAABBPassData {
                         .rasterization_samples(vk::SampleCountFlags::TYPE_1)
                         .build(),
                 )
-                .depth_stencil_state(
-                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .build(),
-                )
+                .depth_stencil_state(&vk::PipelineDepthStencilStateCreateInfo::builder().build())
                 .color_blend_state(
                     &vk::PipelineColorBlendStateCreateInfo::builder()
                         .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
