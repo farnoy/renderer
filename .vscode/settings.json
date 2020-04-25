@@ -6,5 +6,9 @@
   "rust.features": [
     "validation"
   ],
-  "rust-client.channel": "nightly"
+  "rust-client.channel": "nightly",
+  "rust-analyzer.cargo.features": [
+    "validation"
+  ],
+  "rust-analyzer.cargo.allFeatures": false
 }
