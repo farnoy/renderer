@@ -140,100 +140,94 @@ impl ConsolidateMeshBuffers {
                 }
 
                 let mut needs_transfer = false;
-                let command_buffer = graphics_command_pool.0.record_one_time(
-                    "consolidate mesh buffers cb",
-                    |command_buffer| {
-                        for (mesh,) in query.iter(&world) {
-                            let ConsolidatedMeshBuffers {
-                                ref mut next_vertex_offset,
-                                ref mut next_index_offset,
-                                ref position_buffer,
-                                ref normal_buffer,
-                                ref uv_buffer,
-                                ref index_buffer,
-                                ref mut vertex_offsets,
-                                ref mut index_offsets,
-                                ..
-                            } = **consolidated_mesh_buffers;
+                let command_buffer = graphics_command_pool
+                    .0
+                    .record_one_time("consolidate mesh buffers cb");
+                for (mesh,) in query.iter(&world) {
+                    let ConsolidatedMeshBuffers {
+                        ref mut next_vertex_offset,
+                        ref mut next_index_offset,
+                        ref position_buffer,
+                        ref normal_buffer,
+                        ref uv_buffer,
+                        ref index_buffer,
+                        ref mut vertex_offsets,
+                        ref mut index_offsets,
+                        ..
+                    } = **consolidated_mesh_buffers;
 
-                            if let Entry::Vacant(v) =
-                                vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw())
-                            {
-                                v.insert(*next_vertex_offset);
-                                let size_3 =
-                                    mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
-                                let size_2 =
-                                    mesh.vertex_len * size_of::<[f32; 2]>() as vk::DeviceSize;
-                                let offset_3 =
-                                    *next_vertex_offset * size_of::<[f32; 3]>() as vk::DeviceSize;
-                                let offset_2 =
-                                    *next_vertex_offset * size_of::<[f32; 2]>() as vk::DeviceSize;
+                    if let Entry::Vacant(v) =
+                        vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw())
+                    {
+                        v.insert(*next_vertex_offset);
+                        let size_3 = mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
+                        let size_2 = mesh.vertex_len * size_of::<[f32; 2]>() as vk::DeviceSize;
+                        let offset_3 =
+                            *next_vertex_offset * size_of::<[f32; 3]>() as vk::DeviceSize;
+                        let offset_2 =
+                            *next_vertex_offset * size_of::<[f32; 2]>() as vk::DeviceSize;
 
-                                unsafe {
-                                    // vertex
-                                    renderer.device.cmd_copy_buffer(
-                                        command_buffer,
-                                        mesh.vertex_buffer.handle,
-                                        position_buffer.handle,
-                                        &[vk::BufferCopy::builder()
-                                            .size(size_3)
-                                            .dst_offset(offset_3)
-                                            .build()],
-                                    );
-                                    // normal
-                                    renderer.device.cmd_copy_buffer(
-                                        command_buffer,
-                                        mesh.normal_buffer.handle,
-                                        normal_buffer.handle,
-                                        &[vk::BufferCopy::builder()
-                                            .size(size_3)
-                                            .dst_offset(offset_3)
-                                            .build()],
-                                    );
-                                    // uv
-                                    renderer.device.cmd_copy_buffer(
-                                        command_buffer,
-                                        mesh.uv_buffer.handle,
-                                        uv_buffer.handle,
-                                        &[vk::BufferCopy::builder()
-                                            .size(size_2)
-                                            .dst_offset(offset_2)
-                                            .build()],
-                                    );
-                                }
-                                *next_vertex_offset += mesh.vertex_len;
-                                needs_transfer = true;
-                            }
-
-                            for (lod_index_buffer, index_len) in mesh.index_buffers.iter() {
-                                if let Entry::Vacant(v) =
-                                    index_offsets.entry(lod_index_buffer.handle.as_raw())
-                                {
-                                    v.insert(*next_index_offset);
-
-                                    unsafe {
-                                        renderer.device.cmd_copy_buffer(
-                                            command_buffer,
-                                            lod_index_buffer.handle,
-                                            index_buffer.handle,
-                                            &[vk::BufferCopy::builder()
-                                                .size(
-                                                    index_len * size_of::<u32>() as vk::DeviceSize,
-                                                )
-                                                .dst_offset(
-                                                    *next_index_offset
-                                                        * size_of::<u32>() as vk::DeviceSize,
-                                                )
-                                                .build()],
-                                        );
-                                    }
-                                    *next_index_offset += index_len;
-                                    needs_transfer = true;
-                                }
-                            }
+                        unsafe {
+                            // vertex
+                            renderer.device.cmd_copy_buffer(
+                                *command_buffer,
+                                mesh.vertex_buffer.handle,
+                                position_buffer.handle,
+                                &[vk::BufferCopy::builder()
+                                    .size(size_3)
+                                    .dst_offset(offset_3)
+                                    .build()],
+                            );
+                            // normal
+                            renderer.device.cmd_copy_buffer(
+                                *command_buffer,
+                                mesh.normal_buffer.handle,
+                                normal_buffer.handle,
+                                &[vk::BufferCopy::builder()
+                                    .size(size_3)
+                                    .dst_offset(offset_3)
+                                    .build()],
+                            );
+                            // uv
+                            renderer.device.cmd_copy_buffer(
+                                *command_buffer,
+                                mesh.uv_buffer.handle,
+                                uv_buffer.handle,
+                                &[vk::BufferCopy::builder()
+                                    .size(size_2)
+                                    .dst_offset(offset_2)
+                                    .build()],
+                            );
                         }
-                    },
-                );
+                        *next_vertex_offset += mesh.vertex_len;
+                        needs_transfer = true;
+                    }
+
+                    for (lod_index_buffer, index_len) in mesh.index_buffers.iter() {
+                        if let Entry::Vacant(v) =
+                            index_offsets.entry(lod_index_buffer.handle.as_raw())
+                        {
+                            v.insert(*next_index_offset);
+
+                            unsafe {
+                                renderer.device.cmd_copy_buffer(
+                                    *command_buffer,
+                                    lod_index_buffer.handle,
+                                    index_buffer.handle,
+                                    &[vk::BufferCopy::builder()
+                                        .size(index_len * size_of::<u32>() as vk::DeviceSize)
+                                        .dst_offset(
+                                            *next_index_offset * size_of::<u32>() as vk::DeviceSize,
+                                        )
+                                        .build()],
+                                );
+                            }
+                            *next_index_offset += index_len;
+                            needs_transfer = true;
+                        }
+                    }
+                }
+                let command_buffer = command_buffer.end();
 
                 if needs_transfer {
                     let command_buffers = &[*command_buffer];

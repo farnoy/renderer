@@ -284,132 +284,123 @@ pub fn load(
             (index_buffer, index_upload_buffer, index_len)
         })
         .collect::<Vec<_>>();
-    let upload = graphics_command_pool
+    let command_buffer = graphics_command_pool
         .0
-        .record_one_time("upload gltf mesh cb", {
-            let vertex_buffer = &vertex_buffer;
-            let vertex_upload_buffer = &vertex_upload_buffer;
-            let normal_buffer = &normal_buffer;
-            let normal_upload_buffer = &normal_upload_buffer;
-            let uv_buffer = &uv_buffer;
-            let uv_upload_buffer = &uv_upload_buffer;
-            let index_buffers = &index_buffers;
-            let base_color_upload_buffer = &base_color_upload_buffer;
-            let base_color_vkimage = &base_color_vkimage;
-            let device = &renderer.device;
-            move |command_buffer| unsafe {
-                device.device.cmd_copy_buffer(
-                    command_buffer,
-                    vertex_upload_buffer.handle,
-                    vertex_buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: vertex_size,
-                    }],
-                );
-                device.device.cmd_copy_buffer(
-                    command_buffer,
-                    normal_upload_buffer.handle,
-                    normal_buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: normals_size,
-                    }],
-                );
-                device.device.cmd_copy_buffer(
-                    command_buffer,
-                    uv_upload_buffer.handle,
-                    uv_buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: uvs_size,
-                    }],
-                );
-                for (index_buffer, index_upload_buffer, index_len) in index_buffers.iter() {
-                    let index_size = size_of::<u32>() as u64 * index_len;
-                    device.device.cmd_copy_buffer(
-                        command_buffer,
-                        index_upload_buffer.handle,
-                        index_buffer.handle,
-                        &[vk::BufferCopy {
-                            src_offset: 0,
-                            dst_offset: 0,
-                            size: index_size,
-                        }],
-                    );
-                }
-                device.device.cmd_pipeline_barrier(
-                    command_buffer,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier::builder()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                        .old_layout(vk::ImageLayout::PREINITIALIZED)
-                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .image(base_color_vkimage.handle)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        })
-                        .build()],
-                );
-                device.device.cmd_copy_buffer_to_image(
-                    command_buffer,
-                    base_color_upload_buffer.handle,
-                    base_color_vkimage.handle,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[vk::BufferImageCopy::builder()
-                        .image_extent(vk::Extent3D {
-                            height: base_color_image.height(),
-                            width: base_color_image.width(),
-                            depth: 1,
-                        })
-                        .image_subresource(vk::ImageSubresourceLayers {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            mip_level: 0,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        })
-                        .build()],
-                );
-                device.device.cmd_pipeline_barrier(
-                    command_buffer,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier::builder()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .image(base_color_vkimage.handle)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        })
-                        .build()],
-                );
-            }
-        });
+        .record_one_time("upload gltf mesh cb");
+    unsafe {
+        let device = &renderer.device;
+        device.device.cmd_copy_buffer(
+            *command_buffer,
+            vertex_upload_buffer.handle,
+            vertex_buffer.handle,
+            &[vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size: vertex_size,
+            }],
+        );
+        device.device.cmd_copy_buffer(
+            *command_buffer,
+            normal_upload_buffer.handle,
+            normal_buffer.handle,
+            &[vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size: normals_size,
+            }],
+        );
+        device.device.cmd_copy_buffer(
+            *command_buffer,
+            uv_upload_buffer.handle,
+            uv_buffer.handle,
+            &[vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size: uvs_size,
+            }],
+        );
+        for (index_buffer, index_upload_buffer, index_len) in index_buffers.iter() {
+            let index_size = size_of::<u32>() as u64 * index_len;
+            device.device.cmd_copy_buffer(
+                *command_buffer,
+                index_upload_buffer.handle,
+                index_buffer.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: index_size,
+                }],
+            );
+        }
+        device.device.cmd_pipeline_barrier(
+            *command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::PREINITIALIZED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(base_color_vkimage.handle)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build()],
+        );
+        device.device.cmd_copy_buffer_to_image(
+            *command_buffer,
+            base_color_upload_buffer.handle,
+            base_color_vkimage.handle,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[vk::BufferImageCopy::builder()
+                .image_extent(vk::Extent3D {
+                    height: base_color_image.height(),
+                    width: base_color_image.width(),
+                    depth: 1,
+                })
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build()],
+        );
+        device.device.cmd_pipeline_barrier(
+            *command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(base_color_vkimage.handle)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build()],
+        );
+    }
+    let upload = command_buffer.end();
     let mut graphics_queue = renderer.device.graphics_queue.lock();
     let upload_fence = upload.submit_once(&mut *graphics_queue, "upload gltf mesh commands");
     unsafe {

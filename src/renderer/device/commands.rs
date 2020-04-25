@@ -16,7 +16,7 @@ pub struct CommandBuffer {
 
 pub struct RecordingCommandBuffer<'a> {
     handle: vk::CommandBuffer,
-    pool: Arc<CommandPool>,
+    pub(super) pool: Arc<CommandPool>,
     #[allow(unused)]
     pool_lock: MutexGuard<'a, vk::CommandPool>,
 }
@@ -60,39 +60,7 @@ impl CommandPool {
         }
     }
 
-    pub fn record_one_time<F: FnOnce(vk::CommandBuffer)>(
-        self: &Arc<CommandPool>,
-        name: &str,
-        f: F,
-    ) -> CommandBuffer {
-        let mut pool_lock = self.handle.lock();
-        let command_buffer = self.allocate_command_buffers(1, &mut *pool_lock).remove(0);
-        self.device.set_object_name(command_buffer, name);
-
-        let begin_info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-        unsafe {
-            self.device
-                .begin_command_buffer(command_buffer, &begin_info)
-                .unwrap();
-        }
-
-        f(command_buffer);
-
-        unsafe {
-            self.device.end_command_buffer(command_buffer).unwrap();
-        }
-
-        drop(pool_lock);
-
-        CommandBuffer {
-            pool: Arc::clone(self),
-            handle: command_buffer,
-        }
-    }
-
-    pub fn record_one_time2<'a>(
+    pub fn record_one_time<'a>(
         self: &'a Arc<CommandPool>,
         name: &str,
     ) -> RecordingCommandBuffer<'a> {

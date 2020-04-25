@@ -201,92 +201,89 @@ impl CullPass {
 
                 let cull_cb = renderer
                     .compute_command_pool
-                    .record_one_time2("cull pass cb");
+                    .record_one_time("cull pass cb");
                 unsafe {
-                    renderer.device.debug_marker_around(
-                        *cull_cb,
+                    let _debug_marker = renderer.device.debug_marker_around2(
+                        &cull_cb,
                         "cull pass",
                         [0.0, 1.0, 0.0, 1.0],
-                        || {
-                            // Clear the command buffer before using
-                            {
-                                use crate::renderer::shaders::cull_set;
-                                let commands_buffer =
-                                    cull_pass_data.culled_commands_buffer.current(image_index.0);
-                                renderer.device.cmd_fill_buffer(
-                                    *cull_cb,
-                                    commands_buffer.handle,
-                                    0,
-                                    cull_set::bindings::indirect_commands::SIZE,
-                                    0,
-                                );
-                                renderer.device.cmd_pipeline_barrier(
-                                    *cull_cb,
-                                    vk::PipelineStageFlags::TRANSFER,
-                                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                                    Default::default(),
-                                    &[],
-                                    &[vk::BufferMemoryBarrier::builder()
-                                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                                        .buffer(commands_buffer.handle)
-                                        .size(vk::WHOLE_SIZE)
-                                        .build()],
-                                    &[],
-                                );
-                            }
-                            renderer.device.cmd_bind_pipeline(
-                                *cull_cb,
-                                vk::PipelineBindPoint::COMPUTE,
-                                cull_pass_data.cull_pipeline.handle,
-                            );
-                            cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
-                                &renderer.device,
-                                *cull_cb,
-                                &model_data.model_set.current(image_index.0),
-                                &camera_matrices.set.current(image_index.0),
-                                &cull_pass_data.cull_set.current(image_index.0),
-                            );
-                            for (draw_index, mesh_position, mesh) in query.iter(&world) {
-                                let vertex_offset = consolidate_mesh_buffers
-                                    .vertex_offsets
-                                    .get(&mesh.vertex_buffer.handle.as_raw())
-                                    .expect("Vertex buffer not consolidated");
-                                let (index_buffer, index_len) =
-                                    pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
-                                let index_offset = consolidate_mesh_buffers
-                                    .index_offsets
-                                    .get(&index_buffer.handle.as_raw())
-                                    .expect("Index buffer not consolidated");
-
-                                let push_constants =
-                                    super::super::shaders::GenerateWorkPushConstants {
-                                        gltf_index: draw_index.0,
-                                        index_count: index_len.to_u32().unwrap(),
-                                        index_offset: index_offset.to_u32().unwrap(),
-                                        index_offset_in_output,
-                                        vertex_offset: vertex_offset.to_i32().unwrap(),
-                                    };
-
-                                index_offset_in_output += index_len.to_i32().unwrap();
-
-                                cull_pass_data.cull_pipeline_layout.push_constants(
-                                    &renderer.device,
-                                    *cull_cb,
-                                    &push_constants,
-                                );
-                                let index_len = *index_len as u32;
-                                let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
-                                let workgroup_count = index_len / 3 / workgroup_size
-                                    + min(1, index_len / 3 % workgroup_size);
-                                renderer
-                                    .device
-                                    .cmd_dispatch(*cull_cb, workgroup_count, 1, 1);
-                            }
-                        },
                     );
+                    // Clear the command buffer before using
+                    {
+                        use crate::renderer::shaders::cull_set;
+                        let commands_buffer =
+                            cull_pass_data.culled_commands_buffer.current(image_index.0);
+                        renderer.device.cmd_fill_buffer(
+                            *cull_cb,
+                            commands_buffer.handle,
+                            0,
+                            cull_set::bindings::indirect_commands::SIZE,
+                            0,
+                        );
+                        renderer.device.cmd_pipeline_barrier(
+                            *cull_cb,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            Default::default(),
+                            &[],
+                            &[vk::BufferMemoryBarrier::builder()
+                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                                .buffer(commands_buffer.handle)
+                                .size(vk::WHOLE_SIZE)
+                                .build()],
+                            &[],
+                        );
+                    }
+                    renderer.device.cmd_bind_pipeline(
+                        *cull_cb,
+                        vk::PipelineBindPoint::COMPUTE,
+                        cull_pass_data.cull_pipeline.handle,
+                    );
+                    cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
+                        &renderer.device,
+                        *cull_cb,
+                        &model_data.model_set.current(image_index.0),
+                        &camera_matrices.set.current(image_index.0),
+                        &cull_pass_data.cull_set.current(image_index.0),
+                    );
+                    for (draw_index, mesh_position, mesh) in query.iter(&world) {
+                        let vertex_offset = consolidate_mesh_buffers
+                            .vertex_offsets
+                            .get(&mesh.vertex_buffer.handle.as_raw())
+                            .expect("Vertex buffer not consolidated");
+                        let (index_buffer, index_len) =
+                            pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+                        let index_offset = consolidate_mesh_buffers
+                            .index_offsets
+                            .get(&index_buffer.handle.as_raw())
+                            .expect("Index buffer not consolidated");
+
+                        let push_constants = super::super::shaders::GenerateWorkPushConstants {
+                            gltf_index: draw_index.0,
+                            index_count: index_len.to_u32().unwrap(),
+                            index_offset: index_offset.to_u32().unwrap(),
+                            index_offset_in_output,
+                            vertex_offset: vertex_offset.to_i32().unwrap(),
+                        };
+
+                        index_offset_in_output += index_len.to_i32().unwrap();
+
+                        cull_pass_data.cull_pipeline_layout.push_constants(
+                            &renderer.device,
+                            *cull_cb,
+                            &push_constants,
+                        );
+                        let index_len = *index_len as u32;
+                        let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
+                        let workgroup_count =
+                            index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
+                        renderer
+                            .device
+                            .cmd_dispatch(*cull_cb, workgroup_count, 1, 1);
+                    }
                 }
                 let cull_cb = cull_cb.end();
                 let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];

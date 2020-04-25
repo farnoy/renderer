@@ -40,6 +40,11 @@ pub enum QueueType {
     Compute,
 }
 
+pub struct DebugMarkerGuard<'a> {
+    #[allow(unused)]
+    command_buffer: &'a RecordingCommandBuffer<'a>,
+}
+
 impl Device {
     pub fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
         let Instance { ref entry, .. } = **instance;
@@ -298,43 +303,36 @@ impl Device {
     pub fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
 
     #[cfg(feature = "validation")]
-    pub fn debug_marker_around<F: FnOnce()>(
+    pub fn debug_marker_around2<'a>(
         &self,
-        command_buffer: vk::CommandBuffer,
+        command_buffer: &'a RecordingCommandBuffer,
         name: &str,
         color: [f32; 4],
-        f: F,
-    ) {
+    ) -> DebugMarkerGuard<'a> {
         unsafe {
             use std::ffi::CString;
 
             let name = CString::new(name).unwrap();
             {
                 self.instance.debug_utils().cmd_begin_debug_utils_label(
-                    command_buffer,
+                    **command_buffer,
                     &vk::DebugUtilsLabelEXT::builder()
                         .label_name(&name)
                         .color(color),
                 );
             }
-            f();
-            {
-                self.instance
-                    .debug_utils()
-                    .cmd_end_debug_utils_label(command_buffer);
-            }
-        };
+            DebugMarkerGuard { command_buffer }
+        }
     }
 
     #[cfg(not(feature = "validation"))]
-    pub fn debug_marker_around<R, F: FnOnce() -> R>(
+    pub fn debug_marker_around2<'a>(
         &self,
-        _command_buffer: vk::CommandBuffer,
+        command_buffer: &'a RecordingCommandBuffer,
         _name: &str,
         _color: [f32; 4],
-        f: F,
-    ) -> R {
-        f()
+    ) -> DebugMarkerGuard<'a> {
+        DebugMarkerGuard { command_buffer }
     }
 }
 
@@ -352,6 +350,20 @@ impl Drop for Device {
             self.device.device_wait_idle().unwrap();
             alloc::destroy(self.allocator);
             self.device.destroy_device(None);
+        }
+    }
+}
+
+impl<'a> Drop for DebugMarkerGuard<'a> {
+    fn drop(&mut self) {
+        #[cfg(feature = "validation")]
+        unsafe {
+            self.command_buffer
+                .pool
+                .device
+                .instance
+                .debug_utils()
+                .cmd_end_debug_utils_label(**self.command_buffer);
         }
     }
 }
