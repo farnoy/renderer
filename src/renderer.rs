@@ -1161,7 +1161,7 @@ impl Renderer {
                 let signal_semaphore_values = &[renderer.frame_number * 16 + 15]; // next frame
                 let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(wait_semaphore_values)
-                    .signal_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
+                    .signal_semaphore_values(signal_semaphore_values)
                     .build();
                 let submit = vk::SubmitInfo::builder()
                     .wait_semaphores(wait_semaphores)

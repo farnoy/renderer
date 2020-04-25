@@ -371,13 +371,8 @@ fn main() {
             InputHandler::exec_system(input_handler, gui)
         })
         .add_thread_local({
-            let gui = Rc::clone(&gui);
-            let input_handler = Rc::clone(&input_handler);
             SystemBuilder::<()>::new("AcquireFramebuffer")
                 .read_resource::<RenderFrame>()
-                .write_resource::<InputState>()
-                .write_resource::<Camera>()
-                .write_resource::<RuntimeConfiguration>()
                 .write_resource::<Swapchain>()
                 .write_resource::<MainAttachments>()
                 .write_resource::<MainFramebuffer>()
@@ -390,9 +385,6 @@ fn main() {
                 .build_thread_local(move |_commands, _world, resources, _queries| {
                     let (
                         ref renderer,
-                        ref mut input_state,
-                        ref mut camera,
-                        ref mut runtime_config,
                         ref mut swapchain,
                         ref mut main_attachments,
                         ref mut main_framebuffer,
@@ -490,6 +482,7 @@ fn main() {
         .add_system(CullPass::exec_system())
         .add_system(PrepareShadowMaps::exec_system())
         .add_system(DepthOnlyPass::exec_system())
+        .flush()
         .add_thread_local(Renderer::exec_system(
             Rc::clone(&gui),
             Rc::clone(&input_handler),

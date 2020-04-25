@@ -10,10 +10,6 @@ pub mod resources {
 
     use super::super::renderer::{GltfMesh, Image};
     use std::sync::Arc;
-    use winit::{
-        self,
-        event::{MouseButton, VirtualKeyCode},
-    };
 
     pub struct MeshLibrary {
         pub projectile: GltfMesh,
@@ -29,23 +25,13 @@ pub mod systems {
         resources::{Camera, InputActions, MeshLibrary},
     };
     use imgui::im_str;
-    use imgui_winit_support::WinitPlatform;
     #[cfg(feature = "microprofile")]
     use microprofile::scope;
     use na::RealField;
-    use parking_lot::Mutex;
-    use std::{sync::Arc, cell::RefCell, rc::Rc, time::Instant};
-    use winit::{
-        self,
-        dpi::PhysicalSize,
-        event::{
-            ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode,
-            WindowEvent,
-        },
-        platform::desktop::EventLoopExtDesktop,
-    };
+    use std::{sync::Arc, time::Instant};
+    use winit::{self, event::MouseButton};
 
-    use crate::renderer::{forward_vector, right_vector, up_vector, GltfMesh, Swapchain};
+    use crate::renderer::{forward_vector, up_vector, GltfMesh, Swapchain};
 
     pub struct ModelMatrixCalculation;
 
@@ -269,35 +255,6 @@ pub mod systems {
             imgui.style_mut().frame_rounding = 4.0;
 
             Gui { imgui }
-        }
-
-        pub fn exec_system(
-            gui: Rc<RefCell<Self>>,
-            input_handler: Rc<RefCell<InputHandler>>,
-            mut gui_render: GuiRender,
-        ) -> Box<(dyn legion::systems::schedule::Runnable + 'static)> {
-            use legion::{prelude::*, query::IntoQuery};
-            SystemBuilder::<()>::new("Gui")
-                .read_resource::<RenderFrame>()
-                .read_resource::<ImageIndex>()
-                .write_resource::<GraphicsCommandPool>()
-                .read_resource::<ModelData>()
-                .write_resource::<RuntimeConfiguration>()
-                .read_resource::<CameraMatrices>()
-                .read_resource::<Swapchain>()
-                .read_resource::<ConsolidatedMeshBuffers>()
-                .write_resource::<PresentData>()
-                .write_resource::<DebugAABBPassData>()
-                .read_resource::<ShadowMappingData>()
-                .read_resource::<BaseColorDescriptorSet>()
-                .read_resource::<CullPassData>()
-                .read_resource::<Camera>()
-                .read_resource::<MainFramebuffer>()
-                .read_resource::<GltfPassData>()
-                .with_query(<Read<AABB>>::query())
-                .build_thread_local(move |_commands, world, resources, query| {
-
-                })
         }
 
         pub fn update<'a>(

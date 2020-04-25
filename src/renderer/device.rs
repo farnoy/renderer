@@ -24,6 +24,7 @@ type AshDevice = ash::Device;
 
 pub struct Device {
     pub(super) device: AshDevice,
+    #[allow(unused)]
     instance: Arc<Instance>,
     pub(super) physical_device: vk::PhysicalDevice,
     allocator: alloc::VmaAllocator,

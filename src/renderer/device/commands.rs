@@ -1,5 +1,5 @@
 use ash::{version::DeviceV1_0, vk};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use std::{ops::Deref, sync::Arc};
 
 use super::{sync::Fence, Device};
@@ -12,6 +12,13 @@ pub struct CommandPool {
 pub struct CommandBuffer {
     handle: vk::CommandBuffer,
     pool: Arc<CommandPool>,
+}
+
+pub struct RecordingCommandBuffer<'a> {
+    handle: vk::CommandBuffer,
+    pool: Arc<CommandPool>,
+    #[allow(unused)]
+    pool_lock: MutexGuard<'a, vk::CommandPool>,
 }
 
 impl CommandPool {
@@ -84,6 +91,30 @@ impl CommandPool {
             handle: command_buffer,
         }
     }
+
+    pub fn record_one_time2<'a>(
+        self: &'a Arc<CommandPool>,
+        name: &str,
+    ) -> RecordingCommandBuffer<'a> {
+        let mut pool_lock = self.handle.lock();
+        let command_buffer = self.allocate_command_buffers(1, &mut *pool_lock).remove(0);
+        self.device.set_object_name(command_buffer, name);
+
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)
+                .unwrap();
+        }
+
+        RecordingCommandBuffer {
+            pool: Arc::clone(self),
+            pool_lock,
+            handle: command_buffer,
+        }
+    }
 }
 
 impl CommandBuffer {
@@ -106,6 +137,19 @@ impl CommandBuffer {
         }
 
         submit_fence
+    }
+}
+
+impl RecordingCommandBuffer<'_> {
+    pub fn end(self) -> CommandBuffer {
+        unsafe {
+            self.pool.device.end_command_buffer(self.handle).unwrap();
+        }
+
+        CommandBuffer {
+            pool: Arc::clone(&self.pool),
+            handle: self.handle,
+        }
     }
 }
 
@@ -134,5 +178,13 @@ impl Drop for CommandBuffer {
                 .device
                 .free_command_buffers(*pool_lock, &[self.handle]);
         }
+    }
+}
+
+impl Deref for RecordingCommandBuffer<'_> {
+    type Target = vk::CommandBuffer;
+
+    fn deref(&self) -> &vk::CommandBuffer {
+        &self.handle
     }
 }

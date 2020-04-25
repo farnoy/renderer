@@ -5,7 +5,7 @@ build = "build.rs"
 edition = "2018"
 
 [dependencies]
-ash = { git = "https://github.com/MaikKlein/ash" }
+ash = "0.30.0"
 parking_lot = "0.10.0"
 gltf = "0.15.0"
 hashbrown = "0.7.0"

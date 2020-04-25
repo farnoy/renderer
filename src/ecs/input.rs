@@ -1,4 +1,3 @@
-use super::*;
 use crate::{
     ecs::{
         resources::Camera,
@@ -9,13 +8,12 @@ use crate::{
 use std::{cell::RefCell, rc::Rc};
 
 use hashbrown::HashSet;
-use imgui::im_str;
 use imgui_winit_support::WinitPlatform;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 use winit::{
     self,
     dpi::PhysicalSize,

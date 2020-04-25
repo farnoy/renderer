@@ -2,7 +2,7 @@ use crate::{
     ecs::{components::AABB, resources::Camera},
     renderer::{
         alloc,
-        device::{Buffer, CommandBuffer, DoubleBuffered, Event, Fence},
+        device::{Buffer, CommandBuffer, DoubleBuffered, Event},
         helpers::{self, pick_lod, Pipeline},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         CameraMatrices, DrawIndex, GltfMesh, MainDescriptorPool, ModelData, Position, RenderFrame,
@@ -17,7 +17,7 @@ use legion::prelude::*;
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
-use std::{cmp::min, path::PathBuf, sync::Arc, u64};
+use std::{cmp::min, path::PathBuf, sync::Arc};
 
 // Cull geometry in compute pass
 pub struct CullPass;
@@ -35,7 +35,6 @@ pub struct CullPassData {
     pub cull_pipeline: Pipeline,
     pub cull_set_layout: super::super::shaders::cull_set::DescriptorSetLayout,
     pub cull_set: DoubleBuffered<super::super::shaders::cull_set::DescriptorSet>,
-    pub cull_complete_fence: DoubleBuffered<Fence>,
 }
 
 // Internal storage for cleanup purposes
@@ -142,14 +141,6 @@ impl CullPassData {
             s
         });
 
-        let cull_complete_fence = renderer.new_buffered(|ix| {
-            let f = renderer.device.new_fence();
-            renderer
-                .device
-                .set_object_name(f.handle, &format!("Cull complete fence - {}", ix));
-            f
-        });
-
         CullPassData {
             culled_commands_buffer,
             culled_index_buffer,
@@ -157,7 +148,6 @@ impl CullPassData {
             cull_pipeline_layout,
             cull_set_layout,
             cull_set,
-            cull_complete_fence,
         }
     }
 }
@@ -192,28 +182,10 @@ impl CullPass {
                     .current(image_index.0)
                     .is_some()
                 {
-                    unsafe {
-                        renderer
-                            .device
-                            .wait_for_fences(
-                                &[cull_pass_data
-                                    .cull_complete_fence
-                                    .current(image_index.0)
-                                    .handle],
-                                true,
-                                u64::MAX,
-                            )
-                            .expect("Wait for fence failed.");
-                    }
-                }
-                unsafe {
                     renderer
-                        .device
-                        .reset_fences(&[cull_pass_data
-                            .cull_complete_fence
-                            .current(image_index.0)
-                            .handle])
-                        .expect("failed to reset cull complete fence");
+                        .compute_timeline_semaphore
+                        .wait((renderer.frame_number - 2) * 16 + 16)
+                        .unwrap();
                 }
 
                 cull_pass_data
@@ -227,102 +199,96 @@ impl CullPass {
 
                 let mut index_offset_in_output = 0i32;
 
-                let cull_cb = renderer.compute_command_pool.record_one_time(
-                    "cull pass cb",
-                    |command_buffer| unsafe {
-                        renderer.device.debug_marker_around(
-                            command_buffer,
-                            "cull pass",
-                            [0.0, 1.0, 0.0, 1.0],
-                            || {
-                                // Clear the command buffer before using
-                                {
-                                    let commands_buffer = cull_pass_data
-                                        .culled_commands_buffer
-                                        .current(image_index.0);
-                                    renderer.device.cmd_fill_buffer(
-                                command_buffer,
-                                commands_buffer.handle,
-                                0,
-                                super::super::shaders::cull_set::bindings::indirect_commands::SIZE,
-                                0,
+                let cull_cb = renderer
+                    .compute_command_pool
+                    .record_one_time2("cull pass cb");
+                unsafe {
+                    renderer.device.debug_marker_around(
+                        *cull_cb,
+                        "cull pass",
+                        [0.0, 1.0, 0.0, 1.0],
+                        || {
+                            // Clear the command buffer before using
+                            {
+                                use crate::renderer::shaders::cull_set;
+                                let commands_buffer =
+                                    cull_pass_data.culled_commands_buffer.current(image_index.0);
+                                renderer.device.cmd_fill_buffer(
+                                    *cull_cb,
+                                    commands_buffer.handle,
+                                    0,
+                                    cull_set::bindings::indirect_commands::SIZE,
+                                    0,
+                                );
+                                renderer.device.cmd_pipeline_barrier(
+                                    *cull_cb,
+                                    vk::PipelineStageFlags::TRANSFER,
+                                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                                    Default::default(),
+                                    &[],
+                                    &[vk::BufferMemoryBarrier::builder()
+                                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                                        .buffer(commands_buffer.handle)
+                                        .size(vk::WHOLE_SIZE)
+                                        .build()],
+                                    &[],
+                                );
+                            }
+                            renderer.device.cmd_bind_pipeline(
+                                *cull_cb,
+                                vk::PipelineBindPoint::COMPUTE,
+                                cull_pass_data.cull_pipeline.handle,
                             );
-                                    renderer.device.cmd_pipeline_barrier(
-                                        command_buffer,
-                                        vk::PipelineStageFlags::TRANSFER,
-                                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                                        Default::default(),
-                                        &[],
-                                        &[vk::BufferMemoryBarrier::builder()
-                                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                                            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                                            .buffer(commands_buffer.handle)
-                                            .size(vk::WHOLE_SIZE)
-                                            .build()],
-                                        &[],
-                                    );
-                                }
-                                renderer.device.cmd_bind_pipeline(
-                                    command_buffer,
-                                    vk::PipelineBindPoint::COMPUTE,
-                                    cull_pass_data.cull_pipeline.handle,
-                                );
-                                cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
+                            cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
+                                &renderer.device,
+                                *cull_cb,
+                                &model_data.model_set.current(image_index.0),
+                                &camera_matrices.set.current(image_index.0),
+                                &cull_pass_data.cull_set.current(image_index.0),
+                            );
+                            for (draw_index, mesh_position, mesh) in query.iter(&world) {
+                                let vertex_offset = consolidate_mesh_buffers
+                                    .vertex_offsets
+                                    .get(&mesh.vertex_buffer.handle.as_raw())
+                                    .expect("Vertex buffer not consolidated");
+                                let (index_buffer, index_len) =
+                                    pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+                                let index_offset = consolidate_mesh_buffers
+                                    .index_offsets
+                                    .get(&index_buffer.handle.as_raw())
+                                    .expect("Index buffer not consolidated");
+
+                                let push_constants =
+                                    super::super::shaders::GenerateWorkPushConstants {
+                                        gltf_index: draw_index.0,
+                                        index_count: index_len.to_u32().unwrap(),
+                                        index_offset: index_offset.to_u32().unwrap(),
+                                        index_offset_in_output,
+                                        vertex_offset: vertex_offset.to_i32().unwrap(),
+                                    };
+
+                                index_offset_in_output += index_len.to_i32().unwrap();
+
+                                cull_pass_data.cull_pipeline_layout.push_constants(
                                     &renderer.device,
-                                    command_buffer,
-                                    &model_data.model_set.current(image_index.0),
-                                    &camera_matrices.set.current(image_index.0),
-                                    &cull_pass_data.cull_set.current(image_index.0),
+                                    *cull_cb,
+                                    &push_constants,
                                 );
-                                for (draw_index, mesh_position, mesh) in query.iter(&world) {
-                                    let vertex_offset = consolidate_mesh_buffers
-                                        .vertex_offsets
-                                        .get(&mesh.vertex_buffer.handle.as_raw())
-                                        .expect("Vertex buffer not consolidated");
-                                    let (index_buffer, index_len) = pick_lod(
-                                        &mesh.index_buffers,
-                                        camera.position,
-                                        mesh_position.0,
-                                    );
-                                    let index_offset = consolidate_mesh_buffers
-                                        .index_offsets
-                                        .get(&index_buffer.handle.as_raw())
-                                        .expect("Index buffer not consolidated");
-
-                                    let push_constants =
-                                        super::super::shaders::GenerateWorkPushConstants {
-                                            gltf_index: draw_index.0,
-                                            index_count: index_len.to_u32().unwrap(),
-                                            index_offset: index_offset.to_u32().unwrap(),
-                                            index_offset_in_output,
-                                            vertex_offset: vertex_offset.to_i32().unwrap(),
-                                        };
-
-                                    index_offset_in_output += index_len.to_i32().unwrap();
-
-                                    cull_pass_data.cull_pipeline_layout.push_constants(
-                                        &renderer.device,
-                                        command_buffer,
-                                        &push_constants,
-                                    );
-                                    let index_len = *index_len as u32;
-                                    let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
-                                    let workgroup_count = index_len / 3 / workgroup_size
-                                        + min(1, index_len / 3 % workgroup_size);
-                                    renderer.device.cmd_dispatch(
-                                        command_buffer,
-                                        workgroup_count,
-                                        1,
-                                        1,
-                                    );
-                                }
-                                // }
-                            },
-                        );
-                    },
-                );
+                                let index_len = *index_len as u32;
+                                let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
+                                let workgroup_count = index_len / 3 / workgroup_size
+                                    + min(1, index_len / 3 % workgroup_size);
+                                renderer
+                                    .device
+                                    .cmd_dispatch(*cull_cb, workgroup_count, 1, 1);
+                            }
+                        },
+                    );
+                }
+                let cull_cb = cull_cb.end();
                 let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
                 let wait_semaphore_values = &[renderer.frame_number * 16];
                 let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
@@ -346,21 +312,15 @@ impl CullPass {
                 unsafe {
                     renderer
                         .device
-                        .queue_submit(
-                            *queue,
-                            &[submit],
-                            cull_pass_data
-                                .cull_complete_fence
-                                .current(image_index.0)
-                                .handle,
-                        )
+                        .queue_submit(*queue, &[submit], vk::Fence::null())
                         .unwrap();
                 }
 
                 let ix = image_index.0;
                 *cull_pass_data_private
                     .previous_run_command_buffer
-                    .current_mut(ix) = Some(cull_cb); // also destroys the previous one
+                    .current_mut(ix) = Some(cull_cb);
+                // also destroys the previous one
             })
     }
 }
