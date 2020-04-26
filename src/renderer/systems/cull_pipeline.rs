@@ -182,10 +182,32 @@ impl CullPass {
                 microprofile::scope!("ecs", "cull pass");
 
                 if runtime_config.debug_aabbs {
-                    renderer
-                        .compute_timeline_semaphore
-                        .signal(timeline_value!(compute @ renderer.frame_number => PERFORM))
-                        .expect("Failed to bypass culling & signal compute semaphore");
+                    let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
+                    let wait_semaphore_values =
+                        &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
+                    let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
+                    let signal_semaphore_values =
+                        &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
+                    let dst_stage_masks =
+                        vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+                    let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+                        .wait_semaphore_values(wait_semaphore_values)
+                        .signal_semaphore_values(signal_semaphore_values);
+                    let submit = vk::SubmitInfo::builder()
+                        .push_next(&mut wait_timeline)
+                        .wait_semaphores(wait_semaphores)
+                        .wait_dst_stage_mask(&dst_stage_masks)
+                        .signal_semaphores(signal_semaphores)
+                        .build();
+
+                    let queue = renderer.device.compute_queues[0].lock();
+
+                    unsafe {
+                        renderer
+                            .device
+                            .queue_submit(*queue, &[submit], vk::Fence::null())
+                            .unwrap();
+                    }
                     return;
                 }
 
