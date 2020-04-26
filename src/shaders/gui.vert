@@ -1,6 +1,8 @@
 #version 450
 
-layout(push_constant) uniform PushConstants {
+#extension GL_EXT_scalar_block_layout: require
+
+layout(push_constant, scalar) uniform PushConstants {
     vec2 scale;
     vec2 translate;
 } pushConstants;

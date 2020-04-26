@@ -941,8 +941,8 @@ impl Renderer {
                                 &renderer.device,
                                 *command_buffer,
                                 &shaders::DebugAABBPushConstants {
-                                    center: aabb.0.center().to_homogeneous(),
-                                    half_extent: aabb.0.half_extents().push(1.0),
+                                    center: aabb.0.center().coords,
+                                    half_extent: aabb.0.half_extents(),
                                 },
                             );
                             renderer.device.cmd_draw(*command_buffer, 36, 1, 0, 0);

@@ -126,7 +126,8 @@ impl Device {
                 .descriptor_binding_partially_bound(true)
                 .runtime_descriptor_array(true)
                 .shader_storage_buffer_array_non_uniform_indexing(true)
-                .timeline_semaphore(true);
+                .timeline_semaphore(true)
+                .scalar_block_layout(true);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()

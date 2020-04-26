@@ -1,15 +1,17 @@
 #version 450
 #define SHADOW_MAP_DIM 4
 
-layout(set = 0, binding = 0) uniform ModelMatrices {
+#extension GL_EXT_scalar_block_layout: require
+
+layout(set = 0, binding = 0, scalar) uniform ModelMatrices {
     mat4 model[4096];
 };
-layout(set = 1, binding = 0) uniform CameraMatrices {
+layout(set = 1, binding = 0, scalar) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
 } camera;
-layout(set = 2, binding = 0) uniform LightMatrices {
+layout(set = 2, binding = 0, scalar) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;

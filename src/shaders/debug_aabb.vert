@@ -1,19 +1,21 @@
 #version 450
 
-layout(push_constant) uniform PushConstants {
-    vec4 center;
-    vec4 half_extent;
+#extension GL_EXT_scalar_block_layout: require
+
+layout(push_constant, scalar) uniform PushConstants {
+    vec3 center;
+    vec3 half_extent;
 };
 
-layout(set = 0, binding = 0) uniform CameraMatrices {
+layout(set = 0, binding = 0, scalar) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
     vec4 pos;
 };
 
 void main() {
-    vec4 min = center - half_extent;
-    vec4 max = center + half_extent;
+    vec3 min = center - half_extent;
+    vec3 max = center + half_extent;
 
     vec3 points[8] = {
         // bottom half (min y)

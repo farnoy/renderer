@@ -529,8 +529,8 @@ make_pipe!(imgui_pipe {
 
 #[repr(C)]
 pub struct DebugAABBPushConstants {
-    pub center: glm::Vec4,
-    pub half_extent: glm::Vec4,
+    pub center: glm::Vec3,
+    pub half_extent: glm::Vec3,
 }
 
 make_pipe!(debug_aabb {

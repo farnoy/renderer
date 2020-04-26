@@ -3,8 +3,9 @@
 #define SHADOW_MAP_DIM 4
 
 #extension GL_EXT_nonuniform_qualifier: require
+#extension GL_EXT_scalar_block_layout: require
 
-layout(set = 2, binding = 0) uniform LightMatrices {
+layout(set = 2, binding = 0, scalar) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
