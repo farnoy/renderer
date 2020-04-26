@@ -97,6 +97,17 @@ impl TimelineSemaphore {
                 .get_semaphore_counter_value(self.device.handle(), self.handle)
         }
     }
+
+    pub fn signal(&self, value: u64) -> ash::prelude::VkResult<()> {
+        unsafe {
+            self.device.signal_semaphore(
+                self.device.handle(),
+                &vk::SemaphoreSignalInfo::builder()
+                    .semaphore(self.handle)
+                    .value(value),
+            )
+        }
+    }
 }
 
 impl Fence {

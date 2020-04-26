@@ -1,5 +1,5 @@
 use crate::{
-    ecs::{components::AABB, resources::Camera},
+    ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
     renderer::{
         alloc, compute,
         device::{Buffer, CommandBuffer, DoubleBuffered, Event},
@@ -159,6 +159,7 @@ impl CullPass {
             .read_resource::<RenderFrame>()
             .read_resource::<CullPassData>()
             .write_resource::<CullPassDataPrivate>()
+            .read_resource::<RuntimeConfiguration>()
             .read_resource::<ImageIndex>()
             .read_resource::<ConsolidatedMeshBuffers>()
             .read_resource::<Camera>()
@@ -170,6 +171,7 @@ impl CullPass {
                     ref renderer,
                     ref cull_pass_data,
                     ref mut cull_pass_data_private,
+                    ref runtime_config,
                     ref image_index,
                     ref consolidate_mesh_buffers,
                     ref camera,
@@ -178,6 +180,15 @@ impl CullPass {
                 ) = resources;
                 #[cfg(feature = "microprofile")]
                 microprofile::scope!("ecs", "cull pass");
+
+                if runtime_config.debug_aabbs {
+                    renderer
+                        .compute_timeline_semaphore
+                        .signal(timeline_value!(compute @ renderer.frame_number => PERFORM))
+                        .expect("Failed to bypass culling & signal compute semaphore");
+                    return;
+                }
+
                 if cull_pass_data_private
                     .previous_run_command_buffer
                     .current(image_index.0)

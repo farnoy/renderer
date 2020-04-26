@@ -124,8 +124,7 @@ pub fn load(
     let vertex_adapter =
         meshopt::VertexDataAdapter::new(&meshoptpositions, size_of::<f32>() * 3, 0)
             .expect("vertex data adapter failed");
-    let mut index_lods = if indices.len() > 1000 && false
-    {
+    let mut index_lods = if indices.len() > 1000 && false {
         let mut lods = Vec::with_capacity(6);
         for x in 1..6 {
             let factor = (2 as usize).pow(x);
