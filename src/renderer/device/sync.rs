@@ -25,6 +25,34 @@ pub struct Event {
     device: Arc<Device>,
 }
 
+#[macro_export]
+macro_rules! define_timeline {
+    ($mod_name:ident $($name:ident),+) => {
+        pub(crate) mod $mod_name {
+            crate::define_timeline!(@define_const 1u64, $($name),+);
+        }
+    };
+    (@define_const $ix:expr, $arg:ident) => {
+        // last argument, round up to next highest power of 2
+        pub const $arg: u64 = $ix.next_power_of_two();
+        pub const MAX: u64 = $ix.next_power_of_two();
+    };
+    (@define_const $ix:expr, $arg0:ident, $($args:ident),*) => {
+        pub const $arg0: u64 = $ix;
+        crate::define_timeline!(@define_const ($ix + 1), $($args),*);
+    };
+}
+
+#[macro_export]
+macro_rules! timeline_value {
+    ($module:ident @ last $frame_number:expr => $offset:ident) => {
+        ($frame_number - 1) * $module::MAX + $module::$offset
+    };
+    ($module:ident @ $frame_number:expr => $offset:ident) => {
+        $frame_number * $module::MAX + $module::$offset
+    };
+}
+
 impl Semaphore {
     pub(super) fn new(device: &Arc<Device>) -> Semaphore {
         let create_info = vk::SemaphoreCreateInfo::builder();

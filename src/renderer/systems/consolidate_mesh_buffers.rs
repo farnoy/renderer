@@ -1,7 +1,11 @@
-use crate::renderer::{
-    alloc,
-    device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
-    GltfMesh, GraphicsCommandPool, RenderFrame,
+use crate::{
+    define_timeline,
+    renderer::{
+        alloc,
+        device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
+        GltfMesh, GraphicsCommandPool, RenderFrame,
+    },
+    timeline_value,
 };
 use ash::{
     version::{DeviceV1_0, DeviceV1_2},
@@ -40,6 +44,8 @@ pub struct ConsolidatedMeshBuffers {
     sync_point_fence: Fence,
 }
 
+define_timeline!(sync CONSOLIDATE);
+
 /// Identifies distinct GLTF meshes in components and copies them to a shared buffer
 pub struct ConsolidateMeshBuffers;
 
@@ -75,9 +81,9 @@ impl ConsolidatedMeshBuffers {
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             super::super::shaders::cull_set::bindings::index_buffer::SIZE,
         );
-        let sync_timeline = renderer
-            .device
-            .new_semaphore_timeline(renderer.frame_number * 16);
+        let sync_timeline = renderer.device.new_semaphore_timeline(
+            timeline_value!(sync @ last renderer.frame_number => CONSOLIDATE),
+        );
         renderer.device.set_object_name(
             sync_timeline.handle,
             "Consolidate mesh buffers sync timeline",
@@ -232,7 +238,8 @@ impl ConsolidateMeshBuffers {
                 if needs_transfer {
                     let command_buffers = &[*command_buffer];
                     let signal_semaphores = &[consolidated_mesh_buffers.sync_timeline.handle];
-                    let signal_semaphore_values = &[renderer.frame_number * 16 + 16];
+                    let signal_semaphore_values =
+                        &[timeline_value!(sync @ renderer.frame_number => CONSOLIDATE)];
                     let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                         .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
                         .signal_semaphore_values(signal_semaphore_values);
@@ -259,7 +266,7 @@ impl ConsolidateMeshBuffers {
                 } else {
                     let signal_info = vk::SemaphoreSignalInfo::builder()
                         .semaphore(consolidated_mesh_buffers.sync_timeline.handle)
-                        .value(renderer.frame_number * 16 + 16);
+                        .value(timeline_value!(sync @ renderer.frame_number => CONSOLIDATE));
                     unsafe {
                         renderer
                             .device

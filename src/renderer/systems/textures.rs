@@ -1,8 +1,11 @@
-use crate::renderer::{
-    device::{DoubleBuffered, Image},
-    helpers,
-    systems::present::ImageIndex,
-    DrawIndex, MainDescriptorPool, RenderFrame,
+use crate::{
+    renderer::{
+        device::{DoubleBuffered, Image},
+        graphics as graphics_sync, helpers,
+        systems::present::ImageIndex,
+        DrawIndex, MainDescriptorPool, RenderFrame,
+    },
+    timeline_value,
 };
 use ash::{version::DeviceV1_0, vk};
 use legion::prelude::*;
@@ -114,7 +117,7 @@ impl SynchronizeBaseColorTextures {
                 // wait on last frame completion
                 renderer
                     .graphics_timeline_semaphore
-                    .wait(renderer.frame_number.saturating_sub(1) * 16)
+                    .wait(timeline_value!(graphics_sync @ last renderer.frame_number => FULL_DRAW))
                     .unwrap();
 
                 for (ref draw_id, ref marker) in query.iter(&world) {

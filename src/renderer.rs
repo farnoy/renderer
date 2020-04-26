@@ -16,10 +16,14 @@ mod systems {
     pub mod textures;
 }
 
-use crate::ecs::{
-    components::{ModelMatrix, AABB},
-    resources::Camera,
-    systems::*,
+use crate::{
+    define_timeline,
+    ecs::{
+        components::{ModelMatrix, AABB},
+        resources::Camera,
+        systems::*,
+    },
+    timeline_value,
 };
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
@@ -79,6 +83,9 @@ pub struct RenderFrame {
     pub frame_number: u64,
     pub buffer_count: usize,
 }
+
+define_timeline!(graphics SHADOW_MAPPING, DEPTH_PASS, FULL_DRAW);
+define_timeline!(compute PERFORM);
 
 impl RenderFrame {
     pub fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
@@ -157,12 +164,14 @@ impl RenderFrame {
         // Stat frame number at 1 and semaphores at 16, because validation layers assert
         // wait_semaphore_values at > 0
         let frame_number = 1;
-        let graphics_timeline_semaphore = device.new_semaphore_timeline(16);
+        let graphics_timeline_semaphore =
+            device.new_semaphore_timeline(timeline_value!(graphics @ last frame_number => MAX));
         device.set_object_name(
             graphics_timeline_semaphore.handle,
             "Graphics timeline semaphore",
         );
-        let compute_timeline_semaphore = device.new_semaphore_timeline(16);
+        let compute_timeline_semaphore =
+            device.new_semaphore_timeline(timeline_value!(compute @ last frame_number => MAX));
         device.set_object_name(
             compute_timeline_semaphore.handle,
             "Compute timeline semaphore",
@@ -1103,10 +1112,11 @@ impl Renderer {
                     renderer.compute_timeline_semaphore.handle,
                     consolidated_mesh_buffers.sync_timeline.handle,
                 ];
+                use systems::consolidate_mesh_buffers::sync as consolidate_mesh_buffers;
                 let wait_semaphore_values = &[
-                    renderer.frame_number * 16 + 2,
-                    renderer.frame_number * 16 + 16, // all compute work done for this frame
-                    renderer.frame_number * 16 + 16, // all consolidation work done
+                    timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS),
+                    timeline_value!(compute @ renderer.frame_number => PERFORM),
+                    timeline_value!(consolidate_mesh_buffers @ renderer.frame_number => CONSOLIDATE),
                 ];
                 let dst_stage_masks = &[
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -1115,7 +1125,7 @@ impl Renderer {
                 ];
                 let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
                 let command_buffers = &[*command_buffer];
-                let signal_semaphore_values = &[renderer.frame_number * 16 + 15]; // next frame
+                let signal_semaphore_values = &[timeline_value!(graphics @ renderer.frame_number => FULL_DRAW)];
                 let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(wait_semaphore_values)
                     .signal_semaphore_values(signal_semaphore_values)
@@ -1544,10 +1554,12 @@ impl DepthOnlyPass {
                 }
                 let command_buffer = command_buffer.end();
                 let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let wait_semaphore_values = &[renderer.frame_number * 16 + 1];
+                let wait_semaphore_values =
+                    &[timeline_value!(graphics @ renderer.frame_number => SHADOW_MAPPING)];
                 let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
                 let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let signal_semaphore_values = &[renderer.frame_number * 16 + 2];
+                let signal_semaphore_values =
+                    &[timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS)];
                 let command_buffers = &[*command_buffer];
                 let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault

@@ -1,4 +1,8 @@
-use crate::{ecs::components::*, renderer::*};
+use crate::{
+    ecs::components::*,
+    renderer::{graphics as graphics_sync, *},
+    timeline_value,
+};
 use ash::vk;
 
 const MAP_SIZE: u32 = 4096;
@@ -537,8 +541,10 @@ impl PrepareShadowMaps {
                 let command_buffers = &[*command_buffer];
                 let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
                 let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
-                let wait_semaphore_values = &[renderer.frame_number * 16];
-                let signal_semaphore_values = &[renderer.frame_number * 16 + 1];
+                let wait_semaphore_values =
+                    &[timeline_value!(graphics_sync @ last renderer.frame_number => FULL_DRAW)];
+                let signal_semaphore_values =
+                    &[timeline_value!(graphics_sync @ renderer.frame_number => SHADOW_MAPPING)];
                 let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(wait_semaphore_values)
                     .signal_semaphore_values(signal_semaphore_values)

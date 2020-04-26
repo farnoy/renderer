@@ -1,11 +1,12 @@
 use crate::{
     ecs::{components::AABB, resources::Camera},
     renderer::{
-        alloc,
+        alloc, compute,
         device::{Buffer, CommandBuffer, DoubleBuffered, Event},
         helpers::{self, pick_lod, Pipeline},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
-        CameraMatrices, DrawIndex, GltfMesh, MainDescriptorPool, ModelData, Position, RenderFrame,
+        timeline_value, CameraMatrices, DrawIndex, GltfMesh, MainDescriptorPool, ModelData,
+        Position, RenderFrame,
     },
 };
 use ash::{
@@ -184,7 +185,7 @@ impl CullPass {
                 {
                     renderer
                         .compute_timeline_semaphore
-                        .wait((renderer.frame_number - 2) * 16 + 16)
+                        .wait(timeline_value!(compute @ renderer.frame_number - 2 => PERFORM))
                         .unwrap();
                 }
 
@@ -287,9 +288,11 @@ impl CullPass {
                 }
                 let cull_cb = cull_cb.end();
                 let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
-                let wait_semaphore_values = &[renderer.frame_number * 16];
+                let wait_semaphore_values =
+                    &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
                 let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
-                let signal_semaphore_values = &[renderer.frame_number * 16 + 16];
+                let signal_semaphore_values =
+                    &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
                 let dst_stage_masks =
                     vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
                 let command_buffers = &[*cull_cb];

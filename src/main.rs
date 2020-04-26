@@ -1,6 +1,7 @@
 #![feature(arbitrary_self_types)]
 #![feature(backtrace)]
 #![feature(vec_remove_item)]
+#![feature(const_int_pow)]
 #![allow(clippy::new_without_default)]
 
 extern crate nalgebra as na;

@@ -1,7 +1,8 @@
 use super::super::{
     device::{CommandBuffer, DoubleBuffered, Semaphore},
-    RenderFrame, Swapchain,
+    graphics as graphics_sync, RenderFrame, Swapchain,
 };
+use crate::timeline_value;
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
@@ -83,8 +84,9 @@ impl AcquireFramebuffer {
 
         {
             let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-            if counter < renderer.frame_number * 16 {
-                let signal_semaphore_values = &[renderer.frame_number * 16];
+            if counter < timeline_value!(graphics_sync @ renderer.frame_number => FULL_DRAW) {
+                let signal_semaphore_values =
+                    &[timeline_value!(graphics_sync @ renderer.frame_number => FULL_DRAW)];
                 let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
                     .signal_semaphore_values(signal_semaphore_values);
@@ -129,7 +131,8 @@ impl PresentFramebuffer {
         image_index: &ImageIndex,
     ) {
         {
-            let wait_values = &[renderer.frame_number * 16 + 15];
+            let wait_values =
+                &[timeline_value!(graphics_sync @ renderer.frame_number => FULL_DRAW)];
             let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                 .wait_semaphore_values(wait_values)
                 .signal_semaphore_values(wait_values); // only needed because validation layers segfault
