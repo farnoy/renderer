@@ -542,7 +542,7 @@ impl PrepareShadowMaps {
                 let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
                 let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
                 let wait_semaphore_values =
-                    &[timeline_value!(graphics_sync @ last renderer.frame_number => FULL_DRAW)];
+                    &[timeline_value!(graphics_sync @ last renderer.frame_number => GUI_DRAW)];
                 let signal_semaphore_values =
                     &[timeline_value!(graphics_sync @ renderer.frame_number => SHADOW_MAPPING)];
                 let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()

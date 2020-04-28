@@ -33,7 +33,6 @@ fn main() {
     let universe = Universe::new();
     let mut world = universe.create_world();
     let mut resources = Resources::default();
-    resources.insert(swapchain);
 
     let quit_handle = Arc::new(Mutex::new(false));
 
@@ -56,19 +55,24 @@ fn main() {
         &camera_matrices,
     );
     let cull_pass_data_private = CullPassDataPrivate::new(&renderer);
-    let main_attachments = MainAttachments::new(&renderer, &resources.get().unwrap());
+    let main_attachments = MainAttachments::new(&renderer, &swapchain);
     let depth_pass_data = DepthPassData::new(
         &renderer,
         &model_data,
         &main_attachments,
-        &resources.get().unwrap(),
+        &swapchain,
         &camera_matrices,
     );
     let shadow_mapping_data =
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
 
     let gui = Rc::new(RefCell::new(Gui::new()));
-    let gui_render = GuiRender::new(&renderer, &main_descriptor_pool, &mut gui.borrow_mut());
+    let gui_render = GuiRender::new(
+        &renderer,
+        &main_descriptor_pool,
+        &swapchain,
+        &mut gui.borrow_mut(),
+    );
     let mut imgui_platform = WinitPlatform::init(&mut gui.borrow_mut().imgui);
     imgui_platform.attach_window(
         gui.borrow_mut().imgui.io_mut(),
@@ -92,8 +96,7 @@ fn main() {
 
     let debug_aabb_pass_data = DebugAABBPassData::new(&renderer, &camera_matrices);
 
-    let main_framebuffer =
-        MainFramebuffer::new(&renderer, &main_attachments, &resources.get().unwrap());
+    let main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
 
     let LoadedMesh {
         vertex_buffer,
@@ -340,6 +343,7 @@ fn main() {
         }),
     );
 
+    resources.insert(swapchain);
     resources.insert(mesh_library);
     resources.insert(Resized(false));
     resources.insert(FrameTiming::default());
@@ -483,12 +487,14 @@ fn main() {
         .add_system(CullPass::exec_system())
         .add_system(PrepareShadowMaps::exec_system())
         .add_system(DepthOnlyPass::exec_system())
+        .add_system(Renderer::exec_system())
         .flush()
-        .add_thread_local(Renderer::exec_system(
+        .add_thread_local(GuiRender::exec_system(
             Rc::clone(&gui),
             Rc::clone(&input_handler),
             gui_render,
         ))
+        .flush()
         .add_system(
             SystemBuilder::<()>::new("PresentFramebuffer")
                 .read_resource::<RenderFrame>()

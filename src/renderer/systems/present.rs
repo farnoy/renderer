@@ -11,6 +11,7 @@ use std::u64;
 pub struct PresentData {
     render_complete_semaphore: Semaphore,
     pub(in super::super) render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
+    pub(in super::super) gui_render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
 }
 
 pub struct ImageIndex(pub u32);
@@ -35,10 +36,12 @@ impl PresentData {
         );
 
         let render_command_buffer = renderer.new_buffered(|_| None);
+        let gui_render_command_buffer = renderer.new_buffered(|_| None);
 
         PresentData {
             render_complete_semaphore,
             render_command_buffer,
+            gui_render_command_buffer,
         }
     }
 }
@@ -84,9 +87,9 @@ impl AcquireFramebuffer {
 
         {
             let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-            if counter < timeline_value!(graphics_sync @ renderer.frame_number => FULL_DRAW) {
+            if counter < timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW) {
                 let signal_semaphore_values =
-                    &[timeline_value!(graphics_sync @ renderer.frame_number => FULL_DRAW)];
+                    &[timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW)];
                 let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
                     .signal_semaphore_values(signal_semaphore_values);
@@ -131,8 +134,7 @@ impl PresentFramebuffer {
         image_index: &ImageIndex,
     ) {
         {
-            let wait_values =
-                &[timeline_value!(graphics_sync @ renderer.frame_number => FULL_DRAW)];
+            let wait_values = &[timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW)];
             let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                 .wait_semaphore_values(wait_values)
                 .signal_semaphore_values(wait_values); // only needed because validation layers segfault

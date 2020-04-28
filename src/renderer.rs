@@ -84,7 +84,7 @@ pub struct RenderFrame {
     pub buffer_count: usize,
 }
 
-define_timeline!(graphics SHADOW_MAPPING, DEPTH_PASS, FULL_DRAW);
+define_timeline!(graphics SHADOW_MAPPING, DEPTH_PASS, SCENE_DRAW, GUI_DRAW);
 define_timeline!(compute PERFORM);
 
 impl RenderFrame {
@@ -121,7 +121,7 @@ impl RenderFrame {
                                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                                 .initial_layout(vk::ImageLayout::UNDEFINED)
-                                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
                             vk::AttachmentDescription::builder()
                                 .format(vk::Format::D32_SFLOAT)
                                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -775,11 +775,7 @@ impl GltfPassData {
 pub struct Renderer;
 
 impl Renderer {
-    pub fn exec_system(
-        gui: Rc<RefCell<Gui>>,
-        input_handler: Rc<RefCell<InputHandler>>,
-        mut gui_render: GuiRender,
-    ) -> Box<(dyn legion::systems::schedule::Runnable + 'static)> {
+    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
         use legion::{prelude::*, query::IntoQuery};
         SystemBuilder::<()>::new("Renderer")
             .read_resource::<RenderFrame>()
@@ -799,7 +795,7 @@ impl Renderer {
             .read_resource::<MainFramebuffer>()
             .read_resource::<GltfPassData>()
             .with_query(<Read<AABB>>::query())
-            .build_thread_local(move |_commands, world, resources, query| {
+            .build(|_commands, world, resources, query| {
                 let (
                     ref renderer,
                     ref image_index,
@@ -818,14 +814,6 @@ impl Renderer {
                     ref main_framebuffer,
                     ref gltf_pass,
                 ) = resources;
-                let mut gui = gui.borrow_mut();
-                let gui_draw_data = gui.update(
-                    &renderer,
-                    &input_handler.borrow(),
-                    &swapchain,
-                    &camera,
-                    &mut *runtime_config,
-                );
                 #[cfg(feature = "profiling")]
                 microprofile::scope!("ecs", "renderer");
                 // TODO: count this? pack and defragment draw calls?
@@ -833,33 +821,6 @@ impl Renderer {
                     / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
                 let command_buffer = graphics_command_pool.0.record_one_time("renderer cb");
                 unsafe {
-                    if !gui_render.transitioned {
-                        renderer.device.cmd_pipeline_barrier(
-                            *command_buffer,
-                            vk::PipelineStageFlags::HOST,
-                            vk::PipelineStageFlags::HOST,
-                            Default::default(),
-                            &[],
-                            &[],
-                            &[vk::ImageMemoryBarrier::builder()
-                                .image(gui_render.texture.handle)
-                                .subresource_range(vk::ImageSubresourceRange {
-                                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                                    base_mip_level: 0,
-                                    level_count: 1,
-                                    base_array_layer: 0,
-                                    layer_count: 1,
-                                })
-                                .old_layout(vk::ImageLayout::PREINITIALIZED)
-                                .new_layout(vk::ImageLayout::GENERAL)
-                                .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                                .dst_access_mask(vk::AccessFlags::HOST_WRITE)
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .build()],
-                        );
-                    }
-                    gui_render.transitioned = true;
                     let clear_values = &[
                         vk::ClearValue {
                             color: vk::ClearColorValue { float32: [0.0; 4] },
@@ -997,107 +958,6 @@ impl Renderer {
                             size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                         );
                     }
-                    let gui_debug_marker = renderer.device.debug_marker_around2(
-                        &command_buffer,
-                        "GUI",
-                        [1.0, 1.0, 0.0, 1.0],
-                    );
-                    // Split lifetimes
-                    let GuiRender {
-                        ref vertex_buffer,
-                        ref index_buffer,
-                        ref pipeline_layout,
-                        ref pipeline,
-                        ref descriptor_set,
-                        ..
-                    } = gui_render;
-                    pipeline_layout.bind_descriptor_sets(
-                        &renderer.device,
-                        *command_buffer,
-                        descriptor_set,
-                    );
-                    renderer.device.cmd_bind_pipeline(
-                        *command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.handle,
-                    );
-                    renderer.device.cmd_bind_vertex_buffers(
-                        *command_buffer,
-                        0,
-                        &[vertex_buffer.handle],
-                        &[0],
-                    );
-                    renderer.device.cmd_bind_index_buffer(
-                        *command_buffer,
-                        index_buffer.handle,
-                        0,
-                        vk::IndexType::UINT16,
-                    );
-                    let [x, y] = gui_draw_data.display_size;
-                    {
-                        pipeline_layout.push_constants(
-                            &renderer.device,
-                            *command_buffer,
-                            &shaders::ImguiPushConstants {
-                                scale: glm::vec2(2.0 / x, 2.0 / y),
-                                translate: glm::vec2(-1.0, -1.0),
-                            },
-                        );
-                    }
-                    {
-                        let mut vertex_offset_coarse: usize = 0;
-                        let mut index_offset_coarse: usize = 0;
-                        let mut vertex_slice = vertex_buffer
-                            .map::<imgui::DrawVert>()
-                            .expect("Failed to map gui vertex buffer");
-                        let mut index_slice = index_buffer
-                            .map::<imgui::DrawIdx>()
-                            .expect("Failed to map gui index buffer");
-                        for draw_list in gui_draw_data.draw_lists() {
-                            let index_len = draw_list.idx_buffer().len();
-                            index_slice[index_offset_coarse..index_offset_coarse + index_len]
-                                .copy_from_slice(draw_list.idx_buffer());
-                            let vertex_len = draw_list.vtx_buffer().len();
-                            vertex_slice[vertex_offset_coarse..vertex_offset_coarse + vertex_len]
-                                .copy_from_slice(draw_list.vtx_buffer());
-                            for draw_cmd in draw_list.commands() {
-                                match draw_cmd {
-                                    imgui::DrawCmd::Elements { count, cmd_params } => {
-                                        renderer.device.cmd_set_scissor(
-                                            *command_buffer,
-                                            0,
-                                            &[vk::Rect2D {
-                                                offset: vk::Offset2D {
-                                                    x: cmd_params.clip_rect[0] as i32,
-                                                    y: cmd_params.clip_rect[1] as i32,
-                                                },
-                                                extent: vk::Extent2D {
-                                                    width: (cmd_params.clip_rect[2]
-                                                        - cmd_params.clip_rect[0])
-                                                        as u32,
-                                                    height: (cmd_params.clip_rect[3]
-                                                        - cmd_params.clip_rect[1])
-                                                        as u32,
-                                                },
-                                            }],
-                                        );
-                                        renderer.device.cmd_draw_indexed(
-                                            *command_buffer,
-                                            count as u32,
-                                            1,
-                                            (index_offset_coarse + cmd_params.idx_offset) as u32,
-                                            (vertex_offset_coarse + cmd_params.vtx_offset) as i32,
-                                            0,
-                                        );
-                                    }
-                                    _ => panic!("le wtf"),
-                                }
-                            }
-                            index_offset_coarse += index_len;
-                            vertex_offset_coarse += vertex_len;
-                        }
-                    }
-                    drop(gui_debug_marker);
                     renderer.device.cmd_end_render_pass(*command_buffer);
                 }
                 let command_buffer = command_buffer.end();
@@ -1119,7 +979,7 @@ impl Renderer {
                 ];
                 let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
                 let command_buffers = &[*command_buffer];
-                let signal_semaphore_values = &[timeline_value!(graphics @ renderer.frame_number => FULL_DRAW)];
+                let signal_semaphore_values = &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
                 let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
                     .wait_semaphore_values(wait_semaphore_values)
                     .signal_semaphore_values(signal_semaphore_values)
@@ -1156,6 +1016,7 @@ pub struct GuiRender {
     pub descriptor_set_layout: shaders::imgui_set::DescriptorSetLayout,
     pub descriptor_set: shaders::imgui_set::DescriptorSet,
     pub pipeline_layout: shaders::imgui_pipe::PipelineLayout,
+    pub renderpass: RenderPass,
     pub pipeline: Pipeline,
     pub transitioned: bool,
 }
@@ -1164,6 +1025,7 @@ impl GuiRender {
     pub fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &MainDescriptorPool,
+        swapchain: &Swapchain,
         gui: &mut Gui,
     ) -> GuiRender {
         let imgui = &mut gui.imgui;
@@ -1212,6 +1074,70 @@ impl GuiRender {
                 .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
         );
+
+        let renderpass = {
+            let color_attachment = vk::AttachmentReference {
+                attachment: 0,
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            };
+            let depth_attachment = vk::AttachmentReference {
+                attachment: 1,
+                layout: vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+            };
+
+            renderer.device.new_renderpass(
+                &vk::RenderPassCreateInfo::builder()
+                    .attachments(unsafe {
+                        &*(&[
+                            vk::AttachmentDescription::builder()
+                                .format(swapchain.surface.surface_format.format)
+                                .samples(vk::SampleCountFlags::TYPE_1)
+                                .load_op(vk::AttachmentLoadOp::LOAD)
+                                .store_op(vk::AttachmentStoreOp::STORE)
+                                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                            vk::AttachmentDescription::builder()
+                                .format(vk::Format::D32_SFLOAT)
+                                .samples(vk::SampleCountFlags::TYPE_1)
+                                .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .initial_layout(
+                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                )
+                                .final_layout(
+                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                ),
+                        ]
+                            as *const [vk::AttachmentDescriptionBuilder<'_>; 2]
+                            as *const [vk::AttachmentDescription; 2])
+                    })
+                    .subpasses(unsafe {
+                        &*(&[vk::SubpassDescription::builder()
+                            .color_attachments(&[color_attachment])
+                            .depth_stencil_attachment(&depth_attachment)
+                            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]
+                            as *const [vk::SubpassDescriptionBuilder<'_>; 1]
+                            as *const [vk::SubpassDescription; 1])
+                    })
+                    .dependencies(unsafe {
+                        &*(&[vk::SubpassDependency::builder()
+                            .src_subpass(vk::SUBPASS_EXTERNAL)
+                            .dst_subpass(0)
+                            .src_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+                            .dst_stage_mask(vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+                            .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ)]
+                            as *const [vk::SubpassDependencyBuilder<'_>; 1]
+                            as *const [vk::SubpassDependency; 1])
+                    }),
+            )
+        };
+        renderer
+            .device
+            .set_object_name(renderpass.handle, "GUI RenderPass");
 
         let descriptor_set_layout = shaders::imgui_set::DescriptorSetLayout::new(&renderer.device);
 
@@ -1312,7 +1238,7 @@ impl GuiRender {
                         .build(),
                 )
                 .layout(pipeline_layout.layout.handle)
-                .render_pass(renderer.renderpass.handle)
+                .render_pass(renderpass.handle)
                 .subpass(0)
                 .build(),
         );
@@ -1366,10 +1292,257 @@ impl GuiRender {
             sampler,
             descriptor_set_layout,
             descriptor_set,
+            renderpass,
             pipeline_layout,
             pipeline,
             transitioned: false,
         }
+    }
+
+    pub fn exec_system(
+        gui: Rc<RefCell<Gui>>,
+        input_handler: Rc<RefCell<InputHandler>>,
+        mut gui_render: GuiRender,
+    ) -> Box<(dyn legion::systems::schedule::Runnable + 'static)> {
+        use legion::prelude::*;
+        SystemBuilder::<()>::new("GuiRender")
+            .read_resource::<RenderFrame>()
+            .read_resource::<ImageIndex>()
+            .write_resource::<GraphicsCommandPool>()
+            .write_resource::<RuntimeConfiguration>()
+            .write_resource::<PresentData>()
+            .read_resource::<MainFramebuffer>()
+            .read_resource::<Swapchain>()
+            .read_resource::<ConsolidatedMeshBuffers>()
+            .read_resource::<Camera>()
+            .with_query(<Read<AABB>>::query())
+            .build_thread_local(move |_commands, mut world, resources, query| {
+                let (
+                    ref renderer,
+                    ref image_index,
+                    ref mut graphics_command_pool,
+                    ref mut runtime_config,
+                    ref mut present_data,
+                    ref main_framebuffer,
+                    ref swapchain,
+                    ref consolidated_mesh_buffers,
+                    ref camera,
+                ) = resources;
+                let mut gui = gui.borrow_mut();
+                let gui_draw_data = gui.update(
+                    &renderer,
+                    &input_handler.borrow(),
+                    &swapchain,
+                    &camera,
+                    &mut *runtime_config,
+                );
+
+                let command_buffer = graphics_command_pool.0.record_one_time("GuiRender cb");
+                unsafe {
+                    let gui_debug_marker = renderer.device.debug_marker_around2(
+                        &command_buffer,
+                        "GUI",
+                        [1.0, 1.0, 0.0, 1.0],
+                    );
+
+                    if !gui_render.transitioned {
+                        renderer.device.cmd_pipeline_barrier(
+                            *command_buffer,
+                            vk::PipelineStageFlags::HOST,
+                            vk::PipelineStageFlags::HOST,
+                            Default::default(),
+                            &[],
+                            &[],
+                            &[vk::ImageMemoryBarrier::builder()
+                                .image(gui_render.texture.handle)
+                                .subresource_range(vk::ImageSubresourceRange {
+                                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                                    base_mip_level: 0,
+                                    level_count: 1,
+                                    base_array_layer: 0,
+                                    layer_count: 1,
+                                })
+                                .old_layout(vk::ImageLayout::PREINITIALIZED)
+                                .new_layout(vk::ImageLayout::GENERAL)
+                                .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                                .dst_access_mask(vk::AccessFlags::HOST_WRITE)
+                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .build()],
+                        );
+                    }
+                    gui_render.transitioned = true;
+
+                    renderer.device.cmd_begin_render_pass(
+                        *command_buffer,
+                        &vk::RenderPassBeginInfo::builder()
+                            .render_pass(gui_render.renderpass.handle)
+                            .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
+                            .render_area(vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: vk::Extent2D {
+                                    width: swapchain.width,
+                                    height: swapchain.height,
+                                },
+                            })
+                            .clear_values(&[]),
+                        vk::SubpassContents::INLINE,
+                    );
+                    renderer.device.cmd_set_viewport(
+                        *command_buffer,
+                        0,
+                        &[vk::Viewport {
+                            x: 0.0,
+                            y: swapchain.height as f32,
+                            width: swapchain.width as f32,
+                            height: -(swapchain.height as f32),
+                            min_depth: 0.0,
+                            max_depth: 1.0,
+                        }],
+                    );
+                    renderer.device.cmd_set_scissor(
+                        *command_buffer,
+                        0,
+                        &[vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: vk::Extent2D {
+                                width: swapchain.width,
+                                height: swapchain.height,
+                            },
+                        }],
+                    );
+
+                    // Split lifetimes
+                    let GuiRender {
+                        ref vertex_buffer,
+                        ref index_buffer,
+                        ref pipeline_layout,
+                        ref pipeline,
+                        ref descriptor_set,
+                        ..
+                    } = gui_render;
+                    pipeline_layout.bind_descriptor_sets(
+                        &renderer.device,
+                        *command_buffer,
+                        descriptor_set,
+                    );
+                    renderer.device.cmd_bind_pipeline(
+                        *command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                    renderer.device.cmd_bind_vertex_buffers(
+                        *command_buffer,
+                        0,
+                        &[vertex_buffer.handle],
+                        &[0],
+                    );
+                    renderer.device.cmd_bind_index_buffer(
+                        *command_buffer,
+                        index_buffer.handle,
+                        0,
+                        vk::IndexType::UINT16,
+                    );
+                    let [x, y] = gui_draw_data.display_size;
+                    {
+                        pipeline_layout.push_constants(
+                            &renderer.device,
+                            *command_buffer,
+                            &shaders::ImguiPushConstants {
+                                scale: glm::vec2(2.0 / x, 2.0 / y),
+                                translate: glm::vec2(-1.0, -1.0),
+                            },
+                        );
+                    }
+                    {
+                        let mut vertex_offset_coarse: usize = 0;
+                        let mut index_offset_coarse: usize = 0;
+                        let mut vertex_slice = vertex_buffer
+                            .map::<imgui::DrawVert>()
+                            .expect("Failed to map gui vertex buffer");
+                        let mut index_slice = index_buffer
+                            .map::<imgui::DrawIdx>()
+                            .expect("Failed to map gui index buffer");
+                        for draw_list in gui_draw_data.draw_lists() {
+                            let index_len = draw_list.idx_buffer().len();
+                            index_slice[index_offset_coarse..index_offset_coarse + index_len]
+                                .copy_from_slice(draw_list.idx_buffer());
+                            let vertex_len = draw_list.vtx_buffer().len();
+                            vertex_slice[vertex_offset_coarse..vertex_offset_coarse + vertex_len]
+                                .copy_from_slice(draw_list.vtx_buffer());
+                            for draw_cmd in draw_list.commands() {
+                                match draw_cmd {
+                                    imgui::DrawCmd::Elements { count, cmd_params } => {
+                                        renderer.device.cmd_set_scissor(
+                                            *command_buffer,
+                                            0,
+                                            &[vk::Rect2D {
+                                                offset: vk::Offset2D {
+                                                    x: cmd_params.clip_rect[0] as i32,
+                                                    y: cmd_params.clip_rect[1] as i32,
+                                                },
+                                                extent: vk::Extent2D {
+                                                    width: (cmd_params.clip_rect[2]
+                                                        - cmd_params.clip_rect[0])
+                                                        as u32,
+                                                    height: (cmd_params.clip_rect[3]
+                                                        - cmd_params.clip_rect[1])
+                                                        as u32,
+                                                },
+                                            }],
+                                        );
+                                        renderer.device.cmd_draw_indexed(
+                                            *command_buffer,
+                                            count as u32,
+                                            1,
+                                            (index_offset_coarse + cmd_params.idx_offset) as u32,
+                                            (vertex_offset_coarse + cmd_params.vtx_offset) as i32,
+                                            0,
+                                        );
+                                    }
+                                    _ => panic!("le wtf"),
+                                }
+                            }
+                            index_offset_coarse += index_len;
+                            vertex_offset_coarse += vertex_len;
+                        }
+                    }
+                    renderer.device.cmd_end_render_pass(*command_buffer);
+                }
+                let command_buffer = command_buffer.end();
+                let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+                let wait_semaphore_values =
+                    &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
+                let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+                let command_buffers = &[*command_buffer];
+                let signal_semaphore_values =
+                    &[timeline_value!(graphics @ renderer.frame_number => GUI_DRAW)];
+                let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+                    .wait_semaphore_values(wait_semaphore_values)
+                    .signal_semaphore_values(signal_semaphore_values)
+                    .build();
+                let submit = vk::SubmitInfo::builder()
+                    .wait_semaphores(wait_semaphores)
+                    .push_next(&mut signal_timeline)
+                    .wait_dst_stage_mask(dst_stage_masks)
+                    .command_buffers(command_buffers)
+                    .signal_semaphores(signal_semaphores)
+                    .build();
+                let queue = renderer.device.graphics_queue.lock();
+
+                unsafe {
+                    renderer
+                        .device
+                        .queue_submit(*queue, &[submit], vk::Fence::null())
+                        .unwrap();
+                }
+
+                // defer destructor
+                *present_data
+                    .gui_render_command_buffer
+                    .current_mut(image_index.0) = Some(command_buffer);
+            })
     }
 }
 
