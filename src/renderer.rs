@@ -84,7 +84,7 @@ pub struct RenderFrame {
     pub buffer_count: usize,
 }
 
-define_timeline!(graphics SHADOW_MAPPING, DEPTH_PASS, SCENE_DRAW, GUI_DRAW);
+define_timeline!(graphics START, SHADOW_MAPPING, DEPTH_PASS, SCENE_DRAW, GUI_DRAW);
 define_timeline!(compute PERFORM);
 
 impl RenderFrame {

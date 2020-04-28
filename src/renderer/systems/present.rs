@@ -87,17 +87,19 @@ impl AcquireFramebuffer {
 
         {
             let counter = renderer.graphics_timeline_semaphore.value().unwrap();
-            if counter < timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW) {
+            if counter < timeline_value!(graphics_sync @ renderer.frame_number => START) {
+                let wait_semaphore_values =
+                    &[timeline_value!(graphics_sync @ last renderer.frame_number => GUI_DRAW), 0];
                 let signal_semaphore_values =
-                    &[timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW)];
+                    &[timeline_value!(graphics_sync @ renderer.frame_number => START)];
                 let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
+                    .wait_semaphore_values(wait_semaphore_values) 
                     .signal_semaphore_values(signal_semaphore_values);
 
-                let wait_semaphores = &[image_acquired_semaphore.handle];
+                let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle, image_acquired_semaphore.handle];
                 let queue = renderer.device.graphics_queue.lock();
                 let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let dst_stage_masks = &[vk::PipelineStageFlags::TOP_OF_PIPE];
+                let dst_stage_masks = &[vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TOP_OF_PIPE];
                 let submit = vk::SubmitInfo::builder()
                     .push_next(&mut wait_timeline)
                     .wait_semaphores(wait_semaphores)
@@ -111,6 +113,8 @@ impl AcquireFramebuffer {
                         .queue_submit(*queue, &[submit], vk::Fence::null())
                         .unwrap();
                 }
+            } else {
+                dbg!("not taken");
             }
         }
 
