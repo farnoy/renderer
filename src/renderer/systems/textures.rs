@@ -117,7 +117,7 @@ impl SynchronizeBaseColorTextures {
                 // wait on last frame completion
                 renderer
                     .graphics_timeline_semaphore
-                    .wait(timeline_value!(graphics_sync @ last renderer.frame_number => GUI_DRAW))
+                    .wait(timeline_value!(graphics_sync @ renderer.frame_number.saturating_sub(2) => GUI_DRAW))
                     .unwrap();
 
                 for (ref draw_id, ref marker) in query.iter(&world) {
