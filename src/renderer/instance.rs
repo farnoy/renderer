@@ -55,10 +55,16 @@ impl Instance {
             .application_version(0)
             .engine_name(&name)
             .api_version(vk::make_version(1, 2, 0));
+        #[cfg(feature = "silence_validation")]
+        let mut validation_features = vk::ValidationFeaturesEXT::builder()
+            .disabled_validation_features(&[vk::ValidationFeatureDisableEXT::ALL]);
         let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&appinfo)
             .enabled_layer_names(&layers_names_raw)
             .enabled_extension_names(&extension_names_raw);
+        #[cfg(feature = "silence_validation")]
+        let create_info = create_info
+            .push_next(&mut validation_features);
         let instance = unsafe { entry.create_instance(&create_info, None)? };
 
         #[cfg(feature = "validation")]
