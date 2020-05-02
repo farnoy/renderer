@@ -791,7 +791,6 @@ impl Renderer {
             .read_resource::<ShadowMappingData>()
             .read_resource::<BaseColorDescriptorSet>()
             .read_resource::<CullPassData>()
-            .read_resource::<Camera>()
             .read_resource::<MainFramebuffer>()
             .read_resource::<GltfPassData>()
             .with_query(<Read<AABB>>::query())
@@ -810,7 +809,6 @@ impl Renderer {
                     ref shadow_mapping_data,
                     ref base_color_descriptor_set,
                     ref cull_pass_data,
-                    ref camera,
                     ref main_framebuffer,
                     ref gltf_pass,
                 ) = resources;
@@ -1313,10 +1311,9 @@ impl GuiRender {
             .write_resource::<PresentData>()
             .read_resource::<MainFramebuffer>()
             .read_resource::<Swapchain>()
-            .read_resource::<ConsolidatedMeshBuffers>()
             .read_resource::<Camera>()
             .with_query(<Read<AABB>>::query())
-            .build_thread_local(move |_commands, mut world, resources, query| {
+            .build_thread_local(move |_commands, _world, resources, _query| {
                 #[cfg(feature = "profiling")]
                 microprofile::scope!("ecs", "GuiRender");
                 let (
@@ -1327,7 +1324,6 @@ impl GuiRender {
                     ref mut present_data,
                     ref main_framebuffer,
                     ref swapchain,
-                    ref consolidated_mesh_buffers,
                     ref camera,
                 ) = resources;
                 let mut gui = gui.borrow_mut();
@@ -1341,7 +1337,7 @@ impl GuiRender {
 
                 let command_buffer = graphics_command_pool.0.record_one_time("GuiRender cb");
                 unsafe {
-                    let gui_debug_marker = renderer.device.debug_marker_around2(
+                    let _gui_debug_marker = renderer.device.debug_marker_around2(
                         &command_buffer,
                         "GUI",
                         [1.0, 1.0, 0.0, 1.0],
