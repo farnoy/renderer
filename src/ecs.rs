@@ -46,6 +46,8 @@ pub mod systems {
                     Write<ModelMatrix>,
                 )>::query())
                 .build(move |_commands, mut world, _resources, ref mut query| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "ModelMatrixCalculation");
                     for (pos, rot, scale, mut model_matrix) in query.iter_mut(&mut world) {
                         model_matrix.0 = glm::translation(&pos.0.coords)
                             * rot.0.to_homogeneous()
@@ -121,7 +123,7 @@ pub mod systems {
                 .with_query(<(Read<ModelMatrix>, Read<GltfMesh>, Write<AABB>)>::query())
                 .build(move |_commands, mut world, _resources, ref mut query| {
                     #[cfg(feature = "profiling")]
-                    microprofile::scope!("ecs", "aabb calculation");
+                    microprofile::scope!("ecs", "AABBCalculation");
                     use std::f32::{MAX, MIN};
                     for (model_matrix, mesh, mut aabb) in query.iter_mut(&mut world) {
                         let min = mesh.aabb.mins();
@@ -172,6 +174,8 @@ pub mod systems {
                 .read_resource::<MeshLibrary>()
                 .read_resource::<Camera>()
                 .build(move |commands, _world, resources, _query| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "LaunchProjectiles");
                     let (ref input_actions, ref mesh_library, ref camera) = resources;
                     if input_actions.get_mouse_down(MouseButton::Left) {
                         let target = camera.position
@@ -203,7 +207,7 @@ pub mod systems {
     impl UpdateProjectiles {
         pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
             use legion::prelude::*;
-            SystemBuilder::<()>::new("LaunchProjectiles")
+            SystemBuilder::<()>::new("UpdateProjectiles")
                 .read_resource::<FrameTiming>()
                 .with_query(<(
                     Write<Position>,
@@ -212,6 +216,8 @@ pub mod systems {
                     Read<ProjectileVelocity>,
                 )>::query())
                 .build(move |commands, mut world, ref frame_timing, query| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "UpdateProjectiles");
                     for (entity, (mut position, rotation, target, velocity)) in
                         query.iter_entities_mut(&mut world)
                     {

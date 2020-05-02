@@ -38,6 +38,8 @@ impl ModelMatrixCalculation {
                 Write<ModelMatrix>,
             )>::query())
             .build(move |_commands, mut world, _resources, ref mut query| {
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "ModelMatrixCalculation");
                 for (pos, rot, scale, mut model_matrix) in query.iter_mut(&mut world) {
                     model_matrix.0 = glm::translation(&pos.0.coords)
                         * rot.0.to_homogeneous()
@@ -113,7 +115,7 @@ impl AABBCalculation {
             .with_query(<(Read<ModelMatrix>, Read<GltfMesh>, Write<AABB>)>::query())
             .build(move |_commands, mut world, _resources, ref mut query| {
                 #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "aabb calculation");
+                microprofile::scope!("ecs", "AABBCalculation");
                 use std::f32::{MAX, MIN};
                 for (model_matrix, mesh, mut aabb) in query.iter_mut(&mut world) {
                     let min = mesh.aabb.mins();

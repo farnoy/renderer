@@ -388,6 +388,8 @@ fn main() {
                 .write_resource::<ImageIndex>()
                 .read_resource::<Resized>()
                 .build_thread_local(move |_commands, _world, resources, _queries| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "AcquireFramebuffer");
                     let (
                         ref renderer,
                         ref mut swapchain,
@@ -445,6 +447,8 @@ fn main() {
             SystemBuilder::<()>::new("CalculateFrameTiming")
                 .write_resource::<FrameTiming>()
                 .build(move |_commands, _world, mut frame_timing, _queries| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "CalculateFrameTiming");
                     CalculateFrameTiming::exec(&mut frame_timing);
                 }),
         )
@@ -456,6 +460,8 @@ fn main() {
                         & component::<GltfMesh>(),
                 ))
                 .build(move |_commands, mut world, _, query| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "AssignDrawIndex");
                     for (counter, ref mut draw_idx) in query.iter_mut(&mut world).enumerate() {
                         draw_idx.0 = counter as u32;
                     }
@@ -467,6 +473,8 @@ fn main() {
                 .read_resource::<Swapchain>()
                 .write_resource::<Camera>()
                 .build(move |_commands, _world, resources, _queries| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "ProjectCamera");
                     let (swapchain, ref mut camera) = resources;
                     ProjectCamera::exec(swapchain, &mut *camera);
                 }),
@@ -502,6 +510,8 @@ fn main() {
                 .read_resource::<Swapchain>()
                 .write_resource::<PresentData>()
                 .build(move |_commands, _world, resources, _queries| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "PresentFramebuffer");
                     let (ref renderer, ref image_index, ref swapchain, ref mut present_data) =
                         resources;
                     PresentFramebuffer::exec(&renderer, &present_data, &swapchain, &image_index);
@@ -511,6 +521,8 @@ fn main() {
             SystemBuilder::<()>::new("End frame")
                 .write_resource::<RenderFrame>()
                 .build(move |_commands, _world, renderer, _queries| {
+                    #[cfg(feature = "profiling")]
+                    microprofile::scope!("ecs", "End frame");
                     renderer.frame_number += 1;
                 }),
         )

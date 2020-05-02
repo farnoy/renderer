@@ -815,7 +815,7 @@ impl Renderer {
                     ref gltf_pass,
                 ) = resources;
                 #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "renderer");
+                microprofile::scope!("ecs", "Renderer");
                 // TODO: count this? pack and defragment draw calls?
                 let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
                     / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
@@ -1317,6 +1317,8 @@ impl GuiRender {
             .read_resource::<Camera>()
             .with_query(<Read<AABB>>::query())
             .build_thread_local(move |_commands, mut world, resources, query| {
+                #[cfg(feature = "profiling")]
+                microprofile::scope!("ecs", "GuiRender");
                 let (
                     ref renderer,
                     ref image_index,
@@ -1558,7 +1560,7 @@ impl ModelMatricesUpload {
             .build(move |_commands, mut world, resources, query| {
                 let (ref image_index, ref mut model_data) = resources;
                 #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "model matrices upload");
+                microprofile::scope!("ecs", "ModelMatricesUpload");
                 let mut model_mapped = model_data
                     .model_buffer
                     .current_mut(image_index.0)
@@ -1583,7 +1585,7 @@ impl CameraMatricesUpload {
             .build(move |_commands, _world, resources, _queries| {
                 let (ref image_index, ref camera, ref mut camera_matrices) = resources;
                 #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "camera matrices upload");
+                microprofile::scope!("ecs", "CameraMatricesUpload");
                 let mut model_mapped = camera_matrices
                     .buffer
                     .current_mut(image_index.0)
@@ -1627,7 +1629,7 @@ impl DepthOnlyPass {
                     ref swapchain,
                 ) = resources;
                 #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "depth-pass");
+                microprofile::scope!("ecs", "DepthOnlyPass");
                 let command_buffer = graphics_command_pool
                     .0
                     .record_one_time("depth only pass cb");

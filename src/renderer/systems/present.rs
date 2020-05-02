@@ -54,7 +54,7 @@ impl AcquireFramebuffer {
         image_index: &mut ImageIndex,
     ) -> bool {
         #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "present");
+        microprofile::scope!("ecs", "AcquireFramebuffer::exec");
         let image_acquired_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
             image_acquired_semaphore.handle,
@@ -86,6 +86,8 @@ impl AcquireFramebuffer {
         }
 
         {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "AcquireFramebuffer::exec - weird wait");
             let counter = renderer.graphics_timeline_semaphore.value().unwrap();
             if counter < timeline_value!(graphics_sync @ renderer.frame_number => START) {
                 let wait_semaphore_values =
@@ -93,7 +95,7 @@ impl AcquireFramebuffer {
                 let signal_semaphore_values =
                     &[timeline_value!(graphics_sync @ renderer.frame_number => START)];
                 let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(wait_semaphore_values) 
+                    .wait_semaphore_values(wait_semaphore_values)
                     .signal_semaphore_values(signal_semaphore_values);
 
                 let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle, image_acquired_semaphore.handle];

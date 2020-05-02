@@ -122,7 +122,7 @@ impl InputHandler {
                     ref mut resized,
                 ) = resources;
                 #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "input handler");
+                microprofile::scope!("ecs", "InputHandler");
                 let mut borrowed = input_handler.borrow_mut();
                 let InputHandler {
                     ref mut events_loop,
