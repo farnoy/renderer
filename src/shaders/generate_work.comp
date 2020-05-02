@@ -46,7 +46,7 @@ layout(set = 2, binding = 3, scalar) buffer readonly IndexBuffer {
     uint index_buffer[][3];
 };
 
-layout (local_size_x = 512) in;
+layout (local_size_x_id = 1) in;
 
 shared uint localOffset;
 shared uint globalOffset;

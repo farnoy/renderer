@@ -1309,6 +1309,7 @@ impl GuiRender {
             .write_resource::<GraphicsCommandPool>()
             .write_resource::<RuntimeConfiguration>()
             .write_resource::<PresentData>()
+            .write_resource::<CullPassData>()
             .read_resource::<MainFramebuffer>()
             .read_resource::<Swapchain>()
             .read_resource::<Camera>()
@@ -1322,6 +1323,7 @@ impl GuiRender {
                     ref mut graphics_command_pool,
                     ref mut runtime_config,
                     ref mut present_data,
+                    ref mut cull_pass_data,
                     ref main_framebuffer,
                     ref swapchain,
                     ref camera,
@@ -1333,6 +1335,7 @@ impl GuiRender {
                     &swapchain,
                     &camera,
                     &mut *runtime_config,
+                    &mut *cull_pass_data,
                 );
 
                 let command_buffer = graphics_command_pool.0.record_one_time("GuiRender cb");

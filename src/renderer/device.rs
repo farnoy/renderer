@@ -6,7 +6,7 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
-use std::{ops::Deref, sync::Arc};
+use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 mod buffer;
 mod commands;
@@ -14,11 +14,14 @@ mod descriptors;
 mod double_buffered;
 mod image;
 mod mapping;
+mod shader;
 mod sync;
 
 use super::{alloc, Instance, Surface};
 
-pub use self::{buffer::*, commands::*, descriptors::*, double_buffered::*, image::*, sync::*};
+pub use self::{
+    buffer::*, commands::*, descriptors::*, double_buffered::*, image::*, shader::Shader, sync::*,
+};
 
 type AshDevice = ash::Device;
 
@@ -28,6 +31,7 @@ pub struct Device {
     instance: Arc<Instance>,
     pub(super) physical_device: vk::PhysicalDevice,
     allocator: alloc::VmaAllocator,
+    pub limits: vk::PhysicalDeviceLimits,
     graphics_queue_family: u32,
     compute_queue_family: u32,
     pub(super) graphics_queue: Mutex<vk::Queue>,
@@ -58,6 +62,7 @@ impl Device {
         let physical_device = pdevices[0];
         let queue_families =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
         let graphics_queue_family = {
             queue_families
                 .iter()
@@ -165,6 +170,7 @@ impl Device {
             instance: Arc::clone(instance),
             physical_device,
             allocator,
+            limits: properties.limits,
             graphics_queue_family,
             compute_queue_family: compute_queues_spec
                 .map(|a| a.0)
@@ -233,6 +239,13 @@ impl Device {
 
     pub fn new_fence(self: &Arc<Self>) -> Fence {
         Fence::new(self)
+    }
+
+    pub fn new_shader<F>(self: &Arc<Self>, path: &PathBuf, verify: F) -> Shader
+    where
+        F: Fn(&[u8]) -> bool,
+    {
+        Shader::new_verify(self, path, verify)
     }
 
     pub fn new_buffer(

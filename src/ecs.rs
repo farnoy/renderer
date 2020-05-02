@@ -270,6 +270,7 @@ pub mod systems {
             swapchain: &Swapchain,
             camera: &Camera,
             runtime_config: &mut RuntimeConfiguration,
+            cull_pass_data: &mut CullPassData,
         ) -> &'a imgui::DrawData {
             let imgui = &mut self.imgui;
             imgui.io_mut().display_size = [swapchain.width as f32, swapchain.height as f32];
@@ -297,6 +298,18 @@ pub mod systems {
                     ui.spacing();
 
                     if ui
+                        .collapsing_header(&im_str!("Shader settings"))
+                        .default_open(true)
+                        .build()
+                    {
+                        imgui::Slider::new(
+                            im_str!("Compute cull workgroup size"),
+                            1..=renderer.device.limits.max_compute_work_group_size[0],
+                        )
+                        .build(&ui, &mut cull_pass_data.workgroup_size);
+                    }
+
+                    if ui
                         .collapsing_header(&im_str!("Camera"))
                         .default_open(true)
                         .build()
@@ -319,7 +332,6 @@ pub mod systems {
                             &im_str!("[G] Camera fly mode"),
                             &mut runtime_config.fly_mode,
                         );
-                        ui.spacing();
                     }
                     ui.checkbox(
                         &im_str!("Debug collision AABBs"),

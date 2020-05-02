@@ -293,6 +293,11 @@ macro_rules! make_pipe {
 
             const IS_COMPUTE: bool = $compute;
 
+            pub fn load_and_verify_spirv(data: &[u8]) -> bool {
+                let module = spirv_reflect::create_shader_module(&data).unwrap();
+                self::verify_spirv(&module)
+            }
+
             pub fn verify_spirv(s: &spirv_reflect::ShaderModule) -> bool {
                 let entrypoint = Some("main");
                 make_pipe!(@validate_vertex_input s entrypoint $vertex_inputs);

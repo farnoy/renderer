@@ -6,19 +6,20 @@ use crate::{
         helpers::{self, pick_lod, Pipeline},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         timeline_value, CameraMatrices, DrawIndex, GltfMesh, MainDescriptorPool, ModelData,
-        Position, RenderFrame,
+        Position, RenderFrame, Shader,
     },
 };
 use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},
 };
+use helpers::PipelineLayout;
 use legion::prelude::*;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
-use std::{cmp::min, path::PathBuf, sync::Arc};
+use std::{cmp::min, ffi::CStr, mem::size_of, sync::Arc};
 
 // Cull geometry in compute pass
 pub struct CullPass;
@@ -33,15 +34,21 @@ pub struct CullPassData {
     pub culled_commands_buffer: DoubleBuffered<Buffer>,
     pub culled_index_buffer: DoubleBuffered<Buffer>,
     pub cull_pipeline_layout: super::super::shaders::generate_work::PipelineLayout,
-    pub cull_pipeline: Pipeline,
+    pub cull_pipeline: Arc<Pipeline>,
     pub cull_set_layout: super::super::shaders::cull_set::DescriptorSetLayout,
     pub cull_set: DoubleBuffered<super::super::shaders::cull_set::DescriptorSet>,
+    pub workgroup_size: u32,
+    shader: Shader,
 }
 
 // Internal storage for cleanup purposes
 pub struct CullPassDataPrivate {
     previous_run_command_buffer: DoubleBuffered<Option<CommandBuffer>>, // to clean it up
+    previous_cull_pipeline: DoubleBuffered<Option<Arc<Pipeline>>>,
+    previous_workgroup_size: u32,
 }
+
+const INITIAL_WORKGROUP_SIZE: u32 = 512;
 
 pub struct CullPassEvent {
     pub cull_complete_event: DoubleBuffered<Mutex<Event>>,
@@ -74,6 +81,8 @@ impl CullPassDataPrivate {
     pub fn new(renderer: &RenderFrame) -> CullPassDataPrivate {
         CullPassDataPrivate {
             previous_run_command_buffer: renderer.new_buffered(|_| None),
+            previous_cull_pipeline: renderer.new_buffered(|_| None),
+            previous_workgroup_size: INITIAL_WORKGROUP_SIZE,
         }
     }
 }
@@ -97,16 +106,19 @@ impl CullPassData {
             &camera_matrices.set_layout,
             &cull_set_layout,
         );
-        use std::io::Read;
+
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv");
-        let file = std::fs::File::open(path).expect("Could not find shader.");
-        let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-        let module = spirv_reflect::create_shader_module(&bytes).unwrap();
-        debug_assert!(super::super::shaders::generate_work::verify_spirv(&module));
-        let cull_pipeline = helpers::new_compute_pipeline(
-            Arc::clone(&device),
+        let shader = renderer.device.new_shader(
+            &path,
+            |_| true, // TODO: spirv_reflect fails to load with spec const present - super::super::shaders::generate_work::load_and_verify_spirv,
+        );
+
+        let cull_pipeline = CullPassData::create_pipeline(
+            renderer,
+            &shader,
+            INITIAL_WORKGROUP_SIZE,
             &cull_pipeline_layout.layout,
-            &PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv"),
+            None,
         );
 
         let culled_index_buffer = renderer.new_buffered(|ix| {
@@ -145,11 +157,87 @@ impl CullPassData {
         CullPassData {
             culled_commands_buffer,
             culled_index_buffer,
-            cull_pipeline,
+            cull_pipeline: Arc::new(cull_pipeline),
             cull_pipeline_layout,
             cull_set_layout,
             cull_set,
+            workgroup_size: INITIAL_WORKGROUP_SIZE,
+            shader,
         }
+    }
+
+    fn configure_pipeline(
+        renderer: &RenderFrame,
+        cull_pass_data: &mut CullPassData,
+        cull_pass_data_private: &mut CullPassDataPrivate,
+        image_index: &ImageIndex,
+    ) {
+        if cull_pass_data.workgroup_size != cull_pass_data_private.previous_workgroup_size {
+            let cull_pipeline = CullPassData::create_pipeline(
+                renderer,
+                &cull_pass_data.shader,
+                cull_pass_data.workgroup_size,
+                &cull_pass_data.cull_pipeline_layout.layout,
+                Some(&cull_pass_data.cull_pipeline),
+            );
+
+            *cull_pass_data_private
+                .previous_cull_pipeline
+                .current_mut(image_index.0) = Some(Arc::clone(&cull_pass_data.cull_pipeline));
+            cull_pass_data.cull_pipeline = Arc::new(cull_pipeline);
+            cull_pass_data_private.previous_workgroup_size = cull_pass_data.workgroup_size;
+        } else {
+            // potentially destroy unused pipeline
+            *cull_pass_data_private
+                .previous_cull_pipeline
+                .current_mut(image_index.0) = None;
+        }
+    }
+
+    fn create_pipeline(
+        renderer: &RenderFrame,
+        shader: &Shader,
+        workgroup_size: u32,
+        layout: &PipelineLayout,
+        base_pipeline: Option<&Pipeline>,
+    ) -> Pipeline {
+        let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
+        let spec_map = &[vk::SpecializationMapEntry::builder()
+            .constant_id(1)
+            .offset(0)
+            .size(size_of::<u32>())
+            .build()];
+        let values = &[workgroup_size];
+        let (left, spec_data, right) = unsafe { values.align_to() };
+        assert!(
+            left.is_empty() && right.is_empty(),
+            "spec constant alignment failed"
+        );
+        let spec_info = vk::SpecializationInfo::builder()
+            .map_entries(spec_map)
+            .data(spec_data);
+        helpers::new_compute_pipelines(
+            Arc::clone(&renderer.device),
+            &[vk::ComputePipelineCreateInfo::builder()
+                .stage(
+                    vk::PipelineShaderStageCreateInfo::builder()
+                        .module(shader.vk())
+                        .name(&shader_entry_name)
+                        .stage(vk::ShaderStageFlags::COMPUTE)
+                        .specialization_info(&spec_info)
+                        .build(),
+                )
+                .layout(layout.handle)
+                .flags(vk::PipelineCreateFlags::ALLOW_DERIVATIVES)
+                .base_pipeline_handle(
+                    base_pipeline
+                        .map(|pipe| pipe.handle)
+                        .unwrap_or_else(vk::Pipeline::null),
+                )],
+        )
+        .into_iter()
+        .next()
+        .unwrap()
     }
 }
 
@@ -157,7 +245,7 @@ impl CullPass {
     pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
         SystemBuilder::<()>::new("CullPass")
             .read_resource::<RenderFrame>()
-            .read_resource::<CullPassData>()
+            .write_resource::<CullPassData>()
             .write_resource::<CullPassDataPrivate>()
             .read_resource::<RuntimeConfiguration>()
             .read_resource::<ImageIndex>()
@@ -169,7 +257,7 @@ impl CullPass {
             .build(move |_commands, world, resources, query| {
                 let (
                     ref renderer,
-                    ref cull_pass_data,
+                    ref mut cull_pass_data,
                     ref mut cull_pass_data_private,
                     ref runtime_config,
                     ref image_index,
@@ -180,6 +268,13 @@ impl CullPass {
                 ) = resources;
                 #[cfg(feature = "microprofile")]
                 microprofile::scope!("ecs", "cull pass");
+
+                CullPassData::configure_pipeline(
+                    &renderer,
+                    cull_pass_data,
+                    cull_pass_data_private,
+                    &image_index,
+                );
 
                 if runtime_config.debug_aabbs {
                     let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
@@ -311,9 +406,23 @@ impl CullPass {
                             &push_constants,
                         );
                         let index_len = *index_len as u32;
-                        let workgroup_size = 512; // TODO: make a specialization constant, not hardcoded
+                        let workgroup_size = cull_pass_data.workgroup_size;
                         let workgroup_count =
                             index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
+                        debug_assert!(
+                            renderer.device.limits.max_compute_work_group_count[0]
+                                >= workgroup_count,
+                            "max_compute_work_group_count[0] violated"
+                        );
+                        debug_assert!(
+                            renderer.device.limits.max_compute_work_group_invocations
+                                >= workgroup_size,
+                            "max_compute_work_group_invocations violated"
+                        );
+                        debug_assert!(
+                            renderer.device.limits.max_compute_work_group_size[0] >= workgroup_size,
+                            "max_compute_work_group_size[0] violated"
+                        );
                         renderer
                             .device
                             .cmd_dispatch(*cull_cb, workgroup_count, 1, 1);

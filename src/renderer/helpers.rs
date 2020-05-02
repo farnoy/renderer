@@ -171,6 +171,24 @@ pub fn new_graphics_pipeline2(
     }
 }
 
+pub fn new_graphics_pipelines(
+    device: Arc<Device>,
+    create_infos: &[vk::GraphicsPipelineCreateInfo],
+) -> Vec<Pipeline> {
+    unsafe {
+        device
+            .device
+            .create_graphics_pipelines(vk::PipelineCache::null(), create_infos, None)
+            .expect("Unable to create graphics pipelines")
+            .into_iter()
+            .map(|handle| Pipeline {
+                handle,
+                device: Arc::clone(&device),
+            })
+            .collect()
+    }
+}
+
 pub fn new_compute_pipeline(
     device: Arc<Device>,
     pipeline_layout: &PipelineLayout,
@@ -214,6 +232,28 @@ pub fn new_compute_pipeline(
     Pipeline {
         handle: pipelines[0],
         device,
+    }
+}
+
+pub fn new_compute_pipelines(
+    device: Arc<Device>,
+    create_infos: &[vk::ComputePipelineCreateInfoBuilder<'_>],
+) -> Vec<Pipeline> {
+    let infos = create_infos
+        .iter()
+        .map(|builder| **builder)
+        .collect::<Vec<_>>();
+    unsafe {
+        device
+            .device
+            .create_compute_pipelines(vk::PipelineCache::null(), infos.as_slice(), None)
+            .expect("Unable to create compute pipelines")
+            .into_iter()
+            .map(|handle| Pipeline {
+                handle,
+                device: Arc::clone(&device),
+            })
+            .collect()
     }
 }
 
