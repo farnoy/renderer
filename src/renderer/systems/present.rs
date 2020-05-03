@@ -149,9 +149,10 @@ impl PresentFramebuffer {
     ) {
         {
             let wait_values = &[timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW)];
-            let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                .wait_semaphore_values(wait_values)
-                .signal_semaphore_values(wait_values); // only needed because validation layers segfault
+            let mut wait_timeline =
+                vk::TimelineSemaphoreSubmitInfo::builder().wait_semaphore_values(wait_values);
+            // .signal_semaphore_values();
+            // only needed because validation layers segfault... that I fixed on my branch
 
             let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
             let queue = renderer.device.graphics_queue.lock();
