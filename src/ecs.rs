@@ -268,7 +268,7 @@ pub mod systems {
             renderer: &RenderFrame,
             input_handler: &InputHandler,
             swapchain: &Swapchain,
-            camera: &Camera,
+            camera: &mut Camera,
             runtime_config: &mut RuntimeConfiguration,
             cull_pass_data: &mut CullPassData,
         ) -> &'a imgui::DrawData {
@@ -281,6 +281,13 @@ pub mod systems {
             let ui = imgui.frame();
 
             let alloc_stats = renderer.device.allocation_stats();
+            let mut position = [camera.position[0], camera.position[1], camera.position[2]];
+            let (x, y, z) = camera.rotation.euler_angles();
+            let mut rotation = [
+                x * 180.0 / f32::pi(),
+                y * 180.0 / f32::pi(),
+                z * 180.0 / f32::pi(),
+            ];
             imgui::Window::new(im_str!("Debug"))
                 .always_auto_resize(true)
                 .build(&ui, || {
@@ -302,6 +309,7 @@ pub mod systems {
                         .default_open(true)
                         .build()
                     {
+                        ui.set_next_item_width(100.0);
                         imgui::Slider::new(
                             im_str!("Compute cull workgroup size"),
                             1..=renderer.device.limits.max_compute_work_group_size[0],
@@ -314,30 +322,34 @@ pub mod systems {
                         .default_open(true)
                         .build()
                     {
-                        ui.text(&im_str!("Camera:"));
-                        let x = camera.position.x;
-                        let y = camera.position.y;
-                        let z = camera.position.z;
-                        let s = format!("position: x={:.2} y={:.2} z={:.2}", x, y, z);
-                        ui.bullet_text(&im_str!("{}", s));
-                        let (x, y, z) = camera.rotation.euler_angles();
-                        let (x, y, z) = (
-                            x * 180.0 / f32::pi(),
-                            y * 180.0 / f32::pi(),
-                            z * 180.0 / f32::pi(),
-                        );
-                        let s = format!("rotation: x={:5.2} y={:5.2} z={:5.2}", x, y, z);
-                        ui.bullet_text(&im_str!("{}", s));
+                        ui.input_float3(&im_str!("position"), &mut position).build();
+                        ui.input_float3(&im_str!("rotation"), &mut rotation).build();
+                        ui.checkbox(&im_str!("[G] Fly mode"), &mut runtime_config.fly_mode);
+                    }
+
+                    if ui
+                        .collapsing_header(&im_str!("Debug options"))
+                        .default_open(true)
+                        .build()
+                    {
                         ui.checkbox(
-                            &im_str!("[G] Camera fly mode"),
-                            &mut runtime_config.fly_mode,
+                            &im_str!("Debug collision AABBs"),
+                            &mut runtime_config.debug_aabbs,
                         );
                     }
-                    ui.checkbox(
-                        &im_str!("Debug collision AABBs"),
-                        &mut runtime_config.debug_aabbs,
-                    );
                 });
+
+            camera.position = position.into();
+            camera.rotation = na::UnitQuaternion::from_euler_angles(
+                rotation[0] * f32::pi() / 180.0,
+                rotation[1] * f32::pi() / 180.0,
+                rotation[2] * f32::pi() / 180.0,
+            );
+            cull_pass_data.workgroup_size = na::clamp(
+                cull_pass_data.workgroup_size,
+                1,
+                renderer.device.limits.max_compute_work_group_size[0],
+            );
 
             input_handler
                 .imgui_platform

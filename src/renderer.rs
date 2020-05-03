@@ -1312,7 +1312,7 @@ impl GuiRender {
             .write_resource::<CullPassData>()
             .read_resource::<MainFramebuffer>()
             .read_resource::<Swapchain>()
-            .read_resource::<Camera>()
+            .write_resource::<Camera>()
             .with_query(<Read<AABB>>::query())
             .build_thread_local(move |_commands, _world, resources, _query| {
                 #[cfg(feature = "profiling")]
@@ -1326,14 +1326,14 @@ impl GuiRender {
                     ref mut cull_pass_data,
                     ref main_framebuffer,
                     ref swapchain,
-                    ref camera,
+                    ref mut camera,
                 ) = resources;
                 let mut gui = gui.borrow_mut();
                 let gui_draw_data = gui.update(
                     &renderer,
                     &input_handler.borrow(),
                     &swapchain,
-                    &camera,
+                    &mut *camera,
                     &mut *runtime_config,
                     &mut *cull_pass_data,
                 );
