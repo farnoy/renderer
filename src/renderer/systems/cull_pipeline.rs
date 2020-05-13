@@ -4,6 +4,7 @@ use crate::{
         alloc, compute,
         device::{Buffer, CommandBuffer, DoubleBuffered, Event},
         helpers::{self, pick_lod, Pipeline},
+        shaders::{self, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         timeline_value, CameraMatrices, DrawIndex, GltfMesh, MainDescriptorPool, ModelData,
         Position, RenderFrame, Shader,
@@ -19,7 +20,7 @@ use legion::prelude::*;
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::Mutex;
-use std::{cmp::min, ffi::CStr, mem::size_of, sync::Arc};
+use std::{cmp::min, ffi::CStr, sync::Arc};
 
 // Cull geometry in compute pass
 pub struct CullPass;
@@ -33,11 +34,11 @@ pub struct CoarseCulling;
 pub struct CullPassData {
     pub culled_commands_buffer: DoubleBuffered<Buffer>,
     pub culled_index_buffer: DoubleBuffered<Buffer>,
-    pub cull_pipeline_layout: super::super::shaders::generate_work::PipelineLayout,
+    pub cull_pipeline_layout: generate_work::PipelineLayout,
     pub cull_pipeline: Arc<Pipeline>,
-    pub cull_set_layout: super::super::shaders::cull_set::DescriptorSetLayout,
-    pub cull_set: DoubleBuffered<super::super::shaders::cull_set::DescriptorSet>,
-    pub workgroup_size: u32,
+    pub cull_set_layout: cull_set::DescriptorSetLayout,
+    pub cull_set: DoubleBuffered<cull_set::DescriptorSet>,
+    pub specialization: generate_work::Specialization,
     shader: Shader,
 }
 
@@ -45,7 +46,7 @@ pub struct CullPassData {
 pub struct CullPassDataPrivate {
     previous_run_command_buffer: DoubleBuffered<Option<CommandBuffer>>, // to clean it up
     previous_cull_pipeline: DoubleBuffered<Option<Arc<Pipeline>>>,
-    previous_workgroup_size: u32,
+    previous_specialization: generate_work::Specialization,
 }
 
 const INITIAL_WORKGROUP_SIZE: u32 = 512;
@@ -82,7 +83,9 @@ impl CullPassDataPrivate {
         CullPassDataPrivate {
             previous_run_command_buffer: renderer.new_buffered(|_| None),
             previous_cull_pipeline: renderer.new_buffered(|_| None),
-            previous_workgroup_size: INITIAL_WORKGROUP_SIZE,
+            previous_specialization: generate_work::Specialization {
+                local_workgroup_size: INITIAL_WORKGROUP_SIZE,
+            },
         }
     }
 }
@@ -96,11 +99,10 @@ impl CullPassData {
     ) -> CullPassData {
         let device = &renderer.device;
 
-        let cull_set_layout =
-            super::super::shaders::cull_set::DescriptorSetLayout::new(&renderer.device);
+        let cull_set_layout = cull_set::DescriptorSetLayout::new(&renderer.device);
         device.set_object_name(cull_set_layout.layout.handle, "Cull Descriptor Set Layout");
 
-        let cull_pipeline_layout = super::super::shaders::generate_work::PipelineLayout::new(
+        let cull_pipeline_layout = generate_work::PipelineLayout::new(
             &device,
             &model_data.model_set_layout,
             &camera_matrices.set_layout,
@@ -110,13 +112,17 @@ impl CullPassData {
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv");
         let shader = renderer.device.new_shader(
             &path,
-            |_| true, // TODO: spirv_reflect fails to load with spec const present - super::super::shaders::generate_work::load_and_verify_spirv,
+            |_| true, // TODO: spirv_reflect fails to load with spec const present - generate_work::load_and_verify_spirv,
         );
+
+        let specialization = generate_work::Specialization {
+            local_workgroup_size: INITIAL_WORKGROUP_SIZE,
+        };
 
         let cull_pipeline = CullPassData::create_pipeline(
             renderer,
             &shader,
-            INITIAL_WORKGROUP_SIZE,
+            &specialization,
             &cull_pipeline_layout.layout,
             None,
         );
@@ -125,7 +131,7 @@ impl CullPassData {
             let b = device.new_buffer(
                 vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                super::super::shaders::cull_set::bindings::out_index_buffer::SIZE,
+                cull_set::bindings::out_index_buffer::SIZE,
             );
             device.set_object_name(b.handle, &format!("Global culled index buffer - {}", ix));
             b
@@ -137,17 +143,14 @@ impl CullPassData {
                     | vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_DST,
                 alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                super::super::shaders::cull_set::bindings::indirect_commands::SIZE,
+                cull_set::bindings::indirect_commands::SIZE,
             );
             device.set_object_name(b.handle, &format!("indirect draw commands buffer - {}", ix));
             b
         });
 
         let cull_set = renderer.new_buffered(|ix| {
-            let s = super::super::shaders::cull_set::DescriptorSet::new(
-                &main_descriptor_pool,
-                &cull_set_layout,
-            );
+            let s = cull_set::DescriptorSet::new(&main_descriptor_pool, &cull_set_layout);
             device.set_object_name(s.set.handle, &format!("Cull Descriptor Set - {}", ix));
             s.update_whole_buffer(&renderer, 0, &culled_commands_buffer.current(ix));
             s.update_whole_buffer(&renderer, 1, &culled_index_buffer.current(ix));
@@ -161,7 +164,7 @@ impl CullPassData {
             cull_pipeline_layout,
             cull_set_layout,
             cull_set,
-            workgroup_size: INITIAL_WORKGROUP_SIZE,
+            specialization,
             shader,
         }
     }
@@ -172,11 +175,11 @@ impl CullPassData {
         cull_pass_data_private: &mut CullPassDataPrivate,
         image_index: &ImageIndex,
     ) {
-        if cull_pass_data.workgroup_size != cull_pass_data_private.previous_workgroup_size {
+        if cull_pass_data.specialization != cull_pass_data_private.previous_specialization {
             let cull_pipeline = CullPassData::create_pipeline(
                 renderer,
                 &cull_pass_data.shader,
-                cull_pass_data.workgroup_size,
+                &cull_pass_data.specialization,
                 &cull_pass_data.cull_pipeline_layout.layout,
                 Some(&cull_pass_data.cull_pipeline),
             );
@@ -185,7 +188,7 @@ impl CullPassData {
                 .previous_cull_pipeline
                 .current_mut(image_index.0) = Some(Arc::clone(&cull_pass_data.cull_pipeline));
             cull_pass_data.cull_pipeline = Arc::new(cull_pipeline);
-            cull_pass_data_private.previous_workgroup_size = cull_pass_data.workgroup_size;
+            cull_pass_data_private.previous_specialization = cull_pass_data.specialization.clone();
         } else {
             // potentially destroy unused pipeline
             *cull_pass_data_private
@@ -197,26 +200,13 @@ impl CullPassData {
     fn create_pipeline(
         renderer: &RenderFrame,
         shader: &Shader,
-        workgroup_size: u32,
+        spec: &generate_work::Specialization,
         layout: &PipelineLayout,
         base_pipeline: Option<&Pipeline>,
     ) -> Pipeline {
         let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
-        let spec_map = &[vk::SpecializationMapEntry::builder()
-            .constant_id(1)
-            .offset(0)
-            .size(size_of::<u32>())
-            .build()];
-        let values = &[workgroup_size];
-        let (left, spec_data, right) = unsafe { values.align_to() };
-        assert!(
-            left.is_empty() && right.is_empty(),
-            "spec constant alignment failed"
-        );
-        let spec_info = vk::SpecializationInfo::builder()
-            .map_entries(spec_map)
-            .data(spec_data);
-        helpers::new_compute_pipelines(
+        let spec_info = spec.get_spec_info();
+        let pipe = helpers::new_compute_pipelines(
             Arc::clone(&renderer.device),
             &[vk::ComputePipelineCreateInfo::builder()
                 .stage(
@@ -237,7 +227,13 @@ impl CullPassData {
         )
         .into_iter()
         .next()
-        .unwrap()
+        .unwrap();
+
+        renderer
+            .device
+            .set_object_name(pipe.handle, "Cull Descriptor Pipeline");
+
+        pipe
     }
 }
 
@@ -339,7 +335,6 @@ impl CullPass {
                     );
                     // Clear the command buffer before using
                     {
-                        use crate::renderer::shaders::cull_set;
                         let commands_buffer =
                             cull_pass_data.culled_commands_buffer.current(image_index.0);
                         renderer.device.cmd_fill_buffer(
@@ -390,7 +385,7 @@ impl CullPass {
                             .get(&index_buffer.handle.as_raw())
                             .expect("Index buffer not consolidated");
 
-                        let push_constants = super::super::shaders::GenerateWorkPushConstants {
+                        let push_constants = shaders::GenerateWorkPushConstants {
                             gltf_index: draw_index.0,
                             index_count: index_len.to_u32().unwrap(),
                             index_offset: index_offset.to_u32().unwrap(),
@@ -406,7 +401,7 @@ impl CullPass {
                             &push_constants,
                         );
                         let index_len = *index_len as u32;
-                        let workgroup_size = cull_pass_data.workgroup_size;
+                        let workgroup_size = cull_pass_data.specialization.local_workgroup_size;
                         let workgroup_count =
                             index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
                         debug_assert!(

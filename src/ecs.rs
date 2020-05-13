@@ -314,7 +314,7 @@ pub mod systems {
                             im_str!("Compute cull workgroup size"),
                             1..=renderer.device.limits.max_compute_work_group_size[0],
                         )
-                        .build(&ui, &mut cull_pass_data.workgroup_size);
+                        .build(&ui, &mut cull_pass_data.specialization.local_workgroup_size);
                     }
 
                     if ui
@@ -345,8 +345,8 @@ pub mod systems {
                 rotation[1] * f32::pi() / 180.0,
                 rotation[2] * f32::pi() / 180.0,
             );
-            cull_pass_data.workgroup_size = na::clamp(
-                cull_pass_data.workgroup_size,
+            cull_pass_data.specialization.local_workgroup_size = na::clamp(
+                cull_pass_data.specialization.local_workgroup_size,
                 1,
                 renderer.device.limits.max_compute_work_group_size[0],
             );

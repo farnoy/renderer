@@ -4,6 +4,9 @@
 #![feature(const_int_pow)]
 #![allow(clippy::new_without_default)]
 
+#[macro_use]
+extern crate lazy_static;
+
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
 

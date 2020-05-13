@@ -280,13 +280,53 @@ macro_rules! make_pipe {
                 .vertex_binding_descriptions(&BINDING_DESCS)
         }
     };
-    ($name:ident { compute, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)?}) => {
-        make_pipe!(@main $name { vertex_inputs: [], compute: true, descriptors: [$($desc),*] $(, push_constants: $push)?});
+    (@count []) => { 0 };
+    (@count [$x:expr $(, $rest:expr),*]) => { 1 + make_pipe!(@count [$($rest),*]) };
+    (@spec_consts [$($id:expr => $name:ident : $ty:ty),*]) => {
+        use std::{mem::size_of, slice::from_raw_parts};
+        use memoffset::offset_of;
+
+        #[repr(C)]
+        #[derive(PartialEq, Clone)]
+        pub struct Specialization {
+            $(
+                pub $name : $ty,
+            )*
+        }
+
+        lazy_static! {
+            pub static ref SPEC_MAP: [vk::SpecializationMapEntry; make_pipe!(@count [$($id),*])] = [
+                $(
+                    vk::SpecializationMapEntry::builder()
+                    .constant_id($id)
+                    .offset(offset_of!(Specialization, $name) as u32)
+                    .size(size_of::<$ty>())
+                    .build()
+                ),*
+            ];
+        }
+
+        impl Specialization {
+            pub fn get_spec_info(&self) -> vk::SpecializationInfo {
+                let (left, spec_data, right) = unsafe { from_raw_parts(self as *const Specialization, 1).align_to::<u8>() };
+                assert!(
+                    left.is_empty() && right.is_empty(),
+                    "spec constant alignment failed"
+                );
+                vk::SpecializationInfo::builder()
+                    .map_entries(&*SPEC_MAP)
+                    .data(spec_data)
+                    .build()
+            }
+        }
+    };
+    ($name:ident { compute, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)? $(, specialization_constants: $spec_const:tt)?}) => {
+        make_pipe!(@main $name { vertex_inputs: [], compute: true, descriptors: [$($desc),*] $(, push_constants: $push)? $(, specialization_constants: $spec_const)?});
     };
     ($name:ident { vertex_inputs: $vertex_inputs:tt, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)?}) => {
         make_pipe!(@main $name { vertex_inputs: $vertex_inputs, compute: false, descriptors: [$($desc),*] $(, push_constants: $push)?});
     };
-    (@main $name:ident { vertex_inputs: $vertex_inputs:tt, compute: $compute:expr, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)?}) => {
+    (@main $name:ident { vertex_inputs: $vertex_inputs:tt, compute: $compute:expr, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)? $(, specialization_constants: $spec_const:tt)?}) => {
         pub mod $name {
             use ash::{version::DeviceV1_0, vk};
             use std::sync::Arc;
@@ -349,6 +389,9 @@ macro_rules! make_pipe {
             }
 
             make_pipe!(@vertex_descs $vertex_inputs);
+            $(
+                make_pipe!(@spec_consts $spec_const);
+            )?
 
             pub struct PipelineLayout {
                 pub layout: super::super::PipelineLayout,
@@ -387,8 +430,7 @@ macro_rules! make_pipe {
                     $(
                         unsafe {
                             let casted: &[u8] = std::slice::from_raw_parts(
-                                push_constants as *const _ as *const u8,
-                                std::mem::size_of::<super::$push>(),
+                                push_constants as *const _ as *const u8, std::mem::size_of::<super::$push>(),
                             );
                             device.cmd_push_constants(
                                 command_buffer,
@@ -507,7 +549,8 @@ pub struct GenerateWorkPushConstants {
 make_pipe!(generate_work {
     compute,
     descriptors: [model_set, camera_set, cull_set],
-    push_constants: GenerateWorkPushConstants
+    push_constants: GenerateWorkPushConstants,
+    specialization_constants: [1 => local_workgroup_size: u32]
 });
 
 make_pipe!(depth_pipe {
