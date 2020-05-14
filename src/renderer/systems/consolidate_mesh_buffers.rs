@@ -268,10 +268,7 @@ impl ConsolidateMeshBuffers {
                         .semaphore(consolidated_mesh_buffers.sync_timeline.handle)
                         .value(timeline_value!(sync @ renderer.frame_number => CONSOLIDATE));
                     unsafe {
-                        renderer
-                            .device
-                            .signal_semaphore(renderer.device.handle(), &*signal_info)
-                            .unwrap();
+                        renderer.device.signal_semaphore(&*signal_info).unwrap();
                     }
                     consolidated_mesh_buffers.previous_run_command_buffer = None;
                     // potentially destroys the previous one

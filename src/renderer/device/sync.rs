@@ -85,23 +85,16 @@ impl TimelineSemaphore {
         let wait_info = vk::SemaphoreWaitInfo::builder()
             .semaphores(wait_semaphores)
             .values(wait_ixes);
-        unsafe {
-            self.device
-                .wait_semaphores(self.device.handle(), &wait_info, std::u64::MAX)
-        }
+        unsafe { self.device.wait_semaphores(&wait_info, std::u64::MAX) }
     }
 
     pub fn value(&self) -> ash::prelude::VkResult<u64> {
-        unsafe {
-            self.device
-                .get_semaphore_counter_value(self.device.handle(), self.handle)
-        }
+        unsafe { self.device.get_semaphore_counter_value(self.handle) }
     }
 
     pub fn signal(&self, value: u64) -> ash::prelude::VkResult<()> {
         unsafe {
             self.device.signal_semaphore(
-                self.device.handle(),
                 &vk::SemaphoreSignalInfo::builder()
                     .semaphore(self.handle)
                     .value(value),
