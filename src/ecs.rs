@@ -325,7 +325,6 @@ pub mod systems {
                         ui.checkbox(&im_str!("[G] Fly mode"), &mut runtime_config.fly_mode);
                     }
 
-
                     if imgui::CollapsingHeader::new(&im_str!("Debug options"))
                         .default_open(true)
                         .build(&ui)
