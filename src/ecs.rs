@@ -304,10 +304,9 @@ pub mod systems {
 
                     ui.spacing();
 
-                    if ui
-                        .collapsing_header(&im_str!("Shader settings"))
+                    if imgui::CollapsingHeader::new(&im_str!("Shader settings"))
                         .default_open(true)
-                        .build()
+                        .build(&ui)
                     {
                         ui.set_next_item_width(100.0);
                         imgui::Slider::new(
@@ -317,20 +316,19 @@ pub mod systems {
                         .build(&ui, &mut cull_pass_data.specialization.local_workgroup_size);
                     }
 
-                    if ui
-                        .collapsing_header(&im_str!("Camera"))
+                    if imgui::CollapsingHeader::new(&im_str!("Camera"))
                         .default_open(true)
-                        .build()
+                        .build(&ui)
                     {
                         ui.input_float3(&im_str!("position"), &mut position).build();
                         ui.input_float3(&im_str!("rotation"), &mut rotation).build();
                         ui.checkbox(&im_str!("[G] Fly mode"), &mut runtime_config.fly_mode);
                     }
 
-                    if ui
-                        .collapsing_header(&im_str!("Debug options"))
+
+                    if imgui::CollapsingHeader::new(&im_str!("Debug options"))
                         .default_open(true)
-                        .build()
+                        .build(&ui)
                     {
                         ui.checkbox(
                             &im_str!("Debug collision AABBs"),
