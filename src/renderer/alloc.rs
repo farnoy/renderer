@@ -7,7 +7,7 @@ use ash::{
 };
 use std::{
     ffi::CStr,
-    mem::{self, transmute},
+    mem::{self, transmute, MaybeUninit},
     ptr,
 };
 
@@ -292,19 +292,23 @@ pub fn create_buffer(
     allocation_create_info: &VmaAllocationCreateInfo,
 ) -> prelude::VkResult<(vk::Buffer, VmaAllocation, VmaAllocationInfo)> {
     unsafe {
-        let mut buffer = vk::Buffer::null();
-        let mut allocation: VmaAllocation = VmaAllocation(ptr::null_mut());
-        let mut info: VmaAllocationInfo = mem::zeroed();
+        let mut buffer = MaybeUninit::<vk::Buffer>::uninit();
+        let mut allocation = MaybeUninit::<VmaAllocation>::uninit();
+        let mut info = MaybeUninit::<VmaAllocationInfo>::uninit();
         let err_code = vmaCreateBuffer(
             allocator,
             buffer_create_info as *const _,
             allocation_create_info as *const _,
-            &mut buffer as *mut _,
-            &mut allocation as *mut _,
-            &mut info as *mut _,
+            buffer.as_mut_ptr(),
+            allocation.as_mut_ptr(),
+            info.as_mut_ptr(),
         );
         match err_code {
-            vk::Result::SUCCESS => Ok((buffer, allocation, info)),
+            vk::Result::SUCCESS => Ok((
+                buffer.assume_init(),
+                allocation.assume_init(),
+                info.assume_init(),
+            )),
             _ => Err(err_code),
         }
     }
@@ -320,19 +324,23 @@ pub fn create_image(
     allocation_create_info: &VmaAllocationCreateInfo,
 ) -> prelude::VkResult<(vk::Image, VmaAllocation, VmaAllocationInfo)> {
     unsafe {
-        let mut image = vk::Image::null();
-        let mut allocation: VmaAllocation = VmaAllocation(ptr::null_mut());
-        let mut info: VmaAllocationInfo = mem::zeroed();
+        let mut image = MaybeUninit::<vk::Image>::uninit();
+        let mut allocation = MaybeUninit::<VmaAllocation>::uninit();
+        let mut info = MaybeUninit::<VmaAllocationInfo>::uninit();
         let err_code = vmaCreateImage(
             allocator,
             image_create_info as *const _,
             allocation_create_info as *const _,
-            &mut image as *mut _,
-            &mut allocation as *mut _,
-            &mut info as *mut _,
+            image.as_mut_ptr(),
+            allocation.as_mut_ptr(),
+            info.as_mut_ptr(),
         );
         match err_code {
-            vk::Result::SUCCESS => Ok((image, allocation, info)),
+            vk::Result::SUCCESS => Ok((
+                image.assume_init(),
+                allocation.assume_init(),
+                info.assume_init(),
+            )),
             _ => Err(err_code),
         }
     }
