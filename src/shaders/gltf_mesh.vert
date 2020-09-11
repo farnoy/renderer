@@ -32,7 +32,7 @@ void main() {
     // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
     o_normal = transpose(inverse(mat3(model[entity_id]))) * normal;
     o_world_pos = vec3(model[entity_id] * vec4(position, 1.0));
-    gl_Position = camera.projection * camera.view * vec4(o_world_pos, 1.0);
+    gl_Position = camera.projection * camera.view * model[entity_id] * vec4(position, 1.0);
     o_uv = uv;
     o_entity_id = entity_id;
     for (uint ix = 0; ix < 2; ix++) {

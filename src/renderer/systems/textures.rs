@@ -8,7 +8,7 @@ use crate::{
     timeline_value,
 };
 use ash::{version::DeviceV1_0, vk};
-use legion::prelude::*;
+use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 // Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
@@ -69,82 +69,73 @@ impl BaseColorDescriptorSet {
     }
 }
 
-impl SynchronizeBaseColorTextures {
-    pub fn visit_system() -> Box<(dyn Schedulable + 'static)> {
-        SystemBuilder::<()>::new("SynchronizeBaseColorTextures - visit")
-            .read_resource::<RenderFrame>()
-            .with_query(
-                <(Read<GltfMeshBaseColorTexture>,)>::query()
-                    .filter(!component::<BaseColorVisitedMarker>()),
-            )
-            .build(move |commands, world, ref renderer, ref mut query| {
-                for (entity, (base_color,)) in query.iter_entities(&world) {
-                    let image_view = helpers::new_image_view(
-                        renderer.device.clone(),
-                        &vk::ImageViewCreateInfo::builder()
-                            .components(
-                                vk::ComponentMapping::builder()
-                                    .r(vk::ComponentSwizzle::IDENTITY)
-                                    .g(vk::ComponentSwizzle::IDENTITY)
-                                    .b(vk::ComponentSwizzle::IDENTITY)
-                                    .a(vk::ComponentSwizzle::IDENTITY)
-                                    .build(),
-                            )
-                            .image(base_color.0.handle)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(vk::Format::R8G8B8A8_UNORM)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: 1,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                            }),
-                    );
-                    commands.add_component(entity, BaseColorVisitedMarker { image_view });
-                }
-            })
+pub fn synchronize_base_color_textures_visit(
+    mut commands: Commands,
+    renderer: Res<RenderFrame>,
+    mut query: Query<Without<BaseColorVisitedMarker, (Entity, &GltfMeshBaseColorTexture)>>,
+) {
+    for (entity, base_color) in &mut query.iter() {
+        let image_view = helpers::new_image_view(
+            renderer.device.clone(),
+            &vk::ImageViewCreateInfo::builder()
+                .components(
+                    vk::ComponentMapping::builder()
+                        .r(vk::ComponentSwizzle::IDENTITY)
+                        .g(vk::ComponentSwizzle::IDENTITY)
+                        .b(vk::ComponentSwizzle::IDENTITY)
+                        .a(vk::ComponentSwizzle::IDENTITY)
+                        .build(),
+                )
+                .image(base_color.0.handle)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                }),
+        );
+        commands.insert_one(entity, BaseColorVisitedMarker { image_view });
     }
+}
 
-    pub fn consolidate_system() -> Box<(dyn Schedulable + 'static)> {
-        SystemBuilder::<()>::new("SynchronizeBaseColorTextures - visit")
-            .read_resource::<RenderFrame>()
-            .read_resource::<ImageIndex>()
-            .write_resource::<BaseColorDescriptorSet>()
-            .with_query(<(Read<DrawIndex>, Read<BaseColorVisitedMarker>)>::query())
-            .build(move |_commands, world, resources, ref mut query| {
-                let (ref renderer, ref image_index, ref mut base_color_descriptor_set) = resources;
-                // wait on last frame completion
-                renderer
-                    .graphics_timeline_semaphore
-                    .wait(timeline_value!(graphics_sync @ renderer.frame_number.saturating_sub(2) => GUI_DRAW))
-                    .unwrap();
+#[allow(unused_mut)]
+pub fn synchronize_base_color_textures_consolidate(
+    renderer: Res<RenderFrame>,
+    image_index: Res<ImageIndex>,
+    mut base_color_descriptor_set: ResMut<BaseColorDescriptorSet>,
+    mut query: Query<(&DrawIndex, &BaseColorVisitedMarker)>,
+) {
+    renderer
+        .graphics_timeline_semaphore
+        .wait(timeline_value!(graphics_sync @ previous image_index; of renderer => GUI_DRAW))
+        .unwrap();
 
-                for (ref draw_id, ref marker) in query.iter(&world) {
-                    let sampler_updates = &[vk::DescriptorImageInfo::builder()
-                        .image_view(marker.image_view.handle)
-                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .sampler(base_color_descriptor_set.sampler.handle)
-                        .build()];
-                    unsafe {
-                        renderer.device.device.update_descriptor_sets(
-                            &[vk::WriteDescriptorSet::builder()
-                                .dst_set(
-                                    base_color_descriptor_set
-                                        .set
-                                        .current(image_index.0)
-                                        .set
-                                        .handle,
-                                )
-                                .dst_binding(0)
-                                .dst_array_element(draw_id.0)
-                                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                .image_info(sampler_updates)
-                                .build()],
-                            &[],
-                        );
-                    }
-                }
-            })
+    for (draw_id, marker) in &mut query.iter() {
+        let sampler_updates = &[vk::DescriptorImageInfo::builder()
+            .image_view(marker.image_view.handle)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .sampler(base_color_descriptor_set.sampler.handle)
+            .build()];
+        unsafe {
+            renderer.device.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::builder()
+                    .dst_set(
+                        base_color_descriptor_set
+                            .set
+                            .current(image_index.0)
+                            .set
+                            .handle,
+                    )
+                    .dst_binding(0)
+                    .dst_array_element(draw_id.0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(sampler_updates)
+                    .build()],
+                &[],
+            );
+        }
     }
 }

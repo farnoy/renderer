@@ -4,3 +4,6 @@
 [submodule "vendor/VulkanMemoryAllocator"]
 	path = vendor/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "vendor/bevy"]
+	path = vendor/bevy
+	url = https://github.com/farnoy/bevy.git

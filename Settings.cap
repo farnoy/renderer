@@ -1,7 +1,7 @@
 {
     "rdocCaptureSettings": 1,
     "settings": {
-        "autoStart": true,
+        "autoStart": false,
         "commandLine": "",
         "environment": [
             {
@@ -27,7 +27,7 @@
             "refAllResources": false,
             "verifyBufferAccess": false
         },
-        "queuedFrameCap": 200,
+        "queuedFrameCap": 0,
         "workingDir": "."
     }
 }

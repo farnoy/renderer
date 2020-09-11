@@ -6,7 +6,7 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
-use std::{ops::Deref, path::PathBuf, sync::Arc};
+use std::{marker::PhantomData, ops::Deref, path::PathBuf, sync::Arc};
 
 mod buffer;
 mod commands;
@@ -30,10 +30,10 @@ pub struct Device {
     #[allow(unused)]
     instance: Arc<Instance>,
     pub(super) physical_device: vk::PhysicalDevice,
-    allocator: alloc::VmaAllocator,
+    pub allocator: alloc::VmaAllocator,
     pub limits: vk::PhysicalDeviceLimits,
-    graphics_queue_family: u32,
-    compute_queue_family: u32,
+    pub graphics_queue_family: u32,
+    pub compute_queue_family: u32,
     pub(super) graphics_queue: Mutex<vk::Queue>,
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
@@ -63,6 +63,25 @@ impl Device {
         let queue_families =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        /*
+        unsafe {
+            for format in vk::Format::UNDEFINED.as_raw()..vk::Format::ASTC_12X12_SRGB_BLOCK.as_raw()
+            {
+                let format = vk::Format::from_raw(format);
+                let res = instance.get_physical_device_image_format_properties(
+                    physical_device,
+                    format,
+                    vk::ImageType::TYPE_2D,
+                    vk::ImageTiling::OPTIMAL,
+                    vk::ImageUsageFlags::SAMPLED,
+                    vk::ImageCreateFlags::SPARSE_BINDING & vk::ImageCreateFlags::SPARSE_RESIDENCY,
+                );
+                if let Ok(vk::ImageFormatProperties { ref max_extent, ..}) = res {
+                    dbg!(format, max_extent);
+                }
+            }
+        }
+        */
         let graphics_queue_family = {
             queue_families
                 .iter()
@@ -110,17 +129,16 @@ impl Device {
             None => vec![(graphics_queue_family, 1)],
         };
         let device = {
-            let device_extension_names_raw = [
-                extensions::khr::Swapchain::name().as_ptr(),
-                vk::ExtDescriptorIndexingFn::name().as_ptr(),
-            ];
+            let device_extension_names_raw = [extensions::khr::Swapchain::name().as_ptr()];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
+                // sparse_binding: 1,
+                // sparse_residency_image2_d: 1,
                 depth_bounds: 0,
                 multi_draw_indirect: 1,
                 vertex_pipeline_stores_and_atomics: 1,
-                robust_buffer_access: 1,
+                robust_buffer_access: 1, // TODO: disable at some point?
                 fill_mode_non_solid: 1,
                 draw_indirect_first_instance: 1,
                 shader_storage_buffer_array_dynamic_indexing: 1,
@@ -132,7 +150,8 @@ impl Device {
                 .runtime_descriptor_array(true)
                 .shader_storage_buffer_array_non_uniform_indexing(true)
                 .timeline_semaphore(true)
-                .scalar_block_layout(true);
+                .scalar_block_layout(true)
+                .descriptor_indexing(true);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()
@@ -295,7 +314,7 @@ impl Device {
         &self.device
     }
 
-    #[cfg(feature = "validation")]
+    #[cfg(feature = "vk_names")]
     pub fn set_object_name<T: vk::Handle>(&self, handle: T, name: &str) {
         use std::ffi::CString;
 
@@ -313,10 +332,10 @@ impl Device {
         };
     }
 
-    #[cfg(not(feature = "validation"))]
+    #[cfg(not(feature = "vk_names"))]
     pub fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
 
-    #[cfg(feature = "validation")]
+    #[cfg(feature = "vk_names")]
     pub fn debug_marker_around2<'a>(
         &self,
         command_buffer: &'a RecordingCommandBuffer,
@@ -339,7 +358,7 @@ impl Device {
         }
     }
 
-    #[cfg(not(feature = "validation"))]
+    #[cfg(not(feature = "vk_names"))]
     pub fn debug_marker_around2<'a>(
         &self,
         command_buffer: &'a RecordingCommandBuffer,
@@ -370,7 +389,7 @@ impl Drop for Device {
 
 impl<'a> Drop for DebugMarkerGuard<'a> {
     fn drop(&mut self) {
-        #[cfg(feature = "validation")]
+        #[cfg(feature = "vk_names")]
         unsafe {
             self.command_buffer
                 .pool

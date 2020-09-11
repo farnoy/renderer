@@ -2,13 +2,11 @@
 
 layout (set = 0, binding = 0) uniform sampler2D tex;
 
-layout (location = 0) in struct {
-    vec4 color;
-    vec2 uv;
-} In;
+layout (location = 0) in vec4 color;
+layout (location = 1) in vec2 uv;
 
-layout (location = 0) out vec4 color;
+layout (location = 0) out vec4 out_color;
 
 void main() {
-  color = In.color * texture(tex, In.uv.st);
+  out_color = color * texture(tex, uv.st);
 }

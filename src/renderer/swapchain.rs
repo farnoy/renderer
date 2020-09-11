@@ -81,7 +81,7 @@ impl Swapchain {
                 .unwrap()
         };
         let desired_image_count = na::clamp(
-            2,
+            3,
             surface_capabilities.min_image_count,
             surface_capabilities.max_image_count,
         );
@@ -142,7 +142,7 @@ impl Swapchain {
         };
         println!("resizing surface capabilities {:?}", surface_capabilities);
         let desired_image_count = na::clamp(
-            2,
+            3,
             surface_capabilities.min_image_count,
             surface_capabilities.max_image_count,
         );

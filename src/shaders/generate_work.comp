@@ -66,7 +66,9 @@ void main() {
 
     bool cull = false;
 
-    if (gl_GlobalInvocationID.x < indexCount / 3) {
+    if (gl_GlobalInvocationID.x >= indexCount / 3)
+        return;
+
         uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
         uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
         uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
@@ -148,5 +150,4 @@ void main() {
             out_index_buffer[local_offset][1] = ix1;
             out_index_buffer[local_offset][2] = ix2;
         }
-    }
 }

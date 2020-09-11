@@ -48,6 +48,11 @@ macro_rules! timeline_value {
     ($module:ident @ last $frame_number:expr => $offset:ident) => {
         ($frame_number - 1) * $module::MAX + $module::$offset
     };
+    ($module:ident @ previous $image_index:expr; of $renderer:expr => $offset:ident) => {{
+        let frame_number =
+            $renderer.previous_frame_number_for_swapchain_index[$image_index.0 as usize];
+        frame_number * $module::MAX + $module::$offset
+    }};
     ($module:ident @ $frame_number:expr => $offset:ident) => {
         $frame_number * $module::MAX + $module::$offset
     };

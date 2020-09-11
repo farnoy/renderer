@@ -1,16 +1,20 @@
 extern crate bindgen;
 
+use rayon::prelude::*;
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
 fn main() {
+    let jobserver =
+        unsafe { jobserver::Client::from_env().expect("failed to obtain jobserver from cargo") };
     let src = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let src = Path::new(&src);
     let dest = env::var("OUT_DIR").unwrap();
     let dest = Path::new(&dest);
-    let shaders = [
+    let shaders = &[
         "debug_aabb.frag",
         "debug_aabb.vert",
         "depth_prepass.vert",
@@ -20,9 +24,32 @@ fn main() {
         "gui.frag",
         "gui.vert",
     ];
-    for shader in shaders.iter() {
-        println!("cargo:rerun-if-changed=src/shaders/{}", shader);
+
+    let stale_shaders = shaders
+        .iter()
+        .filter(|shader| {
+            println!("cargo:rerun-if-changed=src/shaders/{}", shader);
+
+            let src_path = src.join(format!("src/shaders/{}", shader));
+            let output_path = dest.join(format!("{}.spv", shader));
+            let src_mtime = fs::metadata(&src_path)
+                .unwrap_or_else(|_| panic!("Shader missing {}", shader))
+                .modified()
+                .unwrap();
+
+            fs::metadata(&output_path)
+                .map(|m| m.modified().unwrap())
+                .map(|dest_mtime| src_mtime > dest_mtime)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+
+    stale_shaders.par_iter().for_each(|shader| {
+        let _job_slot = jobserver.acquire().expect("failed to acquire job slot");
+
+        let src_path = src.join(format!("src/shaders/{}", shader));
         let output_path = dest.join(format!("{}.spv", shader));
+
         let result = Command::new("glslangValidator")
             .args(&[
                 "-C",
@@ -32,21 +59,22 @@ fn main() {
                 "vulkan1.1",
                 "-o",
                 output_path.to_str().unwrap(),
-                format!("{}/src/shaders/{}", src, shader).as_str(),
+                src_path.to_str().unwrap(),
             ])
             .spawn()
             .unwrap()
             .wait()
             .unwrap()
             .success();
-        assert!(result, "failed to compile shader");
-    }
+
+        assert!(result, "failed to compile shader {:?}", &src_path);
+    });
 
     println!("cargo:rustc-link-lib=amd_alloc");
     if cfg!(unix) {
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
-    println!("cargo:rustc-link-search=native={}", src);
+    println!("cargo:rustc-link-search=native={}", src.to_str().unwrap());
     println!("cargo:rerun-if-changed=wrapper.h");
 
     let bindings = bindgen::Builder::default()
@@ -54,6 +82,7 @@ fn main() {
         .derive_debug(true)
         .derive_default(true)
         .generate_comments(false)
+        .layout_tests(false)
         .clang_arg("-x")
         .clang_arg("c++")
         .clang_arg("-std=c++14")
@@ -73,6 +102,7 @@ fn main() {
         .bitfield_enum("VmaAllocationCreateFlagBits")
         .rustified_enum("VmaMemoryUsage")
         .whitelist_function("vmaCalculateStats")
+        .whitelist_function("vmaAllocateMemoryPages")
         .whitelist_function("vmaCreateAllocator")
         .whitelist_function("vmaDestroyAllocator")
         .whitelist_function("vmaSetCurrentFrameIndex")
@@ -97,6 +127,9 @@ fn main() {
         .blacklist_type("VkStructureType")
         .blacklist_type("VkDeviceMemory")
         .blacklist_type("VkDevice")
+        .blacklist_type("VkMemoryRequirements")
+        .blacklist_type("VkMemoryRequirements2")
+        .new_type_alias("VkMemoryRequirements")
         .blacklist_type("VkPhysicalDevice")
         .generate()
         .expect("Unable to generate bindings");

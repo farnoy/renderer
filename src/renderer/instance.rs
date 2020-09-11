@@ -4,7 +4,7 @@ use ash::{
     version::{EntryV1_0, InstanceV1_0},
     vk,
 };
-#[cfg(feature = "validation")]
+#[cfg(feature = "vk_names")]
 use std::borrow::Cow;
 use std::{ffi::CString, ops::Deref, sync::Arc};
 
@@ -20,13 +20,13 @@ pub struct Instance {
     debug: Debug,
 }
 
-#[cfg(feature = "validation")]
+#[cfg(feature = "vk_names")]
 struct Debug {
     utils: DebugUtils,
     messenger: vk::DebugUtilsMessengerEXT,
 }
 
-#[cfg(not(feature = "validation"))]
+#[cfg(not(feature = "vk_names"))]
 struct Debug;
 
 impl Instance {
@@ -35,11 +35,11 @@ impl Instance {
         let window = winit::window::WindowBuilder::new()
             .with_title("Renderer v3")
             .build(&events_loop)
-            .unwrap();
+            .expect("Failed to create window");
 
-        let entry = Entry::new().unwrap();
+        let entry = Entry::new().expect("Failed to create entry");
 
-        let layer_names = if cfg!(feature = "validation",) {
+        let layer_names = if cfg!(feature = "standard_validation",) {
             vec![CString::new("VK_LAYER_KHRONOS_validation").unwrap()]
         } else {
             vec![]
@@ -55,18 +55,35 @@ impl Instance {
             .application_version(0)
             .engine_name(&name)
             .api_version(vk::make_version(1, 2, 0));
-        #[cfg(feature = "silence_validation")]
+
+        let disabled_features = vec![
+            #[cfg(feature = "silence_validation")]
+            vk::ValidationFeatureDisableEXT::ALL,
+        ];
+
+        let enabled_features = vec![
+            // TODO: update enum when bindings are available
+            #[cfg(feature = "sync_validation")]
+            vk::ValidationFeatureEnableEXT::from_raw(4),
+        ];
+
         let mut validation_features = vk::ValidationFeaturesEXT::builder()
-            .disabled_validation_features(&[vk::ValidationFeatureDisableEXT::ALL]);
+            .enabled_validation_features(&enabled_features)
+            .disabled_validation_features(&disabled_features);
+
         let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&appinfo)
             .enabled_layer_names(&layers_names_raw)
             .enabled_extension_names(&extension_names_raw);
-        #[cfg(feature = "silence_validation")]
         let create_info = create_info.push_next(&mut validation_features);
-        let instance = unsafe { entry.create_instance(&create_info, None)? };
 
-        #[cfg(feature = "validation")]
+        let instance = unsafe {
+            entry
+                .create_instance(&create_info, None)
+                .expect("create instance")
+        };
+
+        #[cfg(feature = "vk_names")]
         {
             use std::ffi::c_void;
             let debug_utils = DebugUtils::new(entry.vk(), &instance);
@@ -117,12 +134,18 @@ impl Instance {
                 0
             }
 
+            let message_type = if cfg!(feature = "standard_validation") {
+                vk::DebugUtilsMessageTypeFlagsEXT::all()
+            } else {
+                vk::DebugUtilsMessageTypeFlagsEXT::empty()
+            };
+
             let create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
                 .message_severity(
                     vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                         | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
                 )
-                .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
+                .message_type(message_type)
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
             let debug_messenger = unsafe {
@@ -145,7 +168,7 @@ impl Instance {
             ))
         }
 
-        #[cfg(not(feature = "validation"))]
+        #[cfg(not(feature = "vk_names"))]
         {
             Ok((
                 Instance {
@@ -163,7 +186,7 @@ impl Instance {
         &self.handle
     }
 
-    #[cfg(feature = "validation")]
+    #[cfg(feature = "vk_names")]
     pub fn debug_utils(&self) -> &DebugUtils {
         &self.debug.utils
     }
@@ -179,7 +202,7 @@ impl Deref for Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        #[cfg(feature = "validation")]
+        #[cfg(feature = "vk_names")]
         unsafe {
             self.debug
                 .utils
@@ -203,7 +226,7 @@ fn extension_names() -> Vec<*const i8> {
         base.push(Win32Surface::name().as_ptr());
     }
 
-    if cfg!(feature = "validation") {
+    if cfg!(feature = "vk_names") {
         // for validation layers, use the new, consolidated extension for debugging
         base.push(DebugUtils::name().as_ptr());
     }

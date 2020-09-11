@@ -14,6 +14,7 @@ pub struct PresentData {
     pub(in super::super) gui_render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
 }
 
+#[derive(Debug)]
 pub struct ImageIndex(pub u32);
 
 impl Default for ImageIndex {
@@ -128,7 +129,7 @@ impl AcquireFramebuffer {
             }
         }
 
-        std::thread::spawn(move || {
+        rayon::spawn(move || {
             unsafe {
                 device.wait_for_fences(&[x.handle], true, u64::MAX).unwrap();
             }
@@ -142,11 +143,13 @@ impl AcquireFramebuffer {
 
 impl PresentFramebuffer {
     pub fn exec(
-        renderer: &RenderFrame,
+        renderer: &mut RenderFrame,
         present_data: &PresentData,
         swapchain: &Swapchain,
         image_index: &ImageIndex,
     ) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "PresentFramebuffer");
         {
             let wait_values = &[timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW)];
             let mut wait_timeline =
@@ -190,8 +193,7 @@ impl PresentFramebuffer {
             Err(vk::Result::ERROR_DEVICE_LOST) => panic!("device lost in PresentFramebuffer"),
             _ => panic!("unknown condition in PresentFramebuffer"),
         }
-        drop(queue);
-
-        // (renderer.device.wait_semaphores)();
+        renderer.previous_frame_number_for_swapchain_index[image_index.0 as usize] =
+            renderer.frame_number;
     }
 }

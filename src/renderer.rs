@@ -26,8 +26,10 @@ use crate::{
     timeline_value,
 };
 use ash::{version::DeviceV1_0, vk};
+use bevy_ecs::prelude::*;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
+use smallvec::SmallVec;
 use std::{
     cell::RefCell, convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, rc::Rc,
     sync::Arc,
@@ -66,11 +68,11 @@ pub struct GltfMesh {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct DrawIndex(pub u32);
+pub struct DrawIndex(pub u32);
 
-pub(crate) struct Position(pub na::Point3<f32>);
-pub(crate) struct Rotation(pub na::UnitQuaternion<f32>);
-pub(crate) struct Scale(pub f32);
+pub struct Position(pub na::Point3<f32>);
+pub struct Rotation(pub na::UnitQuaternion<f32>);
+pub struct Scale(pub f32);
 
 // TODO: rename
 pub struct RenderFrame {
@@ -81,6 +83,7 @@ pub struct RenderFrame {
     pub graphics_timeline_semaphore: TimelineSemaphore,
     pub compute_timeline_semaphore: TimelineSemaphore,
     pub frame_number: u64,
+    pub previous_frame_number_for_swapchain_index: SmallVec<[u64; 3]>,
     pub buffer_count: usize,
 }
 
@@ -123,7 +126,7 @@ impl RenderFrame {
                                 .initial_layout(vk::ImageLayout::UNDEFINED)
                                 .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
                             vk::AttachmentDescription::builder()
-                                .format(vk::Format::D32_SFLOAT)
+                                .format(vk::Format::D16_UNORM)
                                 .samples(vk::SampleCountFlags::TYPE_1)
                                 .load_op(vk::AttachmentLoadOp::LOAD)
                                 .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -177,6 +180,14 @@ impl RenderFrame {
             "Compute timeline semaphore",
         );
 
+        let buffer_count = unsafe {
+            swapchain
+                .ext
+                .get_swapchain_images(swapchain.swapchain)
+                .unwrap()
+                .len()
+        };
+
         (
             RenderFrame {
                 instance: Arc::clone(&instance),
@@ -186,13 +197,8 @@ impl RenderFrame {
                 graphics_timeline_semaphore,
                 compute_timeline_semaphore,
                 frame_number,
-                buffer_count: unsafe {
-                    swapchain
-                        .ext
-                        .get_swapchain_images(swapchain.swapchain)
-                        .unwrap()
-                        .len()
-                },
+                previous_frame_number_for_swapchain_index: SmallVec::from_elem(0, buffer_count),
+                buffer_count,
             },
             swapchain,
             events_loop,
@@ -252,7 +258,7 @@ impl MainAttachments {
         let depth_images = (0..images.len())
             .map(|_| {
                 renderer.device.new_image(
-                    vk::Format::D32_SFLOAT,
+                    vk::Format::D16_UNORM,
                     vk::Extent3D {
                         width: swapchain.width,
                         height: swapchain.height,
@@ -304,7 +310,7 @@ impl MainAttachments {
             .map(|ref image| {
                 let create_view_info = vk::ImageViewCreateInfo::builder()
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::D32_SFLOAT)
+                    .format(vk::Format::D16_UNORM)
                     .components(vk::ComponentMapping {
                         r: vk::ComponentSwizzle::IDENTITY,
                         g: vk::ComponentSwizzle::IDENTITY,
@@ -506,7 +512,7 @@ impl DepthPassData {
             &vk::RenderPassCreateInfo::builder()
                 .attachments(unsafe {
                     &*(&[vk::AttachmentDescription::builder()
-                        .format(vk::Format::D32_SFLOAT)
+                        .format(vk::Format::D16_UNORM)
                         .samples(vk::SampleCountFlags::TYPE_1)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
@@ -554,8 +560,7 @@ impl DepthPassData {
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv");
         let file = std::fs::File::open(path).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-        let module = spirv_reflect::create_shader_module(&bytes).unwrap();
-        debug_assert!(shaders::depth_pipe::verify_spirv(&module));
+        debug_assert!(shaders::depth_pipe::load_and_verify_spirv(&bytes));
         let depth_pipeline = new_graphics_pipeline2(
             Arc::clone(&device),
             &[(
@@ -675,6 +680,136 @@ impl GltfPassData {
     ) -> GltfPassData {
         let device = &renderer.device;
 
+        /*
+        let queue_family_indices = vec![device.graphics_queue_family];
+        let image_create_info = vk::ImageCreateInfo::builder()
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .extent(vk::Extent3D {
+                width: 20 * 16384,
+                height: 20 * 16384,
+                depth: 1,
+            })
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .usage(vk::ImageUsageFlags::SAMPLED)
+            .mip_levels(1)
+            .array_layers(1)
+            .image_type(vk::ImageType::TYPE_2D)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .flags(vk::ImageCreateFlags::SPARSE_BINDING | vk::ImageCreateFlags::SPARSE_RESIDENCY)
+            .queue_family_indices(&queue_family_indices);
+
+        let image = unsafe { device.create_image(&image_create_info, None).unwrap() };
+
+        unsafe {
+            let mut requirements = device.get_image_memory_requirements(image);
+            requirements.size = requirements.alignment;
+            let requirements = vec![requirements; 5];
+            let create_infos = vec![
+                alloc::VmaAllocationCreateInfo {
+                    flags: alloc::VmaAllocationCreateFlagBits(0),
+                    memoryTypeBits: 0,
+                    pUserData: std::ptr::null_mut(),
+                    pool: std::ptr::null_mut(),
+                    preferredFlags: 0,
+                    requiredFlags: 0,
+                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                },
+                alloc::VmaAllocationCreateInfo {
+                    flags: alloc::VmaAllocationCreateFlagBits(0),
+                    memoryTypeBits: 0,
+                    pUserData: std::ptr::null_mut(),
+                    pool: std::ptr::null_mut(),
+                    preferredFlags: 0,
+                    requiredFlags: 0,
+                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                },
+                alloc::VmaAllocationCreateInfo {
+                    flags: alloc::VmaAllocationCreateFlagBits(0),
+                    memoryTypeBits: 0,
+                    pUserData: std::ptr::null_mut(),
+                    pool: std::ptr::null_mut(),
+                    preferredFlags: 0,
+                    requiredFlags: 0,
+                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                },
+                alloc::VmaAllocationCreateInfo {
+                    flags: alloc::VmaAllocationCreateFlagBits(0),
+                    memoryTypeBits: 0,
+                    pUserData: std::ptr::null_mut(),
+                    pool: std::ptr::null_mut(),
+                    preferredFlags: 0,
+                    requiredFlags: 0,
+                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                },
+                alloc::VmaAllocationCreateInfo {
+                    flags: alloc::VmaAllocationCreateFlagBits(0),
+                    memoryTypeBits: 0,
+                    pUserData: std::ptr::null_mut(),
+                    pool: std::ptr::null_mut(),
+                    preferredFlags: 0,
+                    requiredFlags: 0,
+                    usage: alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                },
+            ];
+            use std::mem::MaybeUninit;
+            let mut allocations: [MaybeUninit<alloc::VmaAllocation>; 5] =
+                MaybeUninit::uninit_array();
+            let mut allocation_infos: [MaybeUninit<alloc::VmaAllocationInfo>; 5] =
+                MaybeUninit::uninit_array();
+            alloc::vmaAllocateMemoryPages(
+                device.allocator,
+                requirements.as_ptr(),
+                create_infos.as_ptr(),
+                5,
+                MaybeUninit::first_ptr_mut(&mut allocations),
+                MaybeUninit::first_ptr_mut(&mut allocation_infos),
+            );
+
+            let allocations = MaybeUninit::slice_get_ref(&allocations);
+            let allocation_infos = MaybeUninit::slice_get_ref(&allocation_infos);
+
+            let mut image_binds = vec![];
+
+            for a in allocation_infos.iter() {
+                image_binds.push(
+                    vk::SparseImageMemoryBind::builder()
+                        .memory(a.deviceMemory)
+                        .extent(vk::Extent3D {
+                            width: 128,
+                            height: 128,
+                            depth: 1,
+                        })
+                        .memory_offset(a.offset)
+                        .subresource(
+                            vk::ImageSubresource::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .mip_level(0)
+                                .build(),
+                        )
+                        .build(),
+                );
+            }
+
+            let mut fence = device.new_fence();
+
+            let image_info = vk::SparseImageMemoryBindInfo::builder()
+                .binds(&image_binds)
+                .image(image)
+                .build();
+
+            device.fp_v1_0().queue_bind_sparse(
+                *device.graphics_queue.lock(),
+                1,
+                &*vk::BindSparseInfo::builder().image_binds(&[image_info])
+                    as *const vk::BindSparseInfo,
+                fence.handle,
+            );
+            fence.wait();
+        }
+        */
+
         let gltf_pipeline_layout = shaders::gltf_mesh::PipelineLayout::new(
             &renderer.device,
             &model_data.model_set_layout,
@@ -687,8 +822,7 @@ impl GltfPassData {
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv");
         let file = std::fs::File::open(path).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-        let module = spirv_reflect::create_shader_module(&bytes).unwrap();
-        debug_assert!(shaders::gltf_mesh::verify_spirv(&module));
+        debug_assert!(shaders::gltf_mesh::load_and_verify_spirv(&bytes));
         let gltf_pipeline = new_graphics_pipeline2(
             Arc::clone(&device),
             &[
@@ -725,7 +859,7 @@ impl GltfPassData {
                         .line_width(1.0)
                         .polygon_mode(vk::PolygonMode::FILL)
                         // magic
-                        .depth_bias_enable(true)
+                        .depth_bias_enable(false)
                         .depth_bias_constant_factor(-0.07)
                         .depth_bias_slope_factor(-1.0)
                         .build(),
@@ -737,6 +871,7 @@ impl GltfPassData {
                 )
                 .depth_stencil_state(
                     &vk::PipelineDepthStencilStateCreateInfo::builder()
+                        // .depth_write_enable(true)
                         .depth_test_enable(true)
                         .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
                         .depth_bounds_test_enable(false)
@@ -772,237 +907,242 @@ impl GltfPassData {
     }
 }
 
-pub struct Renderer;
-
-impl Renderer {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        use legion::{prelude::*, query::IntoQuery};
-        SystemBuilder::<()>::new("Renderer")
-            .read_resource::<RenderFrame>()
-            .read_resource::<ImageIndex>()
-            .write_resource::<GraphicsCommandPool>()
-            .read_resource::<ModelData>()
-            .write_resource::<RuntimeConfiguration>()
-            .read_resource::<CameraMatrices>()
-            .read_resource::<Swapchain>()
-            .read_resource::<ConsolidatedMeshBuffers>()
-            .write_resource::<PresentData>()
-            .write_resource::<DebugAABBPassData>()
-            .read_resource::<ShadowMappingData>()
-            .read_resource::<BaseColorDescriptorSet>()
-            .read_resource::<CullPassData>()
-            .read_resource::<MainFramebuffer>()
-            .read_resource::<GltfPassData>()
-            .with_query(<Read<AABB>>::query())
-            .build(|_commands, world, resources, query| {
-                let (
-                    ref renderer,
-                    ref image_index,
-                    ref mut graphics_command_pool,
-                    ref model_data,
-                    ref mut runtime_config,
-                    ref camera_matrices,
-                    ref swapchain,
-                    ref consolidated_mesh_buffers,
-                    ref mut present_data,
-                    ref mut debug_aabb_pass_data,
-                    ref shadow_mapping_data,
-                    ref base_color_descriptor_set,
-                    ref cull_pass_data,
-                    ref main_framebuffer,
-                    ref gltf_pass,
-                ) = resources;
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "Renderer");
-                // TODO: count this? pack and defragment draw calls?
-                let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
-                    / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
-                let command_buffer = graphics_command_pool.0.record_one_time("renderer cb");
-                unsafe {
-                    let clear_values = &[
-                        vk::ClearValue {
-                            color: vk::ClearColorValue { float32: [0.0; 4] },
-                        },
-                        vk::ClearValue {
-                            depth_stencil: vk::ClearDepthStencilValue {
-                                depth: 1.0,
-                                stencil: 0,
-                            },
-                        },
-                    ];
-                    let begin_info = vk::RenderPassBeginInfo::builder()
-                        .render_pass(renderer.renderpass.handle)
-                        .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
-                        .render_area(vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: swapchain.width,
-                                height: swapchain.height,
-                            },
-                        })
-                        .clear_values(clear_values);
-
-                    let _main_renderpass_marker = renderer.device.debug_marker_around2(
-                        &command_buffer,
-                        "main renderpass",
-                        [0.0, 0.0, 1.0, 1.0],
-                    );
-                    renderer.device.cmd_begin_render_pass(
-                        *command_buffer,
-                        &begin_info,
-                        vk::SubpassContents::INLINE,
-                    );
-                    renderer.device.cmd_set_viewport(
-                        *command_buffer,
-                        0,
-                        &[vk::Viewport {
-                            x: 0.0,
-                            y: swapchain.height as f32,
-                            width: swapchain.width as f32,
-                            height: -(swapchain.height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }],
-                    );
-                    renderer.device.cmd_set_scissor(
-                        *command_buffer,
-                        0,
-                        &[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: swapchain.width,
-                                height: swapchain.height,
-                            },
-                        }],
-                    );
-                    if runtime_config.debug_aabbs {
-                        #[cfg(feature = "profiling")]
-                        microprofile::scope!("ecs", "debug aabb pass");
-
-                        let _aabb_marker = renderer.device.debug_marker_around2(
-                            &command_buffer,
-                            "aabb debug",
-                            [1.0, 0.0, 0.0, 1.0],
-                        );
-                        renderer.device.cmd_bind_pipeline(
-                            *command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            debug_aabb_pass_data.pipeline.handle,
-                        );
-                        debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
-                            &renderer.device,
-                            *command_buffer,
-                            &camera_matrices.set.current(image_index.0),
-                        );
-
-                        for aabb in query.iter(&world) {
-                            debug_aabb_pass_data.pipeline_layout.push_constants(
-                                &renderer.device,
-                                *command_buffer,
-                                &shaders::DebugAABBPushConstants {
-                                    center: aabb.0.center().coords,
-                                    half_extent: aabb.0.half_extents(),
-                                },
-                            );
-                            renderer.device.cmd_draw(*command_buffer, 36, 1, 0, 0);
-                        }
-                    } else {
-                        let _gltf_meshes_marker = renderer.device.debug_marker_around2(
-                            &command_buffer,
-                            "gltf meshes",
-                            [1.0, 0.0, 0.0, 1.0],
-                        );
-                        // gltf mesh
-                        renderer.device.cmd_bind_pipeline(
-                            *command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            gltf_pass.gltf_pipeline.handle,
-                        );
-                        gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
-                            &renderer.device,
-                            *command_buffer,
-                            &model_data.model_set.current(image_index.0),
-                            &camera_matrices.set.current(image_index.0),
-                            shadow_mapping_data.user_set.current(image_index.0),
-                            base_color_descriptor_set.set.current(image_index.0),
-                        );
-                        renderer.device.cmd_bind_index_buffer(
-                            *command_buffer,
-                            cull_pass_data
-                                .culled_index_buffer
-                                .current(image_index.0)
-                                .handle,
-                            0,
-                            vk::IndexType::UINT32,
-                        );
-                        renderer.device.cmd_bind_vertex_buffers(
-                            *command_buffer,
-                            0,
-                            &[
-                                consolidated_mesh_buffers.position_buffer.handle,
-                                consolidated_mesh_buffers.normal_buffer.handle,
-                                consolidated_mesh_buffers.uv_buffer.handle,
-                            ],
-                            &[0, 0, 0],
-                        );
-                        renderer.device.cmd_draw_indexed_indirect(
-                            *command_buffer,
-                            cull_pass_data
-                                .culled_commands_buffer
-                                .current(image_index.0)
-                                .handle,
-                            0,
-                            total,
-                            size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-                        );
-                    }
-                    renderer.device.cmd_end_render_pass(*command_buffer);
-                }
-                let command_buffer = command_buffer.end();
-                let wait_semaphores = &[
-                    renderer.graphics_timeline_semaphore.handle,
-                    renderer.compute_timeline_semaphore.handle,
-                    consolidated_mesh_buffers.sync_timeline.handle,
-                ];
-                use systems::consolidate_mesh_buffers::sync as consolidate_mesh_buffers;
-                let wait_semaphore_values = &[
-                    timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS),
-                    timeline_value!(compute @ renderer.frame_number => PERFORM),
-                    timeline_value!(consolidate_mesh_buffers @ renderer.frame_number => CONSOLIDATE),
-                ];
-                let dst_stage_masks = &[
-                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                ];
-                let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let command_buffers = &[*command_buffer];
-                let signal_semaphore_values = &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
-                let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(wait_semaphore_values)
-                    .signal_semaphore_values(signal_semaphore_values)
-                    .build();
-                let submit = vk::SubmitInfo::builder()
-                    .wait_semaphores(wait_semaphores)
-                    .push_next(&mut signal_timeline)
-                    .wait_dst_stage_mask(dst_stage_masks)
-                    .command_buffers(command_buffers)
-                    .signal_semaphores(signal_semaphores)
-                    .build();
-                let queue = renderer.device.graphics_queue.lock();
-
-                unsafe {
-                    renderer
-                        .device
-                        .queue_submit(*queue, &[submit], vk::Fence::null())
-                        .unwrap();
-                }
-
-                *present_data
-                    .render_command_buffer
-                    .current_mut(image_index.0) = Some(command_buffer);
+pub fn render_frame(
+    renderer: Res<RenderFrame>,
+    image_index: Res<ImageIndex>,
+    graphics_command_pool: Res<GraphicsCommandPool>,
+    model_data: Res<ModelData>,
+    runtime_config: Res<RuntimeConfiguration>,
+    camera_matrices: Res<CameraMatrices>,
+    swapchain: Res<Swapchain>,
+    consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
+    mut present_data: ResMut<PresentData>,
+    debug_aabb_pass_data: Res<DebugAABBPassData>,
+    shadow_mapping_data: Res<ShadowMappingData>,
+    base_color_descriptor_set: Res<BaseColorDescriptorSet>,
+    cull_pass_data: Res<CullPassData>,
+    main_framebuffer: Res<MainFramebuffer>,
+    gltf_pass: Res<GltfPassData>,
+    mut query: Query<&AABB>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "Renderer");
+    // TODO: count this? pack and defragment draw calls?
+    let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
+        / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
+    let command_buffer = graphics_command_pool.0.record_one_time("renderer cb");
+    unsafe {
+        let clear_values = &[
+            vk::ClearValue {
+                color: vk::ClearColorValue { float32: [0.0; 4] },
+            },
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
+        let begin_info = vk::RenderPassBeginInfo::builder()
+            .render_pass(renderer.renderpass.handle)
+            .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: swapchain.width,
+                    height: swapchain.height,
+                },
             })
+            .clear_values(clear_values);
+
+        let _main_renderpass_marker = renderer.device.debug_marker_around2(
+            &command_buffer,
+            "main renderpass",
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        renderer.device.cmd_begin_render_pass(
+            *command_buffer,
+            &begin_info,
+            vk::SubpassContents::INLINE,
+        );
+        renderer.device.cmd_set_viewport(
+            *command_buffer,
+            0,
+            &[vk::Viewport {
+                x: 0.0,
+                y: swapchain.height as f32,
+                width: swapchain.width as f32,
+                height: -(swapchain.height as f32),
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }],
+        );
+        renderer.device.cmd_set_scissor(
+            *command_buffer,
+            0,
+            &[vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: swapchain.width,
+                    height: swapchain.height,
+                },
+            }],
+        );
+        if runtime_config.debug_aabbs {
+            #[cfg(feature = "profiling")]
+            microprofile::scope!("ecs", "debug aabb pass");
+
+            let _aabb_marker = renderer.device.debug_marker_around2(
+                &command_buffer,
+                "aabb debug",
+                [1.0, 0.0, 0.0, 1.0],
+            );
+            renderer.device.cmd_bind_pipeline(
+                *command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                debug_aabb_pass_data.pipeline.handle,
+            );
+            debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
+                &renderer.device,
+                *command_buffer,
+                &camera_matrices.set.current(image_index.0),
+            );
+
+            for aabb in &mut query.iter() {
+                debug_aabb_pass_data.pipeline_layout.push_constants(
+                    &renderer.device,
+                    *command_buffer,
+                    &shaders::DebugAABBPushConstants {
+                        center: aabb.0.center().coords,
+                        half_extent: aabb.0.half_extents(),
+                    },
+                );
+                renderer.device.cmd_draw(*command_buffer, 36, 1, 0, 0);
+            }
+        } else {
+            let _gltf_meshes_marker = renderer.device.debug_marker_around2(
+                &command_buffer,
+                "gltf meshes",
+                [1.0, 0.0, 0.0, 1.0],
+            );
+            /*
+            renderer.device.cmd_clear_attachments(
+                *command_buffer,
+                &[vk::ClearAttachment::builder()
+                    .clear_value(vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 1,
+                        },
+                    })
+                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                    .build()],
+                &[vk::ClearRect::builder()
+                    .rect(vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: 0,
+                            y: 0,
+                        },
+                        extent: vk::Extent2D {
+                            width: swapchain.width,
+                            height: swapchain.height,
+                        },
+                    })
+                    .layer_count(1)
+                    .base_array_layer(0)
+                    .build()],
+            );
+            */
+            // gltf mesh
+            renderer.device.cmd_bind_pipeline(
+                *command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                gltf_pass.gltf_pipeline.handle,
+            );
+            gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
+                &renderer.device,
+                *command_buffer,
+                &model_data.model_set.current(image_index.0),
+                &camera_matrices.set.current(image_index.0),
+                shadow_mapping_data.user_set.current(image_index.0),
+                base_color_descriptor_set.set.current(image_index.0),
+            );
+            renderer.device.cmd_bind_index_buffer(
+                *command_buffer,
+                cull_pass_data
+                    .culled_index_buffer
+                    .current(image_index.0)
+                    .handle,
+                0,
+                vk::IndexType::UINT32,
+            );
+            renderer.device.cmd_bind_vertex_buffers(
+                *command_buffer,
+                0,
+                &[
+                    consolidated_mesh_buffers.position_buffer.handle,
+                    consolidated_mesh_buffers.normal_buffer.handle,
+                    consolidated_mesh_buffers.uv_buffer.handle,
+                ],
+                &[0, 0, 0],
+            );
+            renderer.device.cmd_draw_indexed_indirect(
+                *command_buffer,
+                cull_pass_data
+                    .culled_commands_buffer
+                    .current(image_index.0)
+                    .handle,
+                0,
+                total,
+                size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+            );
+        }
+        renderer.device.cmd_end_render_pass(*command_buffer);
     }
+    let command_buffer = command_buffer.end();
+    let wait_semaphores = &[
+        renderer.graphics_timeline_semaphore.handle,
+        renderer.compute_timeline_semaphore.handle,
+        consolidated_mesh_buffers.sync_timeline.handle,
+    ];
+    use systems::consolidate_mesh_buffers::sync as consolidate_mesh_buffers;
+    let wait_semaphore_values = &[
+        timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS),
+        timeline_value!(compute @ renderer.frame_number => PERFORM),
+        timeline_value!(consolidate_mesh_buffers @ renderer.frame_number => CONSOLIDATE),
+    ];
+    let dst_stage_masks = &[
+        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        vk::PipelineStageFlags::COMPUTE_SHADER,
+        vk::PipelineStageFlags::COMPUTE_SHADER,
+    ];
+    let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let command_buffers = &[*command_buffer];
+    let signal_semaphore_values =
+        &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
+    let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+        .wait_semaphore_values(wait_semaphore_values)
+        .signal_semaphore_values(signal_semaphore_values)
+        .build();
+    let submit = vk::SubmitInfo::builder()
+        .wait_semaphores(wait_semaphores)
+        .push_next(&mut signal_timeline)
+        .wait_dst_stage_mask(dst_stage_masks)
+        .command_buffers(command_buffers)
+        .signal_semaphores(signal_semaphores)
+        .build();
+    let queue = renderer.device.graphics_queue.lock();
+
+    unsafe {
+        renderer
+            .device
+            .queue_submit(*queue, &[submit], vk::Fence::null())
+            .unwrap();
+    }
+
+    *present_data
+        .render_command_buffer
+        .current_mut(image_index.0) = Some(command_buffer);
 }
 
 pub struct GuiRender {
@@ -1083,6 +1223,8 @@ impl GuiRender {
                 layout: vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
             };
 
+            dbg!(swapchain.surface.surface_format.format);
+
             renderer.device.new_renderpass(
                 &vk::RenderPassCreateInfo::builder()
                     .attachments(unsafe {
@@ -1097,7 +1239,7 @@ impl GuiRender {
                                 .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                                 .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
                             vk::AttachmentDescription::builder()
-                                .format(vk::Format::D32_SFLOAT)
+                                .format(vk::Format::D16_UNORM)
                                 .samples(vk::SampleCountFlags::TYPE_1)
                                 .load_op(vk::AttachmentLoadOp::DONT_CARE)
                                 .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1145,12 +1287,12 @@ impl GuiRender {
         let pipeline_layout =
             shaders::imgui_pipe::PipelineLayout::new(&renderer.device, &descriptor_set_layout);
 
-        use std::io::Read;
-        let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gui.vert.spv");
-        let file = std::fs::File::open(path).expect("Could not find shader.");
-        let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-        let module = spirv_reflect::create_shader_module(&bytes).unwrap();
-        debug_assert!(shaders::imgui_pipe::verify_spirv(&module));
+        debug_assert!(shaders::imgui_pipe::load_and_verify_spirv_file(
+            "gui.vert.spv"
+        ));
+        debug_assert!(shaders::imgui_pipe::load_and_verify_spirv_file(
+            "gui.frag.spv"
+        ));
         let pipeline = new_graphics_pipeline2(
             renderer.device.clone(),
             &[
@@ -1297,461 +1439,419 @@ impl GuiRender {
         }
     }
 
-    pub fn exec_system(
+    pub fn render(
+        &mut self,
         gui: Rc<RefCell<Gui>>,
         input_handler: Rc<RefCell<InputHandler>>,
-        mut gui_render: GuiRender,
-    ) -> Box<(dyn legion::systems::schedule::Runnable + 'static)> {
-        use legion::prelude::*;
-        SystemBuilder::<()>::new("GuiRender")
-            .read_resource::<RenderFrame>()
-            .read_resource::<ImageIndex>()
-            .write_resource::<GraphicsCommandPool>()
-            .write_resource::<RuntimeConfiguration>()
-            .write_resource::<PresentData>()
-            .write_resource::<CullPassData>()
-            .read_resource::<MainFramebuffer>()
-            .read_resource::<Swapchain>()
-            .write_resource::<Camera>()
-            .with_query(<Read<AABB>>::query())
-            .build_thread_local(move |_commands, _world, resources, _query| {
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "GuiRender");
-                let (
-                    ref renderer,
-                    ref image_index,
-                    ref mut graphics_command_pool,
-                    ref mut runtime_config,
-                    ref mut present_data,
-                    ref mut cull_pass_data,
-                    ref main_framebuffer,
-                    ref swapchain,
-                    ref mut camera,
-                ) = resources;
-                let mut gui = gui.borrow_mut();
-                let gui_draw_data = gui.update(
-                    &renderer,
-                    &input_handler.borrow(),
-                    &swapchain,
-                    &mut *camera,
-                    &mut *runtime_config,
-                    &mut *cull_pass_data,
+        resources: &mut Resources,
+    ) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "GuiRender");
+        let (
+            renderer,
+            image_index,
+            graphics_command_pool,
+            mut runtime_config,
+            mut present_data,
+            mut cull_pass_data,
+            main_framebuffer,
+            swapchain,
+            mut camera,
+        ) = resources.query::<(
+            Res<RenderFrame>,
+            Res<ImageIndex>,
+            Res<GraphicsCommandPool>,
+            ResMut<RuntimeConfiguration>,
+            ResMut<PresentData>,
+            ResMut<CullPassData>,
+            Res<MainFramebuffer>,
+            Res<Swapchain>,
+            ResMut<Camera>,
+        )>();
+        let mut gui = gui.borrow_mut();
+        let gui_draw_data = gui.update(
+            &renderer,
+            &input_handler.borrow(),
+            &swapchain,
+            &mut *camera,
+            &mut *runtime_config,
+            &mut *cull_pass_data,
+        );
+
+        let command_buffer = graphics_command_pool.0.record_one_time("GuiRender cb");
+        unsafe {
+            let _gui_debug_marker =
+                renderer
+                    .device
+                    .debug_marker_around2(&command_buffer, "GUI", [1.0, 1.0, 0.0, 1.0]);
+
+            if !self.transitioned {
+                renderer.device.cmd_pipeline_barrier(
+                    *command_buffer,
+                    vk::PipelineStageFlags::HOST,
+                    vk::PipelineStageFlags::HOST,
+                    Default::default(),
+                    &[],
+                    &[],
+                    &[vk::ImageMemoryBarrier::builder()
+                        .image(self.texture.handle)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .old_layout(vk::ImageLayout::PREINITIALIZED)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                        .dst_access_mask(vk::AccessFlags::HOST_WRITE)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .build()],
                 );
+            }
+            self.transitioned = true;
 
-                let command_buffer = graphics_command_pool.0.record_one_time("GuiRender cb");
-                unsafe {
-                    let _gui_debug_marker = renderer.device.debug_marker_around2(
-                        &command_buffer,
-                        "GUI",
-                        [1.0, 1.0, 0.0, 1.0],
-                    );
+            renderer.device.cmd_begin_render_pass(
+                *command_buffer,
+                &vk::RenderPassBeginInfo::builder()
+                    .render_pass(self.renderpass.handle)
+                    .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                            width: swapchain.width,
+                            height: swapchain.height,
+                        },
+                    })
+                    .clear_values(&[]),
+                vk::SubpassContents::INLINE,
+            );
+            renderer.device.cmd_set_viewport(
+                *command_buffer,
+                0,
+                &[vk::Viewport {
+                    x: 0.0,
+                    y: swapchain.height as f32,
+                    width: swapchain.width as f32,
+                    height: -(swapchain.height as f32),
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            renderer.device.cmd_set_scissor(
+                *command_buffer,
+                0,
+                &[vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: swapchain.width,
+                        height: swapchain.height,
+                    },
+                }],
+            );
 
-                    if !gui_render.transitioned {
-                        renderer.device.cmd_pipeline_barrier(
-                            *command_buffer,
-                            vk::PipelineStageFlags::HOST,
-                            vk::PipelineStageFlags::HOST,
-                            Default::default(),
-                            &[],
-                            &[],
-                            &[vk::ImageMemoryBarrier::builder()
-                                .image(gui_render.texture.handle)
-                                .subresource_range(vk::ImageSubresourceRange {
-                                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                                    base_mip_level: 0,
-                                    level_count: 1,
-                                    base_array_layer: 0,
-                                    layer_count: 1,
-                                })
-                                .old_layout(vk::ImageLayout::PREINITIALIZED)
-                                .new_layout(vk::ImageLayout::GENERAL)
-                                .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                                .dst_access_mask(vk::AccessFlags::HOST_WRITE)
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .build()],
-                        );
-                    }
-                    gui_render.transitioned = true;
-
-                    renderer.device.cmd_begin_render_pass(
-                        *command_buffer,
-                        &vk::RenderPassBeginInfo::builder()
-                            .render_pass(gui_render.renderpass.handle)
-                            .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
-                            .render_area(vk::Rect2D {
-                                offset: vk::Offset2D { x: 0, y: 0 },
-                                extent: vk::Extent2D {
-                                    width: swapchain.width,
-                                    height: swapchain.height,
-                                },
-                            })
-                            .clear_values(&[]),
-                        vk::SubpassContents::INLINE,
-                    );
-                    renderer.device.cmd_set_viewport(
-                        *command_buffer,
-                        0,
-                        &[vk::Viewport {
-                            x: 0.0,
-                            y: swapchain.height as f32,
-                            width: swapchain.width as f32,
-                            height: -(swapchain.height as f32),
-                            min_depth: 0.0,
-                            max_depth: 1.0,
-                        }],
-                    );
-                    renderer.device.cmd_set_scissor(
-                        *command_buffer,
-                        0,
-                        &[vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: swapchain.width,
-                                height: swapchain.height,
-                            },
-                        }],
-                    );
-
-                    // Split lifetimes
-                    let GuiRender {
-                        ref vertex_buffer,
-                        ref index_buffer,
-                        ref pipeline_layout,
-                        ref pipeline,
-                        ref descriptor_set,
-                        ..
-                    } = gui_render;
-                    pipeline_layout.bind_descriptor_sets(
-                        &renderer.device,
-                        *command_buffer,
-                        descriptor_set,
-                    );
-                    renderer.device.cmd_bind_pipeline(
-                        *command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.handle,
-                    );
-                    renderer.device.cmd_bind_vertex_buffers(
-                        *command_buffer,
-                        0,
-                        &[vertex_buffer.handle],
-                        &[0],
-                    );
-                    renderer.device.cmd_bind_index_buffer(
-                        *command_buffer,
-                        index_buffer.handle,
-                        0,
-                        vk::IndexType::UINT16,
-                    );
-                    let [x, y] = gui_draw_data.display_size;
-                    {
-                        pipeline_layout.push_constants(
-                            &renderer.device,
-                            *command_buffer,
-                            &shaders::ImguiPushConstants {
-                                scale: glm::vec2(2.0 / x, 2.0 / y),
-                                translate: glm::vec2(-1.0, -1.0),
-                            },
-                        );
-                    }
-                    {
-                        let mut vertex_offset_coarse: usize = 0;
-                        let mut index_offset_coarse: usize = 0;
-                        let mut vertex_slice = vertex_buffer
-                            .map::<imgui::DrawVert>()
-                            .expect("Failed to map gui vertex buffer");
-                        let mut index_slice = index_buffer
-                            .map::<imgui::DrawIdx>()
-                            .expect("Failed to map gui index buffer");
-                        for draw_list in gui_draw_data.draw_lists() {
-                            let index_len = draw_list.idx_buffer().len();
-                            index_slice[index_offset_coarse..index_offset_coarse + index_len]
-                                .copy_from_slice(draw_list.idx_buffer());
-                            let vertex_len = draw_list.vtx_buffer().len();
-                            vertex_slice[vertex_offset_coarse..vertex_offset_coarse + vertex_len]
-                                .copy_from_slice(draw_list.vtx_buffer());
-                            for draw_cmd in draw_list.commands() {
-                                match draw_cmd {
-                                    imgui::DrawCmd::Elements { count, cmd_params } => {
-                                        renderer.device.cmd_set_scissor(
-                                            *command_buffer,
-                                            0,
-                                            &[vk::Rect2D {
-                                                offset: vk::Offset2D {
-                                                    x: cmd_params.clip_rect[0] as i32,
-                                                    y: cmd_params.clip_rect[1] as i32,
-                                                },
-                                                extent: vk::Extent2D {
-                                                    width: (cmd_params.clip_rect[2]
-                                                        - cmd_params.clip_rect[0])
-                                                        as u32,
-                                                    height: (cmd_params.clip_rect[3]
-                                                        - cmd_params.clip_rect[1])
-                                                        as u32,
-                                                },
-                                            }],
-                                        );
-                                        renderer.device.cmd_draw_indexed(
-                                            *command_buffer,
-                                            count as u32,
-                                            1,
-                                            (index_offset_coarse + cmd_params.idx_offset) as u32,
-                                            (vertex_offset_coarse + cmd_params.vtx_offset) as i32,
-                                            0,
-                                        );
-                                    }
-                                    _ => panic!("le wtf"),
-                                }
+            // Split lifetimes
+            let GuiRender {
+                ref vertex_buffer,
+                ref index_buffer,
+                ref pipeline_layout,
+                ref pipeline,
+                ref descriptor_set,
+                ..
+            } = self;
+            pipeline_layout.bind_descriptor_sets(&renderer.device, *command_buffer, descriptor_set);
+            renderer.device.cmd_bind_pipeline(
+                *command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.handle,
+            );
+            renderer.device.cmd_bind_vertex_buffers(
+                *command_buffer,
+                0,
+                &[vertex_buffer.handle],
+                &[0],
+            );
+            renderer.device.cmd_bind_index_buffer(
+                *command_buffer,
+                index_buffer.handle,
+                0,
+                vk::IndexType::UINT16,
+            );
+            let [x, y] = gui_draw_data.display_size;
+            {
+                pipeline_layout.push_constants(
+                    &renderer.device,
+                    *command_buffer,
+                    &shaders::ImguiPushConstants {
+                        scale: glm::vec2(2.0 / x, 2.0 / y),
+                        translate: glm::vec2(-1.0, -1.0),
+                    },
+                );
+            }
+            {
+                let mut vertex_offset_coarse: usize = 0;
+                let mut index_offset_coarse: usize = 0;
+                let mut vertex_slice = vertex_buffer
+                    .map::<imgui::DrawVert>()
+                    .expect("Failed to map gui vertex buffer");
+                let mut index_slice = index_buffer
+                    .map::<imgui::DrawIdx>()
+                    .expect("Failed to map gui index buffer");
+                for draw_list in gui_draw_data.draw_lists() {
+                    let index_len = draw_list.idx_buffer().len();
+                    index_slice[index_offset_coarse..index_offset_coarse + index_len]
+                        .copy_from_slice(draw_list.idx_buffer());
+                    let vertex_len = draw_list.vtx_buffer().len();
+                    vertex_slice[vertex_offset_coarse..vertex_offset_coarse + vertex_len]
+                        .copy_from_slice(draw_list.vtx_buffer());
+                    for draw_cmd in draw_list.commands() {
+                        match draw_cmd {
+                            imgui::DrawCmd::Elements { count, cmd_params } => {
+                                renderer.device.cmd_set_scissor(
+                                    *command_buffer,
+                                    0,
+                                    &[vk::Rect2D {
+                                        offset: vk::Offset2D {
+                                            x: cmd_params.clip_rect[0] as i32,
+                                            y: cmd_params.clip_rect[1] as i32,
+                                        },
+                                        extent: vk::Extent2D {
+                                            width: (cmd_params.clip_rect[2]
+                                                - cmd_params.clip_rect[0])
+                                                as u32,
+                                            height: (cmd_params.clip_rect[3]
+                                                - cmd_params.clip_rect[1])
+                                                as u32,
+                                        },
+                                    }],
+                                );
+                                renderer.device.cmd_draw_indexed(
+                                    *command_buffer,
+                                    count as u32,
+                                    1,
+                                    (index_offset_coarse + cmd_params.idx_offset) as u32,
+                                    (vertex_offset_coarse + cmd_params.vtx_offset) as i32,
+                                    0,
+                                );
                             }
-                            index_offset_coarse += index_len;
-                            vertex_offset_coarse += vertex_len;
+                            _ => panic!("le wtf"),
                         }
                     }
-                    renderer.device.cmd_end_render_pass(*command_buffer);
+                    index_offset_coarse += index_len;
+                    vertex_offset_coarse += vertex_len;
                 }
-                let command_buffer = command_buffer.end();
-                let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let wait_semaphore_values =
-                    &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
-                let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let command_buffers = &[*command_buffer];
-                let signal_semaphore_values =
-                    &[timeline_value!(graphics @ renderer.frame_number => GUI_DRAW)];
-                let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(wait_semaphore_values)
-                    .signal_semaphore_values(signal_semaphore_values)
-                    .build();
-                let submit = vk::SubmitInfo::builder()
-                    .wait_semaphores(wait_semaphores)
-                    .push_next(&mut signal_timeline)
-                    .wait_dst_stage_mask(dst_stage_masks)
-                    .command_buffers(command_buffers)
-                    .signal_semaphores(signal_semaphores)
-                    .build();
-                let queue = renderer.device.graphics_queue.lock();
+            }
+            renderer.device.cmd_end_render_pass(*command_buffer);
+        }
+        let command_buffer = command_buffer.end();
+        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+        let wait_semaphore_values =
+            &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
+        let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+        let command_buffers = &[*command_buffer];
+        let signal_semaphore_values =
+            &[timeline_value!(graphics @ renderer.frame_number => GUI_DRAW)];
+        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(wait_semaphore_values)
+            .signal_semaphore_values(signal_semaphore_values)
+            .build();
+        let submit = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .push_next(&mut signal_timeline)
+            .wait_dst_stage_mask(dst_stage_masks)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores)
+            .build();
+        let queue = renderer.device.graphics_queue.lock();
 
-                unsafe {
-                    renderer
-                        .device
-                        .queue_submit(*queue, &[submit], vk::Fence::null())
-                        .unwrap();
-                }
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &[submit], vk::Fence::null())
+                .unwrap();
+        }
 
-                // defer destructor
-                *present_data
-                    .gui_render_command_buffer
-                    .current_mut(image_index.0) = Some(command_buffer);
-            })
+        // defer destructor
+        *present_data
+            .gui_render_command_buffer
+            .current_mut(image_index.0) = Some(command_buffer);
     }
 }
 
-pub struct ModelMatricesUpload;
-
-impl ModelMatricesUpload {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        use legion::prelude::*;
-        SystemBuilder::<()>::new("ModelMatricesUpload")
-            .read_resource::<ImageIndex>()
-            .write_resource::<ModelData>()
-            .with_query(<(Read<DrawIndex>, Write<ModelMatrix>)>::query())
-            .build(move |_commands, mut world, resources, query| {
-                let (ref image_index, ref mut model_data) = resources;
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "ModelMatricesUpload");
-                let mut model_mapped = model_data
-                    .model_buffer
-                    .current_mut(image_index.0)
-                    .map::<glm::Mat4>()
-                    .expect("failed to map Model buffer");
-                for (draw_index, model_matrix) in query.iter_mut(&mut world) {
-                    model_mapped[draw_index.0 as usize] = model_matrix.0;
-                }
-            })
+pub fn model_matrices_upload(
+    image_index: Res<ImageIndex>,
+    mut model_data: ResMut<ModelData>,
+    mut query: Query<(&DrawIndex, &mut ModelMatrix)>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "ModelMatricesUpload");
+    let mut model_mapped = model_data
+        .model_buffer
+        .current_mut(image_index.0)
+        .map::<glm::Mat4>()
+        .expect("failed to map Model buffer");
+    for (draw_index, model_matrix) in &mut query.iter() {
+        model_mapped[draw_index.0 as usize] = model_matrix.0;
     }
 }
 
-pub struct CameraMatricesUpload;
-
-impl CameraMatricesUpload {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        use legion::prelude::*;
-        SystemBuilder::<()>::new("CameraMatricesUpload")
-            .read_resource::<ImageIndex>()
-            .read_resource::<Camera>()
-            .write_resource::<CameraMatrices>()
-            .build(move |_commands, _world, resources, _queries| {
-                let (ref image_index, ref camera, ref mut camera_matrices) = resources;
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "CameraMatricesUpload");
-                let mut model_mapped = camera_matrices
-                    .buffer
-                    .current_mut(image_index.0)
-                    .map::<shaders::camera_set::bindings::matrices::T>()
-                    .expect("failed to map camera matrix buffer");
-                model_mapped[0] = shaders::camera_set::bindings::matrices::T {
-                    projection: camera.projection,
-                    view: camera.view,
-                    position: camera.position.coords.push(1.0),
-                };
-            })
-    }
+pub fn camera_matrices_upload(
+    image_index: Res<ImageIndex>,
+    camera: Res<Camera>,
+    mut camera_matrices: ResMut<CameraMatrices>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "CameraMatricesUpload");
+    let mut model_mapped = camera_matrices
+        .buffer
+        .current_mut(image_index.0)
+        .map::<shaders::camera_set::bindings::matrices::T>()
+        .expect("failed to map camera matrix buffer");
+    model_mapped[0] = shaders::camera_set::bindings::matrices::T {
+        projection: camera.projection,
+        view: camera.view,
+        position: camera.position.coords.push(1.0),
+    };
 }
 
-pub struct DepthOnlyPass;
-
-impl DepthOnlyPass {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        use legion::prelude::*;
-        SystemBuilder::<()>::new("DepthOnlyPass")
-            .read_resource::<RenderFrame>()
-            .read_resource::<ImageIndex>()
-            .write_resource::<GraphicsCommandPool>()
-            .write_resource::<DepthPassData>()
-            .read_resource::<ModelData>()
-            .read_resource::<RuntimeConfiguration>()
-            .read_resource::<Camera>()
-            .read_resource::<CameraMatrices>()
-            .read_resource::<Swapchain>()
-            .with_query(<(Read<Position>, Read<DrawIndex>, Read<GltfMesh>)>::query())
-            .build(move |_commands, world, resources, query| {
-                let (
-                    ref renderer,
-                    ref image_index,
-                    ref mut graphics_command_pool,
-                    ref mut depth_pass,
-                    ref model_data,
-                    ref runtime_config,
-                    ref camera,
-                    ref camera_matrices,
-                    ref swapchain,
-                ) = resources;
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "DepthOnlyPass");
-                let command_buffer = graphics_command_pool
-                    .0
-                    .record_one_time("depth only pass cb");
-                unsafe {
-                    let _marker = renderer.device.debug_marker_around2(
-                        &command_buffer,
-                        "depth prepass",
-                        [0.3, 0.3, 0.3, 1.0],
-                    );
-                    renderer.device.cmd_begin_render_pass(
-                        *command_buffer,
-                        &vk::RenderPassBeginInfo::builder()
-                            .render_pass(depth_pass.renderpass.handle)
-                            .framebuffer(depth_pass.framebuffer[image_index.0 as usize].handle)
-                            .render_area(vk::Rect2D {
-                                offset: vk::Offset2D { x: 0, y: 0 },
-                                extent: vk::Extent2D {
-                                    width: swapchain.width,
-                                    height: swapchain.height,
-                                },
-                            })
-                            .clear_values(&[vk::ClearValue {
-                                depth_stencil: vk::ClearDepthStencilValue {
-                                    depth: 1.0,
-                                    stencil: 0,
-                                },
-                            }]),
-                        vk::SubpassContents::INLINE,
-                    );
-                    if !runtime_config.debug_aabbs {
-                        renderer.device.cmd_set_viewport(
-                            *command_buffer,
-                            0,
-                            &[vk::Viewport {
-                                x: 0.0,
-                                y: swapchain.height as f32,
-                                width: swapchain.width as f32,
-                                height: -(swapchain.height as f32),
-                                min_depth: 0.0,
-                                max_depth: 1.0,
-                            }],
-                        );
-                        renderer.device.cmd_set_scissor(
-                            *command_buffer,
-                            0,
-                            &[vk::Rect2D {
-                                offset: vk::Offset2D { x: 0, y: 0 },
-                                extent: vk::Extent2D {
-                                    width: swapchain.width,
-                                    height: swapchain.height,
-                                },
-                            }],
-                        );
-                        renderer.device.cmd_bind_pipeline(
-                            *command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            depth_pass.depth_pipeline.handle,
-                        );
-                        depth_pass.depth_pipeline_layout.bind_descriptor_sets(
-                            &renderer.device,
-                            *command_buffer,
-                            &model_data.model_set.current(image_index.0),
-                            &camera_matrices.set.current(image_index.0),
-                        );
-                        for (mesh_position, draw_index, mesh) in query.iter(&world) {
-                            let (index_buffer, index_count) =
-                                pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
-                            renderer.device.cmd_bind_index_buffer(
-                                *command_buffer,
-                                index_buffer.handle,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
-                            renderer.device.cmd_bind_vertex_buffers(
-                                *command_buffer,
-                                0,
-                                &[mesh.vertex_buffer.handle],
-                                &[0],
-                            );
-                            renderer.device.cmd_draw_indexed(
-                                *command_buffer,
-                                (*index_count).try_into().unwrap(),
-                                1,
-                                0,
-                                0,
-                                draw_index.0,
-                            );
-                        }
-                    }
-                    renderer.device.cmd_end_render_pass(*command_buffer);
-                }
-                let command_buffer = command_buffer.end();
-                let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let wait_semaphore_values =
-                    &[timeline_value!(graphics @ renderer.frame_number => SHADOW_MAPPING)];
-                let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let signal_semaphore_values =
-                    &[timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS)];
-                let command_buffers = &[*command_buffer];
-                let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
-                    .signal_semaphore_values(signal_semaphore_values)
-                    .build();
-                let submit = vk::SubmitInfo::builder()
-                    .push_next(&mut signal_timeline)
-                    .wait_semaphores(wait_semaphores)
-                    .wait_dst_stage_mask(dst_stage_masks)
-                    .command_buffers(command_buffers)
-                    .signal_semaphores(signal_semaphores)
-                    .build();
-                let queue = renderer.device.graphics_queue.lock();
-
-                unsafe {
-                    renderer
-                        .device
-                        .queue_submit(*queue, &[submit], vk::Fence::null())
-                        .unwrap();
-                }
-
-                *depth_pass
-                    .previous_command_buffer
-                    .current_mut(image_index.0) = Some(command_buffer);
-            })
+pub fn depth_only_pass(
+    renderer: Res<RenderFrame>,
+    image_index: Res<ImageIndex>,
+    graphics_command_pool: Res<GraphicsCommandPool>,
+    mut depth_pass: ResMut<DepthPassData>,
+    model_data: Res<ModelData>,
+    runtime_config: Res<RuntimeConfiguration>,
+    camera: Res<Camera>,
+    camera_matrices: Res<CameraMatrices>,
+    swapchain: Res<Swapchain>,
+    mut query: Query<(&Position, &DrawIndex, &GltfMesh)>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "DepthOnlyPass");
+    let command_buffer = graphics_command_pool
+        .0
+        .record_one_time("depth only pass cb");
+    unsafe {
+        let _marker = renderer.device.debug_marker_around2(
+            &command_buffer,
+            "depth prepass",
+            [0.3, 0.3, 0.3, 1.0],
+        );
+        renderer.device.cmd_begin_render_pass(
+            *command_buffer,
+            &vk::RenderPassBeginInfo::builder()
+                .render_pass(depth_pass.renderpass.handle)
+                .framebuffer(depth_pass.framebuffer[image_index.0 as usize].handle)
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: swapchain.width,
+                        height: swapchain.height,
+                    },
+                })
+                .clear_values(&[vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                }]),
+            vk::SubpassContents::INLINE,
+        );
+        if !runtime_config.debug_aabbs {
+            renderer.device.cmd_set_viewport(
+                *command_buffer,
+                0,
+                &[vk::Viewport {
+                    x: 0.0,
+                    y: swapchain.height as f32,
+                    width: swapchain.width as f32,
+                    height: -(swapchain.height as f32),
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            renderer.device.cmd_set_scissor(
+                *command_buffer,
+                0,
+                &[vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: swapchain.width,
+                        height: swapchain.height,
+                    },
+                }],
+            );
+            renderer.device.cmd_bind_pipeline(
+                *command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                depth_pass.depth_pipeline.handle,
+            );
+            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                &renderer.device,
+                *command_buffer,
+                &model_data.model_set.current(image_index.0),
+                &camera_matrices.set.current(image_index.0),
+            );
+            for (mesh_position, draw_index, mesh) in &mut query.iter() {
+                let (index_buffer, index_count) =
+                    pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+                renderer.device.cmd_bind_index_buffer(
+                    *command_buffer,
+                    index_buffer.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                renderer.device.cmd_bind_vertex_buffers(
+                    *command_buffer,
+                    0,
+                    &[mesh.vertex_buffer.handle],
+                    &[0],
+                );
+                renderer.device.cmd_draw_indexed(
+                    *command_buffer,
+                    (*index_count).try_into().unwrap(),
+                    1,
+                    0,
+                    0,
+                    draw_index.0,
+                );
+            }
+        }
+        renderer.device.cmd_end_render_pass(*command_buffer);
     }
+    let command_buffer = command_buffer.end();
+    let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let wait_semaphore_values =
+        &[timeline_value!(graphics @ renderer.frame_number => SHADOW_MAPPING)];
+    let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+    let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let signal_semaphore_values =
+        &[timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS)];
+    let command_buffers = &[*command_buffer];
+    let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+        .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
+        .signal_semaphore_values(signal_semaphore_values)
+        .build();
+    let submit = vk::SubmitInfo::builder()
+        .push_next(&mut signal_timeline)
+        .wait_semaphores(wait_semaphores)
+        .wait_dst_stage_mask(dst_stage_masks)
+        .command_buffers(command_buffers)
+        .signal_semaphores(signal_semaphores)
+        .build();
+    let queue = renderer.device.graphics_queue.lock();
+
+    unsafe {
+        renderer
+            .device
+            .queue_submit(*queue, &[submit], vk::Fence::null())
+            .unwrap();
+    }
+
+    *depth_pass
+        .previous_command_buffer
+        .current_mut(image_index.0) = Some(command_buffer);
 }

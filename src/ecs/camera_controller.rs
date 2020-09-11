@@ -2,8 +2,7 @@ use crate::{
     ecs::{resources::InputActions, systems::*},
     renderer::{forward_vector, right_vector, up_vector},
 };
-#[cfg(feature = "microprofile")]
-use microprofile::scope;
+use bevy_ecs::prelude::*;
 use winit::{self, event::VirtualKeyCode};
 
 pub struct Camera {
@@ -33,6 +32,49 @@ impl Default for Camera {
     }
 }
 
+pub fn camera_controller(
+    input_actions: Res<InputActions>,
+    frame_timing: Res<FrameTiming>,
+    runtime_config: Res<RuntimeConfiguration>,
+    mut camera: ResMut<Camera>,
+) {
+    if !runtime_config.fly_mode {
+        return;
+    }
+
+    let forward = input_actions.get_key_down(VirtualKeyCode::W);
+    let backward = input_actions.get_key_down(VirtualKeyCode::S);
+    let right = input_actions.get_key_down(VirtualKeyCode::D);
+    let left = input_actions.get_key_down(VirtualKeyCode::A);
+    let up = input_actions.get_key_down(VirtualKeyCode::Space);
+    let down = input_actions.get_key_down(VirtualKeyCode::LControl);
+    let fast = input_actions.get_key_down(VirtualKeyCode::LShift);
+
+    let speed = if fast { 10.0 } else { 1.0 } * frame_timing.time_delta;
+    let mut increment: na::Vector3<f32> = na::zero();
+    if forward {
+        increment += speed * camera.rotation.transform_vector(&forward_vector())
+    }
+    if backward {
+        increment -= speed * camera.rotation.transform_vector(&forward_vector());
+    }
+    if up {
+        increment += speed * camera.rotation.transform_vector(&up_vector());
+    }
+    if down {
+        increment -= speed * camera.rotation.transform_vector(&up_vector());
+    }
+    if right {
+        increment += speed * camera.rotation.transform_vector(&right_vector());
+    }
+    if left {
+        increment -= speed * camera.rotation.transform_vector(&right_vector());
+    }
+
+    camera.position += increment;
+}
+
+/*
 pub struct CameraController;
 
 impl CameraController {
@@ -44,42 +86,7 @@ impl CameraController {
             .read_resource::<RuntimeConfiguration>()
             .write_resource::<Camera>()
             .build(move |_commands, _world, resources, _query| {
-                let (ref input_actions, ref frame_timing, ref runtime_config, ref mut camera) =
-                    resources;
-                if !runtime_config.fly_mode {
-                    return;
-                }
-
-                let forward = input_actions.get_key_down(VirtualKeyCode::W);
-                let backward = input_actions.get_key_down(VirtualKeyCode::S);
-                let right = input_actions.get_key_down(VirtualKeyCode::D);
-                let left = input_actions.get_key_down(VirtualKeyCode::A);
-                let up = input_actions.get_key_down(VirtualKeyCode::Space);
-                let down = input_actions.get_key_down(VirtualKeyCode::LControl);
-                let fast = input_actions.get_key_down(VirtualKeyCode::LShift);
-
-                let speed = if fast { 10.0 } else { 1.0 } * frame_timing.time_delta;
-                let mut increment: na::Vector3<f32> = na::zero();
-                if forward {
-                    increment += speed * camera.rotation.transform_vector(&forward_vector())
-                }
-                if backward {
-                    increment -= speed * camera.rotation.transform_vector(&forward_vector());
-                }
-                if up {
-                    increment += speed * camera.rotation.transform_vector(&up_vector());
-                }
-                if down {
-                    increment -= speed * camera.rotation.transform_vector(&up_vector());
-                }
-                if right {
-                    increment += speed * camera.rotation.transform_vector(&right_vector());
-                }
-                if left {
-                    increment -= speed * camera.rotation.transform_vector(&right_vector());
-                }
-
-                camera.position += increment;
             })
     }
 }
+*/

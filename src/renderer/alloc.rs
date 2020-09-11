@@ -1,4 +1,10 @@
-#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types, unused, clippy::all)]
+#![allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    unused,
+    clippy::all
+)]
 
 use ash::{
     self, prelude,
@@ -20,6 +26,8 @@ type VkInstance = vk::Instance;
 type VkResult = vk::Result;
 type VkStructureType = vk::StructureType;
 type VkDeviceMemory = vk::DeviceMemory;
+type VkMemoryRequirements = vk::MemoryRequirements;
+type VkMemoryRequirements2 = vk::MemoryRequirements2;
 type VkPhysicalDevice = vk::PhysicalDevice;
 type VkDevice = vk::Device;
 

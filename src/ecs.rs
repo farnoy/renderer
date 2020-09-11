@@ -17,13 +17,14 @@ pub mod resources {
     }
 }
 pub mod systems {
-    pub use super::{camera_controller::CameraController, input::InputHandler};
+    pub use super::{camera_controller::camera_controller, input::InputHandler};
 
     use super::super::renderer::*;
     use crate::ecs::{
         components::{ModelMatrix, ProjectileTarget, ProjectileVelocity, AABB},
         resources::{Camera, InputActions, MeshLibrary},
     };
+    use bevy_ecs::prelude::*;
     use imgui::im_str;
     #[cfg(feature = "microprofile")]
     use microprofile::scope;
@@ -33,27 +34,15 @@ pub mod systems {
 
     use crate::renderer::{forward_vector, up_vector, GltfMesh, Swapchain};
 
-    pub struct ModelMatrixCalculation;
-
-    impl ModelMatrixCalculation {
-        pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-            use legion::prelude::*;
-            SystemBuilder::<()>::new("ModelMatrixCalculation - exec")
-                .with_query(<(
-                    Read<Position>,
-                    Read<Rotation>,
-                    Read<Scale>,
-                    Write<ModelMatrix>,
-                )>::query())
-                .build(move |_commands, mut world, _resources, ref mut query| {
-                    #[cfg(feature = "profiling")]
-                    microprofile::scope!("ecs", "ModelMatrixCalculation");
-                    for (pos, rot, scale, mut model_matrix) in query.iter_mut(&mut world) {
-                        model_matrix.0 = glm::translation(&pos.0.coords)
-                            * rot.0.to_homogeneous()
-                            * glm::scaling(&glm::Vec3::repeat(scale.0));
-                    }
-                })
+    pub fn model_matrix_calculation(
+        mut query: Query<(&Position, &Rotation, &Scale, &mut ModelMatrix)>,
+    ) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "ModelMatrixCalculation");
+        for (pos, rot, scale, mut model_matrix) in &mut query.iter() {
+            model_matrix.0 = glm::translation(&pos.0.coords)
+                * rot.0.to_homogeneous()
+                * glm::scaling(&glm::Vec3::repeat(scale.0));
         }
     }
 
@@ -114,123 +103,95 @@ pub mod systems {
         }
     }
 
-    pub struct AABBCalculation;
-
-    impl AABBCalculation {
-        pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-            use legion::prelude::*;
-            SystemBuilder::<()>::new("AABBCalculation - exec")
-                .with_query(<(Read<ModelMatrix>, Read<GltfMesh>, Write<AABB>)>::query())
-                .build(move |_commands, mut world, _resources, ref mut query| {
-                    #[cfg(feature = "profiling")]
-                    microprofile::scope!("ecs", "AABBCalculation");
-                    use std::f32::{MAX, MIN};
-                    for (model_matrix, mesh, mut aabb) in query.iter_mut(&mut world) {
-                        let min = mesh.aabb.mins();
-                        let max = mesh.aabb.maxs();
-                        let (min, max) = [
-                            // bottom half (min y)
-                            na::Point3::new(min.x, min.y, min.z),
-                            na::Point3::new(max.x, min.y, min.z),
-                            na::Point3::new(min.x, min.y, max.z),
-                            na::Point3::new(max.x, min.y, max.z),
-                            // top half (max y)
-                            na::Point3::new(min.x, max.y, min.z),
-                            na::Point3::new(max.x, max.y, min.z),
-                            na::Point3::new(min.x, max.y, max.z),
-                            na::Point3::new(max.x, max.y, max.z),
-                        ]
-                        .iter()
-                        .map(|vertex| model_matrix.0 * vertex.to_homogeneous())
-                        .map(|vertex| vertex.xyz() / vertex.w)
-                        .fold(
-                            ((MAX, MAX, MAX), (MIN, MIN, MIN)),
-                            |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
-                                (
-                                    (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
-                                    (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
-                                )
-                            },
-                        );
-                        let min = na::Vector3::new(min.0, min.1, min.2);
-                        let max = na::Vector3::new(max.0, max.1, max.2);
-                        let new = ncollide3d::bounding_volume::AABB::from_half_extents(
-                            na::Point3::from((max + min) / 2.0),
-                            (max - min) / 2.0,
-                        );
-                        aabb.0 = new;
-                    }
-                })
+    pub fn aabb_calculation(mut query: Query<(&ModelMatrix, &GltfMesh, &mut AABB)>) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "AABBCalculation");
+        use std::f32::{MAX, MIN};
+        for (model_matrix, mesh, mut aabb) in &mut query.iter() {
+            let min = mesh.aabb.mins;
+            let max = mesh.aabb.maxs;
+            let (min, max) = [
+                // bottom half (min y)
+                na::Point3::new(min.x, min.y, min.z),
+                na::Point3::new(max.x, min.y, min.z),
+                na::Point3::new(min.x, min.y, max.z),
+                na::Point3::new(max.x, min.y, max.z),
+                // top half (max y)
+                na::Point3::new(min.x, max.y, min.z),
+                na::Point3::new(max.x, max.y, min.z),
+                na::Point3::new(min.x, max.y, max.z),
+                na::Point3::new(max.x, max.y, max.z),
+            ]
+            .iter()
+            .map(|vertex| model_matrix.0 * vertex.to_homogeneous())
+            .map(|vertex| vertex.xyz() / vertex.w)
+            .fold(
+                ((MAX, MAX, MAX), (MIN, MIN, MIN)),
+                |((minx, miny, minz), (maxx, maxy, maxz)), vertex| {
+                    (
+                        (minx.min(vertex.x), miny.min(vertex.y), minz.min(vertex.z)),
+                        (maxx.max(vertex.x), maxy.max(vertex.y), maxz.max(vertex.z)),
+                    )
+                },
+            );
+            let min = na::Vector3::new(min.0, min.1, min.2);
+            let max = na::Vector3::new(max.0, max.1, max.2);
+            let new = ncollide3d::bounding_volume::AABB::from_half_extents(
+                na::Point3::from((max + min) / 2.0),
+                (max - min) / 2.0,
+            );
+            aabb.0 = new;
         }
     }
 
-    pub struct LaunchProjectileTest;
-
-    impl LaunchProjectileTest {
-        pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-            use legion::prelude::*;
-            SystemBuilder::<()>::new("LaunchProjectiles")
-                .read_resource::<InputActions>()
-                .read_resource::<MeshLibrary>()
-                .read_resource::<Camera>()
-                .build(move |commands, _world, resources, _query| {
-                    #[cfg(feature = "profiling")]
-                    microprofile::scope!("ecs", "LaunchProjectiles");
-                    let (ref input_actions, ref mesh_library, ref camera) = resources;
-                    if input_actions.get_mouse_down(MouseButton::Left) {
-                        let target = camera.position
-                            + camera.rotation * (100.0 * (&forward_vector().into_inner()));
-                        commands.insert(
-                            (),
-                            Some((
-                                Position(camera.position),
-                                Rotation(camera.rotation),
-                                Scale(1.0),
-                                ModelMatrix::default(),
-                                GltfMeshBaseColorTexture(Arc::clone(
-                                    &mesh_library.projectile_texture,
-                                )),
-                                mesh_library.projectile.clone(),
-                                AABB::default(),
-                                CoarseCulled(false),
-                                DrawIndex::default(),
-                                ProjectileTarget(target),
-                                ProjectileVelocity(20.0),
-                            )),
-                        );
-                    }
-                })
+    pub fn launch_projectiles_test(
+        mut commands: Commands,
+        input_actions: Res<InputActions>,
+        mesh_library: Res<MeshLibrary>,
+        camera: Res<Camera>,
+    ) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "LaunchProjectiles");
+        if input_actions.get_mouse_down(MouseButton::Left) {
+            let target =
+                camera.position + camera.rotation * (100.0 * (&forward_vector().into_inner()));
+            commands.spawn((
+                Position(camera.position),
+                Rotation(camera.rotation),
+                Scale(1.0),
+                ModelMatrix::default(),
+                GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_texture)),
+                mesh_library.projectile.clone(),
+                AABB::default(),
+                CoarseCulled(false),
+                DrawIndex::default(),
+                ProjectileTarget(target),
+                ProjectileVelocity(20.0),
+            ));
         }
     }
-    pub struct UpdateProjectiles;
 
-    impl UpdateProjectiles {
-        pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-            use legion::prelude::*;
-            SystemBuilder::<()>::new("UpdateProjectiles")
-                .read_resource::<FrameTiming>()
-                .with_query(<(
-                    Write<Position>,
-                    Read<Rotation>,
-                    Read<ProjectileTarget>,
-                    Read<ProjectileVelocity>,
-                )>::query())
-                .build(move |commands, mut world, ref frame_timing, query| {
-                    #[cfg(feature = "profiling")]
-                    microprofile::scope!("ecs", "UpdateProjectiles");
-                    for (entity, (mut position, rotation, target, velocity)) in
-                        query.iter_entities_mut(&mut world)
-                    {
-                        if na::distance(&position.0, &target.0) < 0.1 {
-                            commands.delete(entity);
-                            continue;
-                        }
-                        let velocity_scaled = velocity.0 * frame_timing.time_delta;
-                        let increment =
-                            velocity_scaled * (rotation.0 * forward_vector().into_inner());
-                        position.0 += increment;
-                    }
-                })
+    pub fn update_projectiles(
+        mut commands: Commands,
+        frame_timing: Res<FrameTiming>,
+        mut query: Query<(
+            Entity,
+            &mut Position,
+            &Rotation,
+            &ProjectileTarget,
+            &ProjectileVelocity,
+        )>,
+    ) {
+        #[cfg(feature = "profiling")]
+        microprofile::scope!("ecs", "UpdateProjectiles");
+        for (entity, mut position, rotation, target, velocity) in &mut query.iter() {
+            if na::distance(&position.0, &target.0) < 0.1 {
+                commands.despawn(entity);
+                continue;
+            }
+            let velocity_scaled = velocity.0 * frame_timing.time_delta;
+            let increment = velocity_scaled * (rotation.0 * forward_vector().into_inner());
+            position.0 += increment;
         }
     }
 
@@ -297,10 +258,20 @@ pub mod systems {
                         "alloc count: {}",
                         alloc_stats.total.allocationCount
                     ));
-                    let used = unbytify::bytify(alloc_stats.total.usedBytes);
-                    ui.bullet_text(&im_str!("used bytes: {} {}", used.0, used.1,));
-                    let unused = unbytify::bytify(alloc_stats.total.unusedBytes);
-                    ui.bullet_text(&im_str!("unused bytes: {} {}", unused.0, unused.1,));
+
+                    use humansize::{file_size_opts, FileSize};
+                    let used = alloc_stats
+                        .total
+                        .usedBytes
+                        .file_size(file_size_opts::BINARY)
+                        .unwrap();
+                    ui.bullet_text(&im_str!("used size: {}", used));
+                    let unused = alloc_stats
+                        .total
+                        .unusedBytes
+                        .file_size(file_size_opts::BINARY)
+                        .unwrap();
+                    ui.bullet_text(&im_str!("unused size: {}", unused));
 
                     ui.spacing();
 

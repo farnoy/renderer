@@ -3,8 +3,6 @@ use crate::{
     shaders, CameraMatrices, RenderFrame,
 };
 use ash::vk;
-#[cfg(feature = "microprofile")]
-use microprofile::scope;
 use std::{path::PathBuf, sync::Arc};
 
 pub struct DebugAABBPassData {
@@ -22,8 +20,7 @@ impl DebugAABBPassData {
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("debug_aabb.vert.spv");
         let file = std::fs::File::open(path).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-        let module = spirv_reflect::create_shader_module(&bytes).unwrap();
-        debug_assert!(shaders::debug_aabb::verify_spirv(&module));
+        debug_assert!(shaders::debug_aabb::load_and_verify_spirv(&bytes));
         let pipeline = helpers::new_graphics_pipeline2(
             Arc::clone(&renderer.device),
             &[

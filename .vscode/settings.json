@@ -3,12 +3,10 @@
     "**/target": true,
     "vendor": true
   },
-  "rust.features": [
-    "validation"
-  ],
-  "rust-client.channel": "nightly",
+  "rust-analyzer.cargo.allFeatures": false,
+  "rust-analyzer.checkOnSave.enable": false,
   "rust-analyzer.cargo.features": [
-    "validation"
+    "standard_validation",
+    "profiling"
   ],
-  "rust-analyzer.cargo.allFeatures": false
 }

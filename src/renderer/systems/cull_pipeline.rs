@@ -2,7 +2,7 @@ use crate::{
     ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
     renderer::{
         alloc, compute,
-        device::{Buffer, CommandBuffer, DoubleBuffered, Event},
+        device::{Buffer, CommandBuffer, DoubleBuffered, Event, StrictCommandPool},
         helpers::{self, pick_lod, Pipeline},
         shaders::{self, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
@@ -14,8 +14,8 @@ use ash::{
     version::DeviceV1_0,
     vk::{self, Handle},
 };
+use bevy_ecs::prelude::*;
 use helpers::PipelineLayout;
-use legion::prelude::*;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use num_traits::ToPrimitive;
@@ -28,8 +28,6 @@ pub struct CullPass;
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
 pub struct CoarseCulled(pub bool);
-
-pub struct CoarseCulling;
 
 pub struct CullPassData {
     pub culled_commands_buffer: DoubleBuffered<Buffer>,
@@ -44,7 +42,7 @@ pub struct CullPassData {
 
 // Internal storage for cleanup purposes
 pub struct CullPassDataPrivate {
-    previous_run_command_buffer: DoubleBuffered<Option<CommandBuffer>>, // to clean it up
+    command_pool: DoubleBuffered<StrictCommandPool>,
     previous_cull_pipeline: DoubleBuffered<Option<Arc<Pipeline>>>,
     previous_specialization: generate_work::Specialization,
 }
@@ -55,33 +53,32 @@ pub struct CullPassEvent {
     pub cull_complete_event: DoubleBuffered<Mutex<Event>>,
 }
 
-impl CoarseCulling {
-    pub fn exec_system() -> Box<(dyn Schedulable + 'static)> {
-        SystemBuilder::<()>::new("CoarseCulling")
-            .read_resource::<Camera>()
-            .with_query(<(Read<AABB>, Write<CoarseCulled>)>::query())
-            .build(move |_commands, mut world, ref camera, query| {
-                for (ref aabb, ref mut coarse_culled) in query.iter_mut(&mut world) {
-                    let mut outside = false;
-                    'per_plane: for plane in camera.frustum_planes.iter() {
-                        let e = aabb.0.half_extents().dot(&plane.xyz().abs());
+pub fn coarse_culling(camera: Res<Camera>, mut query: Query<(&AABB, &mut CoarseCulled)>) {
+    for (aabb, mut coarse_culled) in &mut query.iter() {
+        let mut outside = false;
+        'per_plane: for plane in camera.frustum_planes.iter() {
+            let e = aabb.0.half_extents().dot(&plane.xyz().abs());
 
-                        let s = plane.dot(&aabb.0.center().to_homogeneous());
-                        if s - e > 0.0 {
-                            outside = true;
-                            break 'per_plane;
-                        }
-                    }
-                    coarse_culled.0 = outside;
-                }
-            })
+            let s = plane.dot(&aabb.0.center().to_homogeneous());
+            if s - e > 0.0 {
+                outside = true;
+                break 'per_plane;
+            }
+        }
+        coarse_culled.0 = outside;
     }
 }
 
 impl CullPassDataPrivate {
     pub fn new(renderer: &RenderFrame) -> CullPassDataPrivate {
         CullPassDataPrivate {
-            previous_run_command_buffer: renderer.new_buffered(|_| None),
+            command_pool: renderer.new_buffered(|ix| {
+                StrictCommandPool::new(
+                    &renderer.device,
+                    renderer.device.compute_queue_family,
+                    &format!("Cull pass Command Pool[{}]", dbg!(ix)),
+                )
+            }),
             previous_cull_pipeline: renderer.new_buffered(|_| None),
             previous_specialization: generate_work::Specialization {
                 local_workgroup_size: INITIAL_WORKGROUP_SIZE,
@@ -112,7 +109,8 @@ impl CullPassData {
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("generate_work.comp.spv");
         let shader = renderer.device.new_shader(
             &path,
-            |_| true, // TODO: spirv_reflect fails to load with spec const present - generate_work::load_and_verify_spirv,
+            |_| true, // TODO: spirq fails to load spec const used to define dimensions
+                      // generate_work::load_and_verify_spirv,
         );
 
         let specialization = generate_work::Specialization {
@@ -237,227 +235,268 @@ impl CullPassData {
     }
 }
 
-impl CullPass {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        SystemBuilder::<()>::new("CullPass")
-            .read_resource::<RenderFrame>()
-            .write_resource::<CullPassData>()
-            .write_resource::<CullPassDataPrivate>()
-            .read_resource::<RuntimeConfiguration>()
-            .read_resource::<ImageIndex>()
-            .read_resource::<ConsolidatedMeshBuffers>()
-            .read_resource::<Camera>()
-            .read_resource::<ModelData>()
-            .read_resource::<CameraMatrices>()
-            .with_query(<(Read<DrawIndex>, Read<Position>, Read<GltfMesh>)>::query())
-            .build(move |_commands, world, resources, query| {
-                let (
-                    ref renderer,
-                    ref mut cull_pass_data,
-                    ref mut cull_pass_data_private,
-                    ref runtime_config,
-                    ref image_index,
-                    ref consolidate_mesh_buffers,
-                    ref camera,
-                    ref model_data,
-                    ref camera_matrices,
-                ) = resources;
-                #[cfg(feature = "microprofile")]
-                microprofile::scope!("ecs", "cull pass");
+pub fn cull_pass(
+    renderer: Res<RenderFrame>,
+    mut cull_pass_data: ResMut<CullPassData>,
+    mut cull_pass_data_private: ResMut<CullPassDataPrivate>,
+    runtime_config: Res<RuntimeConfiguration>,
+    image_index: Res<ImageIndex>,
+    consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
+    camera: Res<Camera>,
+    model_data: Res<ModelData>,
+    camera_matrices: Res<CameraMatrices>,
+    mut query: Query<(&DrawIndex, &Position, &GltfMesh)>,
+) {
+    #[cfg(feature = "microprofile")]
+    microprofile::scope!("ecs", "cull pass");
 
-                CullPassData::configure_pipeline(
-                    &renderer,
-                    cull_pass_data,
-                    cull_pass_data_private,
-                    &image_index,
-                );
+    {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("cull pass", "configure pipeline");
+        CullPassData::configure_pipeline(
+            &renderer,
+            &mut cull_pass_data,
+            &mut cull_pass_data_private,
+            &image_index,
+        );
+    }
 
-                if runtime_config.debug_aabbs {
-                    let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
-                    let wait_semaphore_values =
-                        &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
-                    let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
-                    let signal_semaphore_values =
-                        &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
-                    let dst_stage_masks =
-                        vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-                    let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                        .wait_semaphore_values(wait_semaphore_values)
-                        .signal_semaphore_values(signal_semaphore_values);
-                    let submit = vk::SubmitInfo::builder()
-                        .push_next(&mut wait_timeline)
-                        .wait_semaphores(wait_semaphores)
-                        .wait_dst_stage_mask(&dst_stage_masks)
-                        .signal_semaphores(signal_semaphores)
-                        .build();
+    if runtime_config.debug_aabbs {
+        let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
+        let wait_semaphore_values =
+            &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
+        let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
+        let signal_semaphore_values =
+            &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
+        let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+        let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(wait_semaphore_values)
+            .signal_semaphore_values(signal_semaphore_values);
+        let submit = vk::SubmitInfo::builder()
+            .push_next(&mut wait_timeline)
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(&dst_stage_masks)
+            .signal_semaphores(signal_semaphores)
+            .build();
 
-                    let queue = renderer.device.compute_queues[0].lock();
+        let queue = renderer.device.compute_queues[0].lock();
 
-                    unsafe {
-                        renderer
-                            .device
-                            .queue_submit(*queue, &[submit], vk::Fence::null())
-                            .unwrap();
-                    }
-                    return;
-                }
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &[submit], vk::Fence::null())
+                .unwrap();
+        }
+        return;
+    }
 
-                if cull_pass_data_private
-                    .previous_run_command_buffer
-                    .current(image_index.0)
-                    .is_some()
-                {
-                    renderer
-                        .compute_timeline_semaphore
-                        .wait(timeline_value!(compute @ renderer.frame_number - 2 => PERFORM))
-                        .unwrap();
-                }
+    {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("cull pass", "wait previous");
+        renderer
+            .compute_timeline_semaphore
+            .wait(timeline_value!(compute @ previous image_index; of renderer => PERFORM))
+            .unwrap();
+    }
 
-                cull_pass_data
-                    .cull_set
-                    .current(image_index.0)
-                    .update_whole_buffer(&renderer, 2, &consolidate_mesh_buffers.position_buffer);
-                cull_pass_data
-                    .cull_set
-                    .current(image_index.0)
-                    .update_whole_buffer(&renderer, 3, &consolidate_mesh_buffers.index_buffer);
+    {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("cull pass", "update descriptors");
 
-                let mut index_offset_in_output = 0i32;
+        cull_pass_data
+            .cull_set
+            .current(image_index.0)
+            .update_whole_buffer(&renderer, 2, &consolidated_mesh_buffers.position_buffer);
+        cull_pass_data
+            .cull_set
+            .current(image_index.0)
+            .update_whole_buffer(&renderer, 3, &consolidated_mesh_buffers.index_buffer);
+    }
 
-                let cull_cb = renderer
-                    .compute_command_pool
-                    .record_one_time("cull pass cb");
-                unsafe {
-                    let _debug_marker = renderer.device.debug_marker_around2(
-                        &cull_cb,
-                        "cull pass",
-                        [0.0, 1.0, 0.0, 1.0],
-                    );
-                    // Clear the command buffer before using
-                    {
-                        let commands_buffer =
-                            cull_pass_data.culled_commands_buffer.current(image_index.0);
-                        renderer.device.cmd_fill_buffer(
-                            *cull_cb,
-                            commands_buffer.handle,
-                            0,
-                            cull_set::bindings::indirect_commands::SIZE,
-                            0,
-                        );
-                        renderer.device.cmd_pipeline_barrier(
-                            *cull_cb,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            Default::default(),
-                            &[],
-                            &[vk::BufferMemoryBarrier::builder()
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                                .buffer(commands_buffer.handle)
-                                .size(vk::WHOLE_SIZE)
-                                .build()],
-                            &[],
-                        );
-                    }
-                    renderer.device.cmd_bind_pipeline(
-                        *cull_cb,
-                        vk::PipelineBindPoint::COMPUTE,
-                        cull_pass_data.cull_pipeline.handle,
-                    );
-                    cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
-                        &renderer.device,
-                        *cull_cb,
-                        &model_data.model_set.current(image_index.0),
-                        &camera_matrices.set.current(image_index.0),
-                        &cull_pass_data.cull_set.current(image_index.0),
-                    );
-                    for (draw_index, mesh_position, mesh) in query.iter(&world) {
-                        let vertex_offset = consolidate_mesh_buffers
-                            .vertex_offsets
-                            .get(&mesh.vertex_buffer.handle.as_raw())
-                            .expect("Vertex buffer not consolidated");
-                        let (index_buffer, index_len) =
-                            pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
-                        let index_offset = consolidate_mesh_buffers
-                            .index_offsets
-                            .get(&index_buffer.handle.as_raw())
-                            .expect("Index buffer not consolidated");
+    let command_pool = cull_pass_data_private
+        .command_pool
+        .current_mut(image_index.0);
 
-                        let push_constants = shaders::GenerateWorkPushConstants {
-                            gltf_index: draw_index.0,
-                            index_count: index_len.to_u32().unwrap(),
-                            index_offset: index_offset.to_u32().unwrap(),
-                            index_offset_in_output,
-                            vertex_offset: vertex_offset.to_i32().unwrap(),
-                        };
+    let new_command_pool = StrictCommandPool::new(
+        &renderer.device,
+        renderer.device.compute_queue_family,
+        &format!("Cull pass Command Pool[{}]", image_index.0),
+    );
 
-                        index_offset_in_output += index_len.to_i32().unwrap();
+    let mut old_command_pool = std::mem::replace(command_pool, new_command_pool);
 
-                        cull_pass_data.cull_pipeline_layout.push_constants(
-                            &renderer.device,
-                            *cull_cb,
-                            &push_constants,
-                        );
-                        let index_len = *index_len as u32;
-                        let workgroup_size = cull_pass_data.specialization.local_workgroup_size;
-                        let workgroup_count =
-                            index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
-                        debug_assert!(
-                            renderer.device.limits.max_compute_work_group_count[0]
-                                >= workgroup_count,
-                            "max_compute_work_group_count[0] violated"
-                        );
-                        debug_assert!(
-                            renderer.device.limits.max_compute_work_group_invocations
-                                >= workgroup_size,
-                            "max_compute_work_group_invocations violated"
-                        );
-                        debug_assert!(
-                            renderer.device.limits.max_compute_work_group_size[0] >= workgroup_size,
-                            "max_compute_work_group_size[0] violated"
-                        );
-                        renderer
-                            .device
-                            .cmd_dispatch(*cull_cb, workgroup_count, 1, 1);
-                    }
-                }
-                let cull_cb = cull_cb.end();
-                let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
-                let wait_semaphore_values =
-                    &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
-                let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
-                let signal_semaphore_values =
-                    &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
-                let dst_stage_masks =
-                    vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
-                let command_buffers = &[*cull_cb];
-                let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(wait_semaphore_values)
-                    .signal_semaphore_values(signal_semaphore_values);
-                let submit = vk::SubmitInfo::builder()
-                    .push_next(&mut wait_timeline)
-                    .wait_semaphores(wait_semaphores)
-                    .wait_dst_stage_mask(&dst_stage_masks)
-                    .command_buffers(command_buffers)
-                    .signal_semaphores(signal_semaphores)
-                    .build();
+    unsafe {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("cull pass", "CP reset");
+        old_command_pool.reset();
+        // command_pool.reset();
+        drop(old_command_pool);
+    }
 
-                let queue = renderer.device.compute_queues[0].lock();
+    let mut command_session = command_pool.session();
 
-                unsafe {
-                    renderer
-                        .device
-                        .queue_submit(*queue, &[submit], vk::Fence::null())
-                        .unwrap();
-                }
+    let cull_cb = command_session.record_one_time(&format!("Cull Pass CB[{}]", image_index.0));
+    unsafe {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("cull pass", "cb recording");
+        let _debug_marker = cull_cb.debug_marker_around("cull pass", [0.0, 1.0, 0.0, 1.0]);
+        // Clear the command buffer before using
+        {
+            let commands_buffer = cull_pass_data.culled_commands_buffer.current(image_index.0);
+            renderer.device.cmd_fill_buffer(
+                *cull_cb,
+                commands_buffer.handle,
+                0,
+                cull_set::bindings::indirect_commands::SIZE,
+                0,
+            );
+            renderer.device.cmd_pipeline_barrier(
+                *cull_cb,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                Default::default(),
+                &[],
+                &[vk::BufferMemoryBarrier::builder()
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .buffer(commands_buffer.handle)
+                    .size(vk::WHOLE_SIZE)
+                    .build()],
+                &[],
+            );
+        }
+        renderer.device.cmd_bind_pipeline(
+            *cull_cb,
+            vk::PipelineBindPoint::COMPUTE,
+            cull_pass_data.cull_pipeline.handle,
+        );
+        cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
+            &renderer.device,
+            *cull_cb,
+            &model_data.model_set.current(image_index.0),
+            &camera_matrices.set.current(image_index.0),
+            &cull_pass_data.cull_set.current(image_index.0),
+        );
 
-                let ix = image_index.0;
-                *cull_pass_data_private
-                    .previous_run_command_buffer
-                    .current_mut(ix) = Some(cull_cb);
-                // also destroys the previous one
-            })
+        let mut index_offset_in_output = 0i32;
+
+        for (draw_index, mesh_position, mesh) in &mut query.iter() {
+            let vertex_offset = consolidated_mesh_buffers
+                .vertex_offsets
+                .get(&mesh.vertex_buffer.handle.as_raw())
+                .expect("Vertex buffer not consolidated");
+            let (index_buffer, index_len) =
+                pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
+            let index_offset = consolidated_mesh_buffers
+                .index_offsets
+                .get(&index_buffer.handle.as_raw())
+                .expect("Index buffer not consolidated");
+
+            let push_constants = shaders::GenerateWorkPushConstants {
+                gltf_index: draw_index.0,
+                index_count: index_len.to_u32().unwrap(),
+                index_offset: index_offset.to_u32().unwrap(),
+                index_offset_in_output,
+                vertex_offset: vertex_offset.to_i32().unwrap(),
+            };
+
+            index_offset_in_output += index_len.to_i32().unwrap();
+
+            cull_pass_data.cull_pipeline_layout.push_constants(
+                &renderer.device,
+                *cull_cb,
+                &push_constants,
+            );
+            let index_len = *index_len as u32;
+            let workgroup_size = cull_pass_data.specialization.local_workgroup_size;
+            let workgroup_count =
+                index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
+            debug_assert!(
+                renderer.device.limits.max_compute_work_group_count[0] >= workgroup_count,
+                "max_compute_work_group_count[0] violated"
+            );
+            debug_assert!(
+                renderer.device.limits.max_compute_work_group_invocations >= workgroup_size,
+                "max_compute_work_group_invocations violated"
+            );
+            debug_assert!(
+                renderer.device.limits.max_compute_work_group_size[0] >= workgroup_size,
+                "max_compute_work_group_size[0] violated"
+            );
+            renderer
+                .device
+                .cmd_dispatch(*cull_cb, workgroup_count, 1, 1);
+
+            // To silence synchronization validation warnings here - doesn't fix anything
+            #[cfg(feature = "sync_validation")]
+            renderer.device.cmd_pipeline_barrier(
+                *cull_cb,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[
+                    vk::BufferMemoryBarrier::builder()
+                        .buffer(
+                            cull_pass_data
+                                .culled_commands_buffer
+                                .current(image_index.0)
+                                .handle,
+                        )
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .size(vk::WHOLE_SIZE)
+                        .build(),
+                    vk::BufferMemoryBarrier::builder()
+                        .buffer(
+                            cull_pass_data
+                                .culled_index_buffer
+                                .current(image_index.0)
+                                .handle,
+                        )
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .size(vk::WHOLE_SIZE)
+                        .build(),
+                ],
+                &[],
+            );
+        }
+    }
+    let cull_cb = cull_cb.end();
+    let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
+    let wait_semaphore_values = &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
+    let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
+    let signal_semaphore_values = &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
+    let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
+    let command_buffers = &[*cull_cb];
+    let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+        .wait_semaphore_values(wait_semaphore_values)
+        .signal_semaphore_values(signal_semaphore_values);
+    let submit = vk::SubmitInfo::builder()
+        .push_next(&mut wait_timeline)
+        .wait_semaphores(wait_semaphores)
+        .wait_dst_stage_mask(&dst_stage_masks)
+        .command_buffers(command_buffers)
+        .signal_semaphores(signal_semaphores)
+        .build();
+
+    {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("cull pass", "submit");
+        let queue = renderer.device.compute_queues[0].lock();
+
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &[submit], vk::Fence::null())
+                .unwrap();
+        }
     }
 }

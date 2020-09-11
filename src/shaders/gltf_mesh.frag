@@ -4,6 +4,7 @@
 
 #extension GL_EXT_nonuniform_qualifier: require
 #extension GL_EXT_scalar_block_layout: require
+// #extension GL_ARB_sparse_texture2: require
 
 layout(set = 2, binding = 0, scalar) uniform LightMatrices {
     mat4 projection;
@@ -47,4 +48,11 @@ void main() {
         float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z));
         o_color.rgb *= use_shadow && depth < 1.0 ? 0.6 : 1.0;
     }
+    o_color = texture(base_color[entity_id], uv);
+    /*
+    vec4 ret;
+    int code = sparseTextureARB(base_color[entity_id], uv, ret);
+    if (sparseTexelsResidentARB(code))
+        o_color = vec4(1.0);
+    */
 }

@@ -4,6 +4,7 @@ use crate::{
     timeline_value,
 };
 use ash::vk;
+use bevy_ecs::prelude::*;
 
 const MAP_SIZE: u32 = 4096;
 // dimensions of the square texture, 4x4 slots = 16 in total
@@ -32,7 +33,7 @@ impl ShadowMappingData {
             &vk::RenderPassCreateInfo::builder()
                 .attachments(unsafe {
                     &*(&[vk::AttachmentDescription::builder()
-                        .format(vk::Format::D32_SFLOAT)
+                        .format(vk::Format::D16_UNORM)
                         .samples(vk::SampleCountFlags::TYPE_1)
                         .load_op(vk::AttachmentLoadOp::LOAD)
                         .store_op(vk::AttachmentStoreOp::STORE)
@@ -120,7 +121,7 @@ impl ShadowMappingData {
             .set_object_name(depth_pipeline.handle, "Shadow mapping depth Pipeline");
 
         let depth_image = renderer.device.new_image(
-            vk::Format::D32_SFLOAT,
+            vk::Format::D16_UNORM,
             // 16 slots in total
             vk::Extent3D {
                 height: MAP_SIZE * DIM,
@@ -145,7 +146,7 @@ impl ShadowMappingData {
                 .create_image_view(
                     &vk::ImageViewCreateInfo::builder()
                         .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(vk::Format::D32_SFLOAT)
+                        .format(vk::Format::D16_UNORM)
                         .subresource_range(vk::ImageSubresourceRange {
                             aspect_mask: vk::ImageAspectFlags::DEPTH,
                             base_mip_level: 0,
@@ -313,290 +314,251 @@ struct LightMatrices {
     pub position: glm::Vec4,
 }
 
-pub struct ShadowMappingMVPCalculation;
+pub fn shadow_mapping_mvp_calculation(
+    image_index: Res<ImageIndex>,
+    mut query: Query<(&Position, &Rotation, &mut ShadowMappingLightMatrices)>,
+) {
+    debug_assert_eq!(size_of::<LightMatrices>(), 144);
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "shadow mapping light matrices calculation");
+    for (light_position, light_rotation, mut light_matrix) in &mut query.iter() {
+        let near = 10.0;
+        let far = 400.0;
+        let projection = glm::perspective_lh_zo(1.0, glm::radians(&glm::vec1(70.0)).x, near, far);
 
-impl ShadowMappingMVPCalculation {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        use legion::prelude::*;
-        SystemBuilder::<()>::new("ShadowMappingMVPCalculation - exec")
-            .read_resource::<ImageIndex>()
-            .with_query(<(
-                Read<Position>,
-                Read<Rotation>,
-                Write<ShadowMappingLightMatrices>,
-            )>::query())
-            .build(
-                move |_commands, mut world, ref image_index, ref mut query| {
-                    debug_assert_eq!(size_of::<LightMatrices>(), 144);
-                    #[cfg(feature = "profiling")]
-                    microprofile::scope!("ecs", "shadow mapping light matrices calculation");
-                    for (ref light_position, ref light_rotation, ref mut light_matrix) in
-                        query.iter_mut(&mut world)
-                    {
-                        let near = 10.0;
-                        let far = 400.0;
-                        let projection = glm::perspective_lh_zo(
-                            1.0,
-                            glm::radians(&glm::vec1(70.0)).x,
-                            near,
-                            far,
-                        );
-
-                        let view =
-                            glm::translation(&(light_rotation.0 * (-light_position.0.coords)))
-                                * light_rotation.0.to_homogeneous();
-                        let mut matrices_mapped = light_matrix
-                            .matrices_buffer
-                            .current_mut(image_index.0)
-                            .map::<LightMatrices>()
-                            .expect("failed to map Light matrices buffer");
-                        matrices_mapped[0] = LightMatrices {
-                            projection,
-                            view,
-                            position: light_position.0.coords.push(1.0),
-                        };
-                    }
-                },
-            )
+        let view = glm::translation(&(light_rotation.0 * (-light_position.0.coords)))
+            * light_rotation.0.to_homogeneous();
+        let mut matrices_mapped = light_matrix
+            .matrices_buffer
+            .current_mut(image_index.0)
+            .map::<LightMatrices>()
+            .expect("failed to map Light matrices buffer");
+        matrices_mapped[0] = LightMatrices {
+            projection,
+            view,
+            position: light_position.0.coords.push(1.0),
+        };
     }
 }
 
 /// Identifies stale shadow maps in the atlas and refreshes them
-pub struct PrepareShadowMaps;
+pub fn prepare_shadow_maps(
+    renderer: Res<RenderFrame>,
+    depth_pass: Res<DepthPassData>,
+    image_index: Res<ImageIndex>,
+    graphics_command_pool: Res<GraphicsCommandPool>,
+    mut shadow_mapping: ResMut<ShadowMappingData>,
+    model_data: Res<ModelData>,
+    mut mesh_query: Query<(&DrawIndex, &GltfMesh)>,
+    mut shadow_query: Query<With<Light, &ShadowMappingLightMatrices>>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "shadow_mapping");
+    let command_buffer = graphics_command_pool.0.record_one_time("shadow mapping cb");
+    unsafe {
+        if !shadow_mapping.image_transitioned {
+            renderer.device.cmd_pipeline_barrier(
+                *command_buffer,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                Default::default(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier::builder()
+                    .image(shadow_mapping.depth_image.handle)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .old_layout(vk::ImageLayout::PREINITIALIZED)
+                    .new_layout(vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .build()],
+            );
+            shadow_mapping.image_transitioned = true;
+        }
+        let _shadow_mapping_marker = renderer.device.debug_marker_around2(
+            &command_buffer,
+            "shadow mapping",
+            [0.8, 0.1, 0.1, 1.0],
+        );
+        renderer.device.cmd_begin_render_pass(
+            *command_buffer,
+            &vk::RenderPassBeginInfo::builder()
+                .render_pass(shadow_mapping.renderpass.handle)
+                .framebuffer(shadow_mapping.framebuffer.handle)
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: DIM * MAP_SIZE,
+                        height: DIM * MAP_SIZE,
+                    },
+                }),
+            vk::SubpassContents::INLINE,
+        );
+        renderer.device.cmd_bind_pipeline(
+            *command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            shadow_mapping.depth_pipeline.handle,
+        );
 
-impl PrepareShadowMaps {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
-        use legion::prelude::*;
-        SystemBuilder::<()>::new("PrepareShadowMaps - exec")
-            .read_resource::<RenderFrame>()
-            .read_resource::<DepthPassData>()
-            .read_resource::<ImageIndex>()
-            .write_resource::<GraphicsCommandPool>()
-            .write_resource::<ShadowMappingData>()
-            .read_resource::<ModelData>()
-            .with_query(<(Read<DrawIndex>, Read<GltfMesh>)>::query())
-            .with_query(<Read<ShadowMappingLightMatrices>>::query().filter(component::<Light>()))
-            .build(move |_commands, world, resources, queries| {
-                let (
-                    ref renderer,
-                    ref depth_pass,
-                    ref image_index,
-                    ref mut graphics_command_pool,
-                    ref mut shadow_mapping,
-                    ref model_data,
-                ) = resources;
-                let (ref mut mesh_query, ref mut shadow_query) = queries;
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("ecs", "shadow_mapping");
-                let command_buffer = graphics_command_pool.0.record_one_time("shadow mapping cb");
-                unsafe {
-                    if !shadow_mapping.image_transitioned {
-                        renderer.device.cmd_pipeline_barrier(
-                            *command_buffer,
-                            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                            vk::PipelineStageFlags::TOP_OF_PIPE,
-                            Default::default(),
-                            &[],
-                            &[],
-                            &[vk::ImageMemoryBarrier::builder()
-                                .image(shadow_mapping.depth_image.handle)
-                                .subresource_range(vk::ImageSubresourceRange {
-                                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                                    base_mip_level: 0,
-                                    level_count: 1,
-                                    base_array_layer: 0,
-                                    layer_count: 1,
-                                })
-                                .old_layout(vk::ImageLayout::PREINITIALIZED)
-                                .new_layout(
-                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
-                                )
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .build()],
-                        );
-                        shadow_mapping.image_transitioned = true;
-                    }
-                    let _shadow_mapping_marker = renderer.device.debug_marker_around2(
-                        &command_buffer,
-                        "shadow mapping",
-                        [0.8, 0.1, 0.1, 1.0],
-                    );
-                    renderer.device.cmd_begin_render_pass(
-                        *command_buffer,
-                        &vk::RenderPassBeginInfo::builder()
-                            .render_pass(shadow_mapping.renderpass.handle)
-                            .framebuffer(shadow_mapping.framebuffer.handle)
-                            .render_area(vk::Rect2D {
-                                offset: vk::Offset2D { x: 0, y: 0 },
-                                extent: vk::Extent2D {
-                                    width: DIM * MAP_SIZE,
-                                    height: DIM * MAP_SIZE,
-                                },
-                            }),
-                        vk::SubpassContents::INLINE,
-                    );
-                    renderer.device.cmd_bind_pipeline(
-                        *command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        shadow_mapping.depth_pipeline.handle,
-                    );
+        for (ix, shadow_mvp) in shadow_query.iter().iter().enumerate() {
+            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+                &renderer.device,
+                *command_buffer,
+                &model_data.model_set.current(image_index.0),
+                &shadow_mvp.matrices_set.current(image_index.0),
+            );
 
-                    for (ix, shadow_mvp) in shadow_query.iter(&world).enumerate() {
-                        depth_pass.depth_pipeline_layout.bind_descriptor_sets(
-                            &renderer.device,
-                            *command_buffer,
-                            &model_data.model_set.current(image_index.0),
-                            &shadow_mvp.matrices_set.current(image_index.0),
-                        );
+            let row = ix as u32 / DIM;
+            let column = ix as u32 % DIM;
+            let x = MAP_SIZE * column;
+            let y = MAP_SIZE * row;
+            renderer.device.cmd_set_viewport(
+                *command_buffer,
+                0,
+                &[vk::Viewport {
+                    x: x as f32,
+                    y: (MAP_SIZE * (row + 1)) as f32,
+                    width: MAP_SIZE as f32,
+                    height: -(MAP_SIZE as f32),
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            renderer.device.cmd_set_scissor(
+                *command_buffer,
+                0,
+                &[vk::Rect2D {
+                    offset: vk::Offset2D {
+                        x: x as i32,
+                        y: y as i32,
+                    },
+                    extent: vk::Extent2D {
+                        width: MAP_SIZE,
+                        height: MAP_SIZE,
+                    },
+                }],
+            );
+            renderer.device.cmd_clear_attachments(
+                *command_buffer,
+                &[vk::ClearAttachment::builder()
+                    .clear_value(vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 1,
+                        },
+                    })
+                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                    .build()],
+                &[vk::ClearRect::builder()
+                    .rect(vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: x as i32,
+                            y: y as i32,
+                        },
+                        extent: vk::Extent2D {
+                            width: MAP_SIZE,
+                            height: MAP_SIZE,
+                        },
+                    })
+                    .layer_count(1)
+                    .base_array_layer(0)
+                    .build()],
+            );
 
-                        let row = ix as u32 / DIM;
-                        let column = ix as u32 % DIM;
-                        let x = MAP_SIZE * column;
-                        let y = MAP_SIZE * row;
-                        renderer.device.cmd_set_viewport(
-                            *command_buffer,
-                            0,
-                            &[vk::Viewport {
-                                x: x as f32,
-                                y: (MAP_SIZE * (row + 1)) as f32,
-                                width: MAP_SIZE as f32,
-                                height: -(MAP_SIZE as f32),
-                                min_depth: 0.0,
-                                max_depth: 1.0,
-                            }],
-                        );
-                        renderer.device.cmd_set_scissor(
-                            *command_buffer,
-                            0,
-                            &[vk::Rect2D {
-                                offset: vk::Offset2D {
-                                    x: x as i32,
-                                    y: y as i32,
-                                },
-                                extent: vk::Extent2D {
-                                    width: MAP_SIZE,
-                                    height: MAP_SIZE,
-                                },
-                            }],
-                        );
-                        renderer.device.cmd_clear_attachments(
-                            *command_buffer,
-                            &[vk::ClearAttachment::builder()
-                                .clear_value(vk::ClearValue {
-                                    depth_stencil: vk::ClearDepthStencilValue {
-                                        depth: 1.0,
-                                        stencil: 1,
-                                    },
-                                })
-                                .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                .build()],
-                            &[vk::ClearRect::builder()
-                                .rect(vk::Rect2D {
-                                    offset: vk::Offset2D {
-                                        x: x as i32,
-                                        y: y as i32,
-                                    },
-                                    extent: vk::Extent2D {
-                                        width: MAP_SIZE,
-                                        height: MAP_SIZE,
-                                    },
-                                })
-                                .layer_count(1)
-                                .base_array_layer(0)
-                                .build()],
-                        );
+            for (draw_index, mesh) in &mut mesh_query.iter() {
+                let (index_buffer, index_count) = mesh.index_buffers.last().unwrap();
+                renderer.device.cmd_bind_index_buffer(
+                    *command_buffer,
+                    index_buffer.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                renderer.device.cmd_bind_vertex_buffers(
+                    *command_buffer,
+                    0,
+                    &[mesh.vertex_buffer.handle],
+                    &[0],
+                );
+                renderer.device.cmd_draw_indexed(
+                    *command_buffer,
+                    (*index_count).try_into().unwrap(),
+                    1,
+                    0,
+                    0,
+                    draw_index.0,
+                );
+            }
+        }
 
-                        for (draw_index, mesh) in mesh_query.iter(&world) {
-                            let (index_buffer, index_count) = mesh.index_buffers.last().unwrap();
-                            renderer.device.cmd_bind_index_buffer(
-                                *command_buffer,
-                                index_buffer.handle,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
-                            renderer.device.cmd_bind_vertex_buffers(
-                                *command_buffer,
-                                0,
-                                &[mesh.vertex_buffer.handle],
-                                &[0],
-                            );
-                            renderer.device.cmd_draw_indexed(
-                                *command_buffer,
-                                (*index_count).try_into().unwrap(),
-                                1,
-                                0,
-                                0,
-                                draw_index.0,
-                            );
-                        }
-                    }
+        renderer.device.cmd_end_render_pass(*command_buffer);
+    }
+    let command_buffer = command_buffer.end();
 
-                    renderer.device.cmd_end_render_pass(*command_buffer);
-                }
-                let command_buffer = command_buffer.end();
+    let queue = renderer.device.graphics_queue.lock();
 
-                let queue = renderer.device.graphics_queue.lock();
+    let command_buffers = &[*command_buffer];
+    let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
+    let wait_semaphore_values =
+        &[timeline_value!(graphics_sync @ last renderer.frame_number => GUI_DRAW)];
+    let signal_semaphore_values =
+        &[timeline_value!(graphics_sync @ renderer.frame_number => SHADOW_MAPPING)];
+    let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+        .wait_semaphore_values(wait_semaphore_values)
+        .signal_semaphore_values(signal_semaphore_values)
+        .build();
+    let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let submit_info = vk::SubmitInfo::builder()
+        .command_buffers(command_buffers)
+        .push_next(&mut signal_timeline)
+        .wait_semaphores(wait_semaphores)
+        .wait_dst_stage_mask(wait_dst_stage_mask)
+        .signal_semaphores(signal_semaphores)
+        .build();
 
-                let command_buffers = &[*command_buffer];
-                let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
-                let wait_semaphore_values =
-                    &[timeline_value!(graphics_sync @ last renderer.frame_number => GUI_DRAW)];
-                let signal_semaphore_values =
-                    &[timeline_value!(graphics_sync @ renderer.frame_number => SHADOW_MAPPING)];
-                let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                    .wait_semaphore_values(wait_semaphore_values)
-                    .signal_semaphore_values(signal_semaphore_values)
-                    .build();
-                let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-                let submit_info = vk::SubmitInfo::builder()
-                    .command_buffers(command_buffers)
-                    .push_next(&mut signal_timeline)
-                    .wait_semaphores(wait_semaphores)
-                    .wait_dst_stage_mask(wait_dst_stage_mask)
-                    .signal_semaphores(signal_semaphores)
-                    .build();
+    unsafe {
+        renderer
+            .device
+            .queue_submit(*queue, &[submit_info], vk::Fence::null())
+            .unwrap();
+    }
 
-                unsafe {
-                    renderer
-                        .device
-                        .queue_submit(*queue, &[submit_info], vk::Fence::null())
-                        .unwrap();
-                }
+    *shadow_mapping
+        .previous_command_buffer
+        .current_mut(image_index.0) = Some(command_buffer);
 
-                *shadow_mapping
-                    .previous_command_buffer
-                    .current_mut(image_index.0) = Some(command_buffer);
+    // TODO: extract to another stage?
+    // Update descriptor sets so that users of lights have the latest info
+    // preallocate all equired memory so as not to invalidate references during iteration
+    let mut mvp_updates =
+        vec![[vk::DescriptorBufferInfo::default(); 1]; DIM as usize * DIM as usize];
+    let mut write_descriptors = vec![];
+    for (ix, shadow_mvp) in shadow_query.iter().iter().enumerate() {
+        mvp_updates[ix] = [vk::DescriptorBufferInfo {
+            buffer: shadow_mvp.matrices_buffer.current(image_index.0).handle,
+            offset: 0,
+            range: size_of::<LightMatrices>() as vk::DeviceSize,
+        }];
+        write_descriptors.push(
+            vk::WriteDescriptorSet::builder()
+                .dst_set(shadow_mapping.user_set.current(image_index.0).set.handle)
+                .dst_binding(0)
+                .dst_array_element(ix as u32)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&mvp_updates[ix])
+                .build(),
+        );
+    }
 
-                // TODO: extract to another stage?
-                // Update descriptor sets so that users of lights have the latest info
-                // preallocate all equired memory so as not to invalidate references during iteration
-                let mut mvp_updates =
-                    vec![[vk::DescriptorBufferInfo::default(); 1]; DIM as usize * DIM as usize];
-                let mut write_descriptors = vec![];
-                for (ix, shadow_mvp) in shadow_query.iter(&world).enumerate() {
-                    mvp_updates[ix] = [vk::DescriptorBufferInfo {
-                        buffer: shadow_mvp.matrices_buffer.current(image_index.0).handle,
-                        offset: 0,
-                        range: size_of::<LightMatrices>() as vk::DeviceSize,
-                    }];
-                    write_descriptors.push(
-                        vk::WriteDescriptorSet::builder()
-                            .dst_set(shadow_mapping.user_set.current(image_index.0).set.handle)
-                            .dst_binding(0)
-                            .dst_array_element(ix as u32)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .buffer_info(&mvp_updates[ix])
-                            .build(),
-                    );
-                }
-
-                unsafe {
-                    renderer
-                        .device
-                        .update_descriptor_sets(&write_descriptors, &[]);
-                }
-            })
+    unsafe {
+        renderer
+            .device
+            .update_descriptor_sets(&write_descriptors, &[]);
     }
 }

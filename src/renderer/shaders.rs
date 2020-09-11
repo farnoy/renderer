@@ -14,46 +14,28 @@ macro_rules! to_vk_format {
 
 macro_rules! compare_type {
     (u32, $desc: expr) => {
-        $desc.format == spirv_reflect::types::image::ReflectFormat::R32_UINT
+        *$desc == spirq::Type::Scalar(spirq::ty::ScalarType::int(4, false))
     };
     (vec4, $desc: expr) => {
-        $desc.format == spirv_reflect::types::image::ReflectFormat::R32G32B32A32_SFLOAT
+        *$desc
+            == spirq::Type::Vector(spirq::ty::VectorType::new(
+                spirq::ty::ScalarType::float(4),
+                4,
+            ))
     };
     (vec3, $desc: expr) => {
-        $desc.format == spirv_reflect::types::image::ReflectFormat::R32G32B32_SFLOAT
+        *$desc
+            == spirq::Type::Vector(spirq::ty::VectorType::new(
+                spirq::ty::ScalarType::float(4),
+                3,
+            ))
     };
     (vec2, $desc: expr) => {
-        $desc.format == spirv_reflect::types::image::ReflectFormat::R32G32_SFLOAT
-    };
-}
-
-macro_rules! compare_array {
-    (u32, $desc: expr) => {
-        $desc.dims == vec![0u32; 0]
-    };
-    (vec4, $desc: expr) => {
-        $desc.dims == vec![0u32; 0]
-    };
-    (vec3, $desc: expr) => {
-        $desc.dims == vec![0u32; 0]
-    };
-    (vec2, $desc: expr) => {
-        $desc.dims == vec![0u32; 0]
-    };
-}
-
-macro_rules! compare_vector {
-    (u32, $desc: expr) => {
-        $desc.vector.component_count == 0
-    };
-    (vec4, $desc: expr) => {
-        $desc.vector.component_count == 4
-    };
-    (vec3, $desc: expr) => {
-        $desc.vector.component_count == 3
-    };
-    (vec2, $desc: expr) => {
-        $desc.vector.component_count == 2
+        *$desc
+            == spirq::Type::Vector(spirq::ty::VectorType::new(
+                spirq::ty::ScalarType::float(4),
+                2,
+            ))
     };
 }
 
@@ -196,19 +178,12 @@ macro_rules! make_descriptor_set {
     };
 }
 
-fn compare_descriptor_types(
-    lhs: vk::DescriptorType,
-    rhs: spirv_reflect::types::ReflectDescriptorType,
-) -> bool {
+fn compare_descriptor_types(lhs: vk::DescriptorType, rhs: &spirq::DescriptorType) -> bool {
     match (lhs, rhs) {
-        (
-            vk::DescriptorType::UNIFORM_BUFFER,
-            spirv_reflect::types::ReflectDescriptorType::UniformBuffer,
-        ) => true,
-        (
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            spirv_reflect::types::ReflectDescriptorType::CombinedImageSampler,
-        ) => true,
+        (vk::DescriptorType::UNIFORM_BUFFER, spirq::DescriptorType::UniformBuffer(_, _)) => true,
+        (vk::DescriptorType::COMBINED_IMAGE_SAMPLER, spirq::DescriptorType::SampledImage(_, _)) => {
+            true
+        }
         _ => panic!(
             "compare_descriptor_types not implemented for {:?} {:?}",
             lhs, rhs
@@ -217,15 +192,13 @@ fn compare_descriptor_types(
 }
 
 macro_rules! make_pipe {
-    (@validate_vertex_input $s:ident $entry:ident []) => {};
-    (@validate_vertex_input $s:ident $entry:ident [$($e:ident : $t:ident),*]) => {
-        debug_assert_eq!($s.get_spirv_execution_model(), spirv_headers::ExecutionModel::Vertex);
+    (@validate_vertex_input $s:ident []) => {};
+    (@validate_vertex_input $s:ident [$($e:ident : $t:ident),*]) => {
+        let mut ix = 0;
         $(
-            match $s.enumerate_input_variables($entry).unwrap().iter().find(|x| x.name == stringify!($e)) {
-                Some(resource) => {
-                    if !compare_type!($t, resource) ||
-                    !compare_array!($t, resource.array) ||
-                    !compare_vector!($t, resource.numeric) {
+            match $s.get_input(spirq::InterfaceLocation::new(ix, 0)) {
+                Some(ty) => {
+                    if !compare_type!($t, ty) {
                         return false;
                     }
                 },
@@ -234,6 +207,10 @@ macro_rules! make_pipe {
                     return false;
                 }
             };
+            #[allow(unused_assignments)]
+            {
+                ix += 1;
+            }
         )*
     };
     (@vertex_descs [$($e:ident : $t:ident),*]) => {
@@ -329,31 +306,47 @@ macro_rules! make_pipe {
     (@main $name:ident { vertex_inputs: $vertex_inputs:tt, compute: $compute:expr, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)? $(, specialization_constants: $spec_const:tt)?}) => {
         pub mod $name {
             use ash::{version::DeviceV1_0, vk};
-            use std::sync::Arc;
+            use std::{io::Read, sync::Arc};
 
             const IS_COMPUTE: bool = $compute;
 
-            pub fn load_and_verify_spirv(data: &[u8]) -> bool {
-                let module = spirv_reflect::create_shader_module(&data).unwrap();
-                self::verify_spirv(&module)
+            pub fn load_and_verify_spirv_file(path: &'static str) -> bool {
+                let path = std::path::PathBuf::from(env!("OUT_DIR")).join(path);
+                let file = std::fs::File::open(path).expect("Could not find shader.");
+                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
+                self::load_and_verify_spirv(&bytes)
             }
 
-            pub fn verify_spirv(s: &spirv_reflect::ShaderModule) -> bool {
-                let entrypoint = Some("main");
-                make_pipe!(@validate_vertex_input s entrypoint $vertex_inputs);
+            pub fn load_and_verify_spirv(data: &[u8]) -> bool {
+                let (l, spv_words, r) = unsafe { data.align_to::<u32>() };
+                assert!(l.is_empty() && r.is_empty(), "failed to realign code");
+
+                let spv: spirq::SpirvBinary = spv_words.into();
+                let module = spv
+                    .reflect()
+                    .unwrap();
+                let entry = module
+                    .iter()
+                    .find(|entry| entry.name == "main")
+                    .expect("Failed to find entry point `main`");
+                self::verify_spirv(&entry)
+            }
+
+            pub fn verify_spirv(s: &spirq::EntryPoint) -> bool {
+                if s.exec_model == spirq::ExecutionModel::Vertex {
+                    make_pipe!(@validate_vertex_input s $vertex_inputs);
+                }
                 let mut set_ix = 0;
                 $(
                     let bindings = super::$desc::bindings();
-                    for ((binding, name), type_size) in bindings.iter().zip(super::$desc::NAMES.iter()).zip(super::$desc::TYPE_SIZES.iter()) {
+                    for (binding, type_size) in bindings.iter().zip(super::$desc::TYPE_SIZES.iter()) {
                         if binding.descriptor_type == vk::DescriptorType::STORAGE_BUFFER {
                             println!("Skipping storage buffer validation, can't reflect on it!");
                             continue;
                         }
-                        if let Some(resource) = s.enumerate_descriptor_bindings(entrypoint).unwrap().iter().find(|x| x.set == set_ix && x.binding == binding.binding) {
-                            println!("verifying name {} {} {:?}", name, *type_size, resource.block.members.iter().map(|x| x.name.clone()).collect::<Vec<_>>());
-                            if resource.binding != binding.binding || !super::compare_descriptor_types(binding.descriptor_type, resource.descriptor_type) || *type_size != resource.block.size as vk::DeviceSize {
-                                println!("do not match up {} {}", resource.binding, binding.binding);
-                                println!("sizes {} {}", *type_size, resource.block.size);
+                        if let Some(ty) = s.get_desc(spirq::DescriptorBinding::new(set_ix, binding.binding)) {
+                            if !super::compare_descriptor_types(binding.descriptor_type, ty) || ty.nbyte().map(|s| s as vk::DeviceSize != *type_size).unwrap_or(false) {
+                                dbg!(binding.descriptor_type, ty);
                                 return false;
                             }
                         }
@@ -365,23 +358,20 @@ macro_rules! make_pipe {
                     }
                 )*
                 $(
-                    debug_assert_eq!(s.enumerate_push_constant_blocks(entrypoint).unwrap().len(), 1, "multiple push constant blocks not supported");
-
-                    let push_blocks = s.enumerate_push_constant_blocks(entrypoint).unwrap();
-                    match push_blocks.first() {
+                    match s.get_push_const() {
                         None => {
-                            println!("definition uses push constant, but shader does not");
-                            return false;
+                            // TODO: definition has a push constant, but the shader does not
                         },
-                        Some(push_block) => {
-                            // TODO: spirv_reflect does not return the proper size for the block,
-                            //       so we are summing up members for now. not padded_size can be used
+                        Some(spirq::Type::Struct(push_block)) => {
                             // TODO: validate offset and alignment of each block member, bigger topic
-                            if std::mem::size_of::<super::$push>() != push_block.members.iter().map(|a| a.size as usize).sum::<usize>() {
-                                println!("push blocks are different {} {}", std::mem::size_of::<super::$push>(),push_block.members.iter().map(|a| a.padded_size as usize).sum::<usize>());
-                                dbg!(&push_block.members);
+                            if std::mem::size_of::<super::$push>() != push_block.nbyte() {
+                                println!("push blocks are different {} {}", std::mem::size_of::<super::$push>(),push_block.nbyte());
                                 return false;
                             }
+                        }
+                        _ => {
+                            println!("push constant block is not a struct");
+                            return false;
                         }
                     }
                 )?
