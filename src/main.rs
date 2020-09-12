@@ -456,14 +456,12 @@ fn main() {
     );
     schedule.add_system_to_stage("render setup", camera_matrices_upload.system());
     schedule.add_system_to_stage("render setup", model_matrices_upload.system());
+    schedule.add_system_to_stage("render setup", cull_pass.system());
     schedule.add_stage("consolidate textures");
     schedule.add_system_to_stage(
         "consolidate textures",
         synchronize_base_color_textures_consolidate.system(),
     );
-    // TODO: remove to unlock more parallelism
-    schedule.add_stage("cull pass");
-    schedule.add_system_to_stage("cull pass", cull_pass.system());
     // TODO: remove to unlock more parallelism
     schedule.add_stage("shadow mapping");
     schedule.add_system_to_stage("shadow mapping", prepare_shadow_maps.system());
@@ -474,6 +472,29 @@ fn main() {
     schedule.add_stage("main render");
     schedule.add_system_to_stage("main render", render_frame.system());
     // TODO: add the final stage for submitting all work to the graphics queue
+
+    #[cfg(feature = "profiling")]
+    {
+        use std::time::Instant;
+        let counter = Arc::new(Mutex::new(Instant::now()));
+        let counter2 = Arc::clone(&counter);
+        schedule.add_stage_before("shadow mapping", "start graphics profiling");
+        schedule.add_system_to_stage(
+            "start graphics profiling",
+            (move || {
+                *counter.lock() = Instant::now();
+            })
+            .system(),
+        );
+        schedule.add_stage_after("main render", "end graphics profiling");
+        schedule.add_system_to_stage(
+            "end graphics profiling",
+            (move || {
+                dbg!(counter2.lock().elapsed());
+            })
+            .system(),
+        );
+    }
 
     schedule.initialize(&mut resources);
 
