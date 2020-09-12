@@ -58,7 +58,8 @@ default = ["simba/packed_simd"]
 vk_names = []
 standard_validation = ["vk_names"]
 sync_validation = ["standard_validation"]
-profiling = ["microprofile"]
+uncapped = []
+profiling = ["uncapped", "microprofile"]
 
 [profile.dev.package.image]
 opt-level = 3
@@ -86,6 +87,4 @@ opt-level = 1
 lto = "off"
 
 [profile.release]
-debug-assertions = true
-overflow-checks = true
 lto = "thin"

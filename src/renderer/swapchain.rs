@@ -109,7 +109,11 @@ impl Swapchain {
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(pre_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
+            .present_mode(if cfg!(feature = "uncapped") {
+                vk::PresentModeKHR::IMMEDIATE
+            } else {
+                vk::PresentModeKHR::FIFO
+            })
             .clipped(true)
             .image_array_layers(1);
         let swapchain = unsafe {
@@ -164,7 +168,11 @@ impl Swapchain {
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(pre_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
+            .present_mode(if cfg!(feature = "uncapped") {
+                vk::PresentModeKHR::IMMEDIATE
+            } else {
+                vk::PresentModeKHR::FIFO
+            })
             .clipped(true)
             .old_swapchain(self.swapchain)
             .image_array_layers(1);
