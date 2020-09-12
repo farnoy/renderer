@@ -2,7 +2,7 @@ use crate::{
     ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
     renderer::{
         alloc, compute,
-        device::{Buffer, CommandBuffer, DoubleBuffered, Event, StrictCommandPool},
+        device::{Buffer, DoubleBuffered, Event, StrictCommandPool},
         helpers::{self, pick_lod, Pipeline},
         shaders::{self, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
@@ -76,7 +76,7 @@ impl CullPassDataPrivate {
                 StrictCommandPool::new(
                     &renderer.device,
                     renderer.device.compute_queue_family,
-                    &format!("Cull pass Command Pool[{}]", dbg!(ix)),
+                    &format!("Cull pass Command Pool[{}]", ix),
                 )
             }),
             previous_cull_pipeline: renderer.new_buffered(|_| None),
@@ -317,20 +317,10 @@ pub fn cull_pass(
         .command_pool
         .current_mut(image_index.0);
 
-    let new_command_pool = StrictCommandPool::new(
-        &renderer.device,
-        renderer.device.compute_queue_family,
-        &format!("Cull pass Command Pool[{}]", image_index.0),
-    );
-
-    let mut old_command_pool = std::mem::replace(command_pool, new_command_pool);
-
     unsafe {
         #[cfg(feature = "microprofile")]
         microprofile::scope!("cull pass", "CP reset");
-        old_command_pool.reset();
-        // command_pool.reset();
-        drop(old_command_pool);
+        command_pool.recreate();
     }
 
     let mut command_session = command_pool.session();

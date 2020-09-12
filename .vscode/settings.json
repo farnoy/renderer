@@ -4,7 +4,6 @@
     "vendor": true
   },
   "rust-analyzer.cargo.allFeatures": false,
-  "rust-analyzer.checkOnSave.enable": false,
   "rust-analyzer.cargo.features": [
     "standard_validation",
     "profiling"

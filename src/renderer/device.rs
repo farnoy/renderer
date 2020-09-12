@@ -6,7 +6,7 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
-use std::{marker::PhantomData, ops::Deref, path::PathBuf, sync::Arc};
+use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 mod buffer;
 mod commands;

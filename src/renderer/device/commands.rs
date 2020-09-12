@@ -1,6 +1,6 @@
 use ash::{version::DeviceV1_0, vk};
 use parking_lot::{Mutex, MutexGuard};
-use std::{marker::PhantomData, ops::Deref, sync::Arc};
+use std::{marker::PhantomData, mem::swap, ops::Deref, sync::Arc};
 
 use super::{sync::Fence, Device};
 
@@ -24,6 +24,8 @@ pub struct RecordingCommandBuffer<'a> {
 pub struct StrictCommandPool {
     device: Arc<Device>,
     handle: vk::CommandPool,
+    queue_family: u32, // only needed for recreate(), remove later
+    name: String,      // only needed for recreate(), remove later
 }
 
 pub struct StrictCommandPoolSession<'p>(&'p mut StrictCommandPool);
@@ -60,6 +62,8 @@ impl StrictCommandPool {
         StrictCommandPool {
             handle: pool,
             device: Arc::clone(device),
+            queue_family,
+            name: name.into(),
         }
     }
 
@@ -71,6 +75,14 @@ impl StrictCommandPool {
         self.device
             .reset_command_pool(self.handle, vk::CommandPoolResetFlags::empty())
             .unwrap();
+    }
+
+    // To workaround a performance cliff in AMDVLK
+    pub unsafe fn recreate(&mut self) {
+        let mut new_command_pool =
+            StrictCommandPool::new(&self.device, self.queue_family, &self.name);
+
+        swap(self, &mut new_command_pool);
     }
 }
 

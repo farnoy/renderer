@@ -1,7 +1,4 @@
-use super::super::{
-    device::{CommandBuffer, DoubleBuffered, Semaphore},
-    graphics as graphics_sync, RenderFrame, Swapchain,
-};
+use super::super::{device::Semaphore, graphics as graphics_sync, RenderFrame, Swapchain};
 use crate::timeline_value;
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
@@ -10,8 +7,6 @@ use std::u64;
 
 pub struct PresentData {
     render_complete_semaphore: Semaphore,
-    pub(in super::super) render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
-    pub(in super::super) gui_render_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
 }
 
 #[derive(Debug)]
@@ -36,13 +31,8 @@ impl PresentData {
             "Render complete semaphore",
         );
 
-        let render_command_buffer = renderer.new_buffered(|_| None);
-        let gui_render_command_buffer = renderer.new_buffered(|_| None);
-
         PresentData {
             render_complete_semaphore,
-            render_command_buffer,
-            gui_render_command_buffer,
         }
     }
 }
@@ -92,7 +82,7 @@ impl AcquireFramebuffer {
             "AcquireFramebuffer assumption incorrect"
         );
         let wait_semaphore_values = &[
-            timeline_value!(graphics_sync @ last renderer.frame_number => GUI_DRAW),
+            timeline_value!(graphics_sync @ last renderer.frame_number => MAX),
             0,
         ];
         let signal_semaphore_values =

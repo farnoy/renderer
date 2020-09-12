@@ -113,14 +113,16 @@ impl InputHandler {
             mut input_actions,
             mut camera,
             mut resized,
-        ) = resources.query::<(
-            bevy_ecs::Res<RenderFrame>,
-            bevy_ecs::ResMut<RuntimeConfiguration>,
-            bevy_ecs::ResMut<InputState>,
-            bevy_ecs::ResMut<InputActions>,
-            bevy_ecs::ResMut<Camera>,
-            bevy_ecs::ResMut<Resized>,
-        )>();
+        ) = resources
+            .query::<(
+                bevy_ecs::Res<RenderFrame>,
+                bevy_ecs::ResMut<RuntimeConfiguration>,
+                bevy_ecs::ResMut<InputState>,
+                bevy_ecs::ResMut<InputActions>,
+                bevy_ecs::ResMut<Camera>,
+                bevy_ecs::ResMut<Resized>,
+            )>()
+            .unwrap();
 
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "InputHandler");

@@ -166,7 +166,6 @@ pub fn consolidate_mesh_buffers(
         let signal_semaphore_values =
             &[timeline_value!(sync @ renderer.frame_number => CONSOLIDATE)];
         let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(signal_semaphore_values) // only needed because validation layers segfault
             .signal_semaphore_values(signal_semaphore_values);
         let submit = vk::SubmitInfo::builder()
             .push_next(&mut wait_timeline)

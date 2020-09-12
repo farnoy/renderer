@@ -444,28 +444,42 @@ fn main() {
     schedule.add_system_to_stage("acquire_framebuffer", camera_controller.system());
     schedule.add_system_to_stage("acquire_framebuffer", launch_projectiles_test.system());
     schedule.add_system_to_stage("acquire_framebuffer", update_projectiles.system());
-    schedule.add_stage("renderer 1");
-    schedule.add_system_to_stage("renderer 1", consolidate_mesh_buffers.system());
-    schedule.add_system_to_stage("renderer 1", model_matrix_calculation.system());
-    schedule.add_system_to_stage("renderer 1", aabb_calculation.system());
-    schedule.add_system_to_stage("renderer 1", shadow_mapping_mvp_calculation.system());
-    schedule.add_system_to_stage("renderer 1", coarse_culling.system());
-    schedule.add_system_to_stage("renderer 1", synchronize_base_color_textures_visit.system());
-    schedule.add_stage("renderer 2");
+    schedule.add_stage("render setup");
+    schedule.add_system_to_stage("render setup", consolidate_mesh_buffers.system());
+    schedule.add_system_to_stage("render setup", model_matrix_calculation.system());
+    schedule.add_system_to_stage("render setup", aabb_calculation.system());
+    schedule.add_system_to_stage("render setup", shadow_mapping_mvp_calculation.system());
+    schedule.add_system_to_stage("render setup", coarse_culling.system());
     schedule.add_system_to_stage(
-        "renderer 2",
+        "render setup",
+        synchronize_base_color_textures_visit.system(),
+    );
+    schedule.add_system_to_stage("render setup", camera_matrices_upload.system());
+    schedule.add_system_to_stage("render setup", model_matrices_upload.system());
+    schedule.add_stage("consolidate textures");
+    schedule.add_system_to_stage(
+        "consolidate textures",
         synchronize_base_color_textures_consolidate.system(),
     );
-    schedule.add_system_to_stage("renderer 2", camera_matrices_upload.system());
-    schedule.add_system_to_stage("renderer 2", model_matrices_upload.system());
-    schedule.add_system_to_stage("renderer 2", cull_pass.system());
-    schedule.add_system_to_stage("renderer 2", prepare_shadow_maps.system());
-    schedule.add_system_to_stage("renderer 2", depth_only_pass.system());
-    schedule.add_system_to_stage("renderer 2", render_frame.system());
+    // TODO: remove to unlock more parallelism
+    schedule.add_stage("cull pass");
+    schedule.add_system_to_stage("cull pass", cull_pass.system());
+    // TODO: remove to unlock more parallelism
+    schedule.add_stage("shadow mapping");
+    schedule.add_system_to_stage("shadow mapping", prepare_shadow_maps.system());
+    // TODO: remove to unlock more parallelism
+    schedule.add_stage("depth only");
+    schedule.add_system_to_stage("depth only", depth_only_pass.system());
+    // TODO: remove to unlock more parallelism
+    schedule.add_stage("main render");
+    schedule.add_system_to_stage("main render", render_frame.system());
+    // TODO: add the final stage for submitting all work to the graphics queue
 
     schedule.initialize(&mut resources);
 
-    // let mut executor = ParallelExecutor::default();
+    resources.insert(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
+
+    let mut executor = ParallelExecutor::default();
 
     'frame: loop {
         #[cfg(feature = "profiling")]
@@ -481,23 +495,25 @@ fn main() {
                 InputHandler::run(input_handler, gui, &mut resources)
             }
 
-            // executor.run(&mut schedule, &mut world, &mut resources);
             {
                 #[cfg(feature = "profiling")]
                 microprofile::scope!("game-loop", "ecs");
-                schedule.run(&mut world, &mut resources);
+                executor.run(&mut schedule, &mut world, &mut resources);
+                // schedule.run(&mut world, &mut resources);
             }
             {
                 #[cfg(feature = "profiling")]
                 microprofile::scope!("game-loop", "gui");
                 gui_render.render(Rc::clone(&gui), Rc::clone(&input_handler), &mut resources);
             }
-            let (mut renderer, present_data, swapchain, image_index) = resources.query::<(
-                ResMut<RenderFrame>,
-                Res<PresentData>,
-                Res<Swapchain>,
-                Res<ImageIndex>,
-            )>();
+            let (mut renderer, present_data, swapchain, image_index) = resources
+                .query::<(
+                    ResMut<RenderFrame>,
+                    Res<PresentData>,
+                    Res<Swapchain>,
+                    Res<ImageIndex>,
+                )>()
+                .unwrap();
 
             {
                 #[cfg(feature = "profiling")]

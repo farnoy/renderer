@@ -256,8 +256,8 @@ impl MainAttachments {
         };
         println!("swapchain images len {}", images.len());
         let depth_images = (0..images.len())
-            .map(|_| {
-                renderer.device.new_image(
+            .map(|ix| {
+                let im = renderer.device.new_image(
                     vk::Format::D16_UNORM,
                     vk::Extent3D {
                         width: swapchain.width,
@@ -269,7 +269,11 @@ impl MainAttachments {
                     vk::ImageLayout::UNDEFINED,
                     vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
                     alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                )
+                );
+                renderer
+                    .device
+                    .set_object_name(im.handle, &format!("Depth Target[{}]", ix));
+                im
             })
             .collect::<Vec<_>>();
         let image_views = images
@@ -404,6 +408,21 @@ impl GraphicsCommandPool {
         );
 
         GraphicsCommandPool(Arc::new(graphics_command_pool))
+    }
+}
+
+pub struct MainRenderCommandPool(DoubleBuffered<StrictCommandPool>);
+
+impl FromResources for MainRenderCommandPool {
+    fn from_resources(resources: &Resources) -> Self {
+        let renderer = resources.query::<Res<RenderFrame>>().unwrap();
+        MainRenderCommandPool(renderer.new_buffered(|ix| {
+            StrictCommandPool::new(
+                &renderer.device,
+                renderer.device.graphics_queue_family,
+                &format!("Main Render Command Pool[{}]", ix),
+            )
+        }))
     }
 }
 
@@ -910,13 +929,12 @@ impl GltfPassData {
 pub fn render_frame(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
-    graphics_command_pool: Res<GraphicsCommandPool>,
     model_data: Res<ModelData>,
     runtime_config: Res<RuntimeConfiguration>,
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
-    mut present_data: ResMut<PresentData>,
+    mut main_render_command_pool: Local<MainRenderCommandPool>,
     debug_aabb_pass_data: Res<DebugAABBPassData>,
     shadow_mapping_data: Res<ShadowMappingData>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
@@ -930,7 +948,17 @@ pub fn render_frame(
     // TODO: count this? pack and defragment draw calls?
     let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
         / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
-    let command_buffer = graphics_command_pool.0.record_one_time("renderer cb");
+    let command_pool = main_render_command_pool.0.current_mut(image_index.0);
+
+    unsafe {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("main render", "CP reset");
+        command_pool.recreate();
+    }
+
+    let mut command_session = command_pool.session();
+
+    let command_buffer = command_session.record_one_time("Main Render CommandBuffer");
     unsafe {
         let clear_values = &[
             vk::ClearValue {
@@ -955,11 +983,8 @@ pub fn render_frame(
             })
             .clear_values(clear_values);
 
-        let _main_renderpass_marker = renderer.device.debug_marker_around2(
-            &command_buffer,
-            "main renderpass",
-            [0.0, 0.0, 1.0, 1.0],
-        );
+        let _main_renderpass_marker =
+            command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
         renderer.device.cmd_begin_render_pass(
             *command_buffer,
             &begin_info,
@@ -992,11 +1017,8 @@ pub fn render_frame(
             #[cfg(feature = "profiling")]
             microprofile::scope!("ecs", "debug aabb pass");
 
-            let _aabb_marker = renderer.device.debug_marker_around2(
-                &command_buffer,
-                "aabb debug",
-                [1.0, 0.0, 0.0, 1.0],
-            );
+            let _aabb_marker =
+                command_buffer.debug_marker_around("aabb debug", [1.0, 0.0, 0.0, 1.0]);
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -1020,11 +1042,8 @@ pub fn render_frame(
                 renderer.device.cmd_draw(*command_buffer, 36, 1, 0, 0);
             }
         } else {
-            let _gltf_meshes_marker = renderer.device.debug_marker_around2(
-                &command_buffer,
-                "gltf meshes",
-                [1.0, 0.0, 0.0, 1.0],
-            );
+            let _gltf_meshes_marker =
+                command_buffer.debug_marker_around("gltf meshes", [1.0, 0.0, 0.0, 1.0]);
             /*
             renderer.device.cmd_clear_attachments(
                 *command_buffer,
@@ -1139,10 +1158,6 @@ pub fn render_frame(
             .queue_submit(*queue, &[submit], vk::Fence::null())
             .unwrap();
     }
-
-    *present_data
-        .render_command_buffer
-        .current_mut(image_index.0) = Some(command_buffer);
 }
 
 pub struct GuiRender {
@@ -1157,6 +1172,7 @@ pub struct GuiRender {
     pub renderpass: RenderPass,
     pub pipeline: Pipeline,
     pub transitioned: bool,
+    command_pool: DoubleBuffered<StrictCommandPool>,
 }
 
 impl GuiRender {
@@ -1424,6 +1440,14 @@ impl GuiRender {
             );
         }
 
+        let command_pool = renderer.new_buffered(|ix| {
+            StrictCommandPool::new(
+                &renderer.device,
+                renderer.device.graphics_queue_family,
+                &format!("GuiRender Command Pool[{}]", ix),
+            )
+        });
+
         GuiRender {
             vertex_buffer,
             index_buffer,
@@ -1436,6 +1460,7 @@ impl GuiRender {
             pipeline_layout,
             pipeline,
             transitioned: false,
+            command_pool,
         }
     }
 
@@ -1450,24 +1475,22 @@ impl GuiRender {
         let (
             renderer,
             image_index,
-            graphics_command_pool,
             mut runtime_config,
-            mut present_data,
             mut cull_pass_data,
             main_framebuffer,
             swapchain,
             mut camera,
-        ) = resources.query::<(
-            Res<RenderFrame>,
-            Res<ImageIndex>,
-            Res<GraphicsCommandPool>,
-            ResMut<RuntimeConfiguration>,
-            ResMut<PresentData>,
-            ResMut<CullPassData>,
-            Res<MainFramebuffer>,
-            Res<Swapchain>,
-            ResMut<Camera>,
-        )>();
+        ) = resources
+            .query::<(
+                Res<RenderFrame>,
+                Res<ImageIndex>,
+                ResMut<RuntimeConfiguration>,
+                ResMut<CullPassData>,
+                Res<MainFramebuffer>,
+                Res<Swapchain>,
+                ResMut<Camera>,
+            )>()
+            .unwrap();
         let mut gui = gui.borrow_mut();
         let gui_draw_data = gui.update(
             &renderer,
@@ -1478,12 +1501,20 @@ impl GuiRender {
             &mut *cull_pass_data,
         );
 
-        let command_buffer = graphics_command_pool.0.record_one_time("GuiRender cb");
+        let command_pool = self.command_pool.current_mut(image_index.0);
+
         unsafe {
-            let _gui_debug_marker =
-                renderer
-                    .device
-                    .debug_marker_around2(&command_buffer, "GUI", [1.0, 1.0, 0.0, 1.0]);
+            #[cfg(feature = "microprofile")]
+            microprofile::scope!("gui render", "CP reset");
+            command_pool.recreate();
+        }
+
+        let mut command_session = command_pool.session();
+
+        let command_buffer = command_session.record_one_time("GuiRender CommandBuffer");
+
+        unsafe {
+            let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
 
             if !self.transitioned {
                 renderer.device.cmd_pipeline_barrier(
@@ -1673,11 +1704,6 @@ impl GuiRender {
                 .queue_submit(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
-
-        // defer destructor
-        *present_data
-            .gui_render_command_buffer
-            .current_mut(image_index.0) = Some(command_buffer);
     }
 }
 
