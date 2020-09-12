@@ -1806,6 +1806,7 @@ dependencies = [
  "bevy_tasks",
  "bindgen",
  "criterion",
+ "env_logger",
  "gltf",
  "hashbrown",
  "humansize",

@@ -29,6 +29,7 @@ use ash::{version::DeviceV1_0, vk};
 use bevy_ecs::prelude::*;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     cell::RefCell, convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, rc::Rc,
@@ -411,18 +412,22 @@ impl GraphicsCommandPool {
     }
 }
 
-pub struct MainRenderCommandPool(DoubleBuffered<StrictCommandPool>);
+pub struct LocalGraphicsCommandPool {
+    pools: DoubleBuffered<StrictCommandPool>,
+}
 
-impl FromResources for MainRenderCommandPool {
+impl FromResources for LocalGraphicsCommandPool {
     fn from_resources(resources: &Resources) -> Self {
         let renderer = resources.query::<Res<RenderFrame>>().unwrap();
-        MainRenderCommandPool(renderer.new_buffered(|ix| {
-            StrictCommandPool::new(
-                &renderer.device,
-                renderer.device.graphics_queue_family,
-                &format!("Main Render Command Pool[{}]", ix),
-            )
-        }))
+        LocalGraphicsCommandPool {
+            pools: renderer.new_buffered(|ix| {
+                StrictCommandPool::new(
+                    &renderer.device,
+                    renderer.device.graphics_queue_family,
+                    &format!("Render Command Pool[{}]", ix),
+                )
+            }),
+        }
     }
 }
 
@@ -514,7 +519,6 @@ pub struct DepthPassData {
     pub depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
     pub renderpass: RenderPass,
     pub framebuffer: Vec<Framebuffer>,
-    pub previous_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
 }
 
 impl DepthPassData {
@@ -670,14 +674,11 @@ impl DepthPassData {
             })
             .collect();
 
-        let previous_command_buffer = renderer.new_buffered(|_| None);
-
         DepthPassData {
             depth_pipeline_layout,
             depth_pipeline,
             renderpass,
             framebuffer,
-            previous_command_buffer,
         }
     }
 }
@@ -926,6 +927,14 @@ impl GltfPassData {
     }
 }
 
+pub struct MainRenderCommandPool(LocalGraphicsCommandPool);
+
+impl FromResources for MainRenderCommandPool {
+    fn from_resources(resources: &Resources) -> Self {
+        MainRenderCommandPool(LocalGraphicsCommandPool::from_resources(resources))
+    }
+}
+
 pub fn render_frame(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
@@ -934,13 +943,14 @@ pub fn render_frame(
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
-    mut main_render_command_pool: Local<MainRenderCommandPool>,
+    mut local_graphics_command_pool: Local<MainRenderCommandPool>,
     debug_aabb_pass_data: Res<DebugAABBPassData>,
     shadow_mapping_data: Res<ShadowMappingData>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
     main_framebuffer: Res<MainFramebuffer>,
     gltf_pass: Res<GltfPassData>,
+    graphics_submissions: Res<GraphicsSubmissions>,
     mut query: Query<&AABB>,
 ) {
     #[cfg(feature = "profiling")]
@@ -948,7 +958,11 @@ pub fn render_frame(
     // TODO: count this? pack and defragment draw calls?
     let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
         / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
-    let command_pool = main_render_command_pool.0.current_mut(image_index.0);
+
+    let command_pool = local_graphics_command_pool
+        .0
+        .pools
+        .current_mut(image_index.0);
 
     unsafe {
         #[cfg(feature = "microprofile")]
@@ -1118,7 +1132,59 @@ pub fn render_frame(
         }
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
+
     let command_buffer = command_buffer.end();
+    *graphics_submissions.main_render.lock() = *command_buffer;
+}
+
+pub struct GraphicsSubmissions {
+    transition_shadow_mapping: Mutex<Option<vk::CommandBuffer>>,
+    shadow_mapping: Mutex<vk::CommandBuffer>,
+    depth_pass: Mutex<vk::CommandBuffer>,
+    main_render: Mutex<vk::CommandBuffer>,
+}
+
+impl Default for GraphicsSubmissions {
+    fn default() -> Self {
+        GraphicsSubmissions {
+            transition_shadow_mapping: Mutex::new(None),
+            shadow_mapping: Mutex::new(vk::CommandBuffer::null()),
+            depth_pass: Mutex::new(vk::CommandBuffer::null()),
+            main_render: Mutex::new(vk::CommandBuffer::null()),
+        }
+    }
+}
+
+pub fn submit_graphics_commands(
+    renderer: Res<RenderFrame>,
+    consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
+    mut graphics_submissions: ResMut<GraphicsSubmissions>,
+) {
+    let mut command_buffers = vec![
+        *graphics_submissions.shadow_mapping.get_mut(),
+        *graphics_submissions.depth_pass.get_mut(),
+    ];
+    if let Some(command_buffer) = graphics_submissions.transition_shadow_mapping.get_mut() {
+        command_buffers.insert(0, *command_buffer);
+    }
+
+    let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
+    let wait_semaphore_values = &[timeline_value!(graphics @ renderer.frame_number => START)];
+    let signal_semaphore_values =
+        &[timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS)];
+    let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+        .wait_semaphore_values(wait_semaphore_values)
+        .signal_semaphore_values(signal_semaphore_values);
+    let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+    let first_batch = vk::SubmitInfo::builder()
+        .command_buffers(&command_buffers)
+        .push_next(&mut signal_timeline)
+        .wait_semaphores(wait_semaphores)
+        .wait_dst_stage_mask(wait_dst_stage_mask)
+        .signal_semaphores(signal_semaphores)
+        .build();
+
     let wait_semaphores = &[
         renderer.graphics_timeline_semaphore.handle,
         renderer.compute_timeline_semaphore.handle,
@@ -1136,26 +1202,28 @@ pub fn render_frame(
         vk::PipelineStageFlags::COMPUTE_SHADER,
     ];
     let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-    let command_buffers = &[*command_buffer];
+    let command_buffers = &[*graphics_submissions.main_render.get_mut()];
     let signal_semaphore_values =
         &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
     let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
         .wait_semaphore_values(wait_semaphore_values)
-        .signal_semaphore_values(signal_semaphore_values)
-        .build();
-    let submit = vk::SubmitInfo::builder()
+        .signal_semaphore_values(signal_semaphore_values);
+    let main_render_submit = vk::SubmitInfo::builder()
         .wait_semaphores(wait_semaphores)
         .push_next(&mut signal_timeline)
         .wait_dst_stage_mask(dst_stage_masks)
         .command_buffers(command_buffers)
         .signal_semaphores(signal_semaphores)
         .build();
+
+    let submits = &[first_batch, main_render_submit];
+
     let queue = renderer.device.graphics_queue.lock();
 
     unsafe {
         renderer
             .device
-            .queue_submit(*queue, &[submit], vk::Fence::null())
+            .queue_submit(*queue, submits, vk::Fence::null())
             .unwrap();
     }
 }
@@ -1743,29 +1811,47 @@ pub fn camera_matrices_upload(
     };
 }
 
+pub struct DepthPassCommandPool(LocalGraphicsCommandPool);
+
+impl FromResources for DepthPassCommandPool {
+    fn from_resources(resources: &Resources) -> Self {
+        DepthPassCommandPool(LocalGraphicsCommandPool::from_resources(resources))
+    }
+}
+
 pub fn depth_only_pass(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
-    graphics_command_pool: Res<GraphicsCommandPool>,
-    mut depth_pass: ResMut<DepthPassData>,
+    depth_pass: Res<DepthPassData>,
+    mut local_graphics_command_pool: Local<DepthPassCommandPool>,
     model_data: Res<ModelData>,
     runtime_config: Res<RuntimeConfiguration>,
     camera: Res<Camera>,
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
+    graphics_submissions: Res<GraphicsSubmissions>,
     mut query: Query<(&Position, &DrawIndex, &GltfMesh)>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "DepthOnlyPass");
-    let command_buffer = graphics_command_pool
+
+    let command_pool = local_graphics_command_pool
         .0
-        .record_one_time("depth only pass cb");
+        .pools
+        .current_mut(image_index.0);
+
     unsafe {
-        let _marker = renderer.device.debug_marker_around2(
-            &command_buffer,
-            "depth prepass",
-            [0.3, 0.3, 0.3, 1.0],
-        );
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("depth only", "CP reset");
+        command_pool.recreate();
+    }
+
+    let mut command_session = command_pool.session();
+
+    let command_buffer = command_session.record_one_time("Depth Only CommandBuffer");
+
+    unsafe {
+        let _marker = command_buffer.debug_marker_around("depth prepass", [0.3, 0.3, 0.3, 1.0]);
         renderer.device.cmd_begin_render_pass(
             *command_buffer,
             &vk::RenderPassBeginInfo::builder()
@@ -1849,35 +1935,5 @@ pub fn depth_only_pass(
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
     let command_buffer = command_buffer.end();
-    let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-    let wait_semaphore_values =
-        &[timeline_value!(graphics @ renderer.frame_number => SHADOW_MAPPING)];
-    let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-    let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-    let signal_semaphore_values =
-        &[timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS)];
-    let command_buffers = &[*command_buffer];
-    let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-        .wait_semaphore_values(wait_semaphore_values) // only needed because validation layers segfault
-        .signal_semaphore_values(signal_semaphore_values)
-        .build();
-    let submit = vk::SubmitInfo::builder()
-        .push_next(&mut signal_timeline)
-        .wait_semaphores(wait_semaphores)
-        .wait_dst_stage_mask(dst_stage_masks)
-        .command_buffers(command_buffers)
-        .signal_semaphores(signal_semaphores)
-        .build();
-    let queue = renderer.device.graphics_queue.lock();
-
-    unsafe {
-        renderer
-            .device
-            .queue_submit(*queue, &[submit], vk::Fence::null())
-            .unwrap();
-    }
-
-    *depth_pass
-        .previous_command_buffer
-        .current_mut(image_index.0) = Some(command_buffer);
+    *graphics_submissions.depth_pass.lock() = *command_buffer;
 }

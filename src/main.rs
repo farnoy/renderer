@@ -28,6 +28,9 @@ use std::{cell::RefCell, convert::TryInto, rc::Rc, sync::Arc};
 fn main() {
     #[cfg(feature = "profiling")]
     microprofile::init!();
+
+    env_logger::init();
+
     rayon::ThreadPoolBuilder::new()
         .num_threads(8)
         .build_global()
@@ -351,6 +354,7 @@ fn main() {
     resources.insert(main_framebuffer);
     resources.insert(gltf_pass);
     resources.insert(debug_aabb_pass_data);
+    resources.insert(GraphicsSubmissions::default());
 
     let mut schedule = Schedule::default();
     schedule.add_stage("acquire_framebuffer");
@@ -457,28 +461,28 @@ fn main() {
     schedule.add_system_to_stage("render setup", camera_matrices_upload.system());
     schedule.add_system_to_stage("render setup", model_matrices_upload.system());
     schedule.add_system_to_stage("render setup", cull_pass.system());
+    schedule.add_system_to_stage("render setup", transition_shadow_maps.system());
+    schedule.add_system_to_stage("render setup", update_shadow_map_descriptors.system());
     schedule.add_stage("consolidate textures");
     schedule.add_system_to_stage(
         "consolidate textures",
         synchronize_base_color_textures_consolidate.system(),
     );
-    // TODO: remove to unlock more parallelism
-    schedule.add_stage("shadow mapping");
-    schedule.add_system_to_stage("shadow mapping", prepare_shadow_maps.system());
-    // TODO: remove to unlock more parallelism
-    schedule.add_stage("depth only");
-    schedule.add_system_to_stage("depth only", depth_only_pass.system());
-    // TODO: remove to unlock more parallelism
-    schedule.add_stage("main render");
-    schedule.add_system_to_stage("main render", render_frame.system());
-    // TODO: add the final stage for submitting all work to the graphics queue
+
+    schedule.add_stage("prepare graphics work");
+    schedule.add_system_to_stage("prepare graphics work", prepare_shadow_maps.system());
+    schedule.add_system_to_stage("prepare graphics work", depth_only_pass.system());
+    schedule.add_system_to_stage("prepare graphics work", render_frame.system());
+
+    schedule.add_stage("submit graphics work");
+    schedule.add_system_to_stage("submit graphics work", submit_graphics_commands.system());
 
     #[cfg(feature = "profiling")]
     {
         use std::time::Instant;
         let counter = Arc::new(Mutex::new(Instant::now()));
         let counter2 = Arc::clone(&counter);
-        schedule.add_stage_before("shadow mapping", "start graphics profiling");
+        schedule.add_stage_before("prepare graphics work", "start graphics profiling");
         schedule.add_system_to_stage(
             "start graphics profiling",
             (move || {
@@ -486,7 +490,7 @@ fn main() {
             })
             .system(),
         );
-        schedule.add_stage_after("main render", "end graphics profiling");
+        schedule.add_stage_after("submit graphics work", "end graphics profiling");
         schedule.add_system_to_stage(
             "end graphics profiling",
             (move || {

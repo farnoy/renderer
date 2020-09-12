@@ -1,8 +1,4 @@
-use crate::{
-    ecs::components::*,
-    renderer::{graphics as graphics_sync, *},
-    timeline_value,
-};
+use crate::{ecs::components::*, renderer::*};
 use ash::vk;
 use bevy_ecs::prelude::*;
 
@@ -16,7 +12,6 @@ pub struct ShadowMappingData {
     depth_image: Image,
     _depth_image_view: ImageView,
     framebuffer: Framebuffer,
-    previous_command_buffer: DoubleBuffered<Option<CommandBuffer>>,
     image_transitioned: bool,
     pub user_set_layout: super::super::shaders::shadow_map_set::DescriptorSetLayout,
     pub user_set: DoubleBuffered<super::super::shaders::shadow_map_set::DescriptorSet>,
@@ -188,8 +183,6 @@ impl ShadowMappingData {
             .device
             .set_object_name(framebuffer.handle, "Shadow mapping framebuffer");
 
-        let previous_command_buffer = renderer.new_buffered(|_| None);
-
         let user_set_layout =
             super::super::shaders::shadow_map_set::DescriptorSetLayout::new(&renderer.device);
         renderer.device.set_object_name(
@@ -249,7 +242,6 @@ impl ShadowMappingData {
             _depth_image_view: depth_image_view,
             depth_pipeline,
             framebuffer,
-            previous_command_buffer,
             image_transitioned: false,
             user_set_layout,
             user_set,
@@ -341,22 +333,37 @@ pub fn shadow_mapping_mvp_calculation(
     }
 }
 
-/// Identifies stale shadow maps in the atlas and refreshes them
-pub fn prepare_shadow_maps(
+pub struct ShadowMappingCommandPool(LocalGraphicsCommandPool);
+
+impl FromResources for ShadowMappingCommandPool {
+    fn from_resources(resources: &Resources) -> Self {
+        ShadowMappingCommandPool(LocalGraphicsCommandPool::from_resources(resources))
+    }
+}
+
+pub fn transition_shadow_maps(
     renderer: Res<RenderFrame>,
-    depth_pass: Res<DepthPassData>,
     image_index: Res<ImageIndex>,
-    graphics_command_pool: Res<GraphicsCommandPool>,
     mut shadow_mapping: ResMut<ShadowMappingData>,
-    model_data: Res<ModelData>,
-    mut mesh_query: Query<(&DrawIndex, &GltfMesh)>,
-    mut shadow_query: Query<With<Light, &ShadowMappingLightMatrices>>,
+    mut local_graphics_command_pool: Local<ShadowMappingCommandPool>,
+    graphics_submissions: Res<GraphicsSubmissions>,
 ) {
     #[cfg(feature = "profiling")]
-    microprofile::scope!("ecs", "shadow_mapping");
-    let command_buffer = graphics_command_pool.0.record_one_time("shadow mapping cb");
-    unsafe {
-        if !shadow_mapping.image_transitioned {
+    microprofile::scope!("ecs", "transition_shadow_mapping");
+
+    if shadow_mapping.image_transitioned {
+        *graphics_submissions.transition_shadow_mapping.lock() = None;
+    } else {
+        let command_pool = local_graphics_command_pool
+            .0
+            .pools
+            .current_mut(image_index.0);
+
+        let mut command_session = command_pool.session();
+
+        let command_buffer =
+            command_session.record_one_time("Shadow Mapping Transition CommandBuffer");
+        unsafe {
             renderer.device.cmd_pipeline_barrier(
                 *command_buffer,
                 vk::PipelineStageFlags::BOTTOM_OF_PIPE,
@@ -379,13 +386,46 @@ pub fn prepare_shadow_maps(
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .build()],
             );
-            shadow_mapping.image_transitioned = true;
         }
-        let _shadow_mapping_marker = renderer.device.debug_marker_around2(
-            &command_buffer,
-            "shadow mapping",
-            [0.8, 0.1, 0.1, 1.0],
-        );
+        shadow_mapping.image_transitioned = true;
+        let command_buffer = command_buffer.end();
+        *graphics_submissions.transition_shadow_mapping.lock() = Some(*command_buffer);
+    }
+}
+
+/// Identifies stale shadow maps in the atlas and refreshes them
+pub fn prepare_shadow_maps(
+    renderer: Res<RenderFrame>,
+    depth_pass: Res<DepthPassData>,
+    image_index: Res<ImageIndex>,
+    shadow_mapping: Res<ShadowMappingData>,
+    model_data: Res<ModelData>,
+    mut local_graphics_command_pool: Local<ShadowMappingCommandPool>,
+    graphics_submissions: Res<GraphicsSubmissions>,
+    mut mesh_query: Query<(&DrawIndex, &GltfMesh)>,
+    mut shadow_query: Query<With<Light, &ShadowMappingLightMatrices>>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "shadow_mapping");
+
+    let command_pool = local_graphics_command_pool
+        .0
+        .pools
+        .current_mut(image_index.0);
+
+    unsafe {
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("shadow mapping", "CP reset");
+        command_pool.recreate();
+    }
+
+    let mut command_session = command_pool.session();
+
+    let command_buffer = command_session.record_one_time("Shadow Mapping CommandBuffer");
+
+    unsafe {
+        let _shadow_mapping_marker =
+            command_buffer.debug_marker_around("shadow mapping", [0.8, 0.1, 0.1, 1.0]);
         renderer.device.cmd_begin_render_pass(
             *command_buffer,
             &vk::RenderPassBeginInfo::builder()
@@ -499,40 +539,20 @@ pub fn prepare_shadow_maps(
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
     let command_buffer = command_buffer.end();
+    *graphics_submissions.shadow_mapping.lock() = *command_buffer;
+}
 
-    let queue = renderer.device.graphics_queue.lock();
+pub fn update_shadow_map_descriptors(
+    renderer: Res<RenderFrame>,
+    image_index: Res<ImageIndex>,
+    shadow_mapping: Res<ShadowMappingData>,
+    mut shadow_query: Query<With<Light, &ShadowMappingLightMatrices>>,
+) {
+    renderer
+        .graphics_timeline_semaphore
+        .wait(timeline_value!(graphics @ previous image_index; of renderer => SCENE_DRAW))
+        .unwrap();
 
-    let command_buffers = &[*command_buffer];
-    let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-    let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
-    let wait_semaphore_values = &[timeline_value!(graphics_sync @ renderer.frame_number => START)];
-    let signal_semaphore_values =
-        &[timeline_value!(graphics_sync @ renderer.frame_number => SHADOW_MAPPING)];
-    let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-        .wait_semaphore_values(wait_semaphore_values)
-        .signal_semaphore_values(signal_semaphore_values)
-        .build();
-    let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-    let submit_info = vk::SubmitInfo::builder()
-        .command_buffers(command_buffers)
-        .push_next(&mut signal_timeline)
-        .wait_semaphores(wait_semaphores)
-        .wait_dst_stage_mask(wait_dst_stage_mask)
-        .signal_semaphores(signal_semaphores)
-        .build();
-
-    unsafe {
-        renderer
-            .device
-            .queue_submit(*queue, &[submit_info], vk::Fence::null())
-            .unwrap();
-    }
-
-    *shadow_mapping
-        .previous_command_buffer
-        .current_mut(image_index.0) = Some(command_buffer);
-
-    // TODO: extract to another stage?
     // Update descriptor sets so that users of lights have the latest info
     // preallocate all equired memory so as not to invalidate references during iteration
     let mut mvp_updates =
