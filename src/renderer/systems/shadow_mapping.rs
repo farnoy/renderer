@@ -550,7 +550,10 @@ pub fn update_shadow_map_descriptors(
 ) {
     renderer
         .graphics_timeline_semaphore
-        .wait(timeline_value!(graphics @ previous image_index; of renderer => SCENE_DRAW))
+        .wait(timeline_value_previous::<_, graphics::SceneDraw>(
+            &image_index,
+            &renderer,
+        ))
         .unwrap();
 
     // Update descriptor sets so that users of lights have the latest info

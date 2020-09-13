@@ -4,9 +4,13 @@
 #![feature(const_int_pow)]
 #![allow(clippy::new_without_default)]
 #![feature(maybe_uninit_uninit_array, maybe_uninit_slice)]
+#![feature(const_generics)]
+#![allow(incomplete_features)]
 
 #[macro_use]
 extern crate lazy_static;
+#[macro_use]
+extern crate static_assertions;
 
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
@@ -65,7 +69,6 @@ fn main() {
     let depth_pass_data = DepthPassData::new(
         &renderer,
         &model_data,
-        &main_attachments,
         &swapchain,
         &camera_matrices,
     );
@@ -367,9 +370,6 @@ fn main() {
         mut main_attachments: ResMut<MainAttachments>,
         mut main_framebuffer: ResMut<MainFramebuffer>,
         mut present_data: ResMut<PresentData>,
-        model_data: Res<ModelData>,
-        camera_matrices: Res<CameraMatrices>,
-        mut depth_pass_data: ResMut<DepthPassData>,
         mut image_index: ResMut<ImageIndex>,
         resized: Res<Resized>,
     ) {
@@ -382,13 +382,6 @@ fn main() {
             }
             swapchain.resize_to_fit();
             *main_attachments = MainAttachments::new(&renderer, &swapchain);
-            *depth_pass_data = DepthPassData::new(
-                &renderer,
-                &model_data,
-                &main_attachments,
-                &swapchain,
-                &camera_matrices,
-            );
             *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
             *present_data = PresentData::new(&renderer);
         }
@@ -401,13 +394,6 @@ fn main() {
             }
             swapchain.resize_to_fit();
             *main_attachments = MainAttachments::new(&renderer, &swapchain);
-            *depth_pass_data = DepthPassData::new(
-                &renderer,
-                &model_data,
-                &main_attachments,
-                &swapchain,
-                &camera_matrices,
-            );
             *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
             *present_data = PresentData::new(&renderer);
             AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);

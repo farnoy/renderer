@@ -1,5 +1,5 @@
 use super::super::{device::Semaphore, graphics as graphics_sync, RenderFrame, Swapchain};
-use crate::timeline_value;
+use crate::renderer::{timeline_value, timeline_value_last};
 use ash::{version::DeviceV1_0, vk};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
@@ -78,15 +78,16 @@ impl AcquireFramebuffer {
 
         let counter = renderer.graphics_timeline_semaphore.value().unwrap();
         debug_assert!(
-            counter < timeline_value!(graphics_sync @ renderer.frame_number => START),
+            counter < timeline_value::<_, graphics_sync::Start>(renderer.frame_number),
             "AcquireFramebuffer assumption incorrect"
         );
         let wait_semaphore_values = &[
-            timeline_value!(graphics_sync @ last renderer.frame_number => MAX),
+            timeline_value_last::<_, graphics_sync::GuiDraw>(renderer.frame_number),
             0,
         ];
-        let signal_semaphore_values =
-            &[timeline_value!(graphics_sync @ renderer.frame_number => START)];
+        let signal_semaphore_values = &[timeline_value::<_, graphics_sync::Start>(
+            renderer.frame_number,
+        )];
         let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
             .wait_semaphore_values(wait_semaphore_values)
             .signal_semaphore_values(signal_semaphore_values);
@@ -136,7 +137,9 @@ impl PresentFramebuffer {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "PresentFramebuffer");
         {
-            let wait_values = &[timeline_value!(graphics_sync @ renderer.frame_number => GUI_DRAW)];
+            let wait_values = &[timeline_value::<_, graphics_sync::GuiDraw>(
+                renderer.frame_number,
+            )];
             let mut wait_timeline =
                 vk::TimelineSemaphoreSubmitInfo::builder().wait_semaphore_values(wait_values);
 

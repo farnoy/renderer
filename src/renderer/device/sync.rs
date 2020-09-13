@@ -1,3 +1,5 @@
+use crate::renderer::{ImageIndex, RenderFrame};
+
 use super::Device;
 use ash::{
     version::{DeviceV1_0, DeviceV1_2},
@@ -25,37 +27,100 @@ pub struct Event {
     device: Arc<Device>,
 }
 
-#[macro_export]
-macro_rules! define_timeline {
-    ($mod_name:ident $($name:ident),+) => {
-        pub(crate) mod $mod_name {
-            crate::define_timeline!(@define_const 1u64, $($name),+);
-        }
-    };
-    (@define_const $ix:expr, $arg:ident) => {
-        // last argument, round up to next highest power of 2
-        pub const $arg: u64 = $ix.next_power_of_two();
-        pub const MAX: u64 = $ix.next_power_of_two();
-    };
-    (@define_const $ix:expr, $arg0:ident, $($args:ident),*) => {
-        pub const $arg0: u64 = $ix;
-        crate::define_timeline!(@define_const ($ix + 1), $($args),*);
-    };
+pub trait Timeline {
+    const MAX: u64;
+}
+
+pub trait TimelineStage<T: Timeline> {
+    const VALUE: u64;
+
+    /*
+    fn advance_renderpass_2<N, F>(
+        self,
+        at: Attachments2<
+            <Self as HasRenderTarget<0>>::Layout,
+            <Self as HasRenderTarget<1>>::Layout,
+        >,
+        f: F,
+    ) -> (
+        N,
+        Attachments2<<N as HasRenderTarget<0>>::Layout, <N as HasRenderTarget<1>>::Layout>,
+    )
+    where
+        Self: HasRenderTarget<0> + HasRenderTarget<1> + Sized,
+        N: SuccessorStage<T, Previous = Self> + HasRenderTarget<0> + HasRenderTarget<1>,
+        F: FnOnce(
+            Self,
+            Attachments2<<Self as HasRenderTarget<0>>::Layout, <Self as HasRenderTarget<1>>::Layout>,
+        ) -> (
+            N,
+            Attachments2<<N as HasRenderTarget<0>>::Layout, <N as HasRenderTarget<1>>::Layout>,
+        ),
+    {
+        f(self, at)
+    }
+    */
+}
+
+pub trait SuccessorStage<T: Timeline> {
+    type Previous: TimelineStage<T>;
 }
 
 #[macro_export]
-macro_rules! timeline_value {
-    ($module:ident @ last $frame_number:expr => $offset:ident) => {
-        ($frame_number - 1) * $module::MAX + $module::$offset
+macro_rules! define_timeline {
+    ($mod_name:ident $($name:ident $(($ty:path))? ),+) => {
+        pub mod $mod_name {
+            crate::define_timeline!(@define_consts 1u64, previous, $($name $(($ty))? ),+);
+
+            pub struct Timeline;
+
+            impl $crate::renderer::device::Timeline for Timeline {
+                const MAX: u64 = self::MAX;
+            }
+        }
     };
-    ($module:ident @ previous $image_index:expr; of $renderer:expr => $offset:ident) => {{
-        let frame_number =
-            $renderer.previous_frame_number_for_swapchain_index[$image_index.0 as usize];
-        frame_number * $module::MAX + $module::$offset
-    }};
-    ($module:ident @ $frame_number:expr => $offset:ident) => {
-        $frame_number * $module::MAX + $module::$offset
+    (@define_consts $ix:expr, previous $($prev:ident)?, $arg0:ident $(($ty:path))?, $($args:ident $(($types:path))? ),+) => {
+        crate::define_timeline!(@define_const $ix, previous $($prev)?, $arg0 $(($ty))? );
+
+        crate::define_timeline!(@define_consts ($ix + 1), previous $arg0, $($args $(($types))? ),+);
     };
+    (@define_consts $ix:expr, previous $($prev:ident)?, $arg:ident $(($ty:path))? ) => {
+        // last argument, round up to next highest power of 2
+        crate::define_timeline!(@define_const $ix.next_power_of_two(), previous $($prev)?, $arg $(($ty))? );
+
+        #[allow(unused)]
+        pub const MAX: u64 = $ix.next_power_of_two();
+    };
+    (@define_const $ix:expr, previous $($prev:ident)?, $arg:ident$(($argty:path))?) => {
+        #[allow(unused)]
+        #[derive(Debug)]
+        pub struct $arg $((pub $argty))?;
+        impl $crate::renderer::device::TimelineStage<Timeline> for $arg {
+            const VALUE: u64 = $ix;
+        }
+
+        $(
+        impl $crate::renderer::device::SuccessorStage<Timeline> for $arg {
+            type Previous = $prev;
+        }
+        )?
+    };
+}
+
+pub fn timeline_value_last<T: Timeline, S: TimelineStage<T>>(frame_number: u64) -> u64 {
+    timeline_value::<T, S>(frame_number - 1)
+}
+
+pub fn timeline_value<T: Timeline, S: TimelineStage<T>>(frame_number: u64) -> u64 {
+    frame_number * T::MAX + S::VALUE
+}
+
+pub fn timeline_value_previous<T: Timeline, S: TimelineStage<T>>(
+    image_index: &ImageIndex,
+    renderer: &RenderFrame,
+) -> u64 {
+    let frame_number = renderer.previous_frame_number_for_swapchain_index[image_index.0 as usize];
+    timeline_value::<T, S>(frame_number)
 }
 
 impl Semaphore {

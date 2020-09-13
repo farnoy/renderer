@@ -35,7 +35,6 @@ use crate::{
         resources::Camera,
         systems::*,
     },
-    timeline_value,
 };
 use ash::{version::DeviceV1_0, vk};
 use bevy_ecs::prelude::*;
@@ -88,8 +87,77 @@ pub struct RenderFrame {
     pub buffer_count: usize,
 }
 
-define_timeline!(graphics START, SHADOW_MAPPING, DEPTH_PASS, SCENE_DRAW, GUI_DRAW);
-define_timeline!(compute PERFORM);
+// TODO: make a separate module for these high level definitions?
+define_timeline!(graphics Start, ShadowMapping, DepthPass, SceneDraw, GuiDraw);
+
+trait ImageLayout {
+    const VK_FLAG: vk::ImageLayout;
+}
+
+#[derive(Debug)]
+struct Undefined;
+#[derive(Debug)]
+struct ColorAttachmentOptimal;
+#[derive(Debug)]
+struct DepthStencilAttachmentOptimal;
+#[derive(Debug)]
+struct DepthStencilReadOnlyAttachmentOptimal;
+#[derive(Debug)]
+struct PresentSrc;
+
+impl ImageLayout for Undefined {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::UNDEFINED;
+}
+
+impl ImageLayout for ColorAttachmentOptimal {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+}
+
+impl ImageLayout for DepthStencilAttachmentOptimal {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+}
+
+impl ImageLayout for DepthStencilReadOnlyAttachmentOptimal {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+}
+
+impl ImageLayout for PresentSrc {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::PRESENT_SRC_KHR;
+}
+
+trait HasRenderTarget<const I: u8> {
+    type Layout: ImageLayout;
+}
+
+impl HasRenderTarget<0> for graphics::Start {
+    type Layout = Undefined;
+}
+
+impl HasRenderTarget<1> for graphics::Start {
+    type Layout = Undefined;
+}
+
+impl HasRenderTarget<0> for graphics::ShadowMapping {
+    type Layout = Undefined;
+}
+
+impl HasRenderTarget<1> for graphics::ShadowMapping {
+    type Layout = DepthStencilAttachmentOptimal;
+}
+
+impl HasRenderTarget<0> for graphics::DepthPass {
+    type Layout = DepthStencilAttachmentOptimal;
+}
+
+impl HasRenderTarget<0> for graphics::SceneDraw {
+    type Layout = ColorAttachmentOptimal;
+}
+
+impl HasRenderTarget<1> for graphics::SceneDraw {
+    type Layout = DepthStencilReadOnlyAttachmentOptimal;
+}
+
+define_timeline!(compute Perform);
 
 impl RenderFrame {
     pub fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
@@ -106,11 +174,11 @@ impl RenderFrame {
         let main_renderpass = {
             let color_attachment = vk::AttachmentReference {
                 attachment: 0,
-                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                layout: <graphics::SceneDraw as HasRenderTarget<0>>::Layout::VK_FLAG,
             };
             let depth_attachment = vk::AttachmentReference {
                 attachment: 1,
-                layout: vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                layout: <graphics::SceneDraw as HasRenderTarget<1>>::Layout::VK_FLAG,
             };
 
             device.new_renderpass(
@@ -168,14 +236,18 @@ impl RenderFrame {
         // Stat frame number at 1 and semaphores at 16, because validation layers assert
         // wait_semaphore_values at > 0
         let frame_number = 1;
-        let graphics_timeline_semaphore =
-            device.new_semaphore_timeline(timeline_value!(graphics @ last frame_number => MAX));
+        let graphics_timeline_semaphore = device
+            .new_semaphore_timeline(
+                timeline_value_last::<graphics::Timeline, graphics::GuiDraw>(frame_number),
+            );
         device.set_object_name(
             graphics_timeline_semaphore.handle,
             "Graphics timeline semaphore",
         );
-        let compute_timeline_semaphore =
-            device.new_semaphore_timeline(timeline_value!(compute @ last frame_number => MAX));
+        let compute_timeline_semaphore = device
+            .new_semaphore_timeline(timeline_value_last::<compute::Timeline, compute::Perform>(
+                frame_number,
+            ));
         device.set_object_name(
             compute_timeline_semaphore.handle,
             "Compute timeline semaphore",
@@ -525,40 +597,57 @@ pub struct DepthPassData {
     pub depth_pipeline: Pipeline,
     pub depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
     pub renderpass: RenderPass,
-    pub framebuffer: Vec<Framebuffer>,
 }
 
 impl DepthPassData {
     pub fn new(
         renderer: &RenderFrame,
         model_data: &ModelData,
-        main_attachments: &MainAttachments,
         swapchain: &Swapchain,
         camera_matrices: &CameraMatrices,
     ) -> DepthPassData {
         let device = &renderer.device;
 
+        let color_attachment = vk::AttachmentReference {
+            attachment: 0,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        };
+        let depth_attachment = vk::AttachmentReference {
+            attachment: 1,
+            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+
         let renderpass = device.new_renderpass(
             &vk::RenderPassCreateInfo::builder()
                 .attachments(unsafe {
-                    &*(&[vk::AttachmentDescription::builder()
-                        .format(vk::Format::D16_UNORM)
-                        .samples(vk::SampleCountFlags::TYPE_1)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::STORE)
-                        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-                        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                        .initial_layout(vk::ImageLayout::UNDEFINED)
-                        .final_layout(vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL)]
-                        as *const [vk::AttachmentDescriptionBuilder<'_>; 1]
-                        as *const [vk::AttachmentDescription; 1])
+                    &*(&[
+                        vk::AttachmentDescription::builder()
+                            .format(swapchain.surface.surface_format.format)
+                            .samples(vk::SampleCountFlags::TYPE_1)
+                            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                            .initial_layout(vk::ImageLayout::UNDEFINED)
+                            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+                        vk::AttachmentDescription::builder()
+                            .format(vk::Format::D16_UNORM)
+                            .samples(vk::SampleCountFlags::TYPE_1)
+                            .load_op(vk::AttachmentLoadOp::CLEAR)
+                            .store_op(vk::AttachmentStoreOp::STORE)
+                            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                            .initial_layout(vk::ImageLayout::UNDEFINED)
+                            .final_layout(
+                                vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                            ),
+                    ] as *const [vk::AttachmentDescriptionBuilder<'_>; 2]
+                        as *const [vk::AttachmentDescription; 2])
                 })
                 .subpasses(unsafe {
                     &*(&[vk::SubpassDescription::builder()
-                        .depth_stencil_attachment(&vk::AttachmentReference {
-                            attachment: 0,
-                            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                        })
+                        .color_attachments(&[color_attachment])
+                        .depth_stencil_attachment(&depth_attachment)
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]
                         as *const [vk::SubpassDescriptionBuilder<'_>; 1]
                         as *const [vk::SubpassDescription; 1])
@@ -653,39 +742,10 @@ impl DepthPassData {
 
         device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
 
-        let framebuffer = main_attachments
-            .depth_image_views
-            .iter()
-            .enumerate()
-            .map(|(ix, depth_image_view)| {
-                let framebuffer_attachments = [depth_image_view.handle];
-                let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
-                    .render_pass(renderpass.handle)
-                    .attachments(&framebuffer_attachments)
-                    .width(swapchain.width)
-                    .height(swapchain.height)
-                    .layers(1);
-                let handle = unsafe {
-                    renderer
-                        .device
-                        .create_framebuffer(&frame_buffer_create_info, None)
-                        .unwrap()
-                };
-                renderer
-                    .device
-                    .set_object_name(handle, &format!("Depth only Framebuffer - {}", ix));
-                Framebuffer {
-                    handle,
-                    device: Arc::clone(&renderer.device),
-                }
-            })
-            .collect();
-
         DepthPassData {
             depth_pipeline_layout,
             depth_pipeline,
             renderpass,
-            framebuffer,
         }
     }
 }
@@ -1186,9 +1246,10 @@ pub fn submit_graphics_commands(
 
     let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
     let wait_dst_stage_mask = &[vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS];
-    let wait_semaphore_values = &[timeline_value!(graphics @ renderer.frame_number => START)];
-    let signal_semaphore_values =
-        &[timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS)];
+    let wait_semaphore_values = &[timeline_value::<_, graphics::Start>(renderer.frame_number)];
+    let signal_semaphore_values = &[timeline_value::<_, graphics::DepthPass>(
+        renderer.frame_number,
+    )];
     let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
         .wait_semaphore_values(wait_semaphore_values)
         .signal_semaphore_values(signal_semaphore_values);
@@ -1208,9 +1269,9 @@ pub fn submit_graphics_commands(
     ];
     use systems::consolidate_mesh_buffers::sync as consolidate_mesh_buffers;
     let wait_semaphore_values = &[
-        timeline_value!(graphics @ renderer.frame_number => DEPTH_PASS),
-        timeline_value!(compute @ renderer.frame_number => PERFORM),
-        timeline_value!(consolidate_mesh_buffers @ renderer.frame_number => CONSOLIDATE),
+        timeline_value::<_, graphics::DepthPass>(renderer.frame_number),
+        timeline_value::<_, compute::Perform>(renderer.frame_number),
+        timeline_value::<_, consolidate_mesh_buffers::Consolidate>(renderer.frame_number),
     ];
     let dst_stage_masks = &[
         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -1219,8 +1280,9 @@ pub fn submit_graphics_commands(
     ];
     let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
     let command_buffers = &[*graphics_submissions.main_render.get_mut()];
-    let signal_semaphore_values =
-        &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
+    let signal_semaphore_values = &[timeline_value::<_, graphics::SceneDraw>(
+        renderer.frame_number,
+    )];
     let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
         .wait_semaphore_values(wait_semaphore_values)
         .signal_semaphore_values(signal_semaphore_values);
@@ -1762,13 +1824,15 @@ impl GuiRender {
         }
         let command_buffer = command_buffer.end();
         let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let wait_semaphore_values =
-            &[timeline_value!(graphics @ renderer.frame_number => SCENE_DRAW)];
+        let wait_semaphore_values = &[timeline_value::<_, graphics::SceneDraw>(
+            renderer.frame_number,
+        )];
         let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
         let command_buffers = &[*command_buffer];
-        let signal_semaphore_values =
-            &[timeline_value!(graphics @ renderer.frame_number => GUI_DRAW)];
+        let signal_semaphore_values = &[timeline_value::<_, graphics::GuiDraw>(
+            renderer.frame_number,
+        )];
         let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
             .wait_semaphore_values(wait_semaphore_values)
             .signal_semaphore_values(signal_semaphore_values)
@@ -1840,6 +1904,7 @@ pub fn depth_only_pass(
     image_index: Res<ImageIndex>,
     depth_pass: Res<DepthPassData>,
     mut local_graphics_command_pool: Local<DepthPassCommandPool>,
+    main_framebuffer: Res<MainFramebuffer>,
     model_data: Res<ModelData>,
     runtime_config: Res<RuntimeConfiguration>,
     camera: Res<Camera>,
@@ -1872,7 +1937,7 @@ pub fn depth_only_pass(
             *command_buffer,
             &vk::RenderPassBeginInfo::builder()
                 .render_pass(depth_pass.renderpass.handle)
-                .framebuffer(depth_pass.framebuffer[image_index.0 as usize].handle)
+                .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
                 .render_area(vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
                     extent: vk::Extent2D {
@@ -1880,12 +1945,15 @@ pub fn depth_only_pass(
                         height: swapchain.height,
                     },
                 })
-                .clear_values(&[vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
-                        stencil: 0,
+                .clear_values(&[
+                    vk::ClearValue::default(),
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
+                        },
                     },
-                }]),
+                ]),
             vk::SubpassContents::INLINE,
         );
         if !runtime_config.debug_aabbs {

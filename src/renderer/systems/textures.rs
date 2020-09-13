@@ -1,11 +1,8 @@
-use crate::{
-    renderer::{
-        device::{DoubleBuffered, Image},
-        graphics as graphics_sync, helpers,
-        systems::present::ImageIndex,
-        DrawIndex, MainDescriptorPool, RenderFrame,
-    },
-    timeline_value,
+use crate::renderer::{
+    device::{DoubleBuffered, Image},
+    graphics as graphics_sync, helpers,
+    systems::present::ImageIndex,
+    timeline_value_previous, DrawIndex, MainDescriptorPool, RenderFrame,
 };
 use ash::{version::DeviceV1_0, vk};
 use bevy_ecs::prelude::*;
@@ -110,7 +107,10 @@ pub fn synchronize_base_color_textures_consolidate(
 ) {
     renderer
         .graphics_timeline_semaphore
-        .wait(timeline_value!(graphics_sync @ previous image_index; of renderer => GUI_DRAW))
+        .wait(timeline_value_previous::<_, graphics_sync::GuiDraw>(
+            &image_index,
+            &renderer,
+        ))
         .unwrap();
 
     for (draw_id, marker) in &mut query.iter() {

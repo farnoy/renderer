@@ -39,6 +39,7 @@ smallvec = "1.2.0"
 spirq = "0.4.6"
 spirv_headers = "1.3.4"
 spirv-reflect = "0.2.1"
+static_assertions= "1.1.0"
 winit = "0.22.0"
 
 [patch.crates-io]

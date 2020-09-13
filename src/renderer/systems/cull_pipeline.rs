@@ -6,8 +6,8 @@ use crate::{
         helpers::{self, pick_lod, Pipeline},
         shaders::{self, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
-        timeline_value, CameraMatrices, DrawIndex, GltfMesh, MainDescriptorPool, ModelData,
-        Position, RenderFrame, Shader,
+        timeline_value, timeline_value_last, timeline_value_previous, CameraMatrices, DrawIndex,
+        GltfMesh, MainDescriptorPool, ModelData, Position, RenderFrame, Shader,
     },
 };
 use ash::{
@@ -263,11 +263,12 @@ pub fn cull_pass(
 
     if runtime_config.debug_aabbs {
         let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
-        let wait_semaphore_values =
-            &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
+        let wait_semaphore_values = &[timeline_value_last::<_, compute::Perform>(
+            renderer.frame_number,
+        )];
         let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
         let signal_semaphore_values =
-            &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
+            &[timeline_value::<_, compute::Perform>(renderer.frame_number)];
         let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
         let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
             .wait_semaphore_values(wait_semaphore_values)
@@ -295,7 +296,10 @@ pub fn cull_pass(
         microprofile::scope!("cull pass", "wait previous");
         renderer
             .compute_timeline_semaphore
-            .wait(timeline_value!(compute @ previous image_index; of renderer => PERFORM))
+            .wait(timeline_value_previous::<_, compute::Perform>(
+                &image_index,
+                &renderer,
+            ))
             .unwrap();
     }
 
@@ -461,9 +465,11 @@ pub fn cull_pass(
     }
     let cull_cb = cull_cb.end();
     let wait_semaphores = &[renderer.compute_timeline_semaphore.handle];
-    let wait_semaphore_values = &[timeline_value!(compute @ last renderer.frame_number => PERFORM)];
+    let wait_semaphore_values = &[timeline_value_last::<_, compute::Perform>(
+        renderer.frame_number,
+    )];
     let signal_semaphores = &[renderer.compute_timeline_semaphore.handle];
-    let signal_semaphore_values = &[timeline_value!(compute @ renderer.frame_number => PERFORM)];
+    let signal_semaphore_values = &[timeline_value::<_, compute::Perform>(renderer.frame_number)];
     let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE; wait_semaphores.len()];
     let command_buffers = &[*cull_cb];
     let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
