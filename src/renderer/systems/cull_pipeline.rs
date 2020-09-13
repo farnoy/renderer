@@ -245,7 +245,7 @@ pub fn cull_pass(
     camera: Res<Camera>,
     model_data: Res<ModelData>,
     camera_matrices: Res<CameraMatrices>,
-    mut query: Query<(&DrawIndex, &Position, &GltfMesh)>,
+    mut query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
 ) {
     #[cfg(feature = "microprofile")]
     microprofile::scope!("ecs", "cull pass");
@@ -376,7 +376,10 @@ pub fn cull_pass(
 
         let mut index_offset_in_output = 0i32;
 
-        for (draw_index, mesh_position, mesh) in &mut query.iter() {
+        for (draw_index, mesh_position, mesh, coarse_culled) in &mut query.iter() {
+            if coarse_culled.0 {
+                continue;
+            }
             let vertex_offset = consolidated_mesh_buffers
                 .vertex_offsets
                 .get(&mesh.vertex_buffer.handle.as_raw())

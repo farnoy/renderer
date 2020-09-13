@@ -397,8 +397,8 @@ pub fn prepare_shadow_maps(
     model_data: Res<ModelData>,
     mut local_graphics_command_pool: Local<ShadowMappingCommandPool>,
     graphics_submissions: Res<GraphicsSubmissions>,
-    mut mesh_query: Query<(&DrawIndex, &GltfMesh)>,
-    mut shadow_query: Query<With<Light, &ShadowMappingLightMatrices>>,
+    mut mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
+    mut shadow_query: Query<With<Light, (&Position, &ShadowMappingLightMatrices)>>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "shadow_mapping");
@@ -441,7 +441,7 @@ pub fn prepare_shadow_maps(
             shadow_mapping.depth_pipeline.handle,
         );
 
-        for (ix, shadow_mvp) in shadow_query.iter().iter().enumerate() {
+        for (ix, (light_position, shadow_mvp)) in shadow_query.iter().iter().enumerate() {
             depth_pass.depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
@@ -506,8 +506,9 @@ pub fn prepare_shadow_maps(
                     .build()],
             );
 
-            for (draw_index, mesh) in &mut mesh_query.iter() {
-                let (index_buffer, index_count) = mesh.index_buffers.last().unwrap();
+            for (draw_index, mesh_position, mesh) in &mut mesh_query.iter() {
+                let (index_buffer, index_count) =
+                    pick_lod(&mesh.index_buffers, light_position.0, mesh_position.0);
                 renderer.device.cmd_bind_index_buffer(
                     *command_buffer,
                     index_buffer.handle,

@@ -17,7 +17,7 @@ pub struct LoadedMesh {
     pub base_color: Image,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 struct Pos(pub [f32; 3]);
 
 impl meshopt::DecodePosition for Pos {
@@ -118,22 +118,20 @@ pub fn load(
             mapped[ix] = *pixel;
         }
     }
-    let (a, meshoptpositions, b) = unsafe { positions.as_slice().align_to::<u8>() };
-    assert_eq!(a.len(), 0);
-    assert_eq!(b.len(), 0);
-    let vertex_adapter =
-        meshopt::VertexDataAdapter::new(&meshoptpositions, size_of::<f32>() * 3, 0)
-            .expect("vertex data adapter failed");
-    let mut index_lods = if false {
+    let mut index_lods = if true {
         let mut lods = Vec::with_capacity(6);
         for x in 1..6 {
-            let factor = (2 as usize).pow(x);
-            lods.push(meshopt::simplify::simplify_sloppy(
+            let factor = 0.5f32.powf(x as f32);
+            let res = meshopt::simplify::simplify_sloppy_decoder(
                 &indices,
-                &vertex_adapter,
-                indices.len() / factor,
-            ));
+                &positions,
+                (indices.len() as f32 * factor) as usize,
+            );
+            if res.len() < indices.len() && !res.is_empty() {
+                lods.push(res);
+            }
         }
+        lods.insert(0, indices);
         lods
     } else {
         vec![indices]
@@ -142,7 +140,7 @@ pub fn load(
         // This is a bug in the library
         #[allow(clippy::unnecessary_mut_passed)]
         meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
-        // meshopt::optimize_overdraw_in_place(&mut indices, &meshopt::VertexDataAdapter::new(&positions, size_of::<f32>(), 0), 1.05);
+        meshopt::optimize_overdraw_in_place_decoder(&mut indices, &positions, 1.05);
     }
     /*
     // quoting meshopt:

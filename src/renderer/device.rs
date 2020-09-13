@@ -155,6 +155,7 @@ impl Device {
             let mut features12 = vk::PhysicalDeviceVulkan12Features::builder()
                 .descriptor_binding_partially_bound(true)
                 .runtime_descriptor_array(true)
+                .separate_depth_stencil_layouts(true)
                 .shader_storage_buffer_array_non_uniform_indexing(true)
                 .timeline_semaphore(true)
                 .scalar_block_layout(true)

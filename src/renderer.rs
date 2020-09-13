@@ -99,9 +99,9 @@ struct Undefined;
 #[derive(Debug)]
 struct ColorAttachmentOptimal;
 #[derive(Debug)]
-struct DepthStencilAttachmentOptimal;
+struct DepthAttachmentOptimal;
 #[derive(Debug)]
-struct DepthStencilReadOnlyAttachmentOptimal;
+struct DepthReadOnlyOptimal;
 #[derive(Debug)]
 struct PresentSrc;
 
@@ -113,48 +113,52 @@ impl ImageLayout for ColorAttachmentOptimal {
     const VK_FLAG: vk::ImageLayout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
 }
 
-impl ImageLayout for DepthStencilAttachmentOptimal {
-    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+impl ImageLayout for DepthAttachmentOptimal {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL;
 }
 
-impl ImageLayout for DepthStencilReadOnlyAttachmentOptimal {
-    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+impl ImageLayout for DepthReadOnlyOptimal {
+    const VK_FLAG: vk::ImageLayout = vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL;
 }
 
 impl ImageLayout for PresentSrc {
     const VK_FLAG: vk::ImageLayout = vk::ImageLayout::PRESENT_SRC_KHR;
 }
 
-trait HasRenderTarget<const I: u8> {
+trait TransitionsRenderTarget<const I: u8> {
     type Layout: ImageLayout;
 }
 
-impl HasRenderTarget<0> for graphics::Start {
+impl TransitionsRenderTarget<0> for graphics::Start {
     type Layout = Undefined;
 }
 
-impl HasRenderTarget<1> for graphics::Start {
+impl TransitionsRenderTarget<1> for graphics::Start {
     type Layout = Undefined;
 }
 
-impl HasRenderTarget<0> for graphics::ShadowMapping {
-    type Layout = Undefined;
-}
-
-impl HasRenderTarget<1> for graphics::ShadowMapping {
-    type Layout = DepthStencilAttachmentOptimal;
-}
-
-impl HasRenderTarget<0> for graphics::DepthPass {
-    type Layout = DepthStencilAttachmentOptimal;
-}
-
-impl HasRenderTarget<0> for graphics::SceneDraw {
+impl TransitionsRenderTarget<0> for graphics::DepthPass {
     type Layout = ColorAttachmentOptimal;
 }
 
-impl HasRenderTarget<1> for graphics::SceneDraw {
-    type Layout = DepthStencilReadOnlyAttachmentOptimal;
+impl TransitionsRenderTarget<1> for graphics::DepthPass {
+    type Layout = DepthAttachmentOptimal;
+}
+
+impl TransitionsRenderTarget<0> for graphics::SceneDraw {
+    type Layout = ColorAttachmentOptimal;
+}
+
+impl TransitionsRenderTarget<1> for graphics::SceneDraw {
+    type Layout = DepthReadOnlyOptimal;
+}
+
+impl TransitionsRenderTarget<0> for graphics::GuiDraw {
+    type Layout = PresentSrc;
+}
+
+impl TransitionsRenderTarget<1> for graphics::GuiDraw {
+    type Layout = DepthReadOnlyOptimal;
 }
 
 define_timeline!(compute Perform);
@@ -174,11 +178,11 @@ impl RenderFrame {
         let main_renderpass = {
             let color_attachment = vk::AttachmentReference {
                 attachment: 0,
-                layout: <graphics::SceneDraw as HasRenderTarget<0>>::Layout::VK_FLAG,
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             };
             let depth_attachment = vk::AttachmentReference {
                 attachment: 1,
-                layout: <graphics::SceneDraw as HasRenderTarget<1>>::Layout::VK_FLAG,
+                layout: vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
             };
 
             device.new_renderpass(
@@ -192,8 +196,8 @@ impl RenderFrame {
                                 .store_op(vk::AttachmentStoreOp::STORE)
                                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                                .initial_layout(vk::ImageLayout::UNDEFINED)
-                                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+                                .initial_layout(<<graphics::SceneDraw as SuccessorStage<_>>::Previous as TransitionsRenderTarget<0>>::Layout::VK_FLAG)
+                                .final_layout(<graphics::SceneDraw as TransitionsRenderTarget<0>>::Layout::VK_FLAG),
                             vk::AttachmentDescription::builder()
                                 .format(vk::Format::D16_UNORM)
                                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -201,12 +205,8 @@ impl RenderFrame {
                                 .store_op(vk::AttachmentStoreOp::DONT_CARE)
                                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                                .initial_layout(
-                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
-                                )
-                                .final_layout(
-                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
-                                ),
+                                .initial_layout(<<graphics::SceneDraw as SuccessorStage<_>>::Previous as TransitionsRenderTarget<1>>::Layout::VK_FLAG)
+                                .final_layout(<graphics::SceneDraw as TransitionsRenderTarget<1>>::Layout::VK_FLAG),
                         ]
                             as *const [vk::AttachmentDescriptionBuilder<'_>; 2]
                             as *const [vk::AttachmentDescription; 2])
@@ -614,7 +614,7 @@ impl DepthPassData {
         };
         let depth_attachment = vk::AttachmentReference {
             attachment: 1,
-            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
         };
 
         let renderpass = device.new_renderpass(
@@ -629,7 +629,7 @@ impl DepthPassData {
                             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                             .initial_layout(vk::ImageLayout::UNDEFINED)
-                            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+                            .final_layout(<graphics::DepthPass as TransitionsRenderTarget<0>>::Layout::VK_FLAG),
                         vk::AttachmentDescription::builder()
                             .format(vk::Format::D16_UNORM)
                             .samples(vk::SampleCountFlags::TYPE_1)
@@ -638,9 +638,7 @@ impl DepthPassData {
                             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                             .initial_layout(vk::ImageLayout::UNDEFINED)
-                            .final_layout(
-                                vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
-                            ),
+                            .final_layout(<graphics::DepthPass as TransitionsRenderTarget<1>>::Layout::VK_FLAG),
                     ] as *const [vk::AttachmentDescriptionBuilder<'_>; 2]
                         as *const [vk::AttachmentDescription; 2])
                 })
@@ -1382,7 +1380,7 @@ impl GuiRender {
             };
             let depth_attachment = vk::AttachmentReference {
                 attachment: 1,
-                layout: vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                layout: vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
             };
 
             dbg!(swapchain.surface.surface_format.format);
@@ -1398,8 +1396,12 @@ impl GuiRender {
                                 .store_op(vk::AttachmentStoreOp::STORE)
                                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                                .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                                .initial_layout(
+                                    <<graphics::GuiDraw as SuccessorStage<_>>::Previous as TransitionsRenderTarget<0>>::Layout::VK_FLAG,
+                                )
+                                .final_layout(
+                                    <graphics::GuiDraw as TransitionsRenderTarget<0>>::Layout::VK_FLAG,
+                                ),
                             vk::AttachmentDescription::builder()
                                 .format(vk::Format::D16_UNORM)
                                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -1408,10 +1410,10 @@ impl GuiRender {
                                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                                 .initial_layout(
-                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                    <<graphics::GuiDraw as SuccessorStage<_>>::Previous as TransitionsRenderTarget<1>>::Layout::VK_FLAG,
                                 )
                                 .final_layout(
-                                    vk::ImageLayout::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                                    <graphics::GuiDraw as TransitionsRenderTarget<1>>::Layout::VK_FLAG,
                                 ),
                         ]
                             as *const [vk::AttachmentDescriptionBuilder<'_>; 2]
