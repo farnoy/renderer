@@ -66,12 +66,7 @@ fn main() {
     );
     let cull_pass_data_private = CullPassDataPrivate::new(&renderer);
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
-    let depth_pass_data = DepthPassData::new(
-        &renderer,
-        &model_data,
-        &swapchain,
-        &camera_matrices,
-    );
+    let depth_pass_data = DepthPassData::new(&renderer, &model_data, &swapchain, &camera_matrices);
     let shadow_mapping_data =
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
 

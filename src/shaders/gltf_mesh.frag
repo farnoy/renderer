@@ -10,6 +10,7 @@ layout(set = 2, binding = 0, scalar) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
+    mat4 pv;
 } light_data[SHADOW_MAP_DIM * SHADOW_MAP_DIM];
 layout(set = 2, binding = 1) uniform sampler2DShadow shadow_maps;
 layout(set = 3, binding = 0) uniform sampler2D base_color[];

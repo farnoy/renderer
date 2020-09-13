@@ -298,19 +298,13 @@ impl ShadowMappingLightMatrices {
     }
 }
 
-#[repr(C)]
-#[allow(unused_variables)]
-struct LightMatrices {
-    pub projection: glm::Mat4,
-    pub view: glm::Mat4,
-    pub position: glm::Vec4,
-}
+type LightMatrices = super::super::shaders::CameraMatrices;
 
 pub fn shadow_mapping_mvp_calculation(
     image_index: Res<ImageIndex>,
     mut query: Query<(&Position, &Rotation, &mut ShadowMappingLightMatrices)>,
 ) {
-    debug_assert_eq!(size_of::<LightMatrices>(), 144);
+    const_assert_eq!(size_of::<LightMatrices>(), 208);
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "shadow mapping light matrices calculation");
     for (light_position, light_rotation, mut light_matrix) in &mut query.iter() {
@@ -329,6 +323,7 @@ pub fn shadow_mapping_mvp_calculation(
             projection,
             view,
             position: light_position.0.coords.push(1.0),
+            pv: projection * view,
         };
     }
 }

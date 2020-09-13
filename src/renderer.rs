@@ -1888,6 +1888,7 @@ pub fn camera_matrices_upload(
         projection: camera.projection,
         view: camera.view,
         position: camera.position.coords.push(1.0),
+        pv: camera.projection * camera.view,
     };
 }
 

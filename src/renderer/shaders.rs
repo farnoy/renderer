@@ -346,7 +346,7 @@ macro_rules! make_pipe {
                         }
                         if let Some(ty) = s.get_desc(spirq::DescriptorBinding::new(set_ix, binding.binding)) {
                             if !super::compare_descriptor_types(binding.descriptor_type, ty) || ty.nbyte().map(|s| s as vk::DeviceSize != *type_size).unwrap_or(false) {
-                                dbg!(binding.descriptor_type, ty);
+                                dbg!(set_ix, binding.binding, binding.descriptor_type, ty, super::compare_descriptor_types(binding.descriptor_type, ty), ty.nbyte().map(|s| s as vk::DeviceSize), type_size);
                                 return false;
                             }
                         }
@@ -477,10 +477,12 @@ pub type VertexBuffer = [[f32; 3]; 10 /* distinct meshes */ * 30_000];
 pub type UVBuffer = [[f32; 2]; 10 /* distinct meshes */ * 30_000];
 pub type IndexBuffer = [[u32; 3]; 10 /* distinct meshes */ * 30_000];
 
+#[repr(C)]
 pub struct CameraMatrices {
     pub projection: glm::Mat4,
     pub view: glm::Mat4,
     pub position: glm::Vec4,
+    pub pv: glm::Mat4,
 }
 
 pub struct ModelMatrices {

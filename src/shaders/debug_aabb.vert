@@ -11,6 +11,7 @@ layout(set = 0, binding = 0, scalar) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
     vec4 pos;
+    mat4 pv;
 };
 
 void main() {
@@ -53,5 +54,5 @@ void main() {
 
     vec3 position = points[indices[gl_VertexIndex]];
 
-    gl_Position = projection * view * vec4(position, 1.0);
+    gl_Position = pv * vec4(position, 1.0);
 }

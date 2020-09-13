@@ -28,6 +28,7 @@ layout(set = 1, binding = 0, scalar) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
+    mat4 pv;
 };
 
 layout(set = 2, binding = 0, scalar) buffer IndirectCommands {
@@ -90,27 +91,25 @@ void main() {
             vertex_buffer[vertexOffset + ix2][2],
             1.0
         );
-        mat4 mvp = projection * view * model[gltfIndex];
+        mat4 mvp = pv * model[gltfIndex];
         vec4 vertex0 = mvp * input0;
         vec4 vertex1 = mvp * input1;
         vec4 vertex2 = mvp * input2;
+
+        // backface culling in counter clockwise front-facing order, left handed projection
+        cull = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw)) > 0;
 
         vec3 ndc0 = vertex0.xyz / vertex0.w;
         vec3 ndc1 = vertex1.xyz / vertex1.w;
         vec3 ndc2 = vertex2.xyz / vertex2.w;
 
-        cull =
-            // frustum culling
-            (ndc0.z > 1.0 && ndc1.z > 1.0 && ndc2.z > 1.0) ||
-            (ndc0.z < 0.0 && ndc1.z < 0.0 && ndc2.z < 0.0) ||
-            (ndc0.x < -1.0 && ndc1.x < -1.0 && ndc2.x < -1.0) ||
-            (ndc0.x > 1.0 && ndc1.x > 1.0 && ndc2.x > 1.0) ||
-            (ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0) ||
-            (ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0);
-
-        // backface culling in counter clockwise front-facing order, left handed projection
         if (!cull)
-            cull = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw)) > 0;
+            cull =
+                // frustum culling
+                (ndc0.x < -1.0 && ndc1.x < -1.0 && ndc2.x < -1.0) ||
+                (ndc0.x > 1.0 && ndc1.x > 1.0 && ndc2.x > 1.0) ||
+                (ndc0.y < -1.0 && ndc1.y < -1.0 && ndc2.y < -1.0) ||
+                (ndc0.y > 1.0 && ndc1.y > 1.0 && ndc2.y > 1.0);
 
         // degenerate triangle culling, this is a bad algorithm but even while being
         // conservative here, it discards a lot of stuff

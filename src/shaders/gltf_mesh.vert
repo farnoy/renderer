@@ -10,11 +10,13 @@ layout(set = 1, binding = 0, scalar) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
+    mat4 pv;
 } camera;
 layout(set = 2, binding = 0, scalar) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
+    mat4 pv;
 } light_data[SHADOW_MAP_DIM * SHADOW_MAP_DIM];
 
 layout (location = 0) in vec3 position;
