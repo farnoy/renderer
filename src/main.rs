@@ -355,6 +355,9 @@ fn main() {
     resources.insert(gltf_pass);
     resources.insert(debug_aabb_pass_data);
     resources.insert(GraphicsSubmissions::default());
+    if cfg!(feature = "crash_debugging") {
+        resources.insert(CrashBuffer::from_resources(&resources));
+    }
 
     let mut schedule = Schedule::default();
     schedule.add_stage("acquire_framebuffer");

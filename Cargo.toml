@@ -58,8 +58,9 @@ winapi = "0.3.5"
 [features]
 default = ["simba/packed_simd"]
 vk_names = []
+crash_debugging = []
 standard_validation = ["vk_names"]
-sync_validation = ["standard_validation"]
+sync_validation = ["crash_debugging", "standard_validation"]
 uncapped = []
 profiling = ["uncapped", "microprofile"]
 

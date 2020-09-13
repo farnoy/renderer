@@ -6,6 +6,8 @@ use ash::{
     vk,
 };
 use parking_lot::Mutex;
+#[cfg(feature = "crash_debugging")]
+use std::mem::transmute;
 use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 mod buffer;
@@ -37,6 +39,8 @@ pub struct Device {
     pub(super) graphics_queue: Mutex<vk::Queue>,
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
     // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
+    #[cfg(feature = "crash_debugging")]
+    pub buffer_marker_fn: vk::AmdBufferMarkerFn,
 }
 
 pub enum QueueType {
@@ -129,7 +133,10 @@ impl Device {
             None => vec![(graphics_queue_family, 1)],
         };
         let device = {
-            let device_extension_names_raw = [extensions::khr::Swapchain::name().as_ptr()];
+            let mut device_extension_names_raw = vec![extensions::khr::Swapchain::name().as_ptr()];
+            if cfg!(feature = "crash_debugging") {
+                device_extension_names_raw.push(vk::AmdBufferMarkerFn::name().as_ptr());
+            }
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
@@ -184,6 +191,11 @@ impl Device {
             None => vec![graphics_queue],
         };
 
+        #[cfg(feature = "crash_debugging")]
+        let buffer_marker_fn = vk::AmdBufferMarkerFn::load(|name| unsafe {
+            transmute(instance.get_device_proc_addr(device.handle(), name.as_ptr()))
+        });
+
         let device = Device {
             device,
             instance: Arc::clone(instance),
@@ -196,6 +208,8 @@ impl Device {
                 .unwrap_or(graphics_queue_family),
             graphics_queue: Mutex::new(graphics_queue),
             compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
+            #[cfg(feature = "crash_debugging")]
+            buffer_marker_fn,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {

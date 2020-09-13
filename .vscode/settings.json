@@ -6,6 +6,7 @@
   "rust-analyzer.cargo.allFeatures": false,
   "rust-analyzer.cargo.features": [
     "standard_validation",
-    "profiling"
+    "profiling",
+    "crash_debugging"
   ],
 }

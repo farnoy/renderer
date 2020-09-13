@@ -9,6 +9,7 @@ pub mod shaders;
 mod swapchain;
 mod systems {
     pub mod consolidate_mesh_buffers;
+    pub mod crash_debugging;
     pub mod cull_pipeline;
     pub mod debug_aabb_renderer;
     pub mod present;
@@ -16,6 +17,17 @@ mod systems {
     pub mod textures;
 }
 
+pub use self::{
+    device::*,
+    gltf_mesh::{load as load_gltf, LoadedMesh},
+    helpers::*,
+    instance::Instance,
+    swapchain::*,
+    systems::{
+        consolidate_mesh_buffers::*, crash_debugging::*, cull_pipeline::*, debug_aabb_renderer::*,
+        present::*, shadow_mapping::*, textures::*,
+    },
+};
 use crate::{
     define_timeline,
     ecs::{
@@ -34,18 +46,6 @@ use smallvec::SmallVec;
 use std::{
     cell::RefCell, convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, rc::Rc,
     sync::Arc,
-};
-
-pub use self::{helpers::*, instance::Instance};
-
-pub use self::{
-    device::*,
-    gltf_mesh::{load as load_gltf, LoadedMesh},
-    swapchain::*,
-    systems::{
-        consolidate_mesh_buffers::*, cull_pipeline::*, debug_aabb_renderer::*, present::*,
-        shadow_mapping::*, textures::*,
-    },
 };
 
 pub fn up_vector() -> na::Unit<na::Vector3<f32>> {
@@ -208,6 +208,13 @@ impl RenderFrame {
 
     pub fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
         DoubleBuffered::new(self.buffer_count, creator)
+    }
+}
+
+#[cfg(feature = "crash_debugging")]
+impl Drop for RenderFrame {
+    fn drop(&mut self) {
+        dbg!(self.frame_number);
     }
 }
 
@@ -951,6 +958,7 @@ pub fn render_frame(
     main_framebuffer: Res<MainFramebuffer>,
     gltf_pass: Res<GltfPassData>,
     graphics_submissions: Res<GraphicsSubmissions>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
     mut query: Query<&AABB>,
 ) {
     #[cfg(feature = "profiling")]
@@ -1128,6 +1136,14 @@ pub fn render_frame(
                 0,
                 total,
                 size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+            );
+            #[cfg(feature = "crash_debugging")]
+            crash_buffer.record(
+                &renderer,
+                *command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                &image_index,
+                0,
             );
         }
         renderer.device.cmd_end_render_pass(*command_buffer);
