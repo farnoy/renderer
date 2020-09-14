@@ -4,7 +4,7 @@
     non_camel_case_types,
     unused,
     clippy::all,
-    unreachable_pub,
+    unreachable_pub
 )]
 
 use ash::{

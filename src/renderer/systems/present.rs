@@ -1,6 +1,9 @@
 use super::super::{device::Semaphore, graphics as graphics_sync, RenderFrame, Swapchain};
-use crate::renderer::{timeline_value, timeline_value_last};
+use crate::renderer::{
+    timeline_value, timeline_value_last, MainAttachments, MainFramebuffer, Resized,
+};
 use ash::{version::DeviceV1_0, vk};
+use bevy_ecs::prelude::*;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use std::u64;
@@ -34,6 +37,43 @@ impl PresentData {
         PresentData {
             render_complete_semaphore,
         }
+    }
+}
+
+pub(crate) fn acquire_framebuffer(
+    renderer: Res<RenderFrame>,
+    mut swapchain: ResMut<Swapchain>,
+    mut main_attachments: ResMut<MainAttachments>,
+    mut main_framebuffer: ResMut<MainFramebuffer>,
+    mut present_data: ResMut<PresentData>,
+    mut image_index: ResMut<ImageIndex>,
+    resized: Res<Resized>,
+) {
+    #[cfg(feature = "profiling")]
+    microprofile::scope!("ecs", "AcquireFramebuffer");
+
+    if resized.0 {
+        unsafe {
+            renderer.device.device_wait_idle().unwrap();
+        }
+        swapchain.resize_to_fit();
+        *main_attachments = MainAttachments::new(&renderer, &swapchain);
+        *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
+        *present_data = PresentData::new(&renderer);
+    }
+
+    let swapchain_needs_recreating =
+        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);
+
+    if swapchain_needs_recreating {
+        unsafe {
+            renderer.device.device_wait_idle().unwrap();
+        }
+        swapchain.resize_to_fit();
+        *main_attachments = MainAttachments::new(&renderer, &swapchain);
+        *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
+        *present_data = PresentData::new(&renderer);
+        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);
     }
 }
 

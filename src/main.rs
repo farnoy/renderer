@@ -356,41 +356,6 @@ fn main() {
 
     let mut schedule = Schedule::default();
     schedule.add_stage("acquire_framebuffer");
-    fn acquire_framebuffer(
-        renderer: Res<RenderFrame>,
-        mut swapchain: ResMut<Swapchain>,
-        mut main_attachments: ResMut<MainAttachments>,
-        mut main_framebuffer: ResMut<MainFramebuffer>,
-        mut present_data: ResMut<PresentData>,
-        mut image_index: ResMut<ImageIndex>,
-        resized: Res<Resized>,
-    ) {
-        #[cfg(feature = "profiling")]
-        microprofile::scope!("ecs", "AcquireFramebuffer");
-
-        if resized.0 {
-            unsafe {
-                renderer.device.device_wait_idle().unwrap();
-            }
-            swapchain.resize_to_fit();
-            *main_attachments = MainAttachments::new(&renderer, &swapchain);
-            *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
-            *present_data = PresentData::new(&renderer);
-        }
-
-        let swapchain_needs_recreating =
-            AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);
-        if swapchain_needs_recreating {
-            unsafe {
-                renderer.device.device_wait_idle().unwrap();
-            }
-            swapchain.resize_to_fit();
-            *main_attachments = MainAttachments::new(&renderer, &swapchain);
-            *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
-            *present_data = PresentData::new(&renderer);
-            AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);
-        }
-    }
     schedule.add_system_to_stage("acquire_framebuffer", acquire_framebuffer.system());
     schedule.add_system_to_stage(
         "acquire_framebuffer",
