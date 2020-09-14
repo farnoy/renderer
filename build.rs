@@ -25,6 +25,19 @@ fn main() {
         "gui.vert",
     ];
 
+    let latest_helper = fs::read_dir(src.join("src/shaders/helpers"))
+        .unwrap()
+        .map(|f| {
+            let f = f.unwrap();
+            println!(
+                "cargo:rerun-if-changed=src/shaders/helpers/{}",
+                f.file_name().to_str().unwrap()
+            );
+            fs::metadata(f.path()).unwrap().modified().unwrap()
+        })
+        .max()
+        .unwrap();
+
     let stale_shaders = shaders
         .iter()
         .filter(|shader| {
@@ -39,7 +52,7 @@ fn main() {
 
             fs::metadata(&output_path)
                 .map(|m| m.modified().unwrap())
-                .map(|dest_mtime| src_mtime > dest_mtime)
+                .map(|dest_mtime| latest_helper > dest_mtime || src_mtime > dest_mtime)
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
@@ -50,13 +63,10 @@ fn main() {
         let src_path = src.join(format!("src/shaders/{}", shader));
         let output_path = dest.join(format!("{}.spv", shader));
 
-        let result = Command::new("glslangValidator")
+        let result = Command::new("glslc")
             .args(&[
-                "-C",
-                "-V",
                 "-g",
-                "--target-env",
-                "vulkan1.1",
+                "--target-env=vulkan1.2",
                 "-o",
                 output_path.to_str().unwrap(),
                 src_path.to_str().unwrap(),
