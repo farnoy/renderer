@@ -2,8 +2,9 @@ use crate::{
     define_timeline,
     renderer::{
         alloc,
-        device::{Buffer, CommandBuffer, Fence, TimelineSemaphore},
-        timeline_value, timeline_value_last, GltfMesh, GraphicsCommandPool, RenderFrame,
+        device::{Buffer, TimelineSemaphore},
+        timeline_value, timeline_value_last, timeline_value_previous, GltfMesh, ImageIndex,
+        LocalGraphicsCommandPool, RenderFrame,
     },
 };
 use ash::{
@@ -38,10 +39,8 @@ pub struct ConsolidatedMeshBuffers {
     /// If this semaphore is present, a modification to the consolidated buffer has happened
     /// and the user must synchronize with it
     pub sync_timeline: TimelineSemaphore,
-    /// Holds the command buffer executed in the previous frame, to clean it up safely in the following frame
-    previous_run_command_buffer: Option<CommandBuffer>,
-    /// Holds the fence used to synchronize the transfer that occured in previous frame.
-    sync_point_fence: Fence,
+    /// Pool for commands recorded as part of this pass
+    command_pool: LocalGraphicsCommandPool,
 }
 
 define_timeline!(sync Consolidate);
@@ -49,51 +48,51 @@ define_timeline!(sync Consolidate);
 /// Identifies distinct GLTF meshes in components and copies them to a shared buffer
 pub fn consolidate_mesh_buffers(
     renderer: Res<RenderFrame>,
-    graphics_command_pool: Res<GraphicsCommandPool>,
+    image_index: Res<ImageIndex>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
     mut query: Query<&GltfMesh>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "consolidate mesh buffers");
-    if consolidated_mesh_buffers
-        .previous_run_command_buffer
-        .is_some()
+
+    let ConsolidatedMeshBuffers {
+        ref mut next_vertex_offset,
+        ref mut next_index_offset,
+        ref position_buffer,
+        ref normal_buffer,
+        ref uv_buffer,
+        ref index_buffer,
+        ref mut vertex_offsets,
+        ref mut index_offsets,
+        ref mut command_pool,
+        ref sync_timeline,
+        ..
+    } = *consolidated_mesh_buffers;
+
     {
-        unsafe {
-            renderer
-                .device
-                .wait_for_fences(
-                    &[consolidated_mesh_buffers.sync_point_fence.handle],
-                    true,
-                    u64::MAX,
-                )
-                .expect("Wait for fence failed.");
-        }
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("consolidate mesh buffers", "wait previous");
+        sync_timeline
+            .wait(timeline_value_previous::<_, sync::Consolidate>(
+                &image_index,
+                &renderer,
+            ))
+            .unwrap();
     }
+
+    let command_pool = command_pool.pools.current_mut(image_index.0);
+
     unsafe {
-        renderer
-            .device
-            .reset_fences(&[consolidated_mesh_buffers.sync_point_fence.handle])
-            .expect("failed to reset consolidate vertex buffers sync point fence");
+        #[cfg(feature = "microprofile")]
+        microprofile::scope!("consolidate mesh buffers", "CP reset");
+        command_pool.recreate();
     }
+
+    let mut command_session = command_pool.session();
 
     let mut needs_transfer = false;
-    let command_buffer = graphics_command_pool
-        .0
-        .record_one_time("consolidate mesh buffers cb");
+    let command_buffer = command_session.record_one_time("consolidate mesh buffers cb");
     for mesh in &mut query.iter() {
-        let ConsolidatedMeshBuffers {
-            ref mut next_vertex_offset,
-            ref mut next_index_offset,
-            ref position_buffer,
-            ref normal_buffer,
-            ref uv_buffer,
-            ref index_buffer,
-            ref mut vertex_offsets,
-            ref mut index_offsets,
-            ..
-        } = *consolidated_mesh_buffers;
-
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
             v.insert(*next_vertex_offset);
             let size_3 = mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
@@ -173,18 +172,12 @@ pub fn consolidate_mesh_buffers(
             .signal_semaphores(signal_semaphores)
             .build();
 
-        consolidated_mesh_buffers.previous_run_command_buffer = Some(command_buffer); // potentially destroys the previous one
-
         let queue = renderer.device.graphics_queue.lock();
 
         unsafe {
             renderer
                 .device
-                .queue_submit(
-                    *queue,
-                    &[submit],
-                    consolidated_mesh_buffers.sync_point_fence.handle,
-                )
+                .queue_submit(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
     } else {
@@ -196,8 +189,6 @@ pub fn consolidate_mesh_buffers(
         unsafe {
             renderer.device.signal_semaphore(&*signal_info).unwrap();
         }
-        consolidated_mesh_buffers.previous_run_command_buffer = None;
-        // potentially destroys the previous one
     }
 }
 
@@ -248,6 +239,8 @@ impl ConsolidatedMeshBuffers {
             "Consolidate vertex buffers sync point fence",
         );
 
+        let command_pool = LocalGraphicsCommandPool::new(&renderer);
+
         ConsolidatedMeshBuffers {
             vertex_offsets,
             next_vertex_offset: 0,
@@ -258,8 +251,7 @@ impl ConsolidatedMeshBuffers {
             uv_buffer,
             index_buffer,
             sync_timeline,
-            previous_run_command_buffer: None,
-            sync_point_fence,
+            command_pool,
         }
     }
 }

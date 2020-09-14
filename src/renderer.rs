@@ -495,9 +495,8 @@ pub struct LocalGraphicsCommandPool {
     pools: DoubleBuffered<StrictCommandPool>,
 }
 
-impl FromResources for LocalGraphicsCommandPool {
-    fn from_resources(resources: &Resources) -> Self {
-        let renderer = resources.query::<Res<RenderFrame>>().unwrap();
+impl LocalGraphicsCommandPool {
+    fn new(renderer: &RenderFrame) -> LocalGraphicsCommandPool {
         LocalGraphicsCommandPool {
             pools: renderer.new_buffered(|ix| {
                 StrictCommandPool::new(
@@ -507,6 +506,13 @@ impl FromResources for LocalGraphicsCommandPool {
                 )
             }),
         }
+    }
+}
+
+impl FromResources for LocalGraphicsCommandPool {
+    fn from_resources(resources: &Resources) -> Self {
+        let renderer = resources.query::<Res<RenderFrame>>().unwrap();
+        Self::new(&renderer)
     }
 }
 
