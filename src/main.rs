@@ -49,7 +49,6 @@ fn main() {
     let present_data = PresentData::new(&renderer);
     let image_index = ImageIndex::default();
     let consolidated_mesh_buffers = ConsolidatedMeshBuffers::new(&renderer);
-    let graphics_command_pool = GraphicsCommandPool::new(&renderer);
 
     let mut main_descriptor_pool = MainDescriptorPool::new(&renderer);
     let camera_matrices = CameraMatrices::new(&renderer, &main_descriptor_pool);
@@ -112,7 +111,6 @@ fn main() {
         base_color,
     } = load_gltf(
         &renderer,
-        &graphics_command_pool,
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
     );
 
@@ -167,7 +165,6 @@ fn main() {
         } = {
             load_gltf(
                 &renderer,
-                &graphics_command_pool,
                 "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
             )
         };
@@ -336,7 +333,6 @@ fn main() {
     resources.insert(Camera::default());
     resources.insert(RuntimeConfiguration::new());
     resources.insert(renderer);
-    resources.insert(graphics_command_pool);
     resources.insert(image_index);
     resources.insert(consolidated_mesh_buffers);
     resources.insert(main_descriptor_pool);

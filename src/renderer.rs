@@ -78,7 +78,6 @@ pub struct Scale(pub f32);
 pub struct RenderFrame {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
-    pub compute_command_pool: Arc<CommandPool>,
     pub renderpass: RenderPass,
     pub graphics_timeline_semaphore: TimelineSemaphore,
     pub compute_timeline_semaphore: TimelineSemaphore,
@@ -171,10 +170,6 @@ impl RenderFrame {
         let device = Arc::new(Device::new(&instance, &surface).expect("Failed to create device"));
         device.set_object_name(device.handle(), "Device");
         let swapchain = Swapchain::new(&instance, &device, surface);
-        let compute_command_pool = device.new_command_pool(
-            QueueType::Compute,
-            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-        );
         let main_renderpass = {
             let color_attachment = vk::AttachmentReference {
                 attachment: 0,
@@ -265,7 +260,6 @@ impl RenderFrame {
             RenderFrame {
                 instance: Arc::clone(&instance),
                 device: Arc::clone(&device),
-                compute_command_pool: Arc::new(compute_command_pool),
                 renderpass: main_renderpass,
                 graphics_timeline_semaphore,
                 compute_timeline_semaphore,
@@ -475,19 +469,6 @@ impl MainFramebuffer {
             .collect::<Vec<_>>();
 
         MainFramebuffer { handles }
-    }
-}
-
-pub struct GraphicsCommandPool(pub Arc<CommandPool>);
-
-impl GraphicsCommandPool {
-    pub fn new(renderer: &RenderFrame) -> GraphicsCommandPool {
-        let graphics_command_pool = renderer.device.new_command_pool(
-            QueueType::Graphics,
-            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-        );
-
-        GraphicsCommandPool(Arc::new(graphics_command_pool))
     }
 }
 

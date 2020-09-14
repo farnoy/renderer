@@ -48,11 +48,6 @@ pub enum QueueType {
     Compute,
 }
 
-pub struct DebugMarkerGuard<'a> {
-    #[allow(unused)]
-    command_buffer: &'a RecordingCommandBuffer<'a>,
-}
-
 impl Device {
     pub fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
         let Instance { ref entry, .. } = **instance;
@@ -248,21 +243,6 @@ impl Device {
         DescriptorSetLayout::new2(self, create_info)
     }
 
-    fn queue_family_for(&self, t: QueueType) -> u32 {
-        match t {
-            QueueType::Graphics => self.graphics_queue_family,
-            QueueType::Compute => self.compute_queue_family,
-        }
-    }
-
-    pub fn new_command_pool(
-        self: &Arc<Self>,
-        queue_type: QueueType,
-        flags: vk::CommandPoolCreateFlags,
-    ) -> CommandPool {
-        CommandPool::new(self, self.queue_family_for(queue_type), flags)
-    }
-
     pub fn new_semaphore(self: &Arc<Self>) -> Semaphore {
         Semaphore::new(self)
     }
@@ -349,39 +329,6 @@ impl Device {
 
     #[cfg(not(feature = "vk_names"))]
     pub fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
-
-    #[cfg(feature = "vk_names")]
-    pub fn debug_marker_around2<'a>(
-        &self,
-        command_buffer: &'a RecordingCommandBuffer,
-        name: &str,
-        color: [f32; 4],
-    ) -> DebugMarkerGuard<'a> {
-        unsafe {
-            use std::ffi::CString;
-
-            let name = CString::new(name).unwrap();
-            {
-                self.instance.debug_utils().cmd_begin_debug_utils_label(
-                    **command_buffer,
-                    &vk::DebugUtilsLabelEXT::builder()
-                        .label_name(&name)
-                        .color(color),
-                );
-            }
-            DebugMarkerGuard { command_buffer }
-        }
-    }
-
-    #[cfg(not(feature = "vk_names"))]
-    pub fn debug_marker_around2<'a>(
-        &self,
-        command_buffer: &'a RecordingCommandBuffer,
-        _name: &str,
-        _color: [f32; 4],
-    ) -> DebugMarkerGuard<'a> {
-        DebugMarkerGuard { command_buffer }
-    }
 }
 
 impl Deref for Device {
@@ -398,20 +345,6 @@ impl Drop for Device {
             self.device.device_wait_idle().unwrap();
             alloc::destroy(self.allocator);
             self.device.destroy_device(None);
-        }
-    }
-}
-
-impl<'a> Drop for DebugMarkerGuard<'a> {
-    fn drop(&mut self) {
-        #[cfg(feature = "vk_names")]
-        unsafe {
-            self.command_buffer
-                .pool
-                .device
-                .instance
-                .debug_utils()
-                .cmd_end_debug_utils_label(**self.command_buffer);
         }
     }
 }

@@ -4,7 +4,7 @@ use std::{mem::size_of, path::Path, u64};
 use super::{
     alloc,
     device::{Buffer, Image},
-    GraphicsCommandPool, RenderFrame,
+    RenderFrame, StrictCommandPool,
 };
 
 pub struct LoadedMesh {
@@ -26,11 +26,13 @@ impl meshopt::DecodePosition for Pos {
     }
 }
 
-pub fn load(
-    renderer: &RenderFrame,
-    graphics_command_pool: &GraphicsCommandPool,
-    path: &str,
-) -> LoadedMesh {
+pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
+    let mut command_pool = StrictCommandPool::new(
+        &renderer.device,
+        renderer.device.graphics_queue_family,
+        "GLTF upload CommandPool",
+    );
+    let mut command_session = command_pool.session();
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded
         .meshes()
@@ -280,9 +282,7 @@ pub fn load(
             (index_buffer, index_upload_buffer, index_len)
         })
         .collect::<Vec<_>>();
-    let command_buffer = graphics_command_pool
-        .0
-        .record_one_time("upload gltf mesh cb");
+    let command_buffer = command_session.record_one_time("upload gltf mesh cb");
     unsafe {
         let device = &renderer.device;
         device.device.cmd_copy_buffer(
@@ -396,9 +396,9 @@ pub fn load(
                 .build()],
         );
     }
-    let upload = command_buffer.end();
     let mut graphics_queue = renderer.device.graphics_queue.lock();
-    let upload_fence = upload.submit_once(&mut *graphics_queue, "upload gltf mesh commands");
+    let upload_fence =
+        command_buffer.submit_once(&mut *graphics_queue, "upload gltf mesh commands");
     unsafe {
         renderer
             .device
