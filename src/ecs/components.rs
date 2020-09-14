@@ -1,13 +1,14 @@
-pub struct Light {
-    pub strength: f32,
+pub(crate) struct Light {
+    #[allow(unused)]
+    pub(crate) strength: f32,
 }
 
-pub struct AABB(pub ncollide3d::bounding_volume::AABB<f32>);
+pub(crate) struct AABB(pub(crate) ncollide3d::bounding_volume::AABB<f32>);
 
-pub struct ModelMatrix(pub glm::Mat4);
+pub(crate) struct ModelMatrix(pub(crate) glm::Mat4);
 
-pub struct ProjectileTarget(pub na::Point3<f32>);
-pub struct ProjectileVelocity(pub f32);
+pub(crate) struct ProjectileTarget(pub(crate) na::Point3<f32>);
+pub(crate) struct ProjectileVelocity(pub(crate) f32);
 
 impl Default for AABB {
     fn default() -> AABB {

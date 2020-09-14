@@ -10,12 +10,12 @@ use std::{ffi::CString, ops::Deref, sync::Arc};
 
 use super::entry::Entry;
 
-pub type AshInstance = ash::Instance;
+pub(crate) type AshInstance = ash::Instance;
 
-pub struct Instance {
+pub(crate) struct Instance {
     handle: AshInstance,
-    pub entry: Arc<Entry>,
-    pub window: winit::window::Window,
+    pub(crate) entry: Arc<Entry>,
+    pub(crate) window: winit::window::Window,
     #[allow(dead_code)]
     debug: Debug,
 }
@@ -30,7 +30,8 @@ struct Debug {
 struct Debug;
 
 impl Instance {
-    pub fn new() -> Result<(Instance, winit::event_loop::EventLoop<()>), ash::InstanceError> {
+    pub(crate) fn new() -> Result<(Instance, winit::event_loop::EventLoop<()>), ash::InstanceError>
+    {
         let events_loop = winit::event_loop::EventLoop::new();
         let window = winit::window::WindowBuilder::new()
             .with_title("Renderer v3")
@@ -182,12 +183,12 @@ impl Instance {
         }
     }
 
-    pub fn vk(&self) -> &AshInstance {
+    pub(crate) fn vk(&self) -> &AshInstance {
         &self.handle
     }
 
     #[cfg(feature = "vk_names")]
-    pub fn debug_utils(&self) -> &DebugUtils {
+    pub(crate) fn debug_utils(&self) -> &DebugUtils {
         &self.debug.utils
     }
 }

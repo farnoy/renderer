@@ -2,18 +2,18 @@ use std::ops::Deref;
 
 type AshEntry = ash::Entry;
 
-pub struct Entry {
+pub(crate) struct Entry {
     handle: AshEntry,
 }
 
 impl Entry {
-    pub fn new() -> Result<Entry, ash::LoadingError> {
+    pub(crate) fn new() -> Result<Entry, ash::LoadingError> {
         let entry = AshEntry::new()?;
 
         Ok(Entry { handle: entry })
     }
 
-    pub fn vk(&self) -> &AshEntry {
+    pub(crate) fn vk(&self) -> &AshEntry {
         &self.handle
     }
 }

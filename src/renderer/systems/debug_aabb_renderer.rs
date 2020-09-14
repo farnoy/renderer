@@ -5,13 +5,16 @@ use crate::{
 use ash::vk;
 use std::{path::PathBuf, sync::Arc};
 
-pub struct DebugAABBPassData {
-    pub pipeline_layout: shaders::debug_aabb::PipelineLayout,
-    pub pipeline: Pipeline,
+pub(crate) struct DebugAABBPassData {
+    pub(crate) pipeline_layout: shaders::debug_aabb::PipelineLayout,
+    pub(crate) pipeline: Pipeline,
 }
 
 impl DebugAABBPassData {
-    pub fn new(renderer: &RenderFrame, camera_matrices: &CameraMatrices) -> DebugAABBPassData {
+    pub(crate) fn new(
+        renderer: &RenderFrame,
+        camera_matrices: &CameraMatrices,
+    ) -> DebugAABBPassData {
         let device = &renderer.device;
 
         let pipeline_layout =

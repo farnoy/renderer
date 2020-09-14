@@ -9,14 +9,14 @@ use std::{
 use super::super::alloc;
 
 // Wrapper to safely map buffer contents
-pub struct MappedBuffer<'a, T> {
+pub(crate) struct MappedBuffer<'a, T> {
     ptr: &'a mut [T],
     allocator: alloc::VmaAllocator,
     allocation: alloc::VmaAllocation,
 }
 
 impl<'a, T> MappedBuffer<'a, T> {
-    pub fn import(
+    pub(crate) fn import(
         allocator: alloc::VmaAllocator,
         allocation: alloc::VmaAllocation,
         allocation_info: &alloc::VmaAllocationInfo,

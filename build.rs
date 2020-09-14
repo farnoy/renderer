@@ -127,6 +127,7 @@ fn main() {
         .blacklist_type("VkStructureType")
         .blacklist_type("VkDeviceMemory")
         .blacklist_type("VkDevice")
+        .blacklist_type("VkDeviceSize")
         .blacklist_type("VkMemoryRequirements")
         .blacklist_type("VkMemoryRequirements2")
         .new_type_alias("VkMemoryRequirements")

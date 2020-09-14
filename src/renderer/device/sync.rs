@@ -7,31 +7,31 @@ use ash::{
 };
 use std::sync::Arc;
 
-pub struct Semaphore {
-    pub handle: vk::Semaphore,
+pub(crate) struct Semaphore {
+    pub(crate) handle: vk::Semaphore,
     device: Arc<Device>,
 }
 
-pub struct TimelineSemaphore {
-    pub handle: vk::Semaphore,
+pub(crate) struct TimelineSemaphore {
+    pub(crate) handle: vk::Semaphore,
     device: Arc<Device>,
 }
 
-pub struct Fence {
-    pub handle: vk::Fence,
+pub(crate) struct Fence {
+    pub(crate) handle: vk::Fence,
     device: Arc<Device>,
 }
 
-pub struct Event {
-    pub handle: vk::Event,
+pub(crate) struct Event {
+    pub(crate) handle: vk::Event,
     device: Arc<Device>,
 }
 
-pub trait Timeline {
+pub(crate) trait Timeline {
     const MAX: u64;
 }
 
-pub trait TimelineStage<T: Timeline> {
+pub(crate) trait TimelineStage<T: Timeline> {
     const VALUE: u64;
 
     /*
@@ -62,17 +62,18 @@ pub trait TimelineStage<T: Timeline> {
     */
 }
 
-pub trait SuccessorStage<T: Timeline> {
+pub(crate) trait SuccessorStage<T: Timeline> {
     type Previous: TimelineStage<T>;
 }
 
 #[macro_export]
 macro_rules! define_timeline {
     ($mod_name:ident $($name:ident $(($ty:path))? ),+) => {
-        pub mod $mod_name {
+        pub(crate) mod $mod_name {
             crate::define_timeline!(@define_consts 1u64, previous, $($name $(($ty))? ),+);
 
-            pub struct Timeline;
+            #[allow(unused)]
+            pub(crate) struct Timeline;
 
             impl $crate::renderer::device::Timeline for Timeline {
                 const MAX: u64 = self::MAX;
@@ -89,12 +90,12 @@ macro_rules! define_timeline {
         crate::define_timeline!(@define_const $ix.next_power_of_two(), previous $($prev)?, $arg $(($ty))? );
 
         #[allow(unused)]
-        pub const MAX: u64 = $ix.next_power_of_two();
+        pub(crate) const MAX: u64 = $ix.next_power_of_two();
     };
     (@define_const $ix:expr, previous $($prev:ident)?, $arg:ident$(($argty:path))?) => {
         #[allow(unused)]
         #[derive(Debug)]
-        pub struct $arg $((pub $argty))?;
+        pub(crate) struct $arg $((pub(crate) $argty))?;
         impl $crate::renderer::device::TimelineStage<Timeline> for $arg {
             const VALUE: u64 = $ix;
         }
@@ -107,15 +108,15 @@ macro_rules! define_timeline {
     };
 }
 
-pub fn timeline_value_last<T: Timeline, S: TimelineStage<T>>(frame_number: u64) -> u64 {
+pub(crate) fn timeline_value_last<T: Timeline, S: TimelineStage<T>>(frame_number: u64) -> u64 {
     timeline_value::<T, S>(frame_number - 1)
 }
 
-pub fn timeline_value<T: Timeline, S: TimelineStage<T>>(frame_number: u64) -> u64 {
+pub(crate) fn timeline_value<T: Timeline, S: TimelineStage<T>>(frame_number: u64) -> u64 {
     frame_number * T::MAX + S::VALUE
 }
 
-pub fn timeline_value_previous<T: Timeline, S: TimelineStage<T>>(
+pub(crate) fn timeline_value_previous<T: Timeline, S: TimelineStage<T>>(
     image_index: &ImageIndex,
     renderer: &RenderFrame,
 ) -> u64 {
@@ -149,7 +150,7 @@ impl TimelineSemaphore {
         }
     }
 
-    pub fn wait(&self, value: u64) -> ash::prelude::VkResult<()> {
+    pub(crate) fn wait(&self, value: u64) -> ash::prelude::VkResult<()> {
         let wait_ixes = &[value];
         let wait_semaphores = &[self.handle];
         let wait_info = vk::SemaphoreWaitInfo::builder()
@@ -158,11 +159,11 @@ impl TimelineSemaphore {
         unsafe { self.device.wait_semaphores(&wait_info, std::u64::MAX) }
     }
 
-    pub fn value(&self) -> ash::prelude::VkResult<u64> {
+    pub(crate) fn value(&self) -> ash::prelude::VkResult<u64> {
         unsafe { self.device.get_semaphore_counter_value(self.handle) }
     }
 
-    pub fn signal(&self, value: u64) -> ash::prelude::VkResult<()> {
+    pub(crate) fn signal(&self, value: u64) -> ash::prelude::VkResult<()> {
         unsafe {
             self.device.signal_semaphore(
                 &vk::SemaphoreSignalInfo::builder()
@@ -189,7 +190,9 @@ impl Fence {
     }
 }
 
+// TODO: use this later
 impl Event {
+    #[allow(unused)]
     pub(super) fn new(device: &Arc<Device>) -> Event {
         let create_info = vk::EventCreateInfo::builder();
         let event = unsafe {
@@ -205,7 +208,7 @@ impl Event {
     }
 
     #[allow(unused)]
-    pub fn signal(&self) {
+    pub(crate) fn signal(&self) {
         unsafe {
             self.device
                 .set_event(self.handle)

@@ -10,15 +10,15 @@ use ash::{
 };
 use std::{sync::Arc, u32};
 
-pub struct Surface {
-    pub surface: vk::SurfaceKHR,
-    pub ext: extensions::khr::Surface,
-    pub surface_format: vk::SurfaceFormatKHR,
+pub(crate) struct Surface {
+    pub(crate) surface: vk::SurfaceKHR,
+    pub(crate) ext: extensions::khr::Surface,
+    pub(crate) surface_format: vk::SurfaceFormatKHR,
     _instance: Arc<Instance>, // destructor ordering
 }
 
 impl Surface {
-    pub fn new(instance: &Arc<Instance>) -> Surface {
+    pub(crate) fn new(instance: &Arc<Instance>) -> Surface {
         let surface = unsafe {
             create_surface(instance.entry.vk(), &instance.vk(), &instance.window).unwrap()
         };
@@ -63,17 +63,21 @@ impl Drop for Surface {
     }
 }
 
-pub struct Swapchain {
-    pub ext: ash::extensions::khr::Swapchain,
-    pub swapchain: vk::SwapchainKHR,
-    pub surface: Surface,
-    pub width: u32,
-    pub height: u32,
+pub(crate) struct Swapchain {
+    pub(crate) ext: ash::extensions::khr::Swapchain,
+    pub(crate) swapchain: vk::SwapchainKHR,
+    pub(crate) surface: Surface,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     device: Arc<Device>, // destructor ordering
 }
 
 impl Swapchain {
-    pub fn new(instance: &Arc<Instance>, device: &Arc<Device>, surface: Surface) -> Swapchain {
+    pub(crate) fn new(
+        instance: &Arc<Instance>,
+        device: &Arc<Device>,
+        surface: Surface,
+    ) -> Swapchain {
         let surface_capabilities = unsafe {
             surface
                 .ext
@@ -134,7 +138,7 @@ impl Swapchain {
         }
     }
 
-    pub fn resize_to_fit(&mut self) {
+    pub(crate) fn resize_to_fit(&mut self) {
         let surface_capabilities = unsafe {
             self.surface
                 .ext

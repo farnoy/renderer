@@ -15,8 +15,8 @@ extern crate static_assertions;
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;
 
-pub mod ecs;
-pub mod renderer;
+pub(crate) mod ecs;
+pub(crate) mod renderer;
 
 use ash::version::DeviceV1_0;
 use bevy_ecs::*;

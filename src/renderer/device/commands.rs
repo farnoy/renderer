@@ -2,33 +2,33 @@ use super::{sync::Fence, Device};
 use ash::{version::DeviceV1_0, vk};
 use std::{marker::PhantomData, mem::swap, ops::Deref, sync::Arc};
 
-pub struct StrictCommandPool {
+pub(crate) struct StrictCommandPool {
     device: Arc<Device>,
     handle: vk::CommandPool,
     queue_family: u32, // only needed for recreate(), remove later
     name: String,      // only needed for recreate(), remove later
 }
 
-pub struct StrictCommandPoolSession<'p>(&'p mut StrictCommandPool);
+pub(crate) struct StrictCommandPoolSession<'p>(&'p mut StrictCommandPool);
 
-pub struct StrictRecordingCommandBuffer<'c, 'p> {
+pub(crate) struct StrictRecordingCommandBuffer<'c, 'p> {
     pool: &'c mut StrictCommandPool,
     handle: vk::CommandBuffer,
     phantom: PhantomData<&'p StrictCommandPool>,
 }
 
-pub struct StrictDebugMarkerGuard<'a, 'c, 'p> {
+pub(crate) struct StrictDebugMarkerGuard<'a, 'c, 'p> {
     #[allow(unused)]
     recorder: &'a StrictRecordingCommandBuffer<'c, 'p>,
 }
 
-pub struct StrictCommandBuffer<'p> {
+pub(crate) struct StrictCommandBuffer<'p> {
     handle: vk::CommandBuffer,
     phantom: PhantomData<&'p StrictCommandPool>,
 }
 
 impl StrictCommandPool {
-    pub fn new(device: &Arc<Device>, queue_family: u32, name: &str) -> StrictCommandPool {
+    pub(crate) fn new(device: &Arc<Device>, queue_family: u32, name: &str) -> StrictCommandPool {
         let pool_create_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::empty())
             .queue_family_index(queue_family);
@@ -48,18 +48,18 @@ impl StrictCommandPool {
         }
     }
 
-    pub fn session(&mut self) -> StrictCommandPoolSession {
+    pub(crate) fn session(&mut self) -> StrictCommandPoolSession {
         StrictCommandPoolSession(self)
     }
 
-    pub unsafe fn reset(&mut self) {
+    pub(crate) unsafe fn reset(&mut self) {
+        /*
         self.device
             .reset_command_pool(self.handle, vk::CommandPoolResetFlags::empty())
             .unwrap();
-    }
+            */
 
-    // To workaround a performance cliff in AMDVLK
-    pub unsafe fn recreate(&mut self) {
+        // To workaround a performance cliff in AMDVLK
         let mut new_command_pool =
             StrictCommandPool::new(&self.device, self.queue_family, &self.name);
 
@@ -76,7 +76,10 @@ impl Drop for StrictCommandPool {
 }
 
 impl<'p> StrictCommandPoolSession<'p> {
-    pub fn record_one_time<'c>(&'c mut self, name: &str) -> StrictRecordingCommandBuffer<'c, 'p> {
+    pub(crate) fn record_one_time<'c>(
+        &'c mut self,
+        name: &str,
+    ) -> StrictRecordingCommandBuffer<'c, 'p> {
         let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
             .command_buffer_count(1)
             .command_pool(self.0.handle)
@@ -111,7 +114,7 @@ impl<'p> StrictCommandPoolSession<'p> {
 
 impl<'c, 'p> StrictRecordingCommandBuffer<'c, 'p> {
     #[cfg(feature = "vk_names")]
-    pub fn debug_marker_around<'a>(
+    pub(crate) fn debug_marker_around<'a>(
         &'a self,
         name: &str,
         color: [f32; 4],
@@ -137,7 +140,7 @@ impl<'c, 'p> StrictRecordingCommandBuffer<'c, 'p> {
     }
 
     #[cfg(not(feature = "vk_names"))]
-    pub fn debug_marker_around<'a>(
+    pub(crate) fn debug_marker_around<'a>(
         &'a self,
         _name: &str,
         _color: [f32; 4],
@@ -145,7 +148,7 @@ impl<'c, 'p> StrictRecordingCommandBuffer<'c, 'p> {
         StrictDebugMarkerGuard { recorder: self }
     }
 
-    pub fn end(self) -> StrictCommandBuffer<'p> {
+    pub(crate) fn end(self) -> StrictCommandBuffer<'p> {
         unsafe {
             self.pool.device.end_command_buffer(self.handle).unwrap();
         }
@@ -156,7 +159,7 @@ impl<'c, 'p> StrictRecordingCommandBuffer<'c, 'p> {
         }
     }
 
-    pub fn submit_once(&self, queue: &mut vk::Queue, fence_name: &str) -> Fence {
+    pub(crate) fn submit_once(&self, queue: &mut vk::Queue, fence_name: &str) -> Fence {
         let submit_fence = self.pool.device.new_fence();
         self.pool
             .device

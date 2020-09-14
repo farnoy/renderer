@@ -2,7 +2,7 @@ use crate::{
     ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
     renderer::{
         alloc, compute,
-        device::{Buffer, DoubleBuffered, Event, StrictCommandPool},
+        device::{Buffer, DoubleBuffered, StrictCommandPool},
         helpers::{self, pick_lod, Pipeline},
         shaders::{self, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
@@ -19,29 +19,26 @@ use helpers::PipelineLayout;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use num_traits::ToPrimitive;
-use parking_lot::Mutex;
 use std::{cmp::min, ffi::CStr, sync::Arc};
-
-// Cull geometry in compute pass
-pub struct CullPass;
 
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
-pub struct CoarseCulled(pub bool);
+pub(crate) struct CoarseCulled(pub(crate) bool);
 
-pub struct CullPassData {
-    pub culled_commands_buffer: DoubleBuffered<Buffer>,
-    pub culled_index_buffer: DoubleBuffered<Buffer>,
-    pub cull_pipeline_layout: generate_work::PipelineLayout,
-    pub cull_pipeline: Arc<Pipeline>,
-    pub cull_set_layout: cull_set::DescriptorSetLayout,
-    pub cull_set: DoubleBuffered<cull_set::DescriptorSet>,
-    pub specialization: generate_work::Specialization,
+pub(crate) struct CullPassData {
+    pub(crate) culled_commands_buffer: DoubleBuffered<Buffer>,
+    pub(crate) culled_index_buffer: DoubleBuffered<Buffer>,
+    cull_pipeline_layout: generate_work::PipelineLayout,
+    cull_pipeline: Arc<Pipeline>,
+    #[allow(unused)]
+    cull_set_layout: cull_set::DescriptorSetLayout,
+    cull_set: DoubleBuffered<cull_set::DescriptorSet>,
+    pub(crate) specialization: generate_work::Specialization,
     shader: Shader,
 }
 
 // Internal storage for cleanup purposes
-pub struct CullPassDataPrivate {
+pub(crate) struct CullPassDataPrivate {
     command_pool: DoubleBuffered<StrictCommandPool>,
     previous_cull_pipeline: DoubleBuffered<Option<Arc<Pipeline>>>,
     previous_specialization: generate_work::Specialization,
@@ -49,11 +46,7 @@ pub struct CullPassDataPrivate {
 
 const INITIAL_WORKGROUP_SIZE: u32 = 512;
 
-pub struct CullPassEvent {
-    pub cull_complete_event: DoubleBuffered<Mutex<Event>>,
-}
-
-pub fn coarse_culling(camera: Res<Camera>, mut query: Query<(&AABB, &mut CoarseCulled)>) {
+pub(crate) fn coarse_culling(camera: Res<Camera>, mut query: Query<(&AABB, &mut CoarseCulled)>) {
     for (aabb, mut coarse_culled) in &mut query.iter() {
         let mut outside = false;
         'per_plane: for plane in camera.frustum_planes.iter() {
@@ -70,7 +63,7 @@ pub fn coarse_culling(camera: Res<Camera>, mut query: Query<(&AABB, &mut CoarseC
 }
 
 impl CullPassDataPrivate {
-    pub fn new(renderer: &RenderFrame) -> CullPassDataPrivate {
+    pub(crate) fn new(renderer: &RenderFrame) -> CullPassDataPrivate {
         CullPassDataPrivate {
             command_pool: renderer.new_buffered(|ix| {
                 StrictCommandPool::new(
@@ -88,7 +81,7 @@ impl CullPassDataPrivate {
 }
 
 impl CullPassData {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         model_data: &ModelData,
         main_descriptor_pool: &mut MainDescriptorPool,
@@ -235,7 +228,7 @@ impl CullPassData {
     }
 }
 
-pub fn cull_pass(
+pub(crate) fn cull_pass(
     renderer: Res<RenderFrame>,
     mut cull_pass_data: ResMut<CullPassData>,
     mut cull_pass_data_private: ResMut<CullPassDataPrivate>,
@@ -324,7 +317,7 @@ pub fn cull_pass(
     unsafe {
         #[cfg(feature = "microprofile")]
         microprofile::scope!("cull pass", "CP reset");
-        command_pool.recreate();
+        command_pool.reset();
     }
 
     let mut command_session = command_pool.session();

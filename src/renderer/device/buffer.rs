@@ -3,10 +3,10 @@ use std::{ptr, sync::Arc};
 
 use super::{super::alloc, mapping::MappedBuffer, Device};
 
-pub struct Buffer {
-    pub handle: vk::Buffer,
+pub(crate) struct Buffer {
+    pub(crate) handle: vk::Buffer,
     allocation: alloc::VmaAllocation,
-    pub allocation_info: alloc::VmaAllocationInfo,
+    pub(crate) allocation_info: alloc::VmaAllocationInfo,
     device: Arc<Device>,
 }
 
@@ -60,16 +60,12 @@ impl Buffer {
         }
     }
 
-    pub fn map<'a, T>(&'a self) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
+    pub(crate) fn map<'a, T>(&'a self) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
         MappedBuffer::import(
             self.device.allocator,
             self.allocation,
             &self.allocation_info,
         )
-    }
-
-    pub fn size(&self) -> vk::DeviceSize {
-        self.allocation_info.size
     }
 }
 

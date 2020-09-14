@@ -1,9 +1,9 @@
 mod camera_controller;
 mod input;
 
-pub mod components;
-pub mod resources {
-    pub use super::{
+pub(crate) mod components;
+pub(crate) mod resources {
+    pub(crate) use super::{
         camera_controller::Camera,
         input::{InputActions, InputHandler, InputState},
     };
@@ -11,13 +11,13 @@ pub mod resources {
     use super::super::renderer::{GltfMesh, Image};
     use std::sync::Arc;
 
-    pub struct MeshLibrary {
-        pub projectile: GltfMesh,
-        pub projectile_texture: Arc<Image>,
+    pub(crate) struct MeshLibrary {
+        pub(crate) projectile: GltfMesh,
+        pub(crate) projectile_texture: Arc<Image>,
     }
 }
-pub mod systems {
-    pub use super::{camera_controller::camera_controller, input::InputHandler};
+pub(crate) mod systems {
+    pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
 
     use super::super::renderer::*;
     use crate::ecs::{
@@ -34,7 +34,7 @@ pub mod systems {
 
     use crate::renderer::{forward_vector, up_vector, GltfMesh, Swapchain};
 
-    pub fn model_matrix_calculation(
+    pub(crate) fn model_matrix_calculation(
         mut query: Query<(&Position, &Rotation, &Scale, &mut ModelMatrix)>,
     ) {
         #[cfg(feature = "profiling")]
@@ -46,10 +46,10 @@ pub mod systems {
         }
     }
 
-    pub struct ProjectCamera;
+    pub(crate) struct ProjectCamera;
 
     impl ProjectCamera {
-        pub fn exec(swapchain: &Swapchain, camera: &mut Camera) {
+        pub(crate) fn exec(swapchain: &Swapchain, camera: &mut Camera) {
             #[cfg(feature = "profiling")]
             microprofile::scope!("ecs", "project camera");
             let near = 0.1;
@@ -77,9 +77,9 @@ pub mod systems {
         }
     }
 
-    pub struct FrameTiming {
-        pub previous_frame: Instant,
-        pub time_delta: f32,
+    pub(crate) struct FrameTiming {
+        pub(crate) previous_frame: Instant,
+        pub(crate) time_delta: f32,
     }
 
     impl Default for FrameTiming {
@@ -91,10 +91,10 @@ pub mod systems {
         }
     }
 
-    pub struct CalculateFrameTiming;
+    pub(crate) struct CalculateFrameTiming;
 
     impl CalculateFrameTiming {
-        pub fn exec(frame_timing: &mut FrameTiming) {
+        pub(crate) fn exec(frame_timing: &mut FrameTiming) {
             let now = Instant::now();
             let duration = now - frame_timing.previous_frame;
             frame_timing.time_delta =
@@ -103,7 +103,7 @@ pub mod systems {
         }
     }
 
-    pub fn aabb_calculation(mut query: Query<(&ModelMatrix, &GltfMesh, &mut AABB)>) {
+    pub(crate) fn aabb_calculation(mut query: Query<(&ModelMatrix, &GltfMesh, &mut AABB)>) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "AABBCalculation");
         use std::f32::{MAX, MIN};
@@ -144,7 +144,7 @@ pub mod systems {
         }
     }
 
-    pub fn launch_projectiles_test(
+    pub(crate) fn launch_projectiles_test(
         mut commands: Commands,
         input_actions: Res<InputActions>,
         mesh_library: Res<MeshLibrary>,
@@ -171,7 +171,7 @@ pub mod systems {
         }
     }
 
-    pub fn update_projectiles(
+    pub(crate) fn update_projectiles(
         mut commands: Commands,
         frame_timing: Res<FrameTiming>,
         mut query: Query<(
@@ -196,13 +196,13 @@ pub mod systems {
     }
 
     /// Grab-bag for renderer and player controller variables for now
-    pub struct RuntimeConfiguration {
-        pub debug_aabbs: bool,
-        pub fly_mode: bool,
+    pub(crate) struct RuntimeConfiguration {
+        pub(crate) debug_aabbs: bool,
+        pub(crate) fly_mode: bool,
     }
 
     impl RuntimeConfiguration {
-        pub fn new() -> RuntimeConfiguration {
+        pub(crate) fn new() -> RuntimeConfiguration {
             RuntimeConfiguration {
                 debug_aabbs: false,
                 fly_mode: false,
@@ -210,12 +210,12 @@ pub mod systems {
         }
     }
 
-    pub struct Gui {
-        pub imgui: imgui::Context,
+    pub(crate) struct Gui {
+        pub(crate) imgui: imgui::Context,
     }
 
     impl Gui {
-        pub fn new() -> Gui {
+        pub(crate) fn new() -> Gui {
             let mut imgui = imgui::Context::create();
 
             imgui.style_mut().frame_border_size = 1.0;
@@ -224,7 +224,7 @@ pub mod systems {
             Gui { imgui }
         }
 
-        pub fn update<'a>(
+        pub(crate) fn update<'a>(
             &'a mut self,
             renderer: &RenderFrame,
             input_handler: &InputHandler,

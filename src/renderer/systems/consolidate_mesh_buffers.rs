@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use ash::{
-    version::{DeviceV1_0, DeviceV1_2},
+    version::{DeviceV1_0},
     vk::{self, Handle},
 };
 use bevy_ecs::prelude::*;
@@ -18,27 +18,27 @@ use microprofile::scope;
 use std::{mem::size_of, u64};
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
-pub struct ConsolidatedMeshBuffers {
+pub(crate) struct ConsolidatedMeshBuffers {
     /// Maps from vertex buffer handle to offset within the consolidated buffer
     /// Hopefully this is distinct enough
-    pub vertex_offsets: HashMap<u64, vk::DeviceSize>,
+    pub(crate) vertex_offsets: HashMap<u64, vk::DeviceSize>,
     /// Next free vertex offset in the buffer that can be used for a new mesh
     next_vertex_offset: vk::DeviceSize,
     /// Maps from index buffer handle to offset within the consolidated buffer
-    pub index_offsets: HashMap<u64, vk::DeviceSize>,
+    pub(crate) index_offsets: HashMap<u64, vk::DeviceSize>,
     /// Next free index offset in the buffer that can be used for a new mesh
     next_index_offset: vk::DeviceSize,
     /// Stores position data for each mesh
-    pub position_buffer: Buffer,
+    pub(crate) position_buffer: Buffer,
     /// Stores normal data for each mesh
-    pub normal_buffer: Buffer,
+    pub(crate) normal_buffer: Buffer,
     /// Stores uv data for each mesh
-    pub uv_buffer: Buffer,
+    pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
-    pub index_buffer: Buffer,
+    pub(crate) index_buffer: Buffer,
     /// If this semaphore is present, a modification to the consolidated buffer has happened
     /// and the user must synchronize with it
-    pub sync_timeline: TimelineSemaphore,
+    pub(crate) sync_timeline: TimelineSemaphore,
     /// Pool for commands recorded as part of this pass
     command_pool: LocalGraphicsCommandPool,
 }
@@ -46,7 +46,7 @@ pub struct ConsolidatedMeshBuffers {
 define_timeline!(sync Consolidate);
 
 /// Identifies distinct GLTF meshes in components and copies them to a shared buffer
-pub fn consolidate_mesh_buffers(
+pub(crate) fn consolidate_mesh_buffers(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
@@ -85,7 +85,7 @@ pub fn consolidate_mesh_buffers(
     unsafe {
         #[cfg(feature = "microprofile")]
         microprofile::scope!("consolidate mesh buffers", "CP reset");
-        command_pool.recreate();
+        command_pool.reset();
     }
 
     let mut command_session = command_pool.session();
@@ -160,7 +160,7 @@ pub fn consolidate_mesh_buffers(
 
     if needs_transfer {
         let command_buffers = &[*command_buffer];
-        let signal_semaphores = &[consolidated_mesh_buffers.sync_timeline.handle];
+        let signal_semaphores = &[sync_timeline.handle];
         let signal_semaphore_values = &[timeline_value::<_, sync::Consolidate>(
             renderer.frame_number,
         )];
@@ -181,14 +181,9 @@ pub fn consolidate_mesh_buffers(
                 .unwrap();
         }
     } else {
-        let signal_info = vk::SemaphoreSignalInfo::builder()
-            .semaphore(consolidated_mesh_buffers.sync_timeline.handle)
-            .value(timeline_value::<_, sync::Consolidate>(
+            sync_timeline.signal(timeline_value::<_, sync::Consolidate>(
                 renderer.frame_number,
-            ));
-        unsafe {
-            renderer.device.signal_semaphore(&*signal_info).unwrap();
-        }
+            )).unwrap();
     }
 }
 
@@ -196,7 +191,7 @@ pub fn consolidate_mesh_buffers(
 // TODO: use actual transfer queue for the transfers
 
 impl ConsolidatedMeshBuffers {
-    pub fn new(renderer: &RenderFrame) -> ConsolidatedMeshBuffers {
+    pub(crate) fn new(renderer: &RenderFrame) -> ConsolidatedMeshBuffers {
         let vertex_offsets = HashMap::new();
         let index_offsets = HashMap::new();
 

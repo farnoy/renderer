@@ -8,25 +8,22 @@ use ash::{version::DeviceV1_0, vk};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-// Synchronize base color texture of GLTF meshes into the shared descriptor set for base color textures
-pub struct SynchronizeBaseColorTextures;
-
-pub struct BaseColorDescriptorSet {
-    pub layout: super::super::shaders::base_color_set::DescriptorSetLayout,
+pub(crate) struct BaseColorDescriptorSet {
+    pub(crate) layout: super::super::shaders::base_color_set::DescriptorSetLayout,
     pub(in super::super) set: DoubleBuffered<super::super::shaders::base_color_set::DescriptorSet>,
     sampler: helpers::Sampler,
 }
 
-pub struct BaseColorVisitedMarker {
+pub(crate) struct BaseColorVisitedMarker {
     image_view: helpers::ImageView,
 }
 
 // Holds the base color texture that will be mapped into a single,
 // shared Descriptor Set
-pub struct GltfMeshBaseColorTexture(pub Arc<Image>);
+pub(crate) struct GltfMeshBaseColorTexture(pub(crate) Arc<Image>);
 
 impl BaseColorDescriptorSet {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &mut MainDescriptorPool,
     ) -> BaseColorDescriptorSet {
@@ -66,7 +63,7 @@ impl BaseColorDescriptorSet {
     }
 }
 
-pub fn synchronize_base_color_textures_visit(
+pub(crate) fn synchronize_base_color_textures_visit(
     mut commands: Commands,
     renderer: Res<RenderFrame>,
     mut query: Query<Without<BaseColorVisitedMarker, (Entity, &GltfMeshBaseColorTexture)>>,
@@ -99,7 +96,7 @@ pub fn synchronize_base_color_textures_visit(
 }
 
 #[allow(unused_mut)]
-pub fn synchronize_base_color_textures_consolidate(
+pub(crate) fn synchronize_base_color_textures_consolidate(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     mut base_color_descriptor_set: ResMut<BaseColorDescriptorSet>,

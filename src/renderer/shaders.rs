@@ -56,26 +56,20 @@ macro_rules! to_rust_type {
 
 macro_rules! make_descriptor_set {
     ($name:ident [$($desc_count:expr $(, partially $partial:ident)? => $binding_name:ident, $t:ident, $stage:expr, $desc_type:expr);*]) => {
-        pub mod $name {
+        pub(crate) mod $name {
             use ash::{version::DeviceV1_0, vk};
             use std::sync::Arc;
 
-            pub const COUNT: usize = 0usize $(+ { let _ = stringify!($binding_name); 1usize } )*;
+            pub(crate) const COUNT: usize = 0usize $(+ { let _ = stringify!($binding_name); 1usize } )*;
 
-            pub const NAMES: [&'static str; COUNT] = [
-                $(
-                    stringify!($binding_name),
-                )*
-            ];
-
-            pub const TYPE_SIZES: [vk::DeviceSize; COUNT] = [
+            pub(crate) const TYPE_SIZES: [vk::DeviceSize; COUNT] = [
                 $(
                     std::mem::size_of::<super::$t>() as vk::DeviceSize,
                 )*
             ];
 
             #[allow(clippy::eval_order_dependence)]
-            pub fn bindings() -> [vk::DescriptorSetLayoutBinding; COUNT] {
+            pub(crate) fn bindings() -> [vk::DescriptorSetLayoutBinding; COUNT] {
                 let mut ix = 0usize;
                 [
                     $(
@@ -97,23 +91,25 @@ macro_rules! make_descriptor_set {
                 ]
             }
 
-            pub mod bindings {
+            pub(crate) mod bindings {
                 $(
-                    pub mod $binding_name {
+                    pub(crate) mod $binding_name {
                         use ash::vk;
 
-                        pub type T = super::super::super::$t;
-                        pub const SIZE: vk::DeviceSize = std::mem::size_of::<T>() as vk::DeviceSize;
+                        #[allow(unused)]
+                        pub(crate) type T = super::super::super::$t;
+                        #[allow(unused)]
+                        pub(crate) const SIZE: vk::DeviceSize = std::mem::size_of::<T>() as vk::DeviceSize;
                     }
                 )*
             }
 
-            pub struct DescriptorSetLayout {
-                pub layout: super::super::DescriptorSetLayout,
+            pub(crate) struct DescriptorSetLayout {
+                pub(crate) layout: super::super::DescriptorSetLayout,
             }
 
             impl DescriptorSetLayout {
-                pub fn new(device: &Arc<super::super::Device>) -> DescriptorSetLayout {
+                pub(crate) fn new(device: &Arc<super::super::Device>) -> DescriptorSetLayout {
                     let binding_flags = &[
                         $(
                             {
@@ -133,17 +129,17 @@ macro_rules! make_descriptor_set {
                         .bindings(&b)
                         .push_next(&mut binding_flags);
                     DescriptorSetLayout {
-                        layout: device.new_descriptor_set_layout2(&create_info)
+                        layout: device.new_descriptor_set_layout(&create_info)
                     }
                 }
             }
 
-            pub struct DescriptorSet {
-                pub set: super::super::DescriptorSet,
+            pub(crate) struct DescriptorSet {
+                pub(crate) set: super::super::DescriptorSet,
             }
 
             impl DescriptorSet {
-                pub fn new(
+                pub(crate) fn new(
                     main_descriptor_pool: &super::super::MainDescriptorPool,
                     layout: &DescriptorSetLayout,
                 ) -> DescriptorSet {
@@ -153,7 +149,8 @@ macro_rules! make_descriptor_set {
                 }
 
                 // TODO: add batching and return vk::WriteDescriptorSet when lifetimes are improved in ash
-                pub fn update_whole_buffer(&self, renderer: &super::super::RenderFrame,
+                #[allow(unused)]
+                pub(crate) fn update_whole_buffer(&self, renderer: &super::super::RenderFrame,
                                            binding: u32, buf: &super::super::Buffer) {
                     let buffer_updates = &[vk::DescriptorBufferInfo {
                         buffer: buf.handle,
@@ -251,7 +248,8 @@ macro_rules! make_pipe {
             ]
         };
 
-        pub fn vertex_input_state<'a>() -> vk::PipelineVertexInputStateCreateInfoBuilder<'a> {
+        #[allow(unused)]
+        pub(crate) fn vertex_input_state<'a>() -> vk::PipelineVertexInputStateCreateInfoBuilder<'a> {
             vk::PipelineVertexInputStateCreateInfo::builder()
                 .vertex_attribute_descriptions(&ATTRIBUTE_DESCS)
                 .vertex_binding_descriptions(&BINDING_DESCS)
@@ -265,14 +263,14 @@ macro_rules! make_pipe {
 
         #[repr(C)]
         #[derive(PartialEq, Clone)]
-        pub struct Specialization {
+        pub(crate) struct Specialization {
             $(
-                pub $name : $ty,
+                pub(crate) $name : $ty,
             )*
         }
 
         lazy_static! {
-            pub static ref SPEC_MAP: [vk::SpecializationMapEntry; make_pipe!(@count [$($id),*])] = [
+            pub(crate) static ref SPEC_MAP: [vk::SpecializationMapEntry; make_pipe!(@count [$($id),*])] = [
                 $(
                     vk::SpecializationMapEntry::builder()
                     .constant_id($id)
@@ -284,7 +282,7 @@ macro_rules! make_pipe {
         }
 
         impl Specialization {
-            pub fn get_spec_info(&self) -> vk::SpecializationInfo {
+            pub(crate) fn get_spec_info(&self) -> vk::SpecializationInfo {
                 let (left, spec_data, right) = unsafe { from_raw_parts(self as *const Specialization, 1).align_to::<u8>() };
                 assert!(
                     left.is_empty() && right.is_empty(),
@@ -304,20 +302,21 @@ macro_rules! make_pipe {
         make_pipe!(@main $name { vertex_inputs: $vertex_inputs, compute: false, descriptors: [$($desc),*] $(, push_constants: $push)?});
     };
     (@main $name:ident { vertex_inputs: $vertex_inputs:tt, compute: $compute:expr, descriptors: [$($desc:ident),*] $(, push_constants: $push:ident)? $(, specialization_constants: $spec_const:tt)?}) => {
-        pub mod $name {
+        pub(crate) mod $name {
             use ash::{version::DeviceV1_0, vk};
             use std::{io::Read, sync::Arc};
 
             const IS_COMPUTE: bool = $compute;
 
-            pub fn load_and_verify_spirv_file(path: &'static str) -> bool {
+            #[allow(unused)]
+            pub(crate) fn load_and_verify_spirv_file(path: &'static str) -> bool {
                 let path = std::path::PathBuf::from(env!("OUT_DIR")).join(path);
                 let file = std::fs::File::open(path).expect("Could not find shader.");
                 let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
                 self::load_and_verify_spirv(&bytes)
             }
 
-            pub fn load_and_verify_spirv(data: &[u8]) -> bool {
+            pub(crate) fn load_and_verify_spirv(data: &[u8]) -> bool {
                 let (l, spv_words, r) = unsafe { data.align_to::<u32>() };
                 assert!(l.is_empty() && r.is_empty(), "failed to realign code");
 
@@ -332,7 +331,7 @@ macro_rules! make_pipe {
                 self::verify_spirv(&entry)
             }
 
-            pub fn verify_spirv(s: &spirq::EntryPoint) -> bool {
+            pub(crate) fn verify_spirv(s: &spirq::EntryPoint) -> bool {
                 if s.exec_model == spirq::ExecutionModel::Vertex {
                     make_pipe!(@validate_vertex_input s $vertex_inputs);
                 }
@@ -383,12 +382,12 @@ macro_rules! make_pipe {
                 make_pipe!(@spec_consts $spec_const);
             )?
 
-            pub struct PipelineLayout {
-                pub layout: super::super::PipelineLayout,
+            pub(crate) struct PipelineLayout {
+                pub(crate) layout: super::super::PipelineLayout,
             }
 
             impl PipelineLayout {
-                pub fn new(device: &Arc<super::super::Device>, $($desc: &super::$desc::DescriptorSetLayout,)*) -> PipelineLayout {
+                pub(crate) fn new(device: &Arc<super::super::Device>, $($desc: &super::$desc::DescriptorSetLayout,)*) -> PipelineLayout {
                     let layout = super::super::new_pipeline_layout(
                         Arc::clone(&device),
                         &[
@@ -414,8 +413,8 @@ macro_rules! make_pipe {
                     PipelineLayout { layout }
                 }
 
-                #[allow(unused_variables)]
-                pub fn push_constants(&self, device: &super::super::Device,
+                #[allow(unused)]
+                pub(crate) fn push_constants(&self, device: &super::super::Device,
                                       command_buffer: vk::CommandBuffer, $(push_constants: &super::$push)?) {
                     $(
                         unsafe {
@@ -442,7 +441,7 @@ macro_rules! make_pipe {
                     }
                 }
 
-                pub fn bind_descriptor_sets(&self, device: &super::super::Device, command_buffer: vk::CommandBuffer $(, $desc: &super::$desc::DescriptorSet)*) {
+                pub(crate) fn bind_descriptor_sets(&self, device: &super::super::Device, command_buffer: vk::CommandBuffer $(, $desc: &super::$desc::DescriptorSet)*) {
                     unsafe {
                         device.cmd_bind_descriptor_sets(
                             command_buffer,
@@ -468,28 +467,30 @@ macro_rules! make_pipe {
     };
 }
 
-pub struct IndirectCommands {
-    pub indirect_command: [vk::DrawIndexedIndirectCommand; 2400],
+pub(crate) struct IndirectCommands {
+    #[allow(unused)]
+    pub(crate) indirect_command: [vk::DrawIndexedIndirectCommand; 2400],
 }
 
-pub type OutIndexBuffer = [[u32; 3]; 20_000_000];
-pub type VertexBuffer = [[f32; 3]; 10 /* distinct meshes */ * 30_000];
-pub type UVBuffer = [[f32; 2]; 10 /* distinct meshes */ * 30_000];
-pub type IndexBuffer = [[u32; 3]; 10 /* distinct meshes */ * 30_000];
+pub(crate) type OutIndexBuffer = [[u32; 3]; 20_000_000];
+pub(crate) type VertexBuffer = [[f32; 3]; 10 /* distinct meshes */ * 30_000];
+pub(crate) type UVBuffer = [[f32; 2]; 10 /* distinct meshes */ * 30_000];
+pub(crate) type IndexBuffer = [[u32; 3]; 10 /* distinct meshes */ * 30_000];
 
 #[repr(C)]
-pub struct CameraMatrices {
-    pub projection: glm::Mat4,
-    pub view: glm::Mat4,
-    pub position: glm::Vec4,
-    pub pv: glm::Mat4,
+pub(crate) struct CameraMatrices {
+    pub(crate) projection: glm::Mat4,
+    pub(crate) view: glm::Mat4,
+    pub(crate) position: glm::Vec4,
+    pub(crate) pv: glm::Mat4,
 }
 
-pub struct ModelMatrices {
-    pub model: [glm::Mat4; 4096],
+pub(crate) struct ModelMatrices {
+    #[allow(unused)]
+    pub(crate) model: [glm::Mat4; 4096],
 }
 
-pub type Null = ();
+pub(crate) type Null = ();
 
 make_descriptor_set!(
     model_set[
@@ -530,12 +531,12 @@ make_descriptor_set!(
 );
 
 #[repr(C)]
-pub struct GenerateWorkPushConstants {
-    pub gltf_index: u32,
-    pub index_count: u32,
-    pub index_offset: u32,
-    pub index_offset_in_output: i32,
-    pub vertex_offset: i32,
+pub(crate) struct GenerateWorkPushConstants {
+    pub(crate) gltf_index: u32,
+    pub(crate) index_count: u32,
+    pub(crate) index_offset: u32,
+    pub(crate) index_offset_in_output: i32,
+    pub(crate) vertex_offset: i32,
 }
 
 make_pipe!(generate_work {
@@ -556,9 +557,9 @@ make_pipe!(gltf_mesh {
 });
 
 #[repr(C)]
-pub struct ImguiPushConstants {
-    pub scale: glm::Vec2,
-    pub translate: glm::Vec2,
+pub(crate) struct ImguiPushConstants {
+    pub(crate) scale: glm::Vec2,
+    pub(crate) translate: glm::Vec2,
 }
 
 make_pipe!(imgui_pipe {
@@ -568,9 +569,9 @@ make_pipe!(imgui_pipe {
 });
 
 #[repr(C)]
-pub struct DebugAABBPushConstants {
-    pub center: glm::Vec3,
-    pub half_extent: glm::Vec3,
+pub(crate) struct DebugAABBPushConstants {
+    pub(crate) center: glm::Vec3,
+    pub(crate) half_extent: glm::Vec3,
 }
 
 make_pipe!(debug_aabb {

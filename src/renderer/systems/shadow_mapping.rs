@@ -6,20 +6,20 @@ const MAP_SIZE: u32 = 4096;
 // dimensions of the square texture, 4x4 slots = 16 in total
 const DIM: u32 = 4;
 
-pub struct ShadowMappingData {
+pub(crate) struct ShadowMappingData {
     depth_pipeline: Pipeline,
     renderpass: RenderPass,
     depth_image: Image,
     _depth_image_view: ImageView,
     framebuffer: Framebuffer,
     image_transitioned: bool,
-    pub user_set_layout: super::super::shaders::shadow_map_set::DescriptorSetLayout,
-    pub user_set: DoubleBuffered<super::super::shaders::shadow_map_set::DescriptorSet>,
+    pub(crate) user_set_layout: super::super::shaders::shadow_map_set::DescriptorSetLayout,
+    pub(crate) user_set: DoubleBuffered<super::super::shaders::shadow_map_set::DescriptorSet>,
     _user_sampler: helpers::Sampler,
 }
 
 impl ShadowMappingData {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         depth_pass_data: &DepthPassData,
         main_descriptor_pool: &mut MainDescriptorPool,
@@ -251,7 +251,7 @@ impl ShadowMappingData {
 }
 
 /// Holds Projection and view matrices for each light.
-pub struct ShadowMappingLightMatrices {
+pub(crate) struct ShadowMappingLightMatrices {
     matrices_set: DoubleBuffered<super::super::shaders::camera_set::DescriptorSet>,
     matrices_buffer: DoubleBuffered<Buffer>,
 }
@@ -300,7 +300,7 @@ impl ShadowMappingLightMatrices {
 
 type LightMatrices = super::super::shaders::CameraMatrices;
 
-pub fn shadow_mapping_mvp_calculation(
+pub(crate) fn shadow_mapping_mvp_calculation(
     image_index: Res<ImageIndex>,
     mut query: Query<(&Position, &Rotation, &mut ShadowMappingLightMatrices)>,
 ) {
@@ -328,7 +328,7 @@ pub fn shadow_mapping_mvp_calculation(
     }
 }
 
-pub struct ShadowMappingCommandPool(LocalGraphicsCommandPool);
+pub(crate) struct ShadowMappingCommandPool(LocalGraphicsCommandPool);
 
 impl FromResources for ShadowMappingCommandPool {
     fn from_resources(resources: &Resources) -> Self {
@@ -336,7 +336,7 @@ impl FromResources for ShadowMappingCommandPool {
     }
 }
 
-pub fn transition_shadow_maps(
+pub(crate) fn transition_shadow_maps(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     mut shadow_mapping: ResMut<ShadowMappingData>,
@@ -389,7 +389,7 @@ pub fn transition_shadow_maps(
 }
 
 /// Identifies stale shadow maps in the atlas and refreshes them
-pub fn prepare_shadow_maps(
+pub(crate) fn prepare_shadow_maps(
     renderer: Res<RenderFrame>,
     depth_pass: Res<DepthPassData>,
     image_index: Res<ImageIndex>,
@@ -411,7 +411,7 @@ pub fn prepare_shadow_maps(
     unsafe {
         #[cfg(feature = "microprofile")]
         microprofile::scope!("shadow mapping", "CP reset");
-        command_pool.recreate();
+        command_pool.reset();
     }
 
     let mut command_session = command_pool.session();
@@ -538,7 +538,7 @@ pub fn prepare_shadow_maps(
     *graphics_submissions.shadow_mapping.lock() = *command_buffer;
 }
 
-pub fn update_shadow_map_descriptors(
+pub(crate) fn update_shadow_map_descriptors(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     shadow_mapping: Res<ShadowMappingData>,

@@ -5,19 +5,19 @@ mod entry;
 mod gltf_mesh;
 mod helpers;
 mod instance;
-pub mod shaders;
+pub(crate) mod shaders;
 mod swapchain;
 mod systems {
-    pub mod consolidate_mesh_buffers;
-    pub mod crash_debugging;
-    pub mod cull_pipeline;
-    pub mod debug_aabb_renderer;
-    pub mod present;
-    pub mod shadow_mapping;
-    pub mod textures;
+    pub(crate) mod consolidate_mesh_buffers;
+    pub(crate) mod crash_debugging;
+    pub(crate) mod cull_pipeline;
+    pub(crate) mod debug_aabb_renderer;
+    pub(crate) mod present;
+    pub(crate) mod shadow_mapping;
+    pub(crate) mod textures;
 }
 
-pub use self::{
+pub(crate) use self::{
     device::*,
     gltf_mesh::{load as load_gltf, LoadedMesh},
     helpers::*,
@@ -47,43 +47,43 @@ use std::{
     sync::Arc,
 };
 
-pub fn up_vector() -> na::Unit<na::Vector3<f32>> {
+pub(crate) fn up_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::y())
 }
-pub fn forward_vector() -> na::Unit<na::Vector3<f32>> {
+pub(crate) fn forward_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::z())
 }
-pub fn right_vector() -> na::Unit<na::Vector3<f32>> {
+pub(crate) fn right_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::x())
 }
 
 #[derive(Clone)]
-pub struct GltfMesh {
-    pub vertex_buffer: Arc<Buffer>,
-    pub normal_buffer: Arc<Buffer>,
-    pub uv_buffer: Arc<Buffer>,
-    pub index_buffers: Arc<Vec<(Buffer, u64)>>,
-    pub vertex_len: u64,
-    pub aabb: ncollide3d::bounding_volume::AABB<f32>,
+pub(crate) struct GltfMesh {
+    pub(crate) vertex_buffer: Arc<Buffer>,
+    pub(crate) normal_buffer: Arc<Buffer>,
+    pub(crate) uv_buffer: Arc<Buffer>,
+    pub(crate) index_buffers: Arc<Vec<(Buffer, u64)>>,
+    pub(crate) vertex_len: u64,
+    pub(crate) aabb: ncollide3d::bounding_volume::AABB<f32>,
 }
 
 #[derive(Debug, Default)]
-pub struct DrawIndex(pub u32);
+pub(crate) struct DrawIndex(pub(crate) u32);
 
-pub struct Position(pub na::Point3<f32>);
-pub struct Rotation(pub na::UnitQuaternion<f32>);
-pub struct Scale(pub f32);
+pub(crate) struct Position(pub(crate) na::Point3<f32>);
+pub(crate) struct Rotation(pub(crate) na::UnitQuaternion<f32>);
+pub(crate) struct Scale(pub(crate) f32);
 
 // TODO: rename
-pub struct RenderFrame {
-    pub instance: Arc<Instance>,
-    pub device: Arc<Device>,
-    pub renderpass: RenderPass,
-    pub graphics_timeline_semaphore: TimelineSemaphore,
-    pub compute_timeline_semaphore: TimelineSemaphore,
-    pub frame_number: u64,
-    pub previous_frame_number_for_swapchain_index: SmallVec<[u64; 3]>,
-    pub buffer_count: usize,
+pub(crate) struct RenderFrame {
+    pub(crate) instance: Arc<Instance>,
+    pub(crate) device: Arc<Device>,
+    pub(crate) renderpass: RenderPass,
+    pub(crate) graphics_timeline_semaphore: TimelineSemaphore,
+    pub(crate) compute_timeline_semaphore: TimelineSemaphore,
+    pub(crate) frame_number: u64,
+    pub(crate) previous_frame_number_for_swapchain_index: SmallVec<[u64; 3]>,
+    pub(crate) buffer_count: usize,
 }
 
 // TODO: make a separate module for these high level definitions?
@@ -163,7 +163,7 @@ impl TransitionsRenderTarget<1> for graphics::GuiDraw {
 define_timeline!(compute Perform);
 
 impl RenderFrame {
-    pub fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
+    pub(crate) fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
         let (instance, events_loop) = Instance::new().expect("Failed to create instance");
         let instance = Arc::new(instance);
         let surface = Surface::new(&instance);
@@ -272,7 +272,7 @@ impl RenderFrame {
         )
     }
 
-    pub fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
+    pub(crate) fn new_buffered<T, F: FnMut(u32) -> T>(&self, creator: F) -> DoubleBuffered<T> {
         DoubleBuffered::new(self.buffer_count, creator)
     }
 }
@@ -284,10 +284,10 @@ impl Drop for RenderFrame {
     }
 }
 
-pub struct MainDescriptorPool(pub Arc<DescriptorPool>);
+pub(crate) struct MainDescriptorPool(pub(crate) Arc<DescriptorPool>);
 
 impl MainDescriptorPool {
-    pub fn new(renderer: &RenderFrame) -> MainDescriptorPool {
+    pub(crate) fn new(renderer: &RenderFrame) -> MainDescriptorPool {
         let descriptor_pool = Arc::new(renderer.device.new_descriptor_pool(
             3_000,
             &[
@@ -313,15 +313,17 @@ impl MainDescriptorPool {
     }
 }
 
-pub struct MainAttachments {
-    pub swapchain_images: Vec<SwapchainImage>,
-    pub swapchain_image_views: Vec<ImageView>,
-    pub depth_images: Vec<Image>,
-    pub depth_image_views: Vec<ImageView>,
+pub(crate) struct MainAttachments {
+    #[allow(unused)]
+    swapchain_images: Vec<SwapchainImage>,
+    swapchain_image_views: Vec<ImageView>,
+    #[allow(unused)]
+    depth_images: Vec<Image>,
+    depth_image_views: Vec<ImageView>,
 }
 
 impl MainAttachments {
-    pub fn new(renderer: &RenderFrame, swapchain: &Swapchain) -> MainAttachments {
+    pub(crate) fn new(renderer: &RenderFrame, swapchain: &Swapchain) -> MainAttachments {
         let images = unsafe {
             swapchain
                 .ext
@@ -429,12 +431,12 @@ impl MainAttachments {
     }
 }
 
-pub struct MainFramebuffer {
-    pub handles: Vec<Framebuffer>,
+pub(crate) struct MainFramebuffer {
+    pub(crate) handles: Vec<Framebuffer>,
 }
 
 impl MainFramebuffer {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         main_attachments: &MainAttachments,
         swapchain: &Swapchain,
@@ -472,7 +474,7 @@ impl MainFramebuffer {
     }
 }
 
-pub struct LocalGraphicsCommandPool {
+pub(crate) struct LocalGraphicsCommandPool {
     pools: DoubleBuffered<StrictCommandPool>,
 }
 
@@ -497,14 +499,14 @@ impl FromResources for LocalGraphicsCommandPool {
     }
 }
 
-pub struct CameraMatrices {
-    pub set_layout: shaders::camera_set::DescriptorSetLayout,
+pub(crate) struct CameraMatrices {
+    pub(crate) set_layout: shaders::camera_set::DescriptorSetLayout,
     buffer: DoubleBuffered<Buffer>,
     set: DoubleBuffered<shaders::camera_set::DescriptorSet>,
 }
 
 impl CameraMatrices {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &MainDescriptorPool,
     ) -> CameraMatrices {
@@ -542,14 +544,17 @@ impl CameraMatrices {
     }
 }
 
-pub struct ModelData {
-    pub model_set_layout: shaders::model_set::DescriptorSetLayout,
-    pub model_set: DoubleBuffered<shaders::model_set::DescriptorSet>,
-    pub model_buffer: DoubleBuffered<Buffer>,
+pub(crate) struct ModelData {
+    pub(crate) model_set_layout: shaders::model_set::DescriptorSetLayout,
+    pub(crate) model_set: DoubleBuffered<shaders::model_set::DescriptorSet>,
+    pub(crate) model_buffer: DoubleBuffered<Buffer>,
 }
 
 impl ModelData {
-    pub fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> ModelData {
+    pub(crate) fn new(
+        renderer: &RenderFrame,
+        main_descriptor_pool: &MainDescriptorPool,
+    ) -> ModelData {
         let device = &renderer.device;
 
         let model_set_layout = shaders::model_set::DescriptorSetLayout::new(&device);
@@ -580,14 +585,14 @@ impl ModelData {
     }
 }
 
-pub struct DepthPassData {
-    pub depth_pipeline: Pipeline,
-    pub depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
-    pub renderpass: RenderPass,
+pub(crate) struct DepthPassData {
+    pub(crate) depth_pipeline: Pipeline,
+    pub(crate) depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
+    pub(crate) renderpass: RenderPass,
 }
 
 impl DepthPassData {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         model_data: &ModelData,
         swapchain: &Swapchain,
@@ -735,15 +740,15 @@ impl DepthPassData {
     }
 }
 
-pub struct Resized(pub bool);
+pub(crate) struct Resized(pub(crate) bool);
 
-pub struct GltfPassData {
-    pub gltf_pipeline: Pipeline,
-    pub gltf_pipeline_layout: shaders::gltf_mesh::PipelineLayout,
+pub(crate) struct GltfPassData {
+    pub(crate) gltf_pipeline: Pipeline,
+    pub(crate) gltf_pipeline_layout: shaders::gltf_mesh::PipelineLayout,
 }
 
 impl GltfPassData {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         model_data: &ModelData,
         base_color: &BaseColorDescriptorSet,
@@ -979,7 +984,7 @@ impl GltfPassData {
     }
 }
 
-pub struct MainRenderCommandPool(LocalGraphicsCommandPool);
+pub(crate) struct MainRenderCommandPool(LocalGraphicsCommandPool);
 
 impl FromResources for MainRenderCommandPool {
     fn from_resources(resources: &Resources) -> Self {
@@ -987,7 +992,7 @@ impl FromResources for MainRenderCommandPool {
     }
 }
 
-pub fn render_frame(
+pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     model_data: Res<ModelData>,
@@ -1020,7 +1025,7 @@ pub fn render_frame(
     unsafe {
         #[cfg(feature = "microprofile")]
         microprofile::scope!("main render", "CP reset");
-        command_pool.recreate();
+        command_pool.reset();
     }
 
     let mut command_session = command_pool.session();
@@ -1198,7 +1203,7 @@ pub fn render_frame(
     *graphics_submissions.main_render.lock() = *command_buffer;
 }
 
-pub struct GraphicsSubmissions {
+pub(crate) struct GraphicsSubmissions {
     transition_shadow_mapping: Mutex<Option<vk::CommandBuffer>>,
     shadow_mapping: Mutex<vk::CommandBuffer>,
     depth_pass: Mutex<vk::CommandBuffer>,
@@ -1216,7 +1221,7 @@ impl Default for GraphicsSubmissions {
     }
 }
 
-pub fn submit_graphics_commands(
+pub(crate) fn submit_graphics_commands(
     renderer: Res<RenderFrame>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
     mut graphics_submissions: ResMut<GraphicsSubmissions>,
@@ -1291,23 +1296,26 @@ pub fn submit_graphics_commands(
     }
 }
 
-pub struct GuiRender {
-    pub vertex_buffer: Buffer,
-    pub index_buffer: Buffer,
-    pub texture: Image,
-    pub texture_view: ImageView,
-    pub sampler: Sampler,
-    pub descriptor_set_layout: shaders::imgui_set::DescriptorSetLayout,
-    pub descriptor_set: shaders::imgui_set::DescriptorSet,
-    pub pipeline_layout: shaders::imgui_pipe::PipelineLayout,
-    pub renderpass: RenderPass,
-    pub pipeline: Pipeline,
-    pub transitioned: bool,
+pub(crate) struct GuiRender {
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
+    texture: Image,
+    #[allow(unused)]
+    texture_view: ImageView,
+    #[allow(unused)]
+    sampler: Sampler,
+    #[allow(unused)]
+    descriptor_set_layout: shaders::imgui_set::DescriptorSetLayout,
+    descriptor_set: shaders::imgui_set::DescriptorSet,
+    pipeline_layout: shaders::imgui_pipe::PipelineLayout,
+    renderpass: RenderPass,
+    pipeline: Pipeline,
+    transitioned: bool,
     command_pool: DoubleBuffered<StrictCommandPool>,
 }
 
 impl GuiRender {
-    pub fn new(
+    pub(crate) fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &MainDescriptorPool,
         swapchain: &Swapchain,
@@ -1599,7 +1607,7 @@ impl GuiRender {
         }
     }
 
-    pub fn render(
+    pub(crate) fn render(
         &mut self,
         gui: Rc<RefCell<Gui>>,
         input_handler: Rc<RefCell<InputHandler>>,
@@ -1641,7 +1649,7 @@ impl GuiRender {
         unsafe {
             #[cfg(feature = "microprofile")]
             microprofile::scope!("gui render", "CP reset");
-            command_pool.recreate();
+            command_pool.reset();
         }
 
         let mut command_session = command_pool.session();
@@ -1844,7 +1852,7 @@ impl GuiRender {
     }
 }
 
-pub fn model_matrices_upload(
+pub(crate) fn model_matrices_upload(
     image_index: Res<ImageIndex>,
     mut model_data: ResMut<ModelData>,
     mut query: Query<(&DrawIndex, &mut ModelMatrix)>,
@@ -1861,7 +1869,7 @@ pub fn model_matrices_upload(
     }
 }
 
-pub fn camera_matrices_upload(
+pub(crate) fn camera_matrices_upload(
     image_index: Res<ImageIndex>,
     camera: Res<Camera>,
     mut camera_matrices: ResMut<CameraMatrices>,
@@ -1881,7 +1889,7 @@ pub fn camera_matrices_upload(
     };
 }
 
-pub struct DepthPassCommandPool(LocalGraphicsCommandPool);
+pub(crate) struct DepthPassCommandPool(LocalGraphicsCommandPool);
 
 impl FromResources for DepthPassCommandPool {
     fn from_resources(resources: &Resources) -> Self {
@@ -1889,7 +1897,7 @@ impl FromResources for DepthPassCommandPool {
     }
 }
 
-pub fn depth_only_pass(
+pub(crate) fn depth_only_pass(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     depth_pass: Res<DepthPassData>,
@@ -1914,7 +1922,7 @@ pub fn depth_only_pass(
     unsafe {
         #[cfg(feature = "microprofile")]
         microprofile::scope!("depth only", "CP reset");
-        command_pool.recreate();
+        command_pool.reset();
     }
 
     let mut command_session = command_pool.session();

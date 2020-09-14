@@ -5,12 +5,12 @@ use ash::{version::DeviceV1_0, vk};
 use microprofile::scope;
 use std::u64;
 
-pub struct PresentData {
+pub(crate) struct PresentData {
     render_complete_semaphore: Semaphore,
 }
 
 #[derive(Debug)]
-pub struct ImageIndex(pub u32);
+pub(crate) struct ImageIndex(pub(crate) u32);
 
 impl Default for ImageIndex {
     fn default() -> Self {
@@ -19,12 +19,12 @@ impl Default for ImageIndex {
 }
 
 // Acquire swapchain image and store the index
-pub struct AcquireFramebuffer;
+pub(crate) struct AcquireFramebuffer;
 
-pub struct PresentFramebuffer;
+pub(crate) struct PresentFramebuffer;
 
 impl PresentData {
-    pub fn new(renderer: &RenderFrame) -> PresentData {
+    pub(crate) fn new(renderer: &RenderFrame) -> PresentData {
         let render_complete_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
             render_complete_semaphore.handle,
@@ -39,7 +39,7 @@ impl PresentData {
 
 impl AcquireFramebuffer {
     /// Returns true if framebuffer and swapchain need to be recreated
-    pub fn exec(
+    pub(crate) fn exec(
         renderer: &RenderFrame,
         swapchain: &Swapchain,
         image_index: &mut ImageIndex,
@@ -128,7 +128,7 @@ impl AcquireFramebuffer {
 }
 
 impl PresentFramebuffer {
-    pub fn exec(
+    pub(crate) fn exec(
         renderer: &mut RenderFrame,
         present_data: &PresentData,
         swapchain: &Swapchain,

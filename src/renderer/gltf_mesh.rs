@@ -7,18 +7,18 @@ use super::{
     RenderFrame, StrictCommandPool,
 };
 
-pub struct LoadedMesh {
-    pub vertex_buffer: Buffer,
-    pub normal_buffer: Buffer,
-    pub uv_buffer: Buffer,
-    pub index_buffers: Vec<(Buffer, u64)>,
-    pub vertex_len: u64,
-    pub aabb: ncollide3d::bounding_volume::AABB<f32>,
-    pub base_color: Image,
+pub(crate) struct LoadedMesh {
+    pub(crate) vertex_buffer: Buffer,
+    pub(crate) normal_buffer: Buffer,
+    pub(crate) uv_buffer: Buffer,
+    pub(crate) index_buffers: Vec<(Buffer, u64)>,
+    pub(crate) vertex_len: u64,
+    pub(crate) aabb: ncollide3d::bounding_volume::AABB<f32>,
+    pub(crate) base_color: Image,
 }
 
 #[derive(Clone, Default, Debug)]
-struct Pos(pub [f32; 3]);
+struct Pos(pub(crate) [f32; 3]);
 
 impl meshopt::DecodePosition for Pos {
     fn decode_position(&self) -> [f32; 3] {
@@ -26,7 +26,7 @@ impl meshopt::DecodePosition for Pos {
     }
 }
 
-pub fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
+pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let mut command_pool = StrictCommandPool::new(
         &renderer.device,
         renderer.device.graphics_queue_family,

@@ -3,8 +3,8 @@ use std::{ptr, sync::Arc};
 
 use super::{super::alloc, mapping::MappedBuffer, Device};
 
-pub struct Image {
-    pub handle: vk::Image,
+pub(crate) struct Image {
+    pub(crate) handle: vk::Image,
     allocation: alloc::VmaAllocation,
     allocation_info: alloc::VmaAllocationInfo,
     device: Arc<Device>,
@@ -72,7 +72,7 @@ impl Image {
         }
     }
 
-    pub fn map<'a, T>(&'a self) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
+    pub(crate) fn map<'a, T>(&'a self) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
         MappedBuffer::import(
             self.device.allocator,
             self.allocation,

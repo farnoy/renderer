@@ -21,35 +21,30 @@ mod sync;
 
 use super::{alloc, Instance, Surface};
 
-pub use self::{
+pub(crate) use self::{
     buffer::*, commands::*, descriptors::*, double_buffered::*, image::*, shader::Shader, sync::*,
 };
 
 type AshDevice = ash::Device;
 
-pub struct Device {
+pub(crate) struct Device {
     pub(super) device: AshDevice,
     #[allow(unused)]
     instance: Arc<Instance>,
     pub(super) physical_device: vk::PhysicalDevice,
-    pub allocator: alloc::VmaAllocator,
-    pub limits: vk::PhysicalDeviceLimits,
-    pub graphics_queue_family: u32,
-    pub compute_queue_family: u32,
+    pub(crate) allocator: alloc::VmaAllocator,
+    pub(crate) limits: vk::PhysicalDeviceLimits,
+    pub(crate) graphics_queue_family: u32,
+    pub(crate) compute_queue_family: u32,
     pub(super) graphics_queue: Mutex<vk::Queue>,
     pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
-    // pub _transfer_queue: Arc<Mutex<vk::Queue>>,
+    // pub(crate) _transfer_queue: Arc<Mutex<vk::Queue>>,
     #[cfg(feature = "crash_debugging")]
-    pub buffer_marker_fn: vk::AmdBufferMarkerFn,
-}
-
-pub enum QueueType {
-    Graphics,
-    Compute,
+    pub(crate) buffer_marker_fn: vk::AmdBufferMarkerFn,
 }
 
 impl Device {
-    pub fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
+    pub(crate) fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
         let Instance { ref entry, .. } = **instance;
 
         let pdevices = unsafe {
@@ -217,11 +212,11 @@ impl Device {
         Ok(device)
     }
 
-    pub fn allocation_stats(&self) -> alloc::VmaStats {
+    pub(crate) fn allocation_stats(&self) -> alloc::VmaStats {
         alloc::stats(self.allocator)
     }
 
-    pub fn new_descriptor_pool(
+    pub(crate) fn new_descriptor_pool(
         self: &Arc<Self>,
         max_sets: u32,
         pool_sizes: &[vk::DescriptorPoolSize],
@@ -229,40 +224,36 @@ impl Device {
         DescriptorPool::new(self, max_sets, pool_sizes)
     }
 
-    pub fn new_descriptor_set_layout(
-        self: &Arc<Self>,
-        bindings: &[vk::DescriptorSetLayoutBinding],
-    ) -> DescriptorSetLayout {
-        DescriptorSetLayout::new(self, bindings)
-    }
-
-    pub fn new_descriptor_set_layout2(
+    pub(crate) fn new_descriptor_set_layout(
         self: &Arc<Self>,
         create_info: &vk::DescriptorSetLayoutCreateInfo,
     ) -> DescriptorSetLayout {
-        DescriptorSetLayout::new2(self, create_info)
+        DescriptorSetLayout::new(self, create_info)
     }
 
-    pub fn new_semaphore(self: &Arc<Self>) -> Semaphore {
+    pub(crate) fn new_semaphore(self: &Arc<Self>) -> Semaphore {
         Semaphore::new(self)
     }
 
-    pub fn new_semaphore_timeline(self: &Arc<Self>, initial_value: u64) -> TimelineSemaphore {
+    pub(crate) fn new_semaphore_timeline(
+        self: &Arc<Self>,
+        initial_value: u64,
+    ) -> TimelineSemaphore {
         TimelineSemaphore::new(self, initial_value)
     }
 
-    pub fn new_fence(self: &Arc<Self>) -> Fence {
+    pub(crate) fn new_fence(self: &Arc<Self>) -> Fence {
         Fence::new(self)
     }
 
-    pub fn new_shader<F>(self: &Arc<Self>, path: &PathBuf, verify: F) -> Shader
+    pub(crate) fn new_shader<F>(self: &Arc<Self>, path: &PathBuf, verify: F) -> Shader
     where
         F: Fn(&[u8]) -> bool,
     {
         Shader::new_verify(self, path, verify)
     }
 
-    pub fn new_buffer(
+    pub(crate) fn new_buffer(
         self: &Arc<Self>,
         buffer_usage: vk::BufferUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
@@ -272,7 +263,7 @@ impl Device {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_image(
+    pub(crate) fn new_image(
         self: &Arc<Self>,
         format: vk::Format,
         extent: vk::Extent3D,
@@ -294,23 +285,19 @@ impl Device {
         )
     }
 
-    pub fn new_event(self: &Arc<Self>) -> Event {
-        Event::new(self)
-    }
-
-    pub fn new_renderpass(
+    pub(crate) fn new_renderpass(
         self: &Arc<Self>,
         create_info: &vk::RenderPassCreateInfoBuilder,
     ) -> RenderPass {
         RenderPass::new(self, create_info)
     }
 
-    pub fn vk(&self) -> &AshDevice {
+    pub(crate) fn vk(&self) -> &AshDevice {
         &self.device
     }
 
     #[cfg(feature = "vk_names")]
-    pub fn set_object_name<T: vk::Handle>(&self, handle: T, name: &str) {
+    pub(crate) fn set_object_name<T: vk::Handle>(&self, handle: T, name: &str) {
         use std::ffi::CString;
 
         let name = CString::new(name).unwrap();
@@ -328,7 +315,7 @@ impl Device {
     }
 
     #[cfg(not(feature = "vk_names"))]
-    pub fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
+    pub(crate) fn set_object_name<T: vk::Handle>(&self, _handle: T, _name: &str) {}
 }
 
 impl Deref for Device {
@@ -349,8 +336,8 @@ impl Drop for Device {
     }
 }
 
-pub struct RenderPass {
-    pub handle: vk::RenderPass,
+pub(crate) struct RenderPass {
+    pub(crate) handle: vk::RenderPass,
     device: Arc<Device>,
 }
 

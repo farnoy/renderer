@@ -26,7 +26,7 @@ use winit::{
 };
 
 #[derive(Debug)]
-pub struct InputActions {
+pub(crate) struct InputActions {
     pressed: HashSet<VirtualKeyCode>,
     hold: HashSet<VirtualKeyCode>,
     released: HashSet<VirtualKeyCode>,
@@ -34,11 +34,11 @@ pub struct InputActions {
 }
 
 impl InputActions {
-    pub fn get_key_down(&self, key: VirtualKeyCode) -> bool {
+    pub(crate) fn get_key_down(&self, key: VirtualKeyCode) -> bool {
         self.pressed.contains(&key) || self.hold.contains(&key)
     }
 
-    pub fn get_mouse_down(&self, button: MouseButton) -> bool {
+    pub(crate) fn get_mouse_down(&self, button: MouseButton) -> bool {
         self.mouse_buttons.contains(&button)
     }
 
@@ -70,7 +70,7 @@ impl Default for InputActions {
     }
 }
 
-pub struct InputState {
+pub(crate) struct InputState {
     key_presses: Vec<Option<VirtualKeyCode>>,
     key_releases: Vec<Option<VirtualKeyCode>>,
     button_presses: Vec<ButtonId>,
@@ -94,14 +94,14 @@ impl Default for InputState {
     }
 }
 
-pub struct InputHandler {
-    pub events_loop: winit::event_loop::EventLoop<()>,
-    pub quit_handle: Arc<Mutex<bool>>,
-    pub imgui_platform: WinitPlatform,
+pub(crate) struct InputHandler {
+    pub(crate) events_loop: winit::event_loop::EventLoop<()>,
+    pub(crate) quit_handle: Arc<Mutex<bool>>,
+    pub(crate) imgui_platform: WinitPlatform,
 }
 
 impl InputHandler {
-    pub fn run(
+    pub(crate) fn run(
         input_handler: Rc<RefCell<InputHandler>>,
         gui: Rc<RefCell<Gui>>,
         resources: &mut Resources,

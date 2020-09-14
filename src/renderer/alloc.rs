@@ -30,6 +30,7 @@ type VkMemoryRequirements = vk::MemoryRequirements;
 type VkMemoryRequirements2 = vk::MemoryRequirements2;
 type VkPhysicalDevice = vk::PhysicalDevice;
 type VkDevice = vk::Device;
+type VkDeviceSize = vk::DeviceSize;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 

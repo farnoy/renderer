@@ -3,7 +3,7 @@ use std::{fs::File, io::Read, path::PathBuf, sync::Arc};
 
 use super::Device;
 
-pub struct Shader {
+pub(crate) struct Shader {
     handle: vk::ShaderModule,
     device: Arc<Device>,
 }
@@ -32,7 +32,7 @@ impl Shader {
         }
     }
 
-    pub fn vk(&self) -> vk::ShaderModule {
+    pub(crate) fn vk(&self) -> vk::ShaderModule {
         self.handle
     }
 }

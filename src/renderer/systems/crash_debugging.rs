@@ -6,15 +6,15 @@ use bevy_ecs::prelude::*;
 #[cfg(feature = "crash_debugging")]
 use std::{convert::TryInto, mem::size_of};
 
-pub type CrashStages = [u32; 2];
+pub(crate) type CrashStages = [u32; 2];
 
 #[allow(unused)]
 const ZEROED_CRASH: CrashStages = [0; 2];
 
 #[cfg(feature = "crash_debugging")]
-pub struct CrashBuffer(DoubleBuffered<Buffer>);
+pub(crate) struct CrashBuffer(DoubleBuffered<Buffer>);
 #[cfg(not(feature = "crash_debugging"))]
-pub struct CrashBuffer;
+pub(crate) struct CrashBuffer;
 
 impl FromResources for CrashBuffer {
     fn from_resources(#[allow(unused)] resources: &Resources) -> Self {
@@ -40,7 +40,7 @@ impl FromResources for CrashBuffer {
 
 impl CrashBuffer {
     #[cfg(feature = "crash_debugging")]
-    pub fn record(
+    pub(crate) fn record(
         &self,
         renderer: &RenderFrame,
         command_buffer: vk::CommandBuffer,
@@ -65,7 +65,7 @@ impl CrashBuffer {
     }
 
     #[cfg(not(feature = "crash_debugging"))]
-    pub fn record(
+    pub(crate) fn record(
         &self,
         _renderer: &RenderFrame,
         _command_buffer: vk::CommandBuffer,
@@ -73,13 +73,6 @@ impl CrashBuffer {
         _image_index: &ImageIndex,
         _step: u8,
     ) {
-    }
-
-    #[cfg(feature = "crash_debugging")]
-    pub fn clear(&mut self, image_index: &ImageIndex) {
-        let buffer = self.0.current_mut(image_index.0);
-        let mut mapped = buffer.map::<CrashStages>().unwrap();
-        mapped[0] = ZEROED_CRASH;
     }
 }
 

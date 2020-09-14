@@ -2,18 +2,18 @@ use super::Device;
 use ash::{version::DeviceV1_0, vk};
 use std::sync::Arc;
 
-pub struct DescriptorPool {
-    pub handle: vk::DescriptorPool,
+pub(crate) struct DescriptorPool {
+    pub(crate) handle: vk::DescriptorPool,
     device: Arc<Device>,
 }
 
-pub struct DescriptorSetLayout {
-    pub handle: vk::DescriptorSetLayout,
+pub(crate) struct DescriptorSetLayout {
+    pub(crate) handle: vk::DescriptorSetLayout,
     device: Arc<Device>,
 }
 
-pub struct DescriptorSet {
-    pub handle: vk::DescriptorSet,
+pub(crate) struct DescriptorSet {
+    pub(crate) handle: vk::DescriptorSet,
     pool: Arc<DescriptorPool>,
 }
 
@@ -41,7 +41,7 @@ impl DescriptorPool {
         }
     }
 
-    pub fn allocate_set(self: &Arc<Self>, layout: &DescriptorSetLayout) -> DescriptorSet {
+    pub(crate) fn allocate_set(self: &Arc<Self>, layout: &DescriptorSetLayout) -> DescriptorSet {
         let layouts = &[layout.handle];
         let desc_alloc_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(self.handle)
@@ -63,25 +63,6 @@ impl DescriptorPool {
 
 impl DescriptorSetLayout {
     pub(super) fn new(
-        device: &Arc<Device>,
-        bindings: &[vk::DescriptorSetLayoutBinding],
-    ) -> DescriptorSetLayout {
-        let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
-
-        let handle = unsafe {
-            device
-                .device
-                .create_descriptor_set_layout(&create_info, None)
-                .unwrap()
-        };
-
-        DescriptorSetLayout {
-            handle,
-            device: Arc::clone(device),
-        }
-    }
-
-    pub(super) fn new2(
         device: &Arc<Device>,
         create_info: &vk::DescriptorSetLayoutCreateInfo,
     ) -> DescriptorSetLayout {

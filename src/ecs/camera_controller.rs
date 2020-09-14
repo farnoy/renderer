@@ -5,13 +5,13 @@ use crate::{
 use bevy_ecs::prelude::*;
 use winit::{self, event::VirtualKeyCode};
 
-pub struct Camera {
-    pub position: na::Point3<f32>,
-    pub rotation: na::UnitQuaternion<f32>,
-    pub projection: na::Matrix4<f32>,
-    pub view: na::Matrix4<f32>,
+pub(crate) struct Camera {
+    pub(crate) position: na::Point3<f32>,
+    pub(crate) rotation: na::UnitQuaternion<f32>,
+    pub(crate) projection: na::Matrix4<f32>,
+    pub(crate) view: na::Matrix4<f32>,
     // left -> right -> bottom -> top -> near -> far
-    pub frustum_planes: [na::Vector4<f32>; 6],
+    pub(crate) frustum_planes: [na::Vector4<f32>; 6],
 }
 
 impl Default for Camera {
@@ -32,7 +32,7 @@ impl Default for Camera {
     }
 }
 
-pub fn camera_controller(
+pub(crate) fn camera_controller(
     input_actions: Res<InputActions>,
     frame_timing: Res<FrameTiming>,
     runtime_config: Res<RuntimeConfiguration>,
@@ -75,10 +75,10 @@ pub fn camera_controller(
 }
 
 /*
-pub struct CameraController;
+pub(crate) struct CameraController;
 
 impl CameraController {
-    pub fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
+    pub(crate) fn exec_system() -> Box<(dyn legion::systems::schedule::Schedulable + 'static)> {
         use legion::prelude::*;
         SystemBuilder::<()>::new("CameraController")
             .read_resource::<InputActions>()
