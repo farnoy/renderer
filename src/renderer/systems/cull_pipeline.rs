@@ -2,8 +2,8 @@ use crate::{
     ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
     renderer::{
         alloc, compute,
-        device::{Buffer, DoubleBuffered, StrictCommandPool},
-        helpers::{self, pick_lod, Pipeline},
+        device::{Buffer, DoubleBuffered, Pipeline, PipelineLayout, StrictCommandPool},
+        helpers::pick_lod,
         shaders::{self, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         timeline_value, timeline_value_last, timeline_value_previous, CameraMatrices, DrawIndex,
@@ -15,7 +15,6 @@ use ash::{
     vk::{self, Handle},
 };
 use bevy_ecs::prelude::*;
-use helpers::PipelineLayout;
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use num_traits::ToPrimitive;
@@ -197,9 +196,9 @@ impl CullPassData {
     ) -> Pipeline {
         let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
         let spec_info = spec.get_spec_info();
-        let pipe = helpers::new_compute_pipelines(
-            Arc::clone(&renderer.device),
-            &[vk::ComputePipelineCreateInfo::builder()
+        let pipe = renderer
+            .device
+            .new_compute_pipelines(&[vk::ComputePipelineCreateInfo::builder()
                 .stage(
                     vk::PipelineShaderStageCreateInfo::builder()
                         .module(shader.vk())
@@ -208,21 +207,20 @@ impl CullPassData {
                         .specialization_info(&spec_info)
                         .build(),
                 )
-                .layout(layout.handle)
+                .layout(**layout)
                 .flags(vk::PipelineCreateFlags::ALLOW_DERIVATIVES)
                 .base_pipeline_handle(
                     base_pipeline
-                        .map(|pipe| pipe.handle)
+                        .map(|pipe| **pipe)
                         .unwrap_or_else(vk::Pipeline::null),
-                )],
-        )
-        .into_iter()
-        .next()
-        .unwrap();
+                )])
+            .into_iter()
+            .next()
+            .unwrap();
 
         renderer
             .device
-            .set_object_name(pipe.handle, "Cull Descriptor Pipeline");
+            .set_object_name(*pipe, "Cull Descriptor Pipeline");
 
         pipe
     }
@@ -357,7 +355,7 @@ pub(crate) fn cull_pass(
         renderer.device.cmd_bind_pipeline(
             *cull_cb,
             vk::PipelineBindPoint::COMPUTE,
-            cull_pass_data.cull_pipeline.handle,
+            **cull_pass_data.cull_pipeline,
         );
         cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
             &renderer.device,

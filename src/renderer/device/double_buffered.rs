@@ -20,7 +20,7 @@ impl<T> DoubleBuffered<T> {
         &mut self.data[ix as usize % len]
     }
 
-    pub(crate) fn iter<'a>(&'a self) -> impl std::iter::Iterator<Item = &T> + 'a {
+    pub(crate) fn iter<'a>(&'a self) -> impl Iterator<Item = &T> + 'a {
         self.data.iter()
     }
 }

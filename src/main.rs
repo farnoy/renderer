@@ -6,6 +6,7 @@
 #![feature(maybe_uninit_uninit_array, maybe_uninit_slice)]
 #![feature(const_generics)]
 #![allow(incomplete_features)]
+#![warn(unreachable_pub, unused_qualifications)]
 
 #[macro_use]
 extern crate lazy_static;

@@ -15,7 +15,7 @@ pub(crate) struct ShadowMappingData {
     image_transitioned: bool,
     pub(crate) user_set_layout: super::super::shaders::shadow_map_set::DescriptorSetLayout,
     pub(crate) user_set: DoubleBuffered<super::super::shaders::shadow_map_set::DescriptorSet>,
-    _user_sampler: helpers::Sampler,
+    _user_sampler: Sampler,
 }
 
 impl ShadowMappingData {
@@ -61,8 +61,7 @@ impl ShadowMappingData {
                 }),
         );
 
-        let depth_pipeline = new_graphics_pipeline2(
-            Arc::clone(&renderer.device),
+        let depth_pipeline = renderer.device.new_graphics_pipeline(
             &[(
                 vk::ShaderStageFlags::VERTEX,
                 PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
@@ -106,14 +105,14 @@ impl ShadowMappingData {
                         .min_depth_bounds(0.0)
                         .build(),
                 )
-                .layout(depth_pass_data.depth_pipeline_layout.layout.handle)
+                .layout(*depth_pass_data.depth_pipeline_layout.layout)
                 .render_pass(renderpass.handle)
                 .subpass(0)
                 .build(),
         );
         renderer
             .device
-            .set_object_name(depth_pipeline.handle, "Shadow mapping depth Pipeline");
+            .set_object_name(*depth_pipeline, "Shadow mapping depth Pipeline");
 
         let depth_image = renderer.device.new_image(
             vk::Format::D16_UNORM,
@@ -190,7 +189,7 @@ impl ShadowMappingData {
             "Shadow Mapping User Descriptor Set Layout",
         );
 
-        let user_sampler = helpers::new_sampler(
+        let user_sampler = new_sampler(
             renderer.device.clone(),
             &vk::SamplerCreateInfo::builder()
                 .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -438,7 +437,7 @@ pub(crate) fn prepare_shadow_maps(
         renderer.device.cmd_bind_pipeline(
             *command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            shadow_mapping.depth_pipeline.handle,
+            *shadow_mapping.depth_pipeline,
         );
 
         for (ix, (light_position, shadow_mvp)) in shadow_query.iter().iter().enumerate() {

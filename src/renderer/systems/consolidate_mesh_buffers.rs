@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use ash::{
-    version::{DeviceV1_0},
+    version::DeviceV1_0,
     vk::{self, Handle},
 };
 use bevy_ecs::prelude::*;
@@ -181,9 +181,11 @@ pub(crate) fn consolidate_mesh_buffers(
                 .unwrap();
         }
     } else {
-            sync_timeline.signal(timeline_value::<_, sync::Consolidate>(
+        sync_timeline
+            .signal(timeline_value::<_, sync::Consolidate>(
                 renderer.frame_number,
-            )).unwrap();
+            ))
+            .unwrap();
     }
 }
 

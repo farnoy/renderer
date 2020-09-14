@@ -16,13 +16,21 @@ mod descriptors;
 mod double_buffered;
 mod image;
 mod mapping;
+mod pipeline;
 mod shader;
 mod sync;
 
 use super::{alloc, Instance, Surface};
 
 pub(crate) use self::{
-    buffer::*, commands::*, descriptors::*, double_buffered::*, image::*, shader::Shader, sync::*,
+    buffer::*,
+    commands::*,
+    descriptors::*,
+    double_buffered::*,
+    image::*,
+    pipeline::{Pipeline, PipelineLayout},
+    shader::Shader,
+    sync::*,
 };
 
 type AshDevice = ash::Device;
@@ -32,7 +40,7 @@ pub(crate) struct Device {
     #[allow(unused)]
     instance: Arc<Instance>,
     pub(super) physical_device: vk::PhysicalDevice,
-    pub(crate) allocator: alloc::VmaAllocator,
+    allocator: alloc::VmaAllocator,
     pub(crate) limits: vk::PhysicalDeviceLimits,
     pub(crate) graphics_queue_family: u32,
     pub(crate) compute_queue_family: u32,
@@ -283,6 +291,29 @@ impl Device {
             usage,
             allocation_usage,
         )
+    }
+
+    pub(crate) fn new_pipeline_layout(
+        self: &Arc<Self>,
+        descriptor_set_layouts: &[&DescriptorSetLayout],
+        push_constant_ranges: &[vk::PushConstantRange],
+    ) -> PipelineLayout {
+        PipelineLayout::new(self, descriptor_set_layouts, push_constant_ranges)
+    }
+
+    pub(crate) fn new_graphics_pipeline(
+        self: &Arc<Self>,
+        shaders: &[(vk::ShaderStageFlags, PathBuf)],
+        create_info: vk::GraphicsPipelineCreateInfo,
+    ) -> Pipeline {
+        Pipeline::new_graphics_pipeline(Arc::clone(self), shaders, create_info)
+    }
+
+    pub(crate) fn new_compute_pipelines(
+        self: &Arc<Self>,
+        create_infos: &[vk::ComputePipelineCreateInfoBuilder<'_>],
+    ) -> Vec<Pipeline> {
+        Pipeline::new_compute_pipelines(Arc::clone(self), create_infos)
     }
 
     pub(crate) fn new_renderpass(

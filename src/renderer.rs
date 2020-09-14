@@ -670,8 +670,7 @@ impl DepthPassData {
         let file = std::fs::File::open(path).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
         debug_assert!(shaders::depth_pipe::load_and_verify_spirv(&bytes));
-        let depth_pipeline = new_graphics_pipeline2(
-            Arc::clone(&device),
+        let depth_pipeline = device.new_graphics_pipeline(
             &[(
                 vk::ShaderStageFlags::VERTEX,
                 PathBuf::from(env!("OUT_DIR")).join("depth_prepass.vert.spv"),
@@ -724,13 +723,13 @@ impl DepthPassData {
                         }])
                         .build(),
                 )
-                .layout(depth_pipeline_layout.layout.handle)
+                .layout(*depth_pipeline_layout.layout)
                 .render_pass(renderpass.handle)
                 .subpass(0)
                 .build(),
         );
 
-        device.set_object_name(depth_pipeline.handle, "Depth Pipeline");
+        device.set_object_name(*depth_pipeline, "Depth Pipeline");
 
         DepthPassData {
             depth_pipeline_layout,
@@ -894,14 +893,13 @@ impl GltfPassData {
             &shadow_mapping.user_set_layout,
             &base_color.layout,
         );
-        device.set_object_name(gltf_pipeline_layout.layout.handle, "GLTF Pipeline Layout");
+        device.set_object_name(*gltf_pipeline_layout.layout, "GLTF Pipeline Layout");
         use std::io::Read;
         let path = std::path::PathBuf::from(env!("OUT_DIR")).join("gltf_mesh.vert.spv");
         let file = std::fs::File::open(path).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
         debug_assert!(shaders::gltf_mesh::load_and_verify_spirv(&bytes));
-        let gltf_pipeline = new_graphics_pipeline2(
-            Arc::clone(&device),
+        let gltf_pipeline = device.new_graphics_pipeline(
             &[
                 (
                     vk::ShaderStageFlags::VERTEX,
@@ -970,12 +968,12 @@ impl GltfPassData {
                             .build()])
                         .build(),
                 )
-                .layout(gltf_pipeline_layout.layout.handle)
+                .layout(*gltf_pipeline_layout.layout)
                 .render_pass(renderer.renderpass.handle)
                 .subpass(0)
                 .build(),
         );
-        device.set_object_name(gltf_pipeline.handle, "GLTF Pipeline");
+        device.set_object_name(*gltf_pipeline, "GLTF Pipeline");
 
         GltfPassData {
             gltf_pipeline_layout,
@@ -1094,7 +1092,7 @@ pub(crate) fn render_frame(
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                debug_aabb_pass_data.pipeline.handle,
+                *debug_aabb_pass_data.pipeline,
             );
             debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
@@ -1148,7 +1146,7 @@ pub(crate) fn render_frame(
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                gltf_pass.gltf_pipeline.handle,
+                *gltf_pass.gltf_pipeline,
             );
             gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
@@ -1452,8 +1450,7 @@ impl GuiRender {
         debug_assert!(shaders::imgui_pipe::load_and_verify_spirv_file(
             "gui.frag.spv"
         ));
-        let pipeline = new_graphics_pipeline2(
-            renderer.device.clone(),
+        let pipeline = renderer.device.new_graphics_pipeline(
             &[
                 (
                     vk::ShaderStageFlags::VERTEX,
@@ -1536,14 +1533,12 @@ impl GuiRender {
                             .build()])
                         .build(),
                 )
-                .layout(pipeline_layout.layout.handle)
+                .layout(*pipeline_layout.layout)
                 .render_pass(renderpass.handle)
                 .subpass(0)
                 .build(),
         );
-        renderer
-            .device
-            .set_object_name(pipeline.handle, "GUI Pipeline");
+        renderer.device.set_object_name(*pipeline, "GUI Pipeline");
 
         let texture_view = new_image_view(
             Arc::clone(&renderer.device),
@@ -1739,7 +1734,7 @@ impl GuiRender {
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                pipeline.handle,
+                **pipeline,
             );
             renderer.device.cmd_bind_vertex_buffers(
                 *command_buffer,
@@ -1981,7 +1976,7 @@ pub(crate) fn depth_only_pass(
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                depth_pass.depth_pipeline.handle,
+                *depth_pass.depth_pipeline,
             );
             depth_pass.depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,

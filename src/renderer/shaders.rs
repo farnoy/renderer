@@ -313,7 +313,7 @@ macro_rules! make_pipe {
                 let path = std::path::PathBuf::from(env!("OUT_DIR")).join(path);
                 let file = std::fs::File::open(path).expect("Could not find shader.");
                 let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-                self::load_and_verify_spirv(&bytes)
+                load_and_verify_spirv(&bytes)
             }
 
             pub(crate) fn load_and_verify_spirv(data: &[u8]) -> bool {
@@ -328,7 +328,7 @@ macro_rules! make_pipe {
                     .iter()
                     .find(|entry| entry.name == "main")
                     .expect("Failed to find entry point `main`");
-                self::verify_spirv(&entry)
+                verify_spirv(&entry)
             }
 
             pub(crate) fn verify_spirv(s: &spirq::EntryPoint) -> bool {
@@ -362,6 +362,7 @@ macro_rules! make_pipe {
                             // TODO: definition has a push constant, but the shader does not
                         },
                         Some(spirq::Type::Struct(push_block)) => {
+                            #[allow(unused_qualifications)]
                             // TODO: validate offset and alignment of each block member, bigger topic
                             if std::mem::size_of::<super::$push>() != push_block.nbyte() {
                                 println!("push blocks are different {} {}", std::mem::size_of::<super::$push>(),push_block.nbyte());
@@ -383,13 +384,13 @@ macro_rules! make_pipe {
             )?
 
             pub(crate) struct PipelineLayout {
-                pub(crate) layout: super::super::PipelineLayout,
+                pub(crate) layout: super::super::device::PipelineLayout,
             }
 
             impl PipelineLayout {
                 pub(crate) fn new(device: &Arc<super::super::Device>, $($desc: &super::$desc::DescriptorSetLayout,)*) -> PipelineLayout {
-                    let layout = super::super::new_pipeline_layout(
-                        Arc::clone(&device),
+                    #[allow(unused_qualifications)]
+                    let layout = device.new_pipeline_layout(
                         &[
                             $(
                                 &$desc.layout,
@@ -416,6 +417,7 @@ macro_rules! make_pipe {
                 #[allow(unused)]
                 pub(crate) fn push_constants(&self, device: &super::super::Device,
                                       command_buffer: vk::CommandBuffer, $(push_constants: &super::$push)?) {
+                    #[allow(unused_qualifications)]
                     $(
                         unsafe {
                             let casted: &[u8] = std::slice::from_raw_parts(
@@ -423,7 +425,7 @@ macro_rules! make_pipe {
                             );
                             device.cmd_push_constants(
                                 command_buffer,
-                                self.layout.handle,
+                                *self.layout,
                                 if IS_COMPUTE {
                                     vk::ShaderStageFlags::COMPUTE
                                 } else {
@@ -450,7 +452,7 @@ macro_rules! make_pipe {
                             } else {
                                 vk::PipelineBindPoint::GRAPHICS
                             },
-                            self.layout.handle,
+                            *self.layout,
                             0,
                             &[
                                 $(

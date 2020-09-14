@@ -1,9 +1,6 @@
-use crate::{
-    renderer::helpers::{self, Pipeline},
-    shaders, CameraMatrices, RenderFrame,
-};
+use crate::{renderer::device::Pipeline, shaders, CameraMatrices, RenderFrame};
 use ash::vk;
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 pub(crate) struct DebugAABBPassData {
     pub(crate) pipeline_layout: shaders::debug_aabb::PipelineLayout,
@@ -24,8 +21,7 @@ impl DebugAABBPassData {
         let file = std::fs::File::open(path).expect("Could not find shader.");
         let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
         debug_assert!(shaders::debug_aabb::load_and_verify_spirv(&bytes));
-        let pipeline = helpers::new_graphics_pipeline2(
-            Arc::clone(&renderer.device),
+        let pipeline = renderer.device.new_graphics_pipeline(
             &[
                 (
                     vk::ShaderStageFlags::VERTEX,
@@ -79,7 +75,7 @@ impl DebugAABBPassData {
                             .build()])
                         .build(),
                 )
-                .layout(pipeline_layout.layout.handle)
+                .layout(*pipeline_layout.layout)
                 .render_pass(renderer.renderpass.handle)
                 .subpass(0)
                 .build(),

@@ -76,7 +76,7 @@ macro_rules! define_timeline {
             pub(crate) struct Timeline;
 
             impl $crate::renderer::device::Timeline for Timeline {
-                const MAX: u64 = self::MAX;
+                const MAX: u64 = MAX;
             }
         }
     };
