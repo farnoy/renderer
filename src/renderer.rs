@@ -1904,7 +1904,7 @@ pub(crate) fn depth_only_pass(
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     graphics_submissions: Res<GraphicsSubmissions>,
-    mut query: Query<(&Position, &DrawIndex, &GltfMesh)>,
+    mut query: Query<(&Position, &DrawIndex, &GltfMesh, &CoarseCulled)>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "DepthOnlyPass");
@@ -1984,7 +1984,10 @@ pub(crate) fn depth_only_pass(
                 &model_data.model_set.current(image_index.0),
                 &camera_matrices.set.current(image_index.0),
             );
-            for (mesh_position, draw_index, mesh) in &mut query.iter() {
+            for (mesh_position, draw_index, mesh, coarse_culled) in &mut query.iter() {
+                if coarse_culled.0 {
+                    continue;
+                }
                 let (index_buffer, index_count) =
                     pick_lod(&mesh.index_buffers, camera.position, mesh_position.0);
                 renderer.device.cmd_bind_index_buffer(
