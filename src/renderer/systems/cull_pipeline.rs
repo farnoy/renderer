@@ -46,7 +46,7 @@ pub(crate) struct CullPassDataPrivate {
 const INITIAL_WORKGROUP_SIZE: u32 = 512;
 
 pub(crate) fn coarse_culling(camera: Res<Camera>, mut query: Query<(&AABB, &mut CoarseCulled)>) {
-    for (aabb, mut coarse_culled) in &mut query.iter() {
+    for (aabb, mut coarse_culled) in query.iter_mut() {
         let mut outside = false;
         'per_plane: for plane in camera.frustum_planes.iter() {
             let e = aabb.0.half_extents().dot(&plane.xyz().abs());
@@ -236,7 +236,7 @@ pub(crate) fn cull_pass(
     camera: Res<Camera>,
     model_data: Res<ModelData>,
     camera_matrices: Res<CameraMatrices>,
-    mut query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
+    query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
 ) {
     #[cfg(feature = "microprofile")]
     microprofile::scope!("ecs", "cull pass");

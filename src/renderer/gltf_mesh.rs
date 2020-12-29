@@ -79,7 +79,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         gltf::image::Source::Uri { uri, .. } => {
             image::open(Path::new(path).parent().unwrap().join(uri))
                 .expect("failed to open base color texture")
-                .to_rgba()
+                .to_rgba8()
         }
         gltf::image::Source::View { .. } => {
             unimplemented!("Reading embedded textures in gltf not supported")

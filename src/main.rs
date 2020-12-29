@@ -1,7 +1,6 @@
 #![feature(arbitrary_self_types)]
 #![feature(backtrace)]
 #![feature(vec_remove_item)]
-#![feature(const_int_pow)]
 #![allow(clippy::new_without_default)]
 #![feature(maybe_uninit_uninit_array, maybe_uninit_slice)]
 #![feature(const_generics)]
@@ -355,7 +354,7 @@ fn main() {
     }
 
     let mut schedule = Schedule::default();
-    schedule.add_stage("acquire_framebuffer");
+    schedule.add_stage("acquire_framebuffer", SystemStage::serial());
     schedule.add_system_to_stage("acquire_framebuffer", acquire_framebuffer.system());
     schedule.add_system_to_stage(
         "acquire_framebuffer",
@@ -369,11 +368,16 @@ fn main() {
     schedule.add_system_to_stage(
         "acquire_framebuffer",
         (|mut query: Query<
-            With<GltfMeshBaseColorTexture, With<Position, With<GltfMesh, &mut DrawIndex>>>,
+            &mut DrawIndex,
+            (
+                With<GltfMeshBaseColorTexture>,
+                With<Position>,
+                With<GltfMesh>,
+            ),
         >| {
             #[cfg(feature = "profiling")]
             microprofile::scope!("ecs", "AssignDrawIndex");
-            for (counter, ref mut draw_idx) in query.iter().into_iter().enumerate() {
+            for (counter, ref mut draw_idx) in query.iter_mut().enumerate() {
                 draw_idx.0 = counter
                     .try_into()
                     .expect("failed to downcast draw_idx to u32");
@@ -394,7 +398,7 @@ fn main() {
     schedule.add_system_to_stage("acquire_framebuffer", camera_controller.system());
     schedule.add_system_to_stage("acquire_framebuffer", launch_projectiles_test.system());
     schedule.add_system_to_stage("acquire_framebuffer", update_projectiles.system());
-    schedule.add_stage("render setup");
+    schedule.add_stage("render setup", SystemStage::parallel());
     schedule.add_system_to_stage("render setup", consolidate_mesh_buffers.system());
     schedule.add_system_to_stage("render setup", model_matrix_calculation.system());
     schedule.add_system_to_stage("render setup", aabb_calculation.system());
@@ -409,18 +413,21 @@ fn main() {
     schedule.add_system_to_stage("render setup", cull_pass.system());
     schedule.add_system_to_stage("render setup", transition_shadow_maps.system());
     schedule.add_system_to_stage("render setup", update_shadow_map_descriptors.system());
-    schedule.add_stage("consolidate textures");
+    schedule.add_stage("consolidate textures", SystemStage::parallel());
     schedule.add_system_to_stage(
         "consolidate textures",
         synchronize_base_color_textures_consolidate.system(),
     );
 
-    schedule.add_stage("prepare graphics work");
+    schedule.add_stage("prepare graphics work", SystemStage::parallel());
     schedule.add_system_to_stage("prepare graphics work", prepare_shadow_maps.system());
     schedule.add_system_to_stage("prepare graphics work", depth_only_pass.system());
-    schedule.add_system_to_stage("prepare graphics work", render_frame.system());
+    schedule.add_system_to_stage(
+        "prepare graphics work",
+        render_frame.system().chain(submit_render_frame.system()),
+    );
 
-    schedule.add_stage("submit graphics work");
+    schedule.add_stage("submit graphics work", SystemStage::parallel());
     schedule.add_system_to_stage("submit graphics work", submit_graphics_commands.system());
 
     #[cfg(feature = "profiling")]
@@ -428,7 +435,11 @@ fn main() {
         use std::time::Instant;
         let counter = Arc::new(Mutex::new(Instant::now()));
         let counter2 = Arc::clone(&counter);
-        schedule.add_stage_before("prepare graphics work", "start graphics profiling");
+        schedule.add_stage_before(
+            "prepare graphics work",
+            "start graphics profiling",
+            SystemStage::parallel(),
+        );
         schedule.add_system_to_stage(
             "start graphics profiling",
             (move || {
@@ -436,7 +447,11 @@ fn main() {
             })
             .system(),
         );
-        schedule.add_stage_after("submit graphics work", "end graphics profiling");
+        schedule.add_stage_after(
+            "submit graphics work",
+            "end graphics profiling",
+            SystemStage::parallel(),
+        );
         schedule.add_system_to_stage(
             "end graphics profiling",
             (move || {
@@ -446,11 +461,9 @@ fn main() {
         );
     }
 
-    schedule.initialize(&mut resources);
+    schedule.initialize(&mut world, &mut resources);
 
     resources.insert(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
-
-    let mut executor = ParallelExecutor::default();
 
     'frame: loop {
         #[cfg(feature = "profiling")]
@@ -469,7 +482,7 @@ fn main() {
             {
                 #[cfg(feature = "profiling")]
                 microprofile::scope!("game-loop", "ecs");
-                executor.run(&mut schedule, &mut world, &mut resources);
+                schedule.run(&mut world, &mut resources);
                 // schedule.run(&mut world, &mut resources);
             }
             {
@@ -477,14 +490,10 @@ fn main() {
                 microprofile::scope!("game-loop", "gui");
                 gui_render.render(Rc::clone(&gui), Rc::clone(&input_handler), &mut resources);
             }
-            let (mut renderer, present_data, swapchain, image_index) = resources
-                .query::<(
-                    ResMut<RenderFrame>,
-                    Res<PresentData>,
-                    Res<Swapchain>,
-                    Res<ImageIndex>,
-                )>()
-                .unwrap();
+            let mut renderer = resources.get_mut().unwrap();
+            let present_data = resources.get().unwrap();
+            let swapchain = resources.get().unwrap();
+            let image_index = resources.get().unwrap();
 
             {
                 #[cfg(feature = "profiling")]

@@ -494,7 +494,7 @@ impl LocalGraphicsCommandPool {
 
 impl FromResources for LocalGraphicsCommandPool {
     fn from_resources(resources: &Resources) -> Self {
-        let renderer = resources.query::<Res<RenderFrame>>().unwrap();
+        let renderer = resources.get().unwrap();
         Self::new(&renderer)
     }
 }
@@ -990,7 +990,7 @@ impl FromResources for MainRenderCommandPool {
     }
 }
 
-pub(crate) fn render_frame(
+pub(crate) fn render_frame<'a>(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     model_data: Res<ModelData>,
@@ -998,17 +998,16 @@ pub(crate) fn render_frame(
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
-    mut local_graphics_command_pool: Local<MainRenderCommandPool>,
+    mut local_graphics_command_pool: Local<'a, MainRenderCommandPool>,
     debug_aabb_pass_data: Res<DebugAABBPassData>,
     shadow_mapping_data: Res<ShadowMappingData>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
     main_framebuffer: Res<MainFramebuffer>,
     gltf_pass: Res<GltfPassData>,
-    graphics_submissions: Res<GraphicsSubmissions>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
-    mut query: Query<&AABB>,
-) {
+    query: Query<&AABB>,
+) -> vk::CommandBuffer {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "Renderer");
     // TODO: count this? pack and defragment draw calls?
@@ -1197,8 +1196,14 @@ pub(crate) fn render_frame(
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
 
-    let command_buffer = command_buffer.end();
-    *graphics_submissions.main_render.lock() = *command_buffer;
+    *command_buffer.end()
+}
+
+pub(crate) fn submit_render_frame(
+    In(command_buffer): In<vk::CommandBuffer>,
+    graphics_submissions: Res<GraphicsSubmissions>,
+) {
+    *graphics_submissions.main_render.lock() = command_buffer;
 }
 
 pub(crate) struct GraphicsSubmissions {
@@ -1610,25 +1615,13 @@ impl GuiRender {
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "GuiRender");
-        let (
-            renderer,
-            image_index,
-            mut runtime_config,
-            mut cull_pass_data,
-            main_framebuffer,
-            swapchain,
-            mut camera,
-        ) = resources
-            .query::<(
-                Res<RenderFrame>,
-                Res<ImageIndex>,
-                ResMut<RuntimeConfiguration>,
-                ResMut<CullPassData>,
-                Res<MainFramebuffer>,
-                Res<Swapchain>,
-                ResMut<Camera>,
-            )>()
-            .unwrap();
+        let renderer = resources.get::<RenderFrame>().unwrap();
+        let image_index = resources.get::<ImageIndex>().unwrap();
+        let mut runtime_config = resources.get_mut::<RuntimeConfiguration>().unwrap();
+        let mut cull_pass_data = resources.get_mut::<CullPassData>().unwrap();
+        let main_framebuffer = resources.get::<MainFramebuffer>().unwrap();
+        let swapchain = resources.get::<Swapchain>().unwrap();
+        let mut camera = resources.get_mut::<Camera>().unwrap();
         let mut gui = gui.borrow_mut();
         let gui_draw_data = gui.update(
             &renderer,
@@ -1859,7 +1852,7 @@ pub(crate) fn model_matrices_upload(
         .current_mut(image_index.0)
         .map::<glm::Mat4>()
         .expect("failed to map Model buffer");
-    for (draw_index, model_matrix) in &mut query.iter() {
+    for (draw_index, model_matrix) in query.iter_mut() {
         model_mapped[draw_index.0 as usize] = model_matrix.0;
     }
 }
@@ -1904,7 +1897,7 @@ pub(crate) fn depth_only_pass(
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     graphics_submissions: Res<GraphicsSubmissions>,
-    mut query: Query<(&Position, &DrawIndex, &GltfMesh, &CoarseCulled)>,
+    query: Query<(&Position, &DrawIndex, &GltfMesh, &CoarseCulled)>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "DepthOnlyPass");

@@ -306,7 +306,7 @@ pub(crate) fn shadow_mapping_mvp_calculation(
     const_assert_eq!(size_of::<LightMatrices>(), 208);
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "shadow mapping light matrices calculation");
-    for (light_position, light_rotation, mut light_matrix) in &mut query.iter() {
+    for (light_position, light_rotation, mut light_matrix) in query.iter_mut() {
         let near = 10.0;
         let far = 400.0;
         let projection = glm::perspective_lh_zo(1.0, glm::radians(&glm::vec1(70.0)).x, near, far);
@@ -396,8 +396,8 @@ pub(crate) fn prepare_shadow_maps(
     model_data: Res<ModelData>,
     mut local_graphics_command_pool: Local<ShadowMappingCommandPool>,
     graphics_submissions: Res<GraphicsSubmissions>,
-    mut mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
-    mut shadow_query: Query<With<Light, (&Position, &ShadowMappingLightMatrices)>>,
+    mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
+    shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "shadow_mapping");
@@ -440,7 +440,7 @@ pub(crate) fn prepare_shadow_maps(
             *shadow_mapping.depth_pipeline,
         );
 
-        for (ix, (light_position, shadow_mvp)) in shadow_query.iter().iter().enumerate() {
+        for (ix, (light_position, shadow_mvp)) in shadow_query.iter().enumerate() {
             depth_pass.depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
@@ -541,7 +541,7 @@ pub(crate) fn update_shadow_map_descriptors(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     shadow_mapping: Res<ShadowMappingData>,
-    mut shadow_query: Query<With<Light, &ShadowMappingLightMatrices>>,
+    mut shadow_query: Query<&ShadowMappingLightMatrices, With<Light>>,
 ) {
     renderer
         .graphics_timeline_semaphore
@@ -556,7 +556,7 @@ pub(crate) fn update_shadow_map_descriptors(
     let mut mvp_updates =
         vec![[vk::DescriptorBufferInfo::default(); 1]; DIM as usize * DIM as usize];
     let mut write_descriptors = vec![];
-    for (ix, shadow_mvp) in shadow_query.iter().iter().enumerate() {
+    for (ix, shadow_mvp) in shadow_query.iter().enumerate() {
         mvp_updates[ix] = [vk::DescriptorBufferInfo {
             buffer: shadow_mvp.matrices_buffer.current(image_index.0).handle,
             offset: 0,

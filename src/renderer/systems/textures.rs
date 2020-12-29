@@ -64,9 +64,9 @@ impl BaseColorDescriptorSet {
 }
 
 pub(crate) fn synchronize_base_color_textures_visit(
-    mut commands: Commands,
+    commands: &mut Commands,
     renderer: Res<RenderFrame>,
-    mut query: Query<Without<BaseColorVisitedMarker, (Entity, &GltfMeshBaseColorTexture)>>,
+    query: Query<(Entity, &GltfMeshBaseColorTexture), Without<BaseColorVisitedMarker>>,
 ) {
     for (entity, base_color) in &mut query.iter() {
         let image_view = helpers::new_image_view(

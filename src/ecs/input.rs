@@ -106,23 +106,12 @@ impl InputHandler {
         gui: Rc<RefCell<Gui>>,
         resources: &mut Resources,
     ) {
-        let (
-            renderer,
-            mut runtime_config,
-            mut input_state,
-            mut input_actions,
-            mut camera,
-            mut resized,
-        ) = resources
-            .query::<(
-                Res<RenderFrame>,
-                ResMut<RuntimeConfiguration>,
-                ResMut<InputState>,
-                ResMut<InputActions>,
-                ResMut<Camera>,
-                ResMut<Resized>,
-            )>()
-            .unwrap();
+        let renderer = resources.get::<RenderFrame>().unwrap();
+        let mut runtime_config = resources.get_mut::<RuntimeConfiguration>().unwrap();
+        let mut input_state = resources.get_mut::<InputState>().unwrap();
+        let mut input_actions = resources.get_mut::<InputActions>().unwrap();
+        let mut camera = resources.get_mut::<Camera>().unwrap();
+        let mut resized = resources.get_mut::<Resized>().unwrap();
 
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "InputHandler");

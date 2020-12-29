@@ -39,7 +39,7 @@ pub(crate) mod systems {
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "ModelMatrixCalculation");
-        for (pos, rot, scale, mut model_matrix) in &mut query.iter() {
+        for (pos, rot, scale, mut model_matrix) in query.iter_mut() {
             model_matrix.0 = glm::translation(&pos.0.coords)
                 * rot.0.to_homogeneous()
                 * glm::scaling(&glm::Vec3::repeat(scale.0));
@@ -107,7 +107,7 @@ pub(crate) mod systems {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "AABBCalculation");
         use std::f32::{MAX, MIN};
-        for (model_matrix, mesh, mut aabb) in &mut query.iter() {
+        for (model_matrix, mesh, mut aabb) in query.iter_mut() {
             let min = mesh.aabb.mins;
             let max = mesh.aabb.maxs;
             let (min, max) = [
@@ -145,7 +145,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn launch_projectiles_test(
-        mut commands: Commands,
+        commands: &mut Commands,
         input_actions: Res<InputActions>,
         mesh_library: Res<MeshLibrary>,
         camera: Res<Camera>,
@@ -172,7 +172,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn update_projectiles(
-        mut commands: Commands,
+        commands: &mut Commands,
         frame_timing: Res<FrameTiming>,
         mut query: Query<(
             Entity,
@@ -184,7 +184,7 @@ pub(crate) mod systems {
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "UpdateProjectiles");
-        for (entity, mut position, rotation, target, velocity) in &mut query.iter() {
+        for (entity, mut position, rotation, target, velocity) in query.iter_mut() {
             if na::distance(&position.0, &target.0) < 0.1 {
                 commands.despawn(entity);
                 continue;

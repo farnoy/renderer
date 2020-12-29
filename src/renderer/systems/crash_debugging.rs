@@ -20,7 +20,7 @@ impl FromResources for CrashBuffer {
     fn from_resources(#[allow(unused)] resources: &Resources) -> Self {
         #[cfg(feature = "crash_debugging")]
         {
-            let renderer = resources.query::<Res<RenderFrame>>().unwrap();
+            let renderer = resources.get::<RenderFrame>().unwrap();
             CrashBuffer(renderer.new_buffered(|ix| {
                 let buf = renderer.device.new_buffer(
                     vk::BufferUsageFlags::TRANSFER_DST,
