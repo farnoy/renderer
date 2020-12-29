@@ -35,10 +35,6 @@ fn main() {
 
     env_logger::init();
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(8)
-        .build_global()
-        .unwrap();
     let (renderer, swapchain, events_loop) = RenderFrame::new();
 
     let mut world = World::new();

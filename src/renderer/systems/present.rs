@@ -9,6 +9,7 @@ use microprofile::scope;
 use std::u64;
 
 pub(crate) struct PresentData {
+    framebuffer_acquire_semaphore: Semaphore,
     render_complete_semaphore: Semaphore,
 }
 
@@ -28,6 +29,11 @@ pub(crate) struct PresentFramebuffer;
 
 impl PresentData {
     pub(crate) fn new(renderer: &RenderFrame) -> PresentData {
+        let framebuffer_acquire_semaphore = renderer.device.new_semaphore();
+        renderer.device.set_object_name(
+            framebuffer_acquire_semaphore.handle,
+            "Framebuffer acquire semaphore",
+        );
         let render_complete_semaphore = renderer.device.new_semaphore();
         renderer.device.set_object_name(
             render_complete_semaphore.handle,
@@ -35,6 +41,7 @@ impl PresentData {
         );
 
         PresentData {
+            framebuffer_acquire_semaphore,
             render_complete_semaphore,
         }
     }
@@ -63,7 +70,7 @@ pub(crate) fn acquire_framebuffer(
     }
 
     let swapchain_needs_recreating =
-        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);
+        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
 
     if swapchain_needs_recreating {
         unsafe {
@@ -73,7 +80,7 @@ pub(crate) fn acquire_framebuffer(
         *main_attachments = MainAttachments::new(&renderer, &swapchain);
         *main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
         *present_data = PresentData::new(&renderer);
-        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *image_index);
+        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
     }
 }
 
@@ -82,22 +89,17 @@ impl AcquireFramebuffer {
     pub(crate) fn exec(
         renderer: &RenderFrame,
         swapchain: &Swapchain,
+        present_data: &mut PresentData,
         image_index: &mut ImageIndex,
     ) -> bool {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "AcquireFramebuffer::exec");
-        let image_acquired_semaphore = renderer.device.new_semaphore();
-        renderer.device.set_object_name(
-            image_acquired_semaphore.handle,
-            "Image acquired semaphore temp",
-        );
-        let x = renderer.device.new_fence();
         let result = unsafe {
             swapchain.ext.acquire_next_image(
                 swapchain.swapchain,
                 u64::MAX,
-                image_acquired_semaphore.handle,
-                x.handle,
+                present_data.framebuffer_acquire_semaphore.handle,
+                vk::Fence::null(),
             )
         };
 
@@ -134,7 +136,7 @@ impl AcquireFramebuffer {
 
         let wait_semaphores = &[
             renderer.graphics_timeline_semaphore.handle,
-            image_acquired_semaphore.handle,
+            present_data.framebuffer_acquire_semaphore.handle,
         ];
         let queue = renderer.device.graphics_queue.lock();
         let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
@@ -155,13 +157,6 @@ impl AcquireFramebuffer {
                 .queue_submit(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
-
-        rayon::spawn(move || {
-            unsafe {
-                device.wait_for_fences(&[x.handle], true, u64::MAX).unwrap();
-            }
-            drop(image_acquired_semaphore);
-        });
 
         false
     }
