@@ -50,7 +50,7 @@ pub(crate) fn consolidate_mesh_buffers(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
-    mut query: Query<&GltfMesh>,
+    query: Query<&GltfMesh>,
 ) {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "consolidate mesh buffers");

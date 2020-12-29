@@ -982,15 +982,7 @@ impl GltfPassData {
     }
 }
 
-pub(crate) struct MainRenderCommandPool(LocalGraphicsCommandPool);
-
-impl FromResources for MainRenderCommandPool {
-    fn from_resources(resources: &Resources) -> Self {
-        MainRenderCommandPool(LocalGraphicsCommandPool::from_resources(resources))
-    }
-}
-
-pub(crate) fn render_frame<'a>(
+pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     model_data: Res<ModelData>,
@@ -998,7 +990,7 @@ pub(crate) fn render_frame<'a>(
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
-    mut local_graphics_command_pool: Local<'a, MainRenderCommandPool>,
+    mut local_graphics_command_pool: Local<LocalGraphicsCommandPool>,
     debug_aabb_pass_data: Res<DebugAABBPassData>,
     shadow_mapping_data: Res<ShadowMappingData>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
@@ -1015,7 +1007,6 @@ pub(crate) fn render_frame<'a>(
         / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
 
     let command_pool = local_graphics_command_pool
-        .0
         .pools
         .current_mut(image_index.0);
 
@@ -1625,7 +1616,7 @@ impl GuiRender {
         let mut gui = gui.borrow_mut();
         let gui_draw_data = gui.update(
             &renderer,
-            &input_handler.borrow(),
+            &mut input_handler.borrow_mut(),
             &swapchain,
             &mut *camera,
             &mut *runtime_config,
@@ -1877,19 +1868,11 @@ pub(crate) fn camera_matrices_upload(
     };
 }
 
-pub(crate) struct DepthPassCommandPool(LocalGraphicsCommandPool);
-
-impl FromResources for DepthPassCommandPool {
-    fn from_resources(resources: &Resources) -> Self {
-        DepthPassCommandPool(LocalGraphicsCommandPool::from_resources(resources))
-    }
-}
-
 pub(crate) fn depth_only_pass(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     depth_pass: Res<DepthPassData>,
-    mut local_graphics_command_pool: Local<DepthPassCommandPool>,
+    mut local_graphics_command_pool: Local<LocalGraphicsCommandPool>,
     main_framebuffer: Res<MainFramebuffer>,
     model_data: Res<ModelData>,
     runtime_config: Res<RuntimeConfiguration>,
@@ -1903,7 +1886,6 @@ pub(crate) fn depth_only_pass(
     microprofile::scope!("ecs", "DepthOnlyPass");
 
     let command_pool = local_graphics_command_pool
-        .0
         .pools
         .current_mut(image_index.0);
 

@@ -227,7 +227,7 @@ pub(crate) mod systems {
         pub(crate) fn update<'a>(
             &'a mut self,
             renderer: &RenderFrame,
-            input_handler: &InputHandler,
+            input_handler: &mut InputHandler,
             swapchain: &Swapchain,
             camera: &mut Camera,
             runtime_config: &mut RuntimeConfiguration,
@@ -280,11 +280,9 @@ pub(crate) mod systems {
                         .build(&ui)
                     {
                         ui.set_next_item_width(100.0);
-                        imgui::Slider::new(
-                            im_str!("Compute cull workgroup size"),
-                            1..=renderer.device.limits.max_compute_work_group_size[0],
-                        )
-                        .build(&ui, &mut cull_pass_data.specialization.local_workgroup_size);
+                        imgui::Slider::new(im_str!("Compute cull workgroup size"))
+                            .range(1..=renderer.device.limits.max_compute_work_group_size[0])
+                            .build(&ui, &mut cull_pass_data.specialization.local_workgroup_size);
                     }
 
                     if imgui::CollapsingHeader::new(&im_str!("Camera"))

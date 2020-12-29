@@ -211,7 +211,7 @@ macro_rules! make_pipe {
         )*
     };
     (@vertex_descs [$($e:ident : $t:ident),*]) => {
-        #[allow(unused_mut, clippy::eval_order_dependence)]
+        #[allow(unused, unused_mut, clippy::eval_order_dependence)]
         const ATTRIBUTE_DESCS: &[vk::VertexInputAttributeDescription] = {
             let mut ix = 0;
             &[
@@ -230,7 +230,7 @@ macro_rules! make_pipe {
             ]
         };
 
-        #[allow(unused_mut, clippy::eval_order_dependence)]
+        #[allow(unused, unused_mut, clippy::eval_order_dependence)]
         const BINDING_DESCS: &[vk::VertexInputBindingDescription] = {
             let mut ix = 0;
             &[

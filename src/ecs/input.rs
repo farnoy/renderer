@@ -22,7 +22,7 @@ use winit::{
         ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode,
         WindowEvent,
     },
-    platform::desktop::EventLoopExtDesktop,
+    platform::run_return::EventLoopExtRunReturn,
 };
 
 #[derive(Debug)]

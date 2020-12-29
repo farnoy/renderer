@@ -327,19 +327,11 @@ pub(crate) fn shadow_mapping_mvp_calculation(
     }
 }
 
-pub(crate) struct ShadowMappingCommandPool(LocalGraphicsCommandPool);
-
-impl FromResources for ShadowMappingCommandPool {
-    fn from_resources(resources: &Resources) -> Self {
-        ShadowMappingCommandPool(LocalGraphicsCommandPool::from_resources(resources))
-    }
-}
-
 pub(crate) fn transition_shadow_maps(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     mut shadow_mapping: ResMut<ShadowMappingData>,
-    mut local_graphics_command_pool: Local<ShadowMappingCommandPool>,
+    mut local_graphics_command_pool: Local<LocalGraphicsCommandPool>,
     graphics_submissions: Res<GraphicsSubmissions>,
 ) {
     #[cfg(feature = "profiling")]
@@ -349,7 +341,6 @@ pub(crate) fn transition_shadow_maps(
         *graphics_submissions.transition_shadow_mapping.lock() = None;
     } else {
         let command_pool = local_graphics_command_pool
-            .0
             .pools
             .current_mut(image_index.0);
 
@@ -394,7 +385,7 @@ pub(crate) fn prepare_shadow_maps(
     image_index: Res<ImageIndex>,
     shadow_mapping: Res<ShadowMappingData>,
     model_data: Res<ModelData>,
-    mut local_graphics_command_pool: Local<ShadowMappingCommandPool>,
+    mut local_graphics_command_pool: Local<LocalGraphicsCommandPool>,
     graphics_submissions: Res<GraphicsSubmissions>,
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
@@ -403,7 +394,6 @@ pub(crate) fn prepare_shadow_maps(
     microprofile::scope!("ecs", "shadow_mapping");
 
     let command_pool = local_graphics_command_pool
-        .0
         .pools
         .current_mut(image_index.0);
 
@@ -541,7 +531,7 @@ pub(crate) fn update_shadow_map_descriptors(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     shadow_mapping: Res<ShadowMappingData>,
-    mut shadow_query: Query<&ShadowMappingLightMatrices, With<Light>>,
+    shadow_query: Query<&ShadowMappingLightMatrices, With<Light>>,
 ) {
     renderer
         .graphics_timeline_semaphore
