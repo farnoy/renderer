@@ -340,9 +340,7 @@ pub(crate) fn transition_shadow_maps(
     if shadow_mapping.image_transitioned {
         *graphics_submissions.transition_shadow_mapping.lock() = None;
     } else {
-        let command_pool = local_graphics_command_pool
-            .pools
-            .current_mut(image_index.0);
+        let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
 
         let mut command_session = command_pool.session();
 
@@ -393,9 +391,7 @@ pub(crate) fn prepare_shadow_maps(
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "shadow_mapping");
 
-    let command_pool = local_graphics_command_pool
-        .pools
-        .current_mut(image_index.0);
+    let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
 
     unsafe {
         #[cfg(feature = "microprofile")]

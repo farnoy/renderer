@@ -103,8 +103,6 @@ impl AcquireFramebuffer {
             )
         };
 
-        let device = renderer.device.clone();
-
         match result {
             Ok((ix, false)) => image_index.0 = ix,
             Ok((ix, true)) => {
@@ -164,10 +162,10 @@ impl AcquireFramebuffer {
 
 impl PresentFramebuffer {
     pub(crate) fn exec(
-        renderer: &mut RenderFrame,
-        present_data: &PresentData,
-        swapchain: &Swapchain,
-        image_index: &ImageIndex,
+        mut renderer: ResMut<RenderFrame>,
+        present_data: Res<PresentData>,
+        swapchain: Res<Swapchain>,
+        image_index: Res<ImageIndex>,
     ) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "PresentFramebuffer");
@@ -214,6 +212,7 @@ impl PresentFramebuffer {
             Err(vk::Result::ERROR_DEVICE_LOST) => panic!("device lost in PresentFramebuffer"),
             _ => panic!("unknown condition in PresentFramebuffer"),
         }
+        drop(queue);
         renderer.previous_frame_number_for_swapchain_index[image_index.0 as usize] =
             renderer.frame_number;
     }

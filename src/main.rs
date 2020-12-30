@@ -27,7 +27,7 @@ use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
 use renderer::{DrawIndex, *};
-use std::{cell::RefCell, convert::TryInto, rc::Rc, sync::Arc};
+use std::{convert::TryInto, sync::Arc};
 
 fn main() {
     #[cfg(feature = "profiling")]
@@ -65,25 +65,21 @@ fn main() {
     let shadow_mapping_data =
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
 
-    let gui = Rc::new(RefCell::new(Gui::new()));
-    let mut gui_render = GuiRender::new(
-        &renderer,
-        &main_descriptor_pool,
-        &swapchain,
-        &mut gui.borrow_mut(),
-    );
-    let mut imgui_platform = WinitPlatform::init(&mut gui.borrow_mut().imgui);
+    let mut gui = Gui::new();
+    let gui_render_data =
+        GuiRenderData::new(&renderer, &main_descriptor_pool, &swapchain, &mut gui);
+    let mut imgui_platform = WinitPlatform::init(&mut gui.imgui);
     imgui_platform.attach_window(
-        gui.borrow_mut().imgui.io_mut(),
+        gui.imgui.io_mut(),
         &renderer.instance.window,
         HiDpiMode::Locked(1.0), // TODO: Revert this to Default if we can make the app obey winit DPI
     );
 
-    let input_handler = Rc::new(RefCell::new(InputHandler {
+    let input_handler = InputHandler {
         events_loop,
         quit_handle: quit_handle.clone(),
         imgui_platform,
-    }));
+    };
 
     let gltf_pass = GltfPassData::new(
         &renderer,
@@ -345,12 +341,18 @@ fn main() {
     resources.insert(gltf_pass);
     resources.insert(debug_aabb_pass_data);
     resources.insert(GraphicsSubmissions::default());
+    resources.insert_thread_local(input_handler);
+    resources.insert_thread_local(gui);
+    resources.insert_thread_local(gui_render_data);
     if cfg!(feature = "crash_debugging") {
         resources.insert(CrashBuffer::from_resources(&resources));
     }
 
     let mut schedule = Schedule::default();
-    schedule.add_stage("acquire_framebuffer", SystemStage::serial());
+    schedule.add_stage("input", SystemStage::serial());
+    schedule.add_system_to_stage("input", InputHandler::run.system());
+
+    schedule.add_stage("acquire_framebuffer", SystemStage::parallel());
     schedule.add_system_to_stage("acquire_framebuffer", acquire_framebuffer.system());
     schedule.add_system_to_stage(
         "acquire_framebuffer",
@@ -422,6 +424,7 @@ fn main() {
         "prepare graphics work",
         render_frame.system().chain(submit_render_frame.system()),
     );
+    schedule.add_system_to_stage("prepare graphics work", GuiRender::render.system());
 
     schedule.add_stage("submit graphics work", SystemStage::parallel());
     schedule.add_system_to_stage("submit graphics work", submit_graphics_commands.system());
@@ -457,6 +460,19 @@ fn main() {
         );
     }
 
+    schedule.add_stage("present", SystemStage::serial());
+    schedule.add_system_to_stage("present", PresentFramebuffer::exec.system());
+
+    schedule.add_stage(
+        "update counters",
+        SystemStage::serial().with_system(
+            (|mut renderer: ResMut<RenderFrame>| {
+                renderer.frame_number += 1;
+            })
+            .system(),
+        ),
+    );
+
     schedule.initialize(&mut world, &mut resources);
 
     resources.insert(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
@@ -467,37 +483,9 @@ fn main() {
         #[cfg(feature = "profiling")]
         microprofile::scope!("game-loop", "all");
         {
-            {
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("game-loop", "input");
-                let input_handler = Rc::clone(&input_handler);
-                let gui = Rc::clone(&gui);
-                InputHandler::run(input_handler, gui, &mut resources)
-            }
-
-            {
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("game-loop", "ecs");
-                schedule.run(&mut world, &mut resources);
-                // schedule.run(&mut world, &mut resources);
-            }
-            {
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("game-loop", "gui");
-                gui_render.render(Rc::clone(&gui), Rc::clone(&input_handler), &mut resources);
-            }
-            let mut renderer = resources.get_mut().unwrap();
-            let present_data = resources.get().unwrap();
-            let swapchain = resources.get().unwrap();
-            let image_index = resources.get().unwrap();
-
-            {
-                #[cfg(feature = "profiling")]
-                microprofile::scope!("game-loop", "present");
-                PresentFramebuffer::exec(&mut renderer, &present_data, &swapchain, &image_index);
-            }
-            renderer.frame_number += 1;
-            // world.defrag(None);
+            #[cfg(feature = "profiling")]
+            microprofile::scope!("game-loop", "ecs");
+            schedule.run(&mut world, &mut resources);
         }
         if *quit_handle.lock() {
             unsafe {

@@ -42,10 +42,7 @@ use bevy_ecs::prelude::*;
 use microprofile::scope;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::{
-    cell::RefCell, convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, rc::Rc,
-    sync::Arc,
-};
+use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, path::PathBuf, sync::Arc};
 
 pub(crate) fn up_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::y())
@@ -1006,9 +1003,7 @@ pub(crate) fn render_frame(
     let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
         / size_of::<vk::DrawIndexedIndirectCommand>() as u32;
 
-    let command_pool = local_graphics_command_pool
-        .pools
-        .current_mut(image_index.0);
+    let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
 
     unsafe {
         #[cfg(feature = "microprofile")]
@@ -1202,6 +1197,7 @@ pub(crate) struct GraphicsSubmissions {
     shadow_mapping: Mutex<vk::CommandBuffer>,
     depth_pass: Mutex<vk::CommandBuffer>,
     main_render: Mutex<vk::CommandBuffer>,
+    gui_pass: Mutex<vk::CommandBuffer>,
 }
 
 impl Default for GraphicsSubmissions {
@@ -1211,6 +1207,7 @@ impl Default for GraphicsSubmissions {
             shadow_mapping: Mutex::new(vk::CommandBuffer::null()),
             depth_pass: Mutex::new(vk::CommandBuffer::null()),
             main_render: Mutex::new(vk::CommandBuffer::null()),
+            gui_pass: Mutex::new(vk::CommandBuffer::null()),
         }
     }
 }
@@ -1263,8 +1260,11 @@ pub(crate) fn submit_graphics_commands(
         vk::PipelineStageFlags::COMPUTE_SHADER,
     ];
     let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-    let command_buffers = &[*graphics_submissions.main_render.get_mut()];
-    let signal_semaphore_values = &[timeline_value::<_, graphics::SceneDraw>(
+    let command_buffers = &[
+        *graphics_submissions.main_render.get_mut(),
+        *graphics_submissions.gui_pass.get_mut(),
+    ];
+    let signal_semaphore_values = &[timeline_value::<_, graphics::GuiDraw>(
         renderer.frame_number,
     )];
     let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
@@ -1288,9 +1288,44 @@ pub(crate) fn submit_graphics_commands(
             .queue_submit(*queue, submits, vk::Fence::null())
             .unwrap();
     }
+
+    /*
+    {
+        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+        let wait_semaphore_values = &[timeline_value::<_, graphics::SceneDraw>(
+            renderer.frame_number,
+        )];
+        let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
+        let command_buffers = &[*command_buffer];
+        let signal_semaphore_values = &[timeline_value::<_, graphics::GuiDraw>(
+            renderer.frame_number,
+        )];
+        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(wait_semaphore_values)
+            .signal_semaphore_values(signal_semaphore_values)
+            .build();
+        let submit = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .push_next(&mut signal_timeline)
+            .wait_dst_stage_mask(dst_stage_masks)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores)
+            .build();
+        let queue = renderer.device.graphics_queue.lock();
+
+        unsafe {
+            renderer
+                .device
+                .queue_submit(*queue, &[submit], vk::Fence::null())
+                .unwrap();
+        }
+
+    }
+    */
 }
 
-pub(crate) struct GuiRender {
+pub(crate) struct GuiRenderData {
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     texture: Image,
@@ -1308,13 +1343,13 @@ pub(crate) struct GuiRender {
     command_pool: DoubleBuffered<StrictCommandPool>,
 }
 
-impl GuiRender {
+impl GuiRenderData {
     pub(crate) fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &MainDescriptorPool,
         swapchain: &Swapchain,
         gui: &mut Gui,
-    ) -> GuiRender {
+    ) -> GuiRenderData {
         let imgui = &mut gui.imgui;
         imgui
             .io_mut()
@@ -1582,7 +1617,7 @@ impl GuiRender {
             )
         });
 
-        GuiRender {
+        GuiRenderData {
             vertex_buffer,
             index_buffer,
             texture,
@@ -1597,33 +1632,46 @@ impl GuiRender {
             command_pool,
         }
     }
+}
 
-    pub(crate) fn render(
-        &mut self,
-        gui: Rc<RefCell<Gui>>,
-        input_handler: Rc<RefCell<InputHandler>>,
-        resources: &mut Resources,
-    ) {
+pub(crate) struct GuiRender;
+
+impl GuiRender {
+    pub(crate) fn render(_world: &mut World, resources: &mut Resources) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "GuiRender");
         let renderer = resources.get::<RenderFrame>().unwrap();
         let image_index = resources.get::<ImageIndex>().unwrap();
+        let GuiRenderData {
+            command_pool: ref mut gui_command_pool,
+            texture: ref gui_texture,
+            renderpass: ref gui_renderpass,
+            ref mut transitioned,
+            ref vertex_buffer,
+            ref index_buffer,
+            ref pipeline_layout,
+            ref pipeline,
+            ref descriptor_set,
+            ..
+        } = *resources.get_thread_local_mut::<GuiRenderData>().unwrap();
         let mut runtime_config = resources.get_mut::<RuntimeConfiguration>().unwrap();
         let mut cull_pass_data = resources.get_mut::<CullPassData>().unwrap();
         let main_framebuffer = resources.get::<MainFramebuffer>().unwrap();
         let swapchain = resources.get::<Swapchain>().unwrap();
         let mut camera = resources.get_mut::<Camera>().unwrap();
-        let mut gui = gui.borrow_mut();
+        let mut input_handler = resources.get_thread_local_mut::<InputHandler>().unwrap();
+        let mut gui = resources.get_thread_local_mut::<Gui>().unwrap();
+        let graphics_submissions = resources.get::<GraphicsSubmissions>().unwrap();
         let gui_draw_data = gui.update(
             &renderer,
-            &mut input_handler.borrow_mut(),
+            &mut input_handler,
             &swapchain,
             &mut *camera,
             &mut *runtime_config,
             &mut *cull_pass_data,
         );
 
-        let command_pool = self.command_pool.current_mut(image_index.0);
+        let command_pool = gui_command_pool.current_mut(image_index.0);
 
         unsafe {
             #[cfg(feature = "microprofile")]
@@ -1638,7 +1686,7 @@ impl GuiRender {
         unsafe {
             let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
 
-            if !self.transitioned {
+            if !*transitioned {
                 renderer.device.cmd_pipeline_barrier(
                     *command_buffer,
                     vk::PipelineStageFlags::HOST,
@@ -1647,7 +1695,7 @@ impl GuiRender {
                     &[],
                     &[],
                     &[vk::ImageMemoryBarrier::builder()
-                        .image(self.texture.handle)
+                        .image(gui_texture.handle)
                         .subresource_range(vk::ImageSubresourceRange {
                             aspect_mask: vk::ImageAspectFlags::COLOR,
                             base_mip_level: 0,
@@ -1664,12 +1712,12 @@ impl GuiRender {
                         .build()],
                 );
             }
-            self.transitioned = true;
+            *transitioned = true;
 
             renderer.device.cmd_begin_render_pass(
                 *command_buffer,
                 &vk::RenderPassBeginInfo::builder()
-                    .render_pass(self.renderpass.handle)
+                    .render_pass(gui_renderpass.handle)
                     .framebuffer(main_framebuffer.handles[image_index.0 as usize].handle)
                     .render_area(vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
@@ -1705,15 +1753,6 @@ impl GuiRender {
                 }],
             );
 
-            // Split lifetimes
-            let GuiRender {
-                ref vertex_buffer,
-                ref index_buffer,
-                ref pipeline_layout,
-                ref pipeline,
-                ref descriptor_set,
-                ..
-            } = self;
             pipeline_layout.bind_descriptor_sets(&renderer.device, *command_buffer, descriptor_set);
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
@@ -1799,35 +1838,7 @@ impl GuiRender {
             renderer.device.cmd_end_render_pass(*command_buffer);
         }
         let command_buffer = command_buffer.end();
-        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let wait_semaphore_values = &[timeline_value::<_, graphics::SceneDraw>(
-            renderer.frame_number,
-        )];
-        let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let command_buffers = &[*command_buffer];
-        let signal_semaphore_values = &[timeline_value::<_, graphics::GuiDraw>(
-            renderer.frame_number,
-        )];
-        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(wait_semaphore_values)
-            .signal_semaphore_values(signal_semaphore_values)
-            .build();
-        let submit = vk::SubmitInfo::builder()
-            .wait_semaphores(wait_semaphores)
-            .push_next(&mut signal_timeline)
-            .wait_dst_stage_mask(dst_stage_masks)
-            .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores)
-            .build();
-        let queue = renderer.device.graphics_queue.lock();
-
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &[submit], vk::Fence::null())
-                .unwrap();
-        }
+        *graphics_submissions.gui_pass.lock() = *command_buffer;
     }
 }
 
@@ -1885,9 +1896,7 @@ pub(crate) fn depth_only_pass(
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "DepthOnlyPass");
 
-    let command_pool = local_graphics_command_pool
-        .pools
-        .current_mut(image_index.0);
+    let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
 
     unsafe {
         #[cfg(feature = "microprofile")]
