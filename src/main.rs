@@ -66,8 +66,6 @@ fn main() {
         ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
 
     let mut gui = Gui::new();
-    let gui_render_data =
-        GuiRenderData::new(&renderer, &main_descriptor_pool, &swapchain, &mut gui);
     let mut imgui_platform = WinitPlatform::init(&mut gui.imgui);
     imgui_platform.attach_window(
         gui.imgui.io_mut(),
@@ -343,7 +341,6 @@ fn main() {
     resources.insert(GraphicsSubmissions::default());
     resources.insert_thread_local(input_handler);
     resources.insert_thread_local(gui);
-    resources.insert_thread_local(gui_render_data);
     if cfg!(feature = "crash_debugging") {
         resources.insert(CrashBuffer::from_resources(&resources));
     }
@@ -417,17 +414,7 @@ fn main() {
         synchronize_base_color_textures_consolidate.system(),
     );
 
-    schedule.add_stage("prepare graphics work", SystemStage::parallel());
-    schedule.add_system_to_stage("prepare graphics work", prepare_shadow_maps.system());
-    schedule.add_system_to_stage("prepare graphics work", depth_only_pass.system());
-    schedule.add_system_to_stage(
-        "prepare graphics work",
-        render_frame.system().chain(submit_render_frame.system()),
-    );
-    schedule.add_system_to_stage("prepare graphics work", GuiRender::render.system());
-
-    schedule.add_stage("submit graphics work", SystemStage::parallel());
-    schedule.add_system_to_stage("submit graphics work", submit_graphics_commands.system());
+    schedule.add_stage("graphics work", graphics_stage());
 
     #[cfg(feature = "profiling")]
     {
@@ -435,7 +422,7 @@ fn main() {
         let counter = Arc::new(Mutex::new(Instant::now()));
         let counter2 = Arc::clone(&counter);
         schedule.add_stage_before(
-            "prepare graphics work",
+            "graphics work",
             "start graphics profiling",
             SystemStage::parallel(),
         );
@@ -447,7 +434,7 @@ fn main() {
             .system(),
         );
         schedule.add_stage_after(
-            "submit graphics work",
+            "graphics work",
             "end graphics profiling",
             SystemStage::parallel(),
         );

@@ -37,7 +37,7 @@ use crate::{
     },
 };
 use ash::{version::DeviceV1_0, vk};
-use bevy_ecs::prelude::*;
+use bevy_ecs::{prelude::*, RunOnce};
 #[cfg(feature = "microprofile")]
 use microprofile::scope;
 use parking_lot::Mutex;
@@ -979,7 +979,13 @@ impl GltfPassData {
     }
 }
 
-pub(crate) fn render_frame(
+pub(crate) fn render_frame_final() -> impl System<In = (), Out = ()> {
+    render_frame
+        .system()
+        .chain(set_graphics_submission(|gfx| &gfx.main_render))
+}
+
+fn render_frame(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     model_data: Res<ModelData>,
@@ -1185,11 +1191,18 @@ pub(crate) fn render_frame(
     *command_buffer.end()
 }
 
-pub(crate) fn submit_render_frame(
-    In(command_buffer): In<vk::CommandBuffer>,
-    graphics_submissions: Res<GraphicsSubmissions>,
-) {
-    *graphics_submissions.main_render.lock() = command_buffer;
+fn set_graphics_submission<
+    F: 'static + Fn(&GraphicsSubmissions) -> &Mutex<vk::CommandBuffer> + Sync + Send,
+>(
+    f: F,
+) -> impl System<In = vk::CommandBuffer, Out = ()> {
+    Box::new(
+        move |In(command_buffer): In<vk::CommandBuffer>,
+              graphics_submissions: Res<GraphicsSubmissions>| {
+            *f(&graphics_submissions).lock() = command_buffer;
+        },
+    )
+    .system()
 }
 
 pub(crate) struct GraphicsSubmissions {
@@ -1288,41 +1301,6 @@ pub(crate) fn submit_graphics_commands(
             .queue_submit(*queue, submits, vk::Fence::null())
             .unwrap();
     }
-
-    /*
-    {
-        let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let wait_semaphore_values = &[timeline_value::<_, graphics::SceneDraw>(
-            renderer.frame_number,
-        )];
-        let dst_stage_masks = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-        let command_buffers = &[*command_buffer];
-        let signal_semaphore_values = &[timeline_value::<_, graphics::GuiDraw>(
-            renderer.frame_number,
-        )];
-        let mut signal_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(wait_semaphore_values)
-            .signal_semaphore_values(signal_semaphore_values)
-            .build();
-        let submit = vk::SubmitInfo::builder()
-            .wait_semaphores(wait_semaphores)
-            .push_next(&mut signal_timeline)
-            .wait_dst_stage_mask(dst_stage_masks)
-            .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores)
-            .build();
-        let queue = renderer.device.graphics_queue.lock();
-
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &[submit], vk::Fence::null())
-                .unwrap();
-        }
-
-    }
-    */
 }
 
 pub(crate) struct GuiRenderData {
@@ -1343,8 +1321,18 @@ pub(crate) struct GuiRenderData {
     command_pool: DoubleBuffered<StrictCommandPool>,
 }
 
+impl FromResources for GuiRenderData {
+    fn from_resources(resources: &Resources) -> Self {
+        let renderer = resources.get::<RenderFrame>().unwrap();
+        let main_descriptor_pool = resources.get::<MainDescriptorPool>().unwrap();
+        let swapchain = resources.get::<Swapchain>().unwrap();
+        let mut gui = resources.get_thread_local_mut::<Gui>().unwrap();
+        Self::new(&renderer, &main_descriptor_pool, &swapchain, &mut gui)
+    }
+}
+
 impl GuiRenderData {
-    pub(crate) fn new(
+    fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &MainDescriptorPool,
         swapchain: &Swapchain,
@@ -1634,10 +1622,14 @@ impl GuiRenderData {
     }
 }
 
-pub(crate) struct GuiRender;
+struct GuiRender;
 
 impl GuiRender {
-    pub(crate) fn render(_world: &mut World, resources: &mut Resources) {
+    fn setup(_world: &mut World, resources: &mut Resources) {
+        resources.insert_thread_local(GuiRenderData::from_resources(resources));
+    }
+
+    fn render(_world: &mut World, resources: &mut Resources) {
         #[cfg(feature = "profiling")]
         microprofile::scope!("ecs", "GuiRender");
         let renderer = resources.get::<RenderFrame>().unwrap();
@@ -1879,7 +1871,13 @@ pub(crate) fn camera_matrices_upload(
     };
 }
 
-pub(crate) fn depth_only_pass(
+fn depth_only_pass() -> impl System<In = (), Out = ()> {
+    depth_only_pass_internal
+        .system()
+        .chain(set_graphics_submission(|gfx| &gfx.depth_pass))
+}
+
+fn depth_only_pass_internal(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     depth_pass: Res<DepthPassData>,
@@ -1890,9 +1888,8 @@ pub(crate) fn depth_only_pass(
     camera: Res<Camera>,
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
-    graphics_submissions: Res<GraphicsSubmissions>,
     query: Query<(&Position, &DrawIndex, &GltfMesh, &CoarseCulled)>,
-) {
+) -> vk::CommandBuffer {
     #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "DepthOnlyPass");
 
@@ -1998,6 +1995,24 @@ pub(crate) fn depth_only_pass(
         }
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
-    let command_buffer = command_buffer.end();
-    *graphics_submissions.depth_pass.lock() = *command_buffer;
+    *command_buffer.end()
+}
+
+pub(crate) fn graphics_stage() -> Schedule {
+    Schedule::default()
+        .with_stage(
+            "setup",
+            SystemStage::serial()
+                .with_run_criteria(RunOnce::default())
+                .with_system(GuiRender::setup.system()),
+        )
+        .with_stage(
+            "main",
+            SystemStage::parallel()
+                .with_system(prepare_shadow_maps.system())
+                .with_system(depth_only_pass())
+                .with_system(render_frame_final())
+                .with_system(GuiRender::render.system())
+                .with_system(submit_graphics_commands.system()),
+        )
 }

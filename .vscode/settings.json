@@ -9,4 +9,5 @@
     "profiling",
     "crash_debugging"
   ],
+  "rust-analyzer.cargo.loadOutDirsFromCheck": true,
 }
