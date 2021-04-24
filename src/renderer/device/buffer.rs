@@ -24,19 +24,17 @@ impl Buffer {
         allocation_usage: alloc::VmaMemoryUsage,
         size: vk::DeviceSize,
     ) -> Buffer {
-        let (queue_family_indices, sharing_mode) = if device.compute_queue_family != device.graphics_queue_family
-            || device.transfer_queue_family != device.graphics_queue_family
-        {
-            (
-                vec![
-                    device.graphics_queue_family,
-                    device.compute_queue_family,
-                    device.transfer_queue_family,
-                ],
-                vk::SharingMode::CONCURRENT,
-            )
+        let mut queue_family_indices = vec![
+            device.graphics_queue_family,
+            device.compute_queue_family,
+            device.transfer_queue_family,
+        ];
+        queue_family_indices.sort();
+        queue_family_indices.dedup();
+        let sharing_mode = if queue_family_indices.len() > 1 {
+            vk::SharingMode::CONCURRENT
         } else {
-            (vec![device.graphics_queue_family], vk::SharingMode::EXCLUSIVE)
+            vk::SharingMode::EXCLUSIVE
         };
         let buffer_create_info = vk::BufferCreateInfo::builder()
             .size(size)

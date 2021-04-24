@@ -135,6 +135,9 @@ impl Device {
                 (compute_queue_family, compute_queue_len),
                 (transfer_queue_family, 1),
             ],
+            (Some((compute_queue_family, compute_queue_len)), None) => {
+                vec![(graphics_queue_family, 1), (compute_queue_family, compute_queue_len)]
+            }
             _ => vec![(graphics_queue_family, 1)],
         };
         let device = {
@@ -208,6 +211,8 @@ impl Device {
             None => None,
         };
 
+        let compute_queue_family = compute_queues_spec.map(|a| a.0).unwrap_or(graphics_queue_family);
+
         #[cfg(feature = "crash_debugging")]
         let buffer_marker_fn = vk::AmdBufferMarkerFn::load(|name| unsafe {
             transmute(instance.get_device_proc_addr(device.handle(), name.as_ptr()))
@@ -220,8 +225,8 @@ impl Device {
             allocator,
             limits: properties.limits,
             graphics_queue_family,
-            compute_queue_family: compute_queues_spec.map(|a| a.0).unwrap_or(graphics_queue_family),
-            transfer_queue_family: transfer_queue_family.unwrap_or(graphics_queue_family),
+            compute_queue_family,
+            transfer_queue_family: transfer_queue_family.unwrap_or(compute_queue_family),
             graphics_queue: Mutex::new(graphics_queue),
             compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
             transfer_queue: transfer_queue.map(Mutex::new),
@@ -247,7 +252,8 @@ impl Device {
     }
 
     pub(crate) fn transfer_queue(&self) -> &Mutex<vk::Queue> {
-        self.transfer_queue.as_ref().unwrap_or(&self.graphics_queue)
+        // TODO: better selection?
+        self.transfer_queue.as_ref().unwrap_or_else(|| self.compute_queue(0))
     }
 
     pub(crate) fn allocation_stats(&self) -> alloc::VmaStats {

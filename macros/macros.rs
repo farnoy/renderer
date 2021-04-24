@@ -1336,7 +1336,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         ));
         let shader_path = shader_path.to_str().unwrap();
         spirv_code.extend_one(quote! {
-            pub(crate) static #shader_stage: &'static [u8] = include_bytes!(#shader_path);
+            pub(crate) static #shader_stage: &'static [u8] = include_bytes_align_as!(u32, #shader_path);
         });
     }
 
