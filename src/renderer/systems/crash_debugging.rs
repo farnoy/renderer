@@ -1,6 +1,6 @@
 #[cfg(feature = "crash_debugging")]
 use super::super::{alloc::VmaMemoryUsage, Buffer, DoubleBuffered};
-use super::super::{ImageIndex, RenderFrame};
+use super::super::{Device, ImageIndex, RenderFrame};
 use ash::vk;
 use bevy_ecs::prelude::*;
 #[cfg(feature = "crash_debugging")]
@@ -16,11 +16,11 @@ pub(crate) struct CrashBuffer(DoubleBuffered<Buffer>);
 #[cfg(not(feature = "crash_debugging"))]
 pub(crate) struct CrashBuffer;
 
-impl FromResources for CrashBuffer {
-    fn from_resources(#[allow(unused)] resources: &Resources) -> Self {
+impl FromWorld for CrashBuffer {
+    fn from_world(#[allow(unused)] world: &mut World) -> Self {
         #[cfg(feature = "crash_debugging")]
         {
-            let renderer = resources.get::<RenderFrame>().unwrap();
+            let renderer = world.get_resource::<RenderFrame>().unwrap();
             CrashBuffer(renderer.new_buffered(|ix| {
                 let buf = renderer.device.new_buffer(
                     vk::BufferUsageFlags::TRANSFER_DST,
@@ -49,18 +49,13 @@ impl CrashBuffer {
         step: u8,
     ) {
         unsafe {
-            renderer
-                .device
-                .buffer_marker_fn
-                .cmd_write_buffer_marker_amd(
-                    command_buffer,
-                    pipeline_stage,
-                    self.0.current(image_index.0).handle,
-                    (step as vk::DeviceSize) * size_of::<u32>() as vk::DeviceSize,
-                    (renderer.frame_number % (u32::MAX as u64))
-                        .try_into()
-                        .unwrap(),
-                );
+            renderer.device.buffer_marker_fn.cmd_write_buffer_marker_amd(
+                command_buffer,
+                pipeline_stage,
+                self.0.current(image_index.0).handle,
+                (step as vk::DeviceSize) * size_of::<u32>() as vk::DeviceSize,
+                (renderer.frame_number % (u32::MAX as u64)).try_into().unwrap(),
+            );
         }
     }
 
@@ -74,14 +69,10 @@ impl CrashBuffer {
         _step: u8,
     ) {
     }
-}
 
-#[cfg(feature = "crash_debugging")]
-impl Drop for CrashBuffer {
-    fn drop(&mut self) {
-        for (ix, buffer) in self.0.iter().enumerate() {
-            let mapped = buffer.map::<CrashStages>().unwrap();
-            dbg!(ix, mapped[0]);
-        }
+    #[allow(unused_variables)]
+    pub(crate) fn destroy(self, device: &Device) {
+        #[cfg(feature = "crash_debugging")]
+        self.0.into_iter().for_each(|buf| buf.destroy(device));
     }
 }

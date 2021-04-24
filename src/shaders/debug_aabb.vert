@@ -10,7 +10,7 @@ layout(push_constant, scalar) uniform PushConstants {
 layout(set = 0, binding = 0, scalar) uniform CameraMatrices {
     mat4 projection;
     mat4 view;
-    vec4 pos;
+    vec4 position;
     mat4 pv;
 };
 

@@ -1,11 +1,9 @@
-use crate::{
-    define_timeline,
-    renderer::{
-        alloc,
-        device::{Buffer, TimelineSemaphore},
-        timeline_value, timeline_value_last, timeline_value_previous, GltfMesh, ImageIndex,
-        LocalGraphicsCommandPool, RenderFrame,
-    },
+use crate::renderer::{
+    alloc,
+    device::{Buffer, Device},
+    frame_graph,
+    shaders::cull_set,
+    GltfMesh, ImageIndex, LocalGraphicsCommandPool, RenderFrame, RenderStage, SwapchainIndexToFrameNumber,
 };
 use ash::{
     version::DeviceV1_0,
@@ -13,7 +11,7 @@ use ash::{
 };
 use bevy_ecs::prelude::*;
 use hashbrown::{hash_map::Entry, HashMap};
-#[cfg(feature = "microprofile")]
+
 use microprofile::scope;
 use std::{mem::size_of, u64};
 
@@ -29,30 +27,29 @@ pub(crate) struct ConsolidatedMeshBuffers {
     /// Next free index offset in the buffer that can be used for a new mesh
     next_index_offset: vk::DeviceSize,
     /// Stores position data for each mesh
-    pub(crate) position_buffer: Buffer,
+    pub(crate) position_buffer: cull_set::bindings::vertex_buffer::Buffer,
     /// Stores normal data for each mesh
-    pub(crate) normal_buffer: Buffer,
+    pub(crate) normal_buffer: cull_set::bindings::vertex_buffer::Buffer,
     /// Stores uv data for each mesh
     pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
-    pub(crate) index_buffer: Buffer,
-    /// If this semaphore is present, a modification to the consolidated buffer has happened
-    /// and the user must synchronize with it
-    pub(crate) sync_timeline: TimelineSemaphore,
-    /// Pool for commands recorded as part of this pass
-    command_pool: LocalGraphicsCommandPool,
+    pub(crate) index_buffer: cull_set::bindings::index_buffer::Buffer,
+    // If this semaphore is present, a modification to the consolidated buffer has happened
+    // and the user must synchronize with it
+    // pub(crate) sync_timeline: TimelineSemaphore,
 }
 
-define_timeline!(sync Consolidate);
+renderer_macros::define_timeline!(pub(crate) ConsolidateTimeline [Perform]);
 
 /// Identifies distinct GLTF meshes in components and copies them to a shared buffer
 pub(crate) fn consolidate_mesh_buffers(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
+    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
+    mut command_pool: ResMut<LocalGraphicsCommandPool<0>>,
     query: Query<&GltfMesh>,
 ) {
-    #[cfg(feature = "profiling")]
     microprofile::scope!("ecs", "consolidate mesh buffers");
 
     let ConsolidatedMeshBuffers {
@@ -64,36 +61,33 @@ pub(crate) fn consolidate_mesh_buffers(
         ref index_buffer,
         ref mut vertex_offsets,
         ref mut index_offsets,
-        ref mut command_pool,
-        ref sync_timeline,
+        // ref sync_timeline,
         ..
     } = *consolidated_mesh_buffers;
 
-    {
-        #[cfg(feature = "microprofile")]
-        microprofile::scope!("consolidate mesh buffers", "wait previous");
-        sync_timeline
-            .wait(timeline_value_previous::<_, sync::Consolidate>(
-                &image_index,
-                &renderer,
-            ))
-            .unwrap();
-    }
+    // Wait until we can reuse the command pool
+    renderer
+        .consolidate_timeline_semaphore
+        .wait(
+            &renderer.device,
+            ConsolidateTimeline::Perform.as_of_previous(&image_index, &swapchain_index_map),
+        )
+        .unwrap();
 
     let command_pool = command_pool.pools.current_mut(image_index.0);
 
-    unsafe {
-        #[cfg(feature = "microprofile")]
-        microprofile::scope!("consolidate mesh buffers", "CP reset");
-        command_pool.reset();
-    }
+    command_pool.reset(&renderer.device);
 
-    let mut command_session = command_pool.session();
+    let mut command_session = command_pool.session(&renderer.device);
 
     let mut needs_transfer = false;
     let command_buffer = command_session.record_one_time("consolidate mesh buffers cb");
     for mesh in &mut query.iter() {
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
+            debug_assert!(
+                *next_vertex_offset + mesh.vertex_len
+                    < (size_of::<cull_set::bindings::vertex_buffer::T>() / size_of::<[f32; 3]>()) as u64,
+            );
             v.insert(*next_vertex_offset);
             let size_3 = mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
             let size_2 = mesh.vertex_len * size_of::<[f32; 2]>() as vk::DeviceSize;
@@ -105,31 +99,22 @@ pub(crate) fn consolidate_mesh_buffers(
                 renderer.device.cmd_copy_buffer(
                     *command_buffer,
                     mesh.vertex_buffer.handle,
-                    position_buffer.handle,
-                    &[vk::BufferCopy::builder()
-                        .size(size_3)
-                        .dst_offset(offset_3)
-                        .build()],
+                    position_buffer.buffer.handle,
+                    &[vk::BufferCopy::builder().size(size_3).dst_offset(offset_3).build()],
                 );
                 // normal
                 renderer.device.cmd_copy_buffer(
                     *command_buffer,
                     mesh.normal_buffer.handle,
-                    normal_buffer.handle,
-                    &[vk::BufferCopy::builder()
-                        .size(size_3)
-                        .dst_offset(offset_3)
-                        .build()],
+                    normal_buffer.buffer.handle,
+                    &[vk::BufferCopy::builder().size(size_3).dst_offset(offset_3).build()],
                 );
                 // uv
                 renderer.device.cmd_copy_buffer(
                     *command_buffer,
                     mesh.uv_buffer.handle,
                     uv_buffer.handle,
-                    &[vk::BufferCopy::builder()
-                        .size(size_2)
-                        .dst_offset(offset_2)
-                        .build()],
+                    &[vk::BufferCopy::builder().size(size_2).dst_offset(offset_2).build()],
                 );
             }
             *next_vertex_offset += mesh.vertex_len;
@@ -144,7 +129,7 @@ pub(crate) fn consolidate_mesh_buffers(
                     renderer.device.cmd_copy_buffer(
                         *command_buffer,
                         lod_index_buffer.handle,
-                        index_buffer.handle,
+                        index_buffer.buffer.handle,
                         &[vk::BufferCopy::builder()
                             .size(index_len * size_of::<u32>() as vk::DeviceSize)
                             .dst_offset(*next_index_offset * size_of::<u32>() as vk::DeviceSize)
@@ -157,36 +142,16 @@ pub(crate) fn consolidate_mesh_buffers(
         }
     }
     let command_buffer = command_buffer.end();
+    let command_buffers = if needs_transfer { vec![*command_buffer] } else { vec![] };
 
-    if needs_transfer {
-        let command_buffers = &[*command_buffer];
-        let signal_semaphores = &[sync_timeline.handle];
-        let signal_semaphore_values = &[timeline_value::<_, sync::Consolidate>(
-            renderer.frame_number,
-        )];
-        let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-            .signal_semaphore_values(signal_semaphore_values);
-        let submit = vk::SubmitInfo::builder()
-            .push_next(&mut wait_timeline)
-            .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores)
-            .build();
+    let queue = renderer.device.graphics_queue().lock();
 
-        let queue = renderer.device.graphics_queue.lock();
+    frame_graph::ConsolidateMeshBuffers::Stage::queue_submit(&image_index, &renderer, *queue, &command_buffers)
+        .unwrap();
 
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &[submit], vk::Fence::null())
-                .unwrap();
-        }
-    } else {
-        sync_timeline
-            .signal(timeline_value::<_, sync::Consolidate>(
-                renderer.frame_number,
-            ))
-            .unwrap();
-    }
+    // TODO: host_signal is too quick in optimized builds, surpassing last frame's async signal operation
+    //       need to do an empty submit to wait for last frame first, then signal
+    // renderpass3::ConsolidateMeshBuffers::host_signal(&renderer).unwrap();
 }
 
 // TODO: dynamic unloading of meshes
@@ -197,46 +162,46 @@ impl ConsolidatedMeshBuffers {
         let vertex_offsets = HashMap::new();
         let index_offsets = HashMap::new();
 
-        let position_buffer = renderer.device.new_buffer(
+        let position_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::STORAGE_BUFFER,
+                | vk::BufferUsageFlags::STORAGE_BUFFER, // storage_buffer not needed?
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            super::super::shaders::cull_set::bindings::vertex_buffer::SIZE,
         );
-        let normal_buffer = renderer.device.new_buffer(
+        renderer
+            .device
+            .set_object_name(position_buffer.buffer.handle, "Consolidated position buffer");
+        let normal_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            super::super::shaders::cull_set::bindings::vertex_buffer::SIZE,
         );
+        renderer
+            .device
+            .set_object_name(normal_buffer.buffer.handle, "Consolidated normals buffer");
         let uv_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             size_of::<super::super::shaders::UVBuffer>() as vk::DeviceSize,
         );
-        let index_buffer = renderer.device.new_buffer(
+        renderer
+            .device
+            .set_object_name(uv_buffer.handle, "Consolidated UV buffer");
+        let index_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::INDEX_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::STORAGE_BUFFER,
             alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            super::super::shaders::cull_set::bindings::index_buffer::SIZE,
         );
-        let sync_timeline = renderer
+        renderer
             .device
-            .new_semaphore_timeline(timeline_value_last::<_, sync::Consolidate>(
-                renderer.frame_number,
-            ));
-        renderer.device.set_object_name(
-            sync_timeline.handle,
-            "Consolidate mesh buffers sync timeline",
-        );
-        let sync_point_fence = renderer.device.new_fence();
-        renderer.device.set_object_name(
-            sync_point_fence.handle,
-            "Consolidate vertex buffers sync point fence",
-        );
-
-        let command_pool = LocalGraphicsCommandPool::new(&renderer);
+            .set_object_name(index_buffer.buffer.handle, "Consolidated Index buffer");
+        // let sync_timeline = renderer
+        //     .device
+        //     .new_semaphore_timeline(ConsolidateTimeline::Perform.as_of_last(renderer.frame_number));
+        // renderer.device.set_object_name(
+        //     sync_timeline.handle,
+        //     "Consolidate mesh buffers sync timeline",
+        // );
 
         ConsolidatedMeshBuffers {
             vertex_offsets,
@@ -247,8 +212,15 @@ impl ConsolidatedMeshBuffers {
             normal_buffer,
             uv_buffer,
             index_buffer,
-            sync_timeline,
-            command_pool,
+            // sync_timeline,
         }
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.position_buffer.destroy(device);
+        self.normal_buffer.destroy(device);
+        self.uv_buffer.destroy(device);
+        self.index_buffer.destroy(device);
+        // self.sync_timeline.destroy(device);
     }
 }

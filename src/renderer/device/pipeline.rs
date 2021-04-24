@@ -1,42 +1,36 @@
 use super::{DescriptorSetLayout, Device};
 use ash::{version::DeviceV1_0, vk};
-use std::{ffi::CString, fs::File, io::Read, ops::Deref, path::PathBuf, sync::Arc};
+use std::{ffi::CString, ops::Deref};
 
 pub(crate) struct PipelineLayout {
     handle: vk::PipelineLayout,
-    device: Arc<Device>,
 }
 
 pub(crate) struct Pipeline {
     handle: vk::Pipeline,
-    device: Arc<Device>,
 }
 
 impl PipelineLayout {
-    pub(crate) fn new(
-        device: &Arc<Device>,
+    pub(super) fn new(
+        device: &Device,
         descriptor_set_layouts: &[&DescriptorSetLayout],
         push_constant_ranges: &[vk::PushConstantRange],
     ) -> PipelineLayout {
-        let descriptor_set_layout_handles = descriptor_set_layouts
-            .iter()
-            .map(|l| l.handle)
-            .collect::<Vec<_>>();
+        let descriptor_set_layout_handles = descriptor_set_layouts.iter().map(|l| l.handle).collect::<Vec<_>>();
         let create_info = vk::PipelineLayoutCreateInfo::builder()
             .set_layouts(&descriptor_set_layout_handles)
             .push_constant_ranges(push_constant_ranges);
 
-        let pipeline_layout = unsafe {
-            device
-                .device
-                .create_pipeline_layout(&create_info, None)
-                .unwrap()
-        };
+        let pipeline_layout = unsafe { device.device.create_pipeline_layout(&create_info, None).unwrap() };
 
         PipelineLayout {
             handle: pipeline_layout,
-            device: Arc::clone(device),
         }
+    }
+
+    pub(crate) fn destroy(mut self, device: &Device) {
+        unsafe { device.destroy_pipeline_layout(self.handle, None) }
+        self.handle = vk::PipelineLayout::null();
     }
 }
 
@@ -48,28 +42,27 @@ impl Deref for PipelineLayout {
     }
 }
 
+#[cfg(debug_assertions)]
 impl Drop for PipelineLayout {
     fn drop(&mut self) {
-        unsafe {
-            self.device
-                .device
-                .destroy_pipeline_layout(self.handle, None)
-        }
+        debug_assert_eq!(
+            self.handle,
+            vk::PipelineLayout::null(),
+            "PipelineLayout not destroyed before Drop"
+        );
     }
 }
 
 impl Pipeline {
     pub(crate) fn new_graphics_pipeline(
-        device: Arc<Device>,
-        shaders: &[(vk::ShaderStageFlags, PathBuf)],
+        device: &Device,
+        shaders: &[(vk::ShaderStageFlags, &[u8], Option<&vk::SpecializationInfo>)],
         mut create_info: vk::GraphicsPipelineCreateInfo,
     ) -> Pipeline {
         let shader_modules = shaders
             .iter()
-            .map(|&(stage, ref path)| {
-                let file = File::open(path).expect("Could not find shader.");
-                let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-                let (l, aligned, r) = unsafe { bytes.as_slice().align_to() };
+            .map(|&(stage, ref bytes, spec_info)| {
+                let (l, aligned, r) = unsafe { bytes.align_to() };
                 assert!(l.is_empty() && r.is_empty(), "failed to realign code");
                 let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);
                 let shader_module = unsafe {
@@ -78,18 +71,21 @@ impl Pipeline {
                         .create_shader_module(&shader_info, None)
                         .expect("Vertex shader module error")
                 };
-                (shader_module, stage)
+                (shader_module, stage, spec_info)
             })
             .collect::<Vec<_>>();
         let shader_entry_name = CString::new("main").unwrap();
         let shader_stage_create_infos = shader_modules
             .iter()
-            .map(|&(module, stage)| {
-                vk::PipelineShaderStageCreateInfo::builder()
+            .map(|&(module, stage, spec_info)| {
+                let create_info = vk::PipelineShaderStageCreateInfo::builder()
                     .module(module)
                     .name(&shader_entry_name)
-                    .stage(stage)
-                    .build()
+                    .stage(stage);
+                match spec_info {
+                    Some(spec_info) => create_info.specialization_info(spec_info).build(),
+                    None => create_info.build(),
+                }
             })
             .collect::<Vec<_>>();
         create_info.stage_count = shader_stage_create_infos.len() as u32;
@@ -100,7 +96,7 @@ impl Pipeline {
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
                 .expect("Unable to create graphics pipeline")
         };
-        for (shader_module, _stage) in shader_modules {
+        for (shader_module, _stage, _spec_info) in shader_modules {
             unsafe {
                 device.device.destroy_shader_module(shader_module, None);
             }
@@ -108,18 +104,15 @@ impl Pipeline {
 
         Pipeline {
             handle: graphics_pipelines[0],
-            device,
+            // device,
         }
     }
 
     pub(crate) fn new_compute_pipelines(
-        device: Arc<Device>,
+        device: &Device,
         create_infos: &[vk::ComputePipelineCreateInfoBuilder<'_>],
     ) -> Vec<Pipeline> {
-        let infos = create_infos
-            .iter()
-            .map(|builder| **builder)
-            .collect::<Vec<_>>();
+        let infos = create_infos.iter().map(|builder| **builder).collect::<Vec<_>>();
         unsafe {
             device
                 .device
@@ -128,10 +121,15 @@ impl Pipeline {
                 .into_iter()
                 .map(|handle| Pipeline {
                     handle,
-                    device: Arc::clone(&device),
+                    // device: Arc::clone(&device),
                 })
                 .collect()
         }
+    }
+
+    pub(crate) fn destroy(mut self, device: &Device) {
+        unsafe { device.destroy_pipeline(self.handle, None) }
+        self.handle = vk::Pipeline::null();
     }
 }
 
@@ -143,8 +141,35 @@ impl Deref for Pipeline {
     }
 }
 
+#[cfg(debug_assertions)]
 impl Drop for Pipeline {
     fn drop(&mut self) {
-        unsafe { self.device.device.destroy_pipeline(self.handle, None) }
+        debug_assert_eq!(self.handle, vk::Pipeline::null(), "Pipeline not destroyed before Drop");
     }
 }
+
+/*
+#[derive(PartialEq, Eq)]
+pub(crate) enum Viewport {
+    Dynamic,
+    Static(usize, usize),
+}
+
+pub(crate) struct StaticPipeline<const VIEWPORT: Viewport> {
+    inner: Pipeline,
+}
+
+impl<const VIEWPORT: Viewport> StaticPipeline<VIEWPORT> {
+    pub(crate) fn bind(device: &Device, command_buffer: vk::CommandBuffer) {
+        match VIEWPORT {
+            Viewport::Dynamic => {
+                unsafe {
+                    device.cmd_set_viewport(command_buffer, 0, &[]);
+                }
+            },
+            Viewport::Static(w, h) => {
+            }
+        }
+    }
+}
+*/

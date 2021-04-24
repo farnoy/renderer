@@ -1,5 +1,5 @@
 use ash::vk;
-use std::{ptr, sync::Arc};
+use std::ptr;
 
 use super::{super::alloc, mapping::MappedBuffer, Device};
 
@@ -7,13 +7,12 @@ pub(crate) struct Image {
     pub(crate) handle: vk::Image,
     allocation: alloc::VmaAllocation,
     allocation_info: alloc::VmaAllocationInfo,
-    device: Arc<Device>,
 }
 
 impl Image {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        device: &Arc<Device>,
+        device: &Device,
         format: vk::Format,
         extent: vk::Extent3D,
         samples: vk::SampleCountFlags,
@@ -22,18 +21,20 @@ impl Image {
         usage: vk::ImageUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
     ) -> Image {
-        let (queue_family_indices, sharing_mode) =
-            if device.compute_queue_family != device.graphics_queue_family {
-                (
-                    vec![device.graphics_queue_family, device.compute_queue_family],
-                    vk::SharingMode::CONCURRENT,
-                )
-            } else {
-                (
-                    vec![device.graphics_queue_family],
-                    vk::SharingMode::EXCLUSIVE,
-                )
-            };
+        let (queue_family_indices, sharing_mode) = if device.compute_queue_family != device.graphics_queue_family
+            || device.transfer_queue_family != device.graphics_queue_family
+        {
+            (
+                vec![
+                    device.graphics_queue_family,
+                    device.compute_queue_family,
+                    device.transfer_queue_family,
+                ],
+                vk::SharingMode::CONCURRENT,
+            )
+        } else {
+            (vec![device.graphics_queue_family], vk::SharingMode::EXCLUSIVE)
+        };
         let image_create_info = vk::ImageCreateInfo::builder()
             .format(format)
             .extent(extent)
@@ -57,32 +58,30 @@ impl Image {
             usage: allocation_usage,
         };
 
-        let (handle, allocation, allocation_info) = alloc::create_image(
-            device.allocator,
-            &image_create_info,
-            &allocation_create_info,
-        )
-        .unwrap();
+        let (handle, allocation, allocation_info) =
+            alloc::create_image(device.allocator, &image_create_info, &allocation_create_info).unwrap();
 
         Image {
             handle,
             allocation,
             allocation_info,
-            device: Arc::clone(device),
         }
     }
 
-    pub(crate) fn map<'a, T>(&'a self) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
-        MappedBuffer::import(
-            self.device.allocator,
-            self.allocation,
-            &self.allocation_info,
-        )
+    pub(crate) fn map<'a, T>(&'a self, device: &Device) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
+        MappedBuffer::import(device.allocator, self.allocation, &self.allocation_info)
+    }
+
+    pub(crate) fn destroy(mut self, device: &Device) {
+        alloc::destroy_image(device.allocator, self.handle, self.allocation);
+        self.handle = vk::Image::null();
+        // TODO: zero out allocation
     }
 }
 
+#[cfg(debug_assertions)]
 impl Drop for Image {
     fn drop(&mut self) {
-        alloc::destroy_image(self.device.allocator, self.handle, self.allocation)
+        debug_assert_eq!(self.handle, vk::Image::null(), "Image not destroyed before Drop");
     }
 }

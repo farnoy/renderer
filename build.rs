@@ -1,15 +1,8 @@
-extern crate bindgen;
-
 use rayon::prelude::*;
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env, fs, path::Path, process::Command};
 
 fn main() {
-    let jobserver =
-        unsafe { jobserver::Client::from_env().expect("failed to obtain jobserver from cargo") };
+    let jobserver = unsafe { jobserver::Client::from_env().expect("failed to obtain jobserver from cargo") };
     let src = env::var("CARGO_MANIFEST_DIR").unwrap();
     let src = Path::new(&src);
     let dest = env::var("OUT_DIR").unwrap();
@@ -17,12 +10,13 @@ fn main() {
     let shaders = &[
         "debug_aabb.frag",
         "debug_aabb.vert",
-        "depth_prepass.vert",
+        "depth_pipe.vert",
         "generate_work.comp",
+        "compact_draw_stream.comp",
         "gltf_mesh.frag",
         "gltf_mesh.vert",
-        "gui.frag",
-        "gui.vert",
+        "imgui_pipe.frag",
+        "imgui_pipe.vert",
     ];
 
     let latest_helper = fs::read_dir(src.join("src/shaders/helpers"))
@@ -80,12 +74,17 @@ fn main() {
         assert!(result, "failed to compile shader {:?}", &src_path);
     });
 
-    println!("cargo:rustc-link-lib=amd_alloc");
-    if cfg!(unix) {
-        println!("cargo:rustc-link-lib=dylib=stdc++");
-    }
-    println!("cargo:rustc-link-search=native={}", src.to_str().unwrap());
-    println!("cargo:rerun-if-changed=wrapper.h");
+    cc::Build::new()
+        .cpp(true)
+        .flag_if_supported("--std=c++14")
+        .flag_if_supported("/std:c++14")
+        .file("amd_alloc.cc")
+        .includes(if cfg!(windows) {
+            Some("C:\\VulkanSDK\\1.2.170.0\\Include")
+        } else {
+            None
+        })
+        .compile("amd_alloc");
 
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")
@@ -97,55 +96,57 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.2.162.0\\Include"
+            "-IC:\\VulkanSDK\\1.2.170.0\\Include"
         } else {
             ""
         })
-        .whitelist_type("VmaAllocatorCreateInfo")
-        .whitelist_type("VmaAllocatorCreateFlags")
-        .whitelist_type("VmaAllocatorCreateFlagBits")
-        .whitelist_type("VmaAllocation")
-        .whitelist_type("VmaAllocationCreateFlagBits")
-        .whitelist_type("VmaAllocationInfo")
-        .whitelist_type("VmaVulkanFunctions")
+        .allowlist_type("VmaAllocatorCreateInfo")
+        .allowlist_type("VmaAllocatorCreateFlags")
+        .allowlist_type("VmaAllocatorCreateFlagBits")
+        .allowlist_type("VmaAllocation")
+        .allowlist_type("VmaAllocationCreateFlagBits")
+        .allowlist_type("VmaAllocationInfo")
+        .allowlist_type("VmaVulkanFunctions")
         .bitfield_enum("VmaAllocatorCreateFlagBits")
         .bitfield_enum("VmaAllocationCreateFlagBits")
         .rustified_enum("VmaMemoryUsage")
-        .whitelist_function("vmaCalculateStats")
-        .whitelist_function("vmaAllocateMemoryPages")
-        .whitelist_function("vmaCreateAllocator")
-        .whitelist_function("vmaDestroyAllocator")
-        .whitelist_function("vmaSetCurrentFrameIndex")
-        .whitelist_function("vmaMapMemory")
-        .whitelist_function("vmaFlushAllocation")
-        .whitelist_function("vmaUnmapMemory")
-        .whitelist_function("vmaCreateBuffer")
-        .whitelist_function("vmaDestroyBuffer")
-        .whitelist_function("vmaCreateImage")
-        .whitelist_function("vmaDestroyImage")
-        .blacklist_type("VmaAllocator")
-        .blacklist_type("VmaAllocation")
-        .blacklist_type("VmaAllocationCreateInfo")
-        .blacklist_type("VmaAllocationInfo")
-        .blacklist_type("VkBuffer")
-        .blacklist_type("VkBufferCreateInfo")
-        .blacklist_type("VkImage")
-        .blacklist_type("VkImageCreateInfo")
-        .blacklist_type("VkInstance")
-        .blacklist_type("VkFlags")
-        .blacklist_type("VkResult")
-        .blacklist_type("VkStructureType")
-        .blacklist_type("VkDeviceMemory")
-        .blacklist_type("VkDevice")
-        .blacklist_type("VkDeviceSize")
-        .blacklist_type("VkMemoryRequirements")
-        .blacklist_type("VkMemoryRequirements2")
+        .allowlist_function("vmaCalculateStats")
+        .allowlist_function("vmaAllocateMemoryPages")
+        .allowlist_function("vmaCreateAllocator")
+        .allowlist_function("vmaGetAllocationInfo")
+        .allowlist_function("vmaDestroyAllocator")
+        .allowlist_function("vmaSetCurrentFrameIndex")
+        .allowlist_function("vmaMapMemory")
+        .allowlist_function("vmaFlushAllocation")
+        .allowlist_function("vmaUnmapMemory")
+        .allowlist_function("vmaCreateBuffer")
+        .allowlist_function("vmaDestroyBuffer")
+        .allowlist_function("vmaCreateImage")
+        .allowlist_function("vmaDestroyImage")
+        .blocklist_type("VmaAllocator")
+        .blocklist_type("VmaAllocation")
+        .blocklist_type("VmaAllocationCreateInfo")
+        .blocklist_type("VmaAllocationInfo")
+        .blocklist_type("VkBuffer")
+        .blocklist_type("VkBufferCreateInfo")
+        .blocklist_type("VkImage")
+        .blocklist_type("VkImageCreateInfo")
+        .blocklist_type("VkInstance")
+        .blocklist_type("VkFlags")
+        .blocklist_type("VkResult")
+        .blocklist_type("VkStructureType")
+        .blocklist_type("VkDeviceMemory")
+        .blocklist_type("VkDevice")
+        .blocklist_type("VkDeviceSize")
+        .blocklist_type("VkMemoryRequirements")
+        .blocklist_type("VkMemoryRequirements2")
         .new_type_alias("VkMemoryRequirements")
-        .blacklist_type("VkPhysicalDevice")
+        .blocklist_type("VkPhysicalDevice")
         .generate()
         .expect("Unable to generate bindings");
 
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_path = Path::new(&out_dir);
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");

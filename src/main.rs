@@ -1,14 +1,7 @@
-#![feature(arbitrary_self_types)]
 #![feature(backtrace)]
-#![feature(vec_remove_item)]
 #![allow(clippy::new_without_default)]
-#![feature(maybe_uninit_uninit_array, maybe_uninit_slice)]
-#![feature(const_generics)]
-#![allow(incomplete_features)]
 #![warn(unreachable_pub, unused_qualifications)]
 
-#[macro_use]
-extern crate lazy_static;
 #[macro_use]
 extern crate static_assertions;
 
@@ -19,26 +12,35 @@ pub(crate) mod ecs;
 pub(crate) mod renderer;
 
 use ash::version::DeviceV1_0;
-use bevy_ecs::*;
+use bevy_app::*;
+use bevy_ecs::{
+    component::{ComponentDescriptor, StorageType},
+    prelude::*,
+};
 use ecs::{components::*, resources::*, systems::*};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
-#[cfg(feature = "microprofile")]
+
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
 use renderer::{DrawIndex, *};
-use std::{convert::TryInto, sync::Arc};
+use std::sync::Arc;
 
 fn main() {
-    #[cfg(feature = "profiling")]
     microprofile::init!();
+    microprofile::on_thread_create!("main");
 
     env_logger::init();
 
     let (renderer, swapchain, events_loop) = RenderFrame::new();
 
-    let mut world = World::new();
-    let mut resources = Resources::default();
+    let mut app = App::build();
+
+    app.register_component(ComponentDescriptor::new::<BaseColorVisitedMarker>(
+        StorageType::SparseSet,
+    ));
+
+    app.register_component(ComponentDescriptor::new::<Deleting>(StorageType::SparseSet));
 
     let quit_handle = Arc::new(Mutex::new(false));
 
@@ -49,8 +51,7 @@ fn main() {
     let mut main_descriptor_pool = MainDescriptorPool::new(&renderer);
     let camera_matrices = CameraMatrices::new(&renderer, &main_descriptor_pool);
 
-    let base_color_descriptor_set =
-        BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
+    let base_color_descriptor_set = BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
     let model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
     let cull_pass_data = CullPassData::new(
@@ -58,12 +59,13 @@ fn main() {
         &model_data,
         &mut main_descriptor_pool,
         &camera_matrices,
+        &consolidated_mesh_buffers,
     );
-    let cull_pass_data_private = CullPassDataPrivate::new(&renderer);
+    let cull_pass_data_private = CullPassDataPrivate::new(&renderer, &cull_pass_data);
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
-    let depth_pass_data = DepthPassData::new(&renderer, &model_data, &swapchain, &camera_matrices);
-    let shadow_mapping_data =
-        ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
+    let main_renderpass = MainRenderpass::new(&renderer, &main_attachments);
+    let depth_pass_data = DepthPassData::new(&renderer, &model_data, &camera_matrices, &main_renderpass);
+    let shadow_mapping_data = ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
 
     let mut gui = Gui::new();
     let mut imgui_platform = WinitPlatform::init(&mut gui.imgui);
@@ -81,15 +83,12 @@ fn main() {
 
     let gltf_pass = GltfPassData::new(
         &renderer,
+        &main_renderpass,
         &model_data,
         &base_color_descriptor_set,
         &shadow_mapping_data,
         &camera_matrices,
     );
-
-    let debug_aabb_pass_data = DebugAABBPassData::new(&renderer, &camera_matrices);
-
-    let main_framebuffer = MainFramebuffer::new(&renderer, &main_attachments, &swapchain);
 
     let LoadedMesh {
         vertex_buffer,
@@ -114,7 +113,7 @@ fn main() {
     debug_assert!(max_entities > 7); // 7 static ones
 
     // lights
-    world.spawn_batch(vec![
+    app.app.world.spawn_batch(vec![
         (
             Light { strength: 1.0 },
             Position(na::Point3::new(30.0, 20.0, -40.1)),
@@ -183,7 +182,7 @@ fn main() {
     };
 
     // objects
-    world.spawn_batch(vec![
+    app.app.world.spawn_batch(vec![
         (
             Position(na::Point3::new(0.0, 5.0, 0.0)),
             Rotation(na::UnitQuaternion::identity()),
@@ -204,10 +203,7 @@ fn main() {
         ),
         (
             Position(na::Point3::new(0.0, 5.0, 5.0)),
-            Rotation(na::UnitQuaternion::from_axis_angle(
-                &up_vector(),
-                f32::pi() / 2.0,
-            )),
+            Rotation(na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 2.0)),
             Scale(1.0),
             ModelMatrix::default(),
             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
@@ -225,10 +221,7 @@ fn main() {
         ),
         (
             Position(na::Point3::new(-5.0, 5.0, 0.0)),
-            Rotation(na::UnitQuaternion::from_axis_angle(
-                &up_vector(),
-                f32::pi() / 3.0,
-            )),
+            Rotation(na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 3.0)),
             Scale(1.0),
             ModelMatrix::default(),
             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
@@ -282,14 +275,16 @@ fn main() {
         ),
     ]);
 
-    world.spawn_batch((7..max_entities).map(|ix| {
+    drop(box_vertex_buffer);
+    drop(box_normal_buffer);
+    drop(box_uv_buffer);
+    drop(box_index_buffers);
+    drop(box_base_color);
+
+    app.app.world.spawn_batch((7..max_entities).map(|ix| {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
         let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
-        let pos = rot.transform_point(&na::Point3::new(
-            0.0,
-            (ix as f32 * -0.01) + 2.0,
-            5.0 + (ix / 10) as f32,
-        ));
+        let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix / 10) as f32));
 
         (
             Position(pos),
@@ -314,170 +309,236 @@ fn main() {
         )
     }));
 
-    resources.insert(swapchain);
-    resources.insert(mesh_library);
-    resources.insert(Resized(false));
-    resources.insert(FrameTiming::default());
-    resources.insert(InputState::default());
-    resources.insert(InputActions::default());
-    resources.insert(Camera::default());
-    resources.insert(RuntimeConfiguration::new());
-    resources.insert(renderer);
-    resources.insert(image_index);
-    resources.insert(consolidated_mesh_buffers);
-    resources.insert(main_descriptor_pool);
-    resources.insert(camera_matrices);
-    resources.insert(base_color_descriptor_set);
-    resources.insert(model_data);
-    resources.insert(cull_pass_data);
-    resources.insert(cull_pass_data_private);
-    resources.insert(shadow_mapping_data);
-    resources.insert(depth_pass_data);
-    resources.insert(present_data);
-    resources.insert(main_attachments);
-    resources.insert(main_framebuffer);
-    resources.insert(gltf_pass);
-    resources.insert(debug_aabb_pass_data);
-    resources.insert(GraphicsSubmissions::default());
-    resources.insert_thread_local(input_handler);
-    resources.insert_thread_local(gui);
-    if cfg!(feature = "crash_debugging") {
-        resources.insert(CrashBuffer::from_resources(&resources));
+    drop(vertex_buffer);
+    drop(normal_buffer);
+    drop(uv_buffer);
+    drop(index_buffers);
+    drop(base_color);
+
+    app.insert_resource(swapchain);
+    app.insert_resource(mesh_library);
+    app.insert_resource(Resized(false));
+    app.init_resource::<FrameTiming>();
+    app.init_resource::<InputActions>();
+    app.init_resource::<Camera>();
+    app.init_resource::<RuntimeConfiguration>();
+    app.init_resource::<GuiCopy<RuntimeConfiguration>>();
+    app.init_resource::<GuiCopy<Camera>>();
+    app.insert_resource(renderer);
+    app.insert_resource(image_index);
+    app.insert_resource(consolidated_mesh_buffers);
+    app.insert_resource(main_descriptor_pool);
+    app.insert_resource(camera_matrices);
+    app.insert_resource(base_color_descriptor_set);
+    app.insert_resource(model_data);
+    app.insert_resource(cull_pass_data);
+    app.insert_resource(cull_pass_data_private);
+    app.insert_resource(shadow_mapping_data);
+    app.insert_resource(depth_pass_data);
+    app.insert_resource(present_data);
+    app.insert_resource(main_renderpass);
+    app.insert_resource(main_attachments);
+    app.insert_resource(gltf_pass);
+    app.init_resource::<SwapchainIndexToFrameNumber>();
+    app.init_resource::<DebugAABBPassData>();
+    app.init_resource::<MainFramebuffer>();
+    app.insert_non_send_resource(input_handler);
+    app.insert_non_send_resource(gui);
+    app.init_resource::<GuiRenderData>();
+    app.init_resource::<CrashBuffer>();
+    app.init_resource::<LocalTransferCommandPool<0>>();
+    app.init_resource::<LocalGraphicsCommandPool<0>>();
+    app.init_resource::<LocalGraphicsCommandPool<1>>();
+    app.init_resource::<LocalGraphicsCommandPool<2>>();
+    app.init_resource::<MainPassCommandBuffer>();
+
+    app.add_plugin(bevy_log::LogPlugin);
+
+    #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+    enum UpdatePhase {
+        Input,
+        AcquireFramebuffer,
+        CalculateFrameTiming,
+        AssignDrawIndex,
+        CameraController,
+        RenderSetup,
+        ProjectCamera,
+        LaunchProjectiles,
+        UpdateProjectiles,
+        Gameplay,
     }
 
-    let mut schedule = Schedule::default();
-    schedule.add_stage("input", SystemStage::serial());
-    schedule.add_system_to_stage("input", InputHandler::run.system());
+    use UpdatePhase::*;
 
-    schedule.add_stage("acquire_framebuffer", SystemStage::parallel());
-    schedule.add_system_to_stage("acquire_framebuffer", acquire_framebuffer.system());
-    schedule.add_system_to_stage(
-        "acquire_framebuffer",
-        (|mut frame_timing: ResMut<FrameTiming>| {
-            #[cfg(feature = "profiling")]
-            microprofile::scope!("ecs", "CalculateFrameTiming");
-            CalculateFrameTiming::exec(&mut frame_timing);
-        })
-        .system(),
+    app.add_system(InputHandler::run.system().label(Input));
+    app.add_system(acquire_framebuffer.system().label(AcquireFramebuffer).after(Input));
+    app.add_system(
+        calculate_frame_timing
+            .system()
+            .label(CalculateFrameTiming)
+            .after(AcquireFramebuffer),
     );
-    schedule.add_system_to_stage(
-        "acquire_framebuffer",
-        (|mut query: Query<
-            &mut DrawIndex,
-            (
-                With<GltfMeshBaseColorTexture>,
-                With<Position>,
-                With<GltfMesh>,
+
+    app.add_system_set(
+        SystemSet::new()
+            .label(Gameplay)
+            .with_system(
+                camera_controller
+                    .system()
+                    .label(CameraController)
+                    .after(CalculateFrameTiming),
+            )
+            .with_system(
+                project_camera
+                    .system()
+                    .label(ProjectCamera)
+                    .after(CameraController)
+                    .after(AcquireFramebuffer),
+            )
+            .with_system(
+                launch_projectiles_test
+                    .system()
+                    .label(LaunchProjectiles)
+                    .after(ProjectCamera)
+                    .after(CalculateFrameTiming),
+            )
+            .with_system(
+                update_projectiles
+                    .system()
+                    .label(UpdateProjectiles)
+                    .after(CalculateFrameTiming),
             ),
-        >| {
-            #[cfg(feature = "profiling")]
-            microprofile::scope!("ecs", "AssignDrawIndex");
-            for (counter, ref mut draw_idx) in query.iter_mut().enumerate() {
-                draw_idx.0 = counter
-                    .try_into()
-                    .expect("failed to downcast draw_idx to u32");
-            }
-        })
-        .system(),
-    );
-    schedule.add_system_to_stage("acquire_framebuffer", camera_controller.system());
-    schedule.add_system_to_stage(
-        "acquire_framebuffer",
-        (|swapchain: Res<Swapchain>, mut camera: ResMut<Camera>| {
-            #[cfg(feature = "profiling")]
-            microprofile::scope!("ecs", "ProjectCamera");
-            ProjectCamera::exec(&*swapchain, &mut *camera);
-        })
-        .system(),
-    );
-    schedule.add_system_to_stage("acquire_framebuffer", camera_controller.system());
-    schedule.add_system_to_stage("acquire_framebuffer", launch_projectiles_test.system());
-    schedule.add_system_to_stage("acquire_framebuffer", update_projectiles.system());
-    schedule.add_stage("render setup", SystemStage::parallel());
-    schedule.add_system_to_stage("render setup", consolidate_mesh_buffers.system());
-    schedule.add_system_to_stage("render setup", model_matrix_calculation.system());
-    schedule.add_system_to_stage("render setup", aabb_calculation.system());
-    schedule.add_system_to_stage("render setup", shadow_mapping_mvp_calculation.system());
-    schedule.add_system_to_stage("render setup", coarse_culling.system());
-    schedule.add_system_to_stage(
-        "render setup",
-        synchronize_base_color_textures_visit.system(),
-    );
-    schedule.add_system_to_stage("render setup", camera_matrices_upload.system());
-    schedule.add_system_to_stage("render setup", model_matrices_upload.system());
-    schedule.add_system_to_stage("render setup", cull_pass.system());
-    schedule.add_system_to_stage("render setup", transition_shadow_maps.system());
-    schedule.add_system_to_stage("render setup", update_shadow_map_descriptors.system());
-    schedule.add_stage("consolidate textures", SystemStage::parallel());
-    schedule.add_system_to_stage(
-        "consolidate textures",
-        synchronize_base_color_textures_consolidate.system(),
     );
 
-    schedule.add_stage("graphics work", graphics_stage());
-
-    #[cfg(feature = "profiling")]
-    {
-        use std::time::Instant;
-        let counter = Arc::new(Mutex::new(Instant::now()));
-        let counter2 = Arc::clone(&counter);
-        schedule.add_stage_before(
-            "graphics work",
-            "start graphics profiling",
-            SystemStage::parallel(),
-        );
-        schedule.add_system_to_stage(
-            "start graphics profiling",
-            (move || {
-                *counter.lock() = Instant::now();
-            })
-            .system(),
-        );
-        schedule.add_stage_after(
-            "graphics work",
-            "end graphics profiling",
-            SystemStage::parallel(),
-        );
-        schedule.add_system_to_stage(
-            "end graphics profiling",
-            (move || {
-                dbg!(counter2.lock().elapsed());
-            })
-            .system(),
-        );
+    #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+    enum RenderSetup {
+        ConsolidateMeshBuffers,
+        ModelMatrixCalculation,
+        AABBCalculation,
+        ShadowMappingMVPCalculation,
+        CoarseCulling,
+        SynchronizeBaseColorTexturesVisit,
+        CameraMatricesUpload,
+        ModelMatricesUpload,
+        UpdateShadowMapDescriptors,
     }
 
-    schedule.add_stage("present", SystemStage::serial());
-    schedule.add_system_to_stage("present", PresentFramebuffer::exec.system());
-
-    schedule.add_stage(
-        "update counters",
-        SystemStage::serial().with_system(
-            (|mut renderer: ResMut<RenderFrame>| {
-                renderer.frame_number += 1;
-            })
-            .system(),
-        ),
+    app.add_system_set(
+        SystemSet::new()
+            .label(RenderSetup)
+            .after(AcquireFramebuffer)
+            .after(Gameplay)
+            .with_system(assign_draw_index.system().label(AssignDrawIndex))
+            .with_system(
+                consolidate_mesh_buffers
+                    .system()
+                    .label(RenderSetup::ConsolidateMeshBuffers),
+            )
+            .with_system(
+                model_matrix_calculation
+                    .system()
+                    .label(RenderSetup::ModelMatrixCalculation),
+            )
+            .with_system(
+                aabb_calculation
+                    .system()
+                    .label(RenderSetup::AABBCalculation)
+                    .after(RenderSetup::ModelMatrixCalculation),
+            )
+            .with_system(
+                shadow_mapping_mvp_calculation
+                    .system()
+                    .label(RenderSetup::ShadowMappingMVPCalculation),
+            )
+            .with_system(
+                coarse_culling
+                    .system()
+                    .label(RenderSetup::CoarseCulling)
+                    .after(RenderSetup::AABBCalculation),
+            )
+            .with_system(
+                synchronize_base_color_textures_visit
+                    .system()
+                    .label(RenderSetup::SynchronizeBaseColorTexturesVisit),
+            )
+            .with_system(
+                camera_matrices_upload
+                    .system()
+                    .label(RenderSetup::CameraMatricesUpload)
+                    .after(ProjectCamera),
+            )
+            .with_system(
+                model_matrices_upload
+                    .system()
+                    .label(RenderSetup::ModelMatricesUpload)
+                    .after(AssignDrawIndex)
+                    .after(RenderSetup::ModelMatrixCalculation),
+            )
+            .with_system(
+                update_shadow_map_descriptors
+                    .system()
+                    .label(RenderSetup::UpdateShadowMapDescriptors)
+                    .after(RenderSetup::ShadowMappingMVPCalculation),
+            ),
     );
 
-    schedule.initialize(&mut world, &mut resources);
+    app.add_stage_after(CoreStage::Update, "graphics work", graphics_stage());
 
-    resources.insert(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
+    #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+    enum CleanupPhases {
+        CleanupBaseColorMarkers,
+        CleanupDeletedEntities,
+        IncrementFrameNumber,
+    }
+
+    use CleanupPhases::*;
+
+    app.add_stage_after(
+        CoreStage::PostUpdate,
+        "cleanup",
+        SystemStage::parallel()
+            .with_system(
+                cleanup_base_color_markers
+                    .exclusive_system()
+                    .at_end()
+                    .label(CleanupBaseColorMarkers)
+                    .before(CleanupDeletedEntities),
+            )
+            .with_system(
+                cleanup_deleted_entities
+                    .exclusive_system()
+                    .at_end()
+                    .label(CleanupDeletedEntities),
+            )
+            .with_system(
+                (|mut renderer: ResMut<RenderFrame>| {
+                    renderer.frame_number += 1;
+                })
+                .exclusive_system()
+                .at_end()
+                .label(IncrementFrameNumber)
+                .after(CleanupDeletedEntities),
+            ),
+    );
+
+    app.insert_resource(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
+
+    if cfg!(feature = "standard_validation") {
+        app.insert_resource(bevy_ecs::schedule::ReportExecutionOrderAmbiguities);
+    }
 
     'frame: loop {
-        #[cfg(feature = "profiling")]
         microprofile::flip!();
-        #[cfg(feature = "profiling")]
+
         microprofile::scope!("game-loop", "all");
-        {
-            #[cfg(feature = "profiling")]
-            microprofile::scope!("game-loop", "ecs");
-            schedule.run(&mut world, &mut resources);
-        }
+
+        app.app.update();
+
         if *quit_handle.lock() {
             unsafe {
-                resources
-                    .get::<RenderFrame>()
+                app.app
+                    .world
+                    .get_resource::<RenderFrame>()
                     .unwrap()
                     .device
                     .device_wait_idle()
@@ -486,6 +547,330 @@ fn main() {
             break 'frame;
         }
     }
-    #[cfg(feature = "profiling")]
+
+    let render_frame = app.app.world.remove_resource::<RenderFrame>().unwrap();
+
+    app.app
+        .world
+        .remove_resource::<DepthPassData>()
+        .unwrap()
+        .destroy(&render_frame.device);
+
+    let gltf_pass_data = app.app.world.remove_resource::<GltfPassData>().unwrap();
+    gltf_pass_data.gltf_pipeline.destroy(&render_frame.device);
+    gltf_pass_data.gltf_pipeline_layout.destroy(&render_frame.device);
+
+    app.app
+        .world
+        .remove_resource::<CullPassDataPrivate>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<ConsolidatedMeshBuffers>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<DebugAABBPassData>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<MainRenderpass>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<MainAttachments>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    let main_descriptor_pool = app.app.world.remove_resource::<MainDescriptorPool>().unwrap();
+    app.app
+        .world
+        .remove_resource::<CullPassData>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<BaseColorDescriptorSet>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<ShadowMappingData>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<GuiRenderData>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<CameraMatrices>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<ModelData>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<MeshLibrary>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<MainFramebuffer>()
+        .unwrap()
+        .destroy(&render_frame.device);
+
+    let entities = app
+        .app
+        .world
+        .query_filtered::<Entity, With<BaseColorVisitedMarker>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let marker = app
+            .app
+            .world
+            .entity_mut(entity)
+            .remove::<BaseColorVisitedMarker>()
+            .unwrap();
+        marker.destroy(&render_frame.device);
+    }
+
+    let entities = app
+        .app
+        .world
+        .query_filtered::<Entity, With<GltfMeshBaseColorTexture>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let marker = app
+            .app
+            .world
+            .entity_mut(entity)
+            .remove::<GltfMeshBaseColorTexture>()
+            .unwrap();
+        drop(Arc::try_unwrap(marker.0).map(|im| im.destroy(&render_frame.device)));
+    }
+
+    let entities = app
+        .app
+        .world
+        .query_filtered::<Entity, With<ShadowMappingLightMatrices>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let light_matrices = app
+            .app
+            .world
+            .entity_mut(entity)
+            .remove::<ShadowMappingLightMatrices>()
+            .unwrap();
+        light_matrices.destroy(&render_frame.device, &main_descriptor_pool);
+    }
+
+    let entities = app
+        .app
+        .world
+        .query_filtered::<Entity, With<GltfMesh>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        app.app
+            .world
+            .entity_mut(entity)
+            .remove::<GltfMesh>()
+            .unwrap()
+            .destroy(&render_frame.device);
+    }
+
+    app.app
+        .world
+        .remove_resource::<CrashBuffer>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<LocalTransferCommandPool<0>>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<LocalGraphicsCommandPool<0>>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<LocalGraphicsCommandPool<1>>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<LocalGraphicsCommandPool<2>>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<PresentData>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    drop(app);
+
+    main_descriptor_pool.destroy(&render_frame.device);
+    render_frame.destroy();
+
+    /* debug dependency graph
+    let mut last: &dyn StageLabel = &"Start";
+    let mut last_ix = 0usize;
+    let stage_clusters: Vec<Box<dyn SystemLabel>> =
+        vec![Gameplay.dyn_clone(), RenderSetup.dyn_clone()];
+    println!("digraph G {{");
+    println!("  graph [compound=true];");
+    println!("  rankdir=LR;");
+    for (ix, (label, stage)) in app.app.schedule.iter_stages().enumerate() {
+        println!("  subgraph cluster_{} {{", ix);
+        println!("    label = {:?};", label);
+        let system_stage = match stage.downcast_ref::<SystemStage>() {
+            Some(s) => s,
+            None => {
+                println!("    // unknown stage\n  }}");
+                continue;
+            }
+        };
+        let systems = system_stage.parallel_systems();
+        println!(
+            "    {:?} [label=single style={}];",
+            label,
+            if systems.len() < 1 { "filled" } else { "invis" }
+        );
+        for stage_cluster in stage_clusters.iter() {
+            println!(
+                "    subgraph cluster_{:?} {{ label = {:?}; }}",
+                stage_cluster, stage_cluster
+            );
+        }
+        let casted = unsafe {
+            std::mem::transmute::<_, &[bevy_ecs::schedule::ParallelSystemContainer]>(systems)
+        };
+        let mut names =
+            hashbrown::HashMap::<Box<dyn SystemLabel>, Vec<bevy_ecs::system::SystemId>>::with_capacity(
+                casted.len(),
+            );
+        for system in casted {
+            use bevy_ecs::schedule::GraphNode;
+            for label in system.labels() {
+                names
+                    .entry(label.clone())
+                    .or_default()
+                    .push(system.system().id());
+            }
+        }
+        let mut connected_clusters: Vec<(Box<dyn SystemLabel>, Box<dyn SystemLabel>)> = vec![];
+        for system in casted {
+            use bevy_ecs::schedule::GraphNode;
+            let mut in_cluster = None;
+            'outer: for stage_cluster in stage_clusters.iter() {
+                for label in system.labels() {
+                    if stage_cluster == label {
+                        in_cluster = Some(stage_cluster.dyn_clone());
+                        break 'outer;
+                    }
+                }
+            }
+            println!(
+                "    {} {} [label={:?}]; {}",
+                match in_cluster {
+                    Some(ref cluster) => format!("subgraph cluster_{:?} {{", cluster),
+                    None => "".to_string(),
+                },
+                system.system().id().0,
+                system
+                    .labels()
+                    .get(0)
+                    .unwrap_or(&SystemLabel::dyn_clone(&system.name())),
+                if in_cluster.is_some() { "}" } else { "" },
+            );
+            for downstream_dep in system.before() {
+                let mut downstream_cluster = None;
+                for stage_cluster in stage_clusters.iter() {
+                    if stage_cluster == downstream_dep {
+                        downstream_cluster = Some(stage_cluster.dyn_clone());
+                    }
+                }
+                for downstream_system in names.get(downstream_dep).unwrap() {
+                    println!("    {} -> {};", system.system().id().0, downstream_system.0,);
+                }
+                for downstream_system in names.get(downstream_dep).unwrap() {
+                    match (&downstream_cluster, &in_cluster) {
+                        (Some(ref downstream_cluster), Some(ref in_cluster)) => {
+                            if !connected_clusters
+                                .iter()
+                                .any(|(ref x, ref y)| (in_cluster, downstream_cluster) == (x, y))
+                            {
+                                println!(
+                                    "    {} -> {} [ltail=cluster_{:?} lhead=cluster_{:?}];",
+                                    system.system().id().0,
+                                    downstream_system.0,
+                                    in_cluster,
+                                    downstream_cluster,
+                                );
+                                connected_clusters
+                                    .push((in_cluster.dyn_clone(), downstream_cluster.dyn_clone()));
+                            }
+                        }
+                        _ => println!("    {} -> {};", system.system().id().0, downstream_system.0),
+                    }
+                }
+            }
+            for upstream_dep in system.after() {
+                let mut upstream_cluster = None;
+                for stage_cluster in stage_clusters.iter() {
+                    if stage_cluster == upstream_dep {
+                        upstream_cluster = Some(stage_cluster.dyn_clone());
+                    }
+                }
+                for upstream_system in names.get(upstream_dep).unwrap() {
+                    match (&upstream_cluster, &in_cluster) {
+                        (Some(ref upstream_cluster), Some(ref in_cluster)) => {
+                            if !connected_clusters
+                                .iter()
+                                .any(|(ref x, ref y)| (upstream_cluster, in_cluster) == (x, y))
+                            {
+                                println!(
+                                    "    {} -> {} [ltail=cluster_{:?} lhead=cluster_{:?}];",
+                                    upstream_system.0,
+                                    system.system().id().0,
+                                    upstream_cluster,
+                                    in_cluster,
+                                );
+                                connected_clusters
+                                    .push((upstream_cluster.dyn_clone(), in_cluster.dyn_clone()));
+                            }
+                        }
+                        _ => println!("    {} -> {};", upstream_system.0, system.system().id().0),
+                    }
+                }
+            }
+        }
+        println!("  }}");
+        println!(
+            "  {:?} -> {:?} [lhead=cluster_{} ltail=cluster_{}];",
+            last, label, ix, last_ix
+        );
+        last = label;
+        last_ix = ix;
+    }
+
+    println!("  {:?} -> End;", last);
+    println!("}}");
+
+    */
+
     microprofile::shutdown!();
 }

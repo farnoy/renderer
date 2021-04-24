@@ -32,12 +32,9 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         renderer.device.graphics_queue_family,
         "GLTF upload CommandPool",
     );
-    let mut command_session = command_pool.session();
+    let mut command_session = command_pool.session(&renderer.device);
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
-    let mesh = loaded
-        .meshes()
-        .next()
-        .expect("failed to get first mesh from gltf");
+    let mesh = loaded.meshes().next().expect("failed to get first mesh from gltf");
     let primitive = mesh
         .primitives()
         .next()
@@ -54,10 +51,8 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .into_f32()
         .collect::<Vec<_>>();
     let bounding_box = primitive.bounding_box();
-    let aabb = ncollide3d::bounding_volume::AABB::new(
-        na::Point3::from(bounding_box.min),
-        na::Point3::from(bounding_box.max),
-    );
+    let aabb =
+        ncollide3d::bounding_volume::AABB::new(na::Point3::from(bounding_box.min), na::Point3::from(bounding_box.max));
     let normals = reader
         .read_normals()
         .expect("failed to load normals")
@@ -76,11 +71,9 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .source()
         .source();
     let base_color_image = match base_color_source {
-        gltf::image::Source::Uri { uri, .. } => {
-            image::open(Path::new(path).parent().unwrap().join(uri))
-                .expect("failed to open base color texture")
-                .to_rgba8()
-        }
+        gltf::image::Source::Uri { uri, .. } => image::open(Path::new(path).parent().unwrap().join(uri))
+            .expect("failed to open base color texture")
+            .to_rgba8(),
         gltf::image::Source::View { .. } => {
             unimplemented!("Reading embedded textures in gltf not supported")
         }
@@ -104,9 +97,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let base_color_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-        vk::DeviceSize::from(base_color_image.width())
-            * vk::DeviceSize::from(base_color_image.height())
-            * 4,
+        vk::DeviceSize::from(base_color_image.width()) * vk::DeviceSize::from(base_color_image.height()) * 4,
     );
     renderer.device.set_object_name(
         base_color_upload_buffer.handle,
@@ -114,7 +105,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     );
     {
         let mut mapped = base_color_upload_buffer
-            .map::<image::Rgba<u8>>()
+            .map::<image::Rgba<u8>>(&renderer.device)
             .expect("Failed to map base color upload buffer");
         for (ix, pixel) in base_color_image.pixels().enumerate() {
             mapped[ix] = *pixel;
@@ -180,22 +171,19 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         vertex_size,
     );
-    renderer.device.set_object_name(
-        vertex_upload_buffer.handle,
-        "Gltf mesh Vertex upload buffer",
-    );
+    renderer
+        .device
+        .set_object_name(vertex_upload_buffer.handle, "Gltf mesh Vertex upload buffer");
     {
         let mut mapped = vertex_upload_buffer
-            .map::<[f32; 3]>()
+            .map::<[f32; 3]>(&renderer.device)
             .expect("Failed to map vertex upload buffer");
         for (ix, data) in positions.iter().enumerate() {
             mapped[ix] = data.0;
         }
     }
     let normal_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::VERTEX_BUFFER
-            | vk::BufferUsageFlags::TRANSFER_DST
-            | vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         normals_size,
     );
@@ -207,28 +195,23 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         normals_size,
     );
-    renderer.device.set_object_name(
-        normal_upload_buffer.handle,
-        "Gltf mesh Normal upload buffer",
-    );
+    renderer
+        .device
+        .set_object_name(normal_upload_buffer.handle, "Gltf mesh Normal upload buffer");
     {
         let mut mapped = normal_upload_buffer
-            .map::<[f32; 3]>()
+            .map::<[f32; 3]>(&renderer.device)
             .expect("Failed to map normal upload buffer");
         for (ix, data) in normals.iter().enumerate() {
             mapped[ix] = *data;
         }
     }
     let uv_buffer = renderer.device.new_buffer(
-        vk::BufferUsageFlags::VERTEX_BUFFER
-            | vk::BufferUsageFlags::TRANSFER_DST
-            | vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         uvs_size,
     );
-    renderer
-        .device
-        .set_object_name(uv_buffer.handle, "Gltf mesh UV buffer");
+    renderer.device.set_object_name(uv_buffer.handle, "Gltf mesh UV buffer");
     let uv_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
         alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
@@ -239,7 +222,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .set_object_name(uv_upload_buffer.handle, "Gltf mesh UV upload buffer");
     {
         let mut mapped = uv_upload_buffer
-            .map::<[f32; 2]>()
+            .map::<[f32; 2]>(&renderer.device)
             .expect("Failed to map UV upload buffer");
         for (ix, data) in uvs.iter().enumerate() {
             mapped[ix] = *data;
@@ -261,7 +244,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             );
             renderer.device.set_object_name(
                 index_buffer.handle,
-                &format!("Gltf mesh index buffer LOD {}", ix),
+                &format!("Gltf mesh {} index buffer LOD {}", path, ix),
             );
             let index_upload_buffer = renderer.device.new_buffer(
                 vk::BufferUsageFlags::TRANSFER_SRC,
@@ -274,7 +257,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             );
             {
                 let mut mapped = index_upload_buffer
-                    .map::<u32>()
+                    .map::<u32>(&renderer.device)
                     .expect("failed to map index upload buffer");
                 mapped[0..index_len as usize].copy_from_slice(&indices);
             }
@@ -396,19 +379,28 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                 .build()],
         );
     }
-    let mut graphics_queue = renderer.device.graphics_queue.lock();
-    let upload_fence =
-        command_buffer.submit_once(&mut *graphics_queue, "upload gltf mesh commands");
+    let mut graphics_queue = renderer.device.graphics_queue().lock();
+    let upload_fence = command_buffer.submit_once(&mut *graphics_queue, "upload gltf mesh commands");
     unsafe {
         renderer
             .device
             .wait_for_fences(&[upload_fence.handle], true, u64::MAX)
             .expect("Wait for fence failed.");
     }
+    upload_fence.destroy(&renderer.device);
     let index_buffers = index_buffers
         .into_iter()
-        .map(|(buffer, _, len)| (buffer, len))
+        .map(|(buffer, upload_buffer, len)| {
+            upload_buffer.destroy(&renderer.device);
+            (buffer, len)
+        })
         .collect();
+
+    uv_upload_buffer.destroy(&renderer.device);
+    normal_upload_buffer.destroy(&renderer.device);
+    vertex_upload_buffer.destroy(&renderer.device);
+    base_color_upload_buffer.destroy(&renderer.device);
+    command_pool.destroy(&renderer.device);
 
     LoadedMesh {
         vertex_buffer,

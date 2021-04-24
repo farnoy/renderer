@@ -1,42 +1,32 @@
-use crate::{renderer::device::Pipeline, shaders, CameraMatrices, RenderFrame};
+use crate::{
+    renderer::device::{Device, Pipeline},
+    shaders, CameraMatrices, MainRenderpass, RenderFrame,
+};
 use ash::vk;
-use std::path::PathBuf;
+use bevy_ecs::prelude::*;
 
 pub(crate) struct DebugAABBPassData {
     pub(crate) pipeline_layout: shaders::debug_aabb::PipelineLayout,
     pub(crate) pipeline: Pipeline,
 }
 
-impl DebugAABBPassData {
-    pub(crate) fn new(
-        renderer: &RenderFrame,
-        camera_matrices: &CameraMatrices,
-    ) -> DebugAABBPassData {
+impl FromWorld for DebugAABBPassData {
+    fn from_world(world: &mut World) -> Self {
+        let renderer = world.get_resource::<RenderFrame>().unwrap();
+        let main_renderpass = world.get_resource::<MainRenderpass>().unwrap();
+        let camera_matrices = world.get_resource::<CameraMatrices>().unwrap();
         let device = &renderer.device;
 
-        let pipeline_layout =
-            shaders::debug_aabb::PipelineLayout::new(&device, &camera_matrices.set_layout);
-        use std::io::Read;
-        let path = std::path::PathBuf::from(env!("OUT_DIR")).join("debug_aabb.vert.spv");
-        let file = std::fs::File::open(path).expect("Could not find shader.");
-        let bytes: Vec<u8> = file.bytes().filter_map(Result::ok).collect();
-        debug_assert!(shaders::debug_aabb::load_and_verify_spirv(&bytes));
+        let pipeline_layout = shaders::debug_aabb::PipelineLayout::new(&device, &camera_matrices.set_layout);
         let pipeline = renderer.device.new_graphics_pipeline(
             &[
-                (
-                    vk::ShaderStageFlags::VERTEX,
-                    PathBuf::from(env!("OUT_DIR")).join("debug_aabb.vert.spv"),
-                ),
-                (
-                    vk::ShaderStageFlags::FRAGMENT,
-                    PathBuf::from(env!("OUT_DIR")).join("debug_aabb.frag.spv"),
-                ),
+                (vk::ShaderStageFlags::VERTEX, shaders::debug_aabb::VERTEX, None),
+                (vk::ShaderStageFlags::FRAGMENT, shaders::debug_aabb::FRAGMENT, None),
             ],
             vk::GraphicsPipelineCreateInfo::builder()
                 .vertex_input_state(&shaders::debug_aabb::vertex_input_state())
                 .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST),
+                    &vk::PipelineInputAssemblyStateCreateInfo::builder().topology(vk::PrimitiveTopology::TRIANGLE_LIST),
                 )
                 .dynamic_state(
                     &vk::PipelineDynamicStateCreateInfo::builder()
@@ -76,14 +66,21 @@ impl DebugAABBPassData {
                         .build(),
                 )
                 .layout(*pipeline_layout.layout)
-                .render_pass(renderer.renderpass.handle)
-                .subpass(0)
+                .render_pass(main_renderpass.renderpass.renderpass.handle)
+                .subpass(1) // FIXME
                 .build(),
         );
 
         DebugAABBPassData {
-            pipeline,
             pipeline_layout,
+            pipeline,
         }
+    }
+}
+
+impl DebugAABBPassData {
+    pub(crate) fn destroy(self, device: &Device) {
+        self.pipeline.destroy(device);
+        self.pipeline_layout.destroy(device);
     }
 }

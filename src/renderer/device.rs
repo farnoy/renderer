@@ -1,14 +1,14 @@
-#[cfg(target = "windows")]
-use ash::extensions::Win32Surface;
 use ash::{
     self, extensions,
     version::{DeviceV1_0, InstanceV1_0},
     vk,
 };
 use parking_lot::Mutex;
+#[cfg(feature = "gpu_printf")]
+use std::ffi::CStr;
 #[cfg(feature = "crash_debugging")]
 use std::mem::transmute;
-use std::{ops::Deref, path::PathBuf, sync::Arc};
+use std::{ops::Deref, sync::Arc};
 
 mod buffer;
 mod commands;
@@ -44,9 +44,10 @@ pub(crate) struct Device {
     pub(crate) limits: vk::PhysicalDeviceLimits,
     pub(crate) graphics_queue_family: u32,
     pub(crate) compute_queue_family: u32,
-    pub(super) graphics_queue: Mutex<vk::Queue>,
-    pub(super) compute_queues: Vec<Mutex<vk::Queue>>,
-    // pub(crate) _transfer_queue: Arc<Mutex<vk::Queue>>,
+    pub(crate) transfer_queue_family: u32,
+    graphics_queue: Mutex<vk::Queue>,
+    compute_queues: Vec<Mutex<vk::Queue>>,
+    transfer_queue: Option<Mutex<vk::Queue>>,
     #[cfg(feature = "crash_debugging")]
     pub(crate) buffer_marker_fn: vk::AmdBufferMarkerFn,
 }
@@ -55,15 +56,10 @@ impl Device {
     pub(crate) fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
         let Instance { ref entry, .. } = **instance;
 
-        let pdevices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .expect("Physical device error")
-        };
+        let pdevices = unsafe { instance.enumerate_physical_devices().expect("Physical device error") };
 
         let physical_device = pdevices[0];
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
         /*
         unsafe {
@@ -89,16 +85,11 @@ impl Device {
                 .iter()
                 .enumerate()
                 .filter_map(|(ix, info)| unsafe {
-                    let supports_graphic_and_surface =
-                        info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                            && surface
-                                .ext
-                                .get_physical_device_surface_support(
-                                    physical_device,
-                                    ix as u32,
-                                    surface.surface,
-                                )
-                                .unwrap();
+                    let supports_graphic_and_surface = info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                        && surface
+                            .ext
+                            .get_physical_device_surface_support(physical_device, ix as u32, surface.surface)
+                            .unwrap();
                     if supports_graphic_and_surface {
                         Some(ix as u32)
                     } else {
@@ -123,18 +114,39 @@ impl Device {
                 })
                 .next()
         };
-        let queues = match compute_queues_spec {
-            Some((compute_queue_family, compute_queue_len)) => vec![
+        let transfer_queue_family = {
+            queue_families
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, info)| {
+                    if info.queue_flags.contains(vk::QueueFlags::TRANSFER)
+                        && !info.queue_flags.contains(vk::QueueFlags::COMPUTE)
+                    {
+                        Some(ix as u32)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+        };
+        let queues = match (compute_queues_spec, transfer_queue_family) {
+            (Some((compute_queue_family, compute_queue_len)), Some(transfer_queue_family)) => vec![
                 (graphics_queue_family, 1),
                 (compute_queue_family, compute_queue_len),
+                (transfer_queue_family, 1),
             ],
-            None => vec![(graphics_queue_family, 1)],
+            _ => vec![(graphics_queue_family, 1)],
         };
         let device = {
-            let mut device_extension_names_raw = vec![extensions::khr::Swapchain::name().as_ptr()];
-            if cfg!(feature = "crash_debugging") {
-                device_extension_names_raw.push(vk::AmdBufferMarkerFn::name().as_ptr());
-            }
+            let device_extension_names_raw = vec![
+                extensions::khr::Swapchain::name().as_ptr(),
+                #[cfg(feature = "gpu_printf")]
+                CStr::from_bytes_with_nul(b"VK_KHR_shader_non_semantic_info\0")
+                    .unwrap()
+                    .as_ptr(),
+                #[cfg(feature = "crash_debugging")]
+                vk::AmdBufferMarkerFn::name().as_ptr(),
+            ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
                 sampler_anisotropy: 1,
@@ -152,9 +164,12 @@ impl Device {
             let mut features2 = vk::PhysicalDeviceFeatures2::builder().features(features);
             let mut features12 = vk::PhysicalDeviceVulkan12Features::builder()
                 .descriptor_binding_partially_bound(true)
+                .draw_indirect_count(true)
                 .runtime_descriptor_array(true)
                 .separate_depth_stencil_layouts(true)
                 .shader_storage_buffer_array_non_uniform_indexing(true)
+                .shader_sampled_image_array_non_uniform_indexing(true)
+                .shader_storage_image_array_non_uniform_indexing(true)
                 .timeline_semaphore(true)
                 .scalar_block_layout(true)
                 .descriptor_indexing(true);
@@ -180,14 +195,17 @@ impl Device {
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
 
-        let allocator =
-            alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
+        let allocator = alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
         let compute_queues = match compute_queues_spec {
             Some((compute_queue_family, len)) => (0..len)
                 .map(|ix| unsafe { device.get_device_queue(compute_queue_family, ix) })
                 .collect::<Vec<_>>(),
-            None => vec![graphics_queue],
+            None => vec![],
+        };
+        let transfer_queue = match transfer_queue_family {
+            Some(transfer_queue_family) => Some(unsafe { device.get_device_queue(transfer_queue_family, 0) }),
+            None => None,
         };
 
         #[cfg(feature = "crash_debugging")]
@@ -202,11 +220,11 @@ impl Device {
             allocator,
             limits: properties.limits,
             graphics_queue_family,
-            compute_queue_family: compute_queues_spec
-                .map(|a| a.0)
-                .unwrap_or(graphics_queue_family),
+            compute_queue_family: compute_queues_spec.map(|a| a.0).unwrap_or(graphics_queue_family),
+            transfer_queue_family: transfer_queue_family.unwrap_or(graphics_queue_family),
             graphics_queue: Mutex::new(graphics_queue),
             compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
+            transfer_queue: transfer_queue.map(Mutex::new),
             #[cfg(feature = "crash_debugging")]
             buffer_marker_fn,
         };
@@ -220,49 +238,51 @@ impl Device {
         Ok(device)
     }
 
+    pub(crate) fn graphics_queue(&self) -> &Mutex<vk::Queue> {
+        &self.graphics_queue
+    }
+
+    pub(crate) fn compute_queue(&self, ix: usize) -> &Mutex<vk::Queue> {
+        self.compute_queues.get(ix).unwrap_or(&self.graphics_queue)
+    }
+
+    pub(crate) fn transfer_queue(&self) -> &Mutex<vk::Queue> {
+        self.transfer_queue.as_ref().unwrap_or(&self.graphics_queue)
+    }
+
     pub(crate) fn allocation_stats(&self) -> alloc::VmaStats {
         alloc::stats(self.allocator)
     }
 
-    pub(crate) fn new_descriptor_pool(
-        self: &Arc<Self>,
-        max_sets: u32,
-        pool_sizes: &[vk::DescriptorPoolSize],
-    ) -> DescriptorPool {
+    pub(crate) fn new_descriptor_pool(&self, max_sets: u32, pool_sizes: &[vk::DescriptorPoolSize]) -> DescriptorPool {
         DescriptorPool::new(self, max_sets, pool_sizes)
     }
 
     pub(crate) fn new_descriptor_set_layout(
-        self: &Arc<Self>,
+        &self,
         create_info: &vk::DescriptorSetLayoutCreateInfo,
     ) -> DescriptorSetLayout {
         DescriptorSetLayout::new(self, create_info)
     }
 
-    pub(crate) fn new_semaphore(self: &Arc<Self>) -> Semaphore {
+    pub(crate) fn new_semaphore(&self) -> Semaphore {
         Semaphore::new(self)
     }
 
-    pub(crate) fn new_semaphore_timeline(
-        self: &Arc<Self>,
-        initial_value: u64,
-    ) -> TimelineSemaphore {
+    pub(crate) fn new_semaphore_timeline(&self, initial_value: u64) -> TimelineSemaphore {
         TimelineSemaphore::new(self, initial_value)
     }
 
-    pub(crate) fn new_fence(self: &Arc<Self>) -> Fence {
+    pub(crate) fn new_fence(&self) -> Fence {
         Fence::new(self)
     }
 
-    pub(crate) fn new_shader<F>(self: &Arc<Self>, path: &PathBuf, verify: F) -> Shader
-    where
-        F: Fn(&[u8]) -> bool,
-    {
-        Shader::new_verify(self, path, verify)
+    pub(crate) fn new_shader(&self, bytes: &[u8]) -> Shader {
+        Shader::new(self, bytes)
     }
 
     pub(crate) fn new_buffer(
-        self: &Arc<Self>,
+        &self,
         buffer_usage: vk::BufferUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
         size: vk::DeviceSize,
@@ -270,9 +290,17 @@ impl Device {
         Buffer::new(self, buffer_usage, allocation_usage, size)
     }
 
+    pub(crate) fn new_static_buffer<T: Sized>(
+        &self,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+    ) -> StaticBuffer<T> {
+        StaticBuffer::new(self, buffer_usage, allocation_usage)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_image(
-        self: &Arc<Self>,
+        &self,
         format: vk::Format,
         extent: vk::Extent3D,
         samples: vk::SampleCountFlags,
@@ -294,7 +322,7 @@ impl Device {
     }
 
     pub(crate) fn new_pipeline_layout(
-        self: &Arc<Self>,
+        &self,
         descriptor_set_layouts: &[&DescriptorSetLayout],
         push_constant_ranges: &[vk::PushConstantRange],
     ) -> PipelineLayout {
@@ -302,24 +330,21 @@ impl Device {
     }
 
     pub(crate) fn new_graphics_pipeline(
-        self: &Arc<Self>,
-        shaders: &[(vk::ShaderStageFlags, PathBuf)],
+        &self,
+        shaders: &[(vk::ShaderStageFlags, &[u8], Option<&vk::SpecializationInfo>)],
         create_info: vk::GraphicsPipelineCreateInfo,
     ) -> Pipeline {
-        Pipeline::new_graphics_pipeline(Arc::clone(self), shaders, create_info)
+        Pipeline::new_graphics_pipeline(self, shaders, create_info)
     }
 
     pub(crate) fn new_compute_pipelines(
-        self: &Arc<Self>,
+        &self,
         create_infos: &[vk::ComputePipelineCreateInfoBuilder<'_>],
     ) -> Vec<Pipeline> {
-        Pipeline::new_compute_pipelines(Arc::clone(self), create_infos)
+        Pipeline::new_compute_pipelines(self, create_infos)
     }
 
-    pub(crate) fn new_renderpass(
-        self: &Arc<Self>,
-        create_info: &vk::RenderPassCreateInfoBuilder,
-    ) -> RenderPass {
+    pub(crate) fn new_renderpass(&self, create_info: &vk::RenderPassCreateInfoBuilder) -> RenderPass {
         RenderPass::new(self, create_info)
     }
 
@@ -369,29 +394,32 @@ impl Drop for Device {
 
 pub(crate) struct RenderPass {
     pub(crate) handle: vk::RenderPass,
-    device: Arc<Device>,
 }
 
 impl RenderPass {
-    pub(super) fn new(
-        device: &Arc<Device>,
-        create_info: &vk::RenderPassCreateInfoBuilder,
-    ) -> RenderPass {
+    pub(super) fn new(device: &Device, create_info: &vk::RenderPassCreateInfoBuilder) -> RenderPass {
         let handle = unsafe {
             device
                 .device
                 .create_render_pass(create_info, None)
                 .expect("Failed to create renderpass")
         };
-        RenderPass {
-            device: Arc::clone(device),
-            handle,
-        }
+        RenderPass { handle }
+    }
+
+    pub(crate) fn destroy(mut self, device: &Device) {
+        unsafe { device.destroy_render_pass(self.handle, None) }
+        self.handle = vk::RenderPass::null();
     }
 }
 
+#[cfg(debug_assertions)]
 impl Drop for RenderPass {
     fn drop(&mut self) {
-        unsafe { self.device.device.destroy_render_pass(self.handle, None) }
+        debug_assert_eq!(
+            self.handle,
+            vk::RenderPass::null(),
+            "RenderPass not destroyed before Drop"
+        );
     }
 }

@@ -5,6 +5,7 @@ use crate::{
 use bevy_ecs::prelude::*;
 use winit::{self, event::VirtualKeyCode};
 
+#[derive(Clone)]
 pub(crate) struct Camera {
     pub(crate) position: na::Point3<f32>,
     pub(crate) rotation: na::UnitQuaternion<f32>,

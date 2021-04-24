@@ -19,15 +19,9 @@ pub(crate) struct Surface {
 
 impl Surface {
     pub(crate) fn new(instance: &Arc<Instance>) -> Surface {
-        let surface = unsafe {
-            create_surface(instance.entry.vk(), &instance.vk(), &instance.window).unwrap()
-        };
+        let surface = unsafe { create_surface(instance.entry.vk(), &instance.vk(), &instance.window).unwrap() };
 
-        let pdevices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .expect("Physical device error")
-        };
+        let pdevices = unsafe { instance.enumerate_physical_devices().expect("Physical device error") };
         let physical_device = pdevices[0];
 
         let surface_loader = extensions::khr::Surface::new(instance.entry.vk(), instance.vk());
@@ -69,15 +63,10 @@ pub(crate) struct Swapchain {
     pub(crate) surface: Surface,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    device: Arc<Device>, // destructor ordering
 }
 
 impl Swapchain {
-    pub(crate) fn new(
-        instance: &Arc<Instance>,
-        device: &Arc<Device>,
-        surface: Surface,
-    ) -> Swapchain {
+    pub(crate) fn new(instance: &Arc<Instance>, device: &Device, surface: Surface) -> Swapchain {
         let surface_capabilities = unsafe {
             surface
                 .ext
@@ -120,11 +109,7 @@ impl Swapchain {
             })
             .clipped(true)
             .image_array_layers(1);
-        let swapchain = unsafe {
-            swapchain_loader
-                .create_swapchain(&swapchain_create_info, None)
-                .unwrap()
-        };
+        let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None).unwrap() };
 
         device.set_object_name(swapchain, "Window surface");
 
@@ -132,20 +117,16 @@ impl Swapchain {
             swapchain,
             ext: swapchain_loader,
             surface,
-            device: Arc::clone(&device),
             width: surface_resolution.width,
             height: surface_resolution.height,
         }
     }
 
-    pub(crate) fn resize_to_fit(&mut self) {
+    pub(crate) fn resize_to_fit(&mut self, device: &Device) {
         let surface_capabilities = unsafe {
             self.surface
                 .ext
-                .get_physical_device_surface_capabilities(
-                    self.device.physical_device,
-                    self.surface.surface,
-                )
+                .get_physical_device_surface_capabilities(device.physical_device, self.surface.surface)
                 .unwrap()
         };
         println!("resizing surface capabilities {:?}", surface_capabilities);
@@ -181,10 +162,7 @@ impl Swapchain {
             .old_swapchain(self.swapchain)
             .image_array_layers(1);
         unsafe {
-            let new_swapchain = self
-                .ext
-                .create_swapchain(&swapchain_create_info, None)
-                .unwrap();
+            let new_swapchain = self.ext.create_swapchain(&swapchain_create_info, None).unwrap();
             self.ext.destroy_swapchain(self.swapchain, None);
             self.swapchain = new_swapchain;
         };

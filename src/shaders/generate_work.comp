@@ -3,6 +3,7 @@
 #extension GL_KHR_shader_subgroup_basic: require
 #extension GL_KHR_shader_subgroup_ballot: require
 #extension GL_EXT_scalar_block_layout: require
+#extension GL_KHR_shader_subgroup_vote : require
 
 struct VkDrawIndexedIndirectCommand {
     uint indexCount;
@@ -32,19 +33,19 @@ layout(set = 1, binding = 0, scalar) uniform CameraMatrices {
 };
 
 layout(set = 2, binding = 0, scalar) buffer IndirectCommands {
-    VkDrawIndexedIndirectCommand indirect_commands[];
+    VkDrawIndexedIndirectCommand indirect_commands[2400];
 };
 
 layout(set = 2, binding = 1, scalar) buffer OutIndexBuffer {
-    uint out_index_buffer[][3];
+    uvec3 out_index_buffer[20000000];
 };
 
 layout(set = 2, binding = 2, scalar) buffer readonly VertexBuffer {
-    float vertex_buffer[][3];
+    vec3 vertex_buffer[300000];
 };
 
 layout(set = 2, binding = 3, scalar) buffer readonly IndexBuffer {
-    uint index_buffer[][3];
+    uvec3 index_buffer[300000];
 };
 
 layout (local_size_x_id = 1) in;
@@ -54,7 +55,7 @@ shared uint globalOffset;
 
 void main() {
     if (gl_GlobalInvocationID.x == 0) {
-        indirect_commands[gltfIndex].indexCount = 0;
+        // indexCount is preinitialized to 0 before a barrier, here would be too late
         indirect_commands[gltfIndex].instanceCount = 1;
         indirect_commands[gltfIndex].firstInstance = gltfIndex;
         indirect_commands[gltfIndex].firstIndex = indexOffsetInOutput;
@@ -63,34 +64,15 @@ void main() {
     if (gl_LocalInvocationID.x == 0) {
         localOffset = 0;
     }
-    memoryBarrierShared();
+    barrier();
 
     bool cull = false;
 
-    if (gl_GlobalInvocationID.x >= indexCount / 3)
-        return;
-
-        uint ix0 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][0];
-        uint ix1 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][1];
-        uint ix2 = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x][2];
-        vec4 input0 = vec4(
-            vertex_buffer[vertexOffset + ix0][0],
-            vertex_buffer[vertexOffset + ix0][1],
-            vertex_buffer[vertexOffset + ix0][2],
-            1.0
-        );
-        vec4 input1 = vec4(
-            vertex_buffer[vertexOffset + ix1][0],
-            vertex_buffer[vertexOffset + ix1][1],
-            vertex_buffer[vertexOffset + ix1][2],
-            1.0
-        );
-        vec4 input2 = vec4(
-            vertex_buffer[vertexOffset + ix2][0],
-            vertex_buffer[vertexOffset + ix2][1],
-            vertex_buffer[vertexOffset + ix2][2],
-            1.0
-        );
+    if (gl_GlobalInvocationID.x < indexCount / 3) {
+        uvec3 ix = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x];
+        vec4 input0 = vec4(vertex_buffer[vertexOffset + ix.x], 1.0);
+        vec4 input1 = vec4(vertex_buffer[vertexOffset + ix.y], 1.0);
+        vec4 input2 = vec4(vertex_buffer[vertexOffset + ix.z], 1.0);
         mat4 mvp = pv * model[gltfIndex];
         vec4 vertex0 = mvp * input0;
         vec4 vertex1 = mvp * input1;
@@ -145,8 +127,7 @@ void main() {
 
         if (!cull) {
             uint local_offset = globalOffset + offset + exclusiveBitCount;
-            out_index_buffer[local_offset][0] = ix0;
-            out_index_buffer[local_offset][1] = ix1;
-            out_index_buffer[local_offset][2] = ix2;
+            out_index_buffer[local_offset] = ix;
         }
+    }
 }

@@ -82,94 +82,50 @@ pub fn create(
 ) -> prelude::VkResult<VmaAllocator> {
     let vma_functions = unsafe {
         VmaVulkanFunctions {
-            vkAllocateMemory: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkAllocateMemory\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkBindBufferMemory: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkBindBufferMemory\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkBindBufferMemory2KHR: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkBindBufferMemory2\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkBindImageMemory: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkBindImageMemory\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkBindImageMemory2KHR: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkBindImageMemory2\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkCmdCopyBuffer: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkCmdCopyBuffer\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkCreateBuffer: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkCreateBuffer\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkCreateImage: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkCreateImage\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkDestroyBuffer: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkDestroyBuffer\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkDestroyImage: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkDestroyImage\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkFreeMemory: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkFreeMemory\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
+            vkAllocateMemory: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkAllocateMemory\0").unwrap().as_ptr(),
+            )),
+            vkBindBufferMemory: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkBindBufferMemory\0").unwrap().as_ptr(),
+            )),
+            vkBindBufferMemory2KHR: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkBindBufferMemory2\0").unwrap().as_ptr(),
+            )),
+            vkBindImageMemory: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkBindImageMemory\0").unwrap().as_ptr(),
+            )),
+            vkBindImageMemory2KHR: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkBindImageMemory2\0").unwrap().as_ptr(),
+            )),
+            vkCmdCopyBuffer: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkCmdCopyBuffer\0").unwrap().as_ptr(),
+            )),
+            vkCreateBuffer: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkCreateBuffer\0").unwrap().as_ptr(),
+            )),
+            vkCreateImage: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkCreateImage\0").unwrap().as_ptr(),
+            )),
+            vkDestroyBuffer: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkDestroyBuffer\0").unwrap().as_ptr(),
+            )),
+            vkDestroyImage: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkDestroyImage\0").unwrap().as_ptr(),
+            )),
+            vkFreeMemory: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkFreeMemory\0").unwrap().as_ptr(),
+            )),
             vkGetBufferMemoryRequirements: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
@@ -226,22 +182,14 @@ pub fn create(
                         .as_ptr(),
                 ),
             ),
-            vkMapMemory: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkMapMemory\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
-            vkUnmapMemory: transmute(
-                entry.get_instance_proc_addr(
-                    instance.handle(),
-                    CStr::from_bytes_with_nul(b"vkUnmapMemory\0")
-                        .unwrap()
-                        .as_ptr(),
-                ),
-            ),
+            vkMapMemory: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkMapMemory\0").unwrap().as_ptr(),
+            )),
+            vkUnmapMemory: transmute(entry.get_instance_proc_addr(
+                instance.handle(),
+                CStr::from_bytes_with_nul(b"vkUnmapMemory\0").unwrap().as_ptr(),
+            )),
             vkFlushMappedMemoryRanges: transmute(
                 entry.get_instance_proc_addr(
                     instance.handle(),
@@ -261,8 +209,7 @@ pub fn create(
         }
     };
     let create_info = VmaAllocatorCreateInfo {
-        flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0
-            as u32,
+        flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0 as u32,
         vulkanApiVersion: vk::make_version(1, 2, 0),
         instance: instance.handle(),
         device: device,
@@ -276,8 +223,7 @@ pub fn create(
         pRecordSettings: ptr::null(),
     };
     let mut allocator: VmaAllocator = VmaAllocator(ptr::null_mut());
-    let err_code =
-        unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
+    let err_code = unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
     match err_code {
         vk::Result::SUCCESS => Ok(allocator),
         _ => Err(err_code),
@@ -314,11 +260,7 @@ pub fn create_buffer(
             info.as_mut_ptr(),
         );
         match err_code {
-            vk::Result::SUCCESS => Ok((
-                buffer.assume_init(),
-                allocation.assume_init(),
-                info.assume_init(),
-            )),
+            vk::Result::SUCCESS => Ok((buffer.assume_init(), allocation.assume_init(), info.assume_init())),
             _ => Err(err_code),
         }
     }
@@ -346,11 +288,7 @@ pub fn create_image(
             info.as_mut_ptr(),
         );
         match err_code {
-            vk::Result::SUCCESS => Ok((
-                image.assume_init(),
-                allocation.assume_init(),
-                info.assume_init(),
-            )),
+            vk::Result::SUCCESS => Ok((image.assume_init(), allocation.assume_init(), info.assume_init())),
             _ => Err(err_code),
         }
     }
@@ -364,4 +302,13 @@ pub fn destroy_image(allocator: VmaAllocator, image: vk::Image, allocation: VmaA
 
 pub fn set_current_frame_index(allocator: VmaAllocator, index: u32) {
     unsafe { vmaSetCurrentFrameIndex(allocator, index) }
+}
+
+pub fn get_allocation_info(allocator: VmaAllocator, allocation: VmaAllocation) -> VmaAllocationInfo {
+    let mut info = mem::MaybeUninit::uninit();
+
+    unsafe {
+        vmaGetAllocationInfo(allocator, allocation, info.as_mut_ptr());
+        info.assume_init()
+    }
 }

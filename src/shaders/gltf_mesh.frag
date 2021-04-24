@@ -1,24 +1,24 @@
 #version 450
-// TODO: define in shadow compiler
-#define SHADOW_MAP_DIM 4
-
 #extension GL_EXT_nonuniform_qualifier: require
 #extension GL_EXT_scalar_block_layout: require
 // #extension GL_ARB_sparse_texture2: require
+
+layout(constant_id = 10) const uint SHADOW_MAP_DIM = 4;
+layout(constant_id = 11) const uint SHADOW_MAP_DIM_SQUARED = 4 * 4;
 
 layout(set = 2, binding = 0, scalar) uniform LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
     mat4 pv;
-} light_data[SHADOW_MAP_DIM * SHADOW_MAP_DIM];
+} light_data[SHADOW_MAP_DIM_SQUARED];
 layout(set = 2, binding = 1) uniform sampler2DShadow shadow_maps;
 layout(set = 3, binding = 0) uniform sampler2D base_color[];
 
 layout (location = 0) in vec3 normal;
 layout (location = 1) in vec2 uv;
 layout (location = 2) in flat uint entity_id;
-layout (location = 3) in vec3 world_position;
+layout (location = 3) in flat vec3 world_position;
 layout (location = 4) in vec4 position_lightspace[2];
 layout (location = 0) out vec4 o_color;
 

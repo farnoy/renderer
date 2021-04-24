@@ -1,3 +1,5 @@
+use std::ops::{Index, IndexMut};
+
 use smallvec::SmallVec;
 
 pub(crate) struct DoubleBuffered<T> {
@@ -11,6 +13,12 @@ impl<T> DoubleBuffered<T> {
         }
     }
 
+    pub(crate) fn import(data: Vec<T>) -> DoubleBuffered<T> {
+        DoubleBuffered {
+            data: SmallVec::from(data),
+        }
+    }
+
     pub(crate) fn current(&self, ix: u32) -> &T {
         &self.data[ix as usize % self.data.len()]
     }
@@ -20,7 +28,31 @@ impl<T> DoubleBuffered<T> {
         &mut self.data[ix as usize % len]
     }
 
+    #[allow(unused)]
     pub(crate) fn iter<'a>(&'a self) -> impl Iterator<Item = &T> + 'a {
         self.data.iter()
+    }
+
+    #[allow(unused)]
+    pub(crate) fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &mut T> + 'a {
+        self.data.iter_mut()
+    }
+
+    pub(crate) fn into_iter(self) -> impl Iterator<Item = T> {
+        self.data.into_iter()
+    }
+}
+
+impl<T> Index<usize> for DoubleBuffered<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.data[index]
+    }
+}
+
+impl<T> IndexMut<usize> for DoubleBuffered<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.data[index]
     }
 }

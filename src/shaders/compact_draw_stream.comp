@@ -1,0 +1,58 @@
+#version 450
+
+#extension GL_KHR_shader_subgroup_basic: require
+#extension GL_KHR_shader_subgroup_ballot: require
+#extension GL_EXT_scalar_block_layout: require
+
+struct VkDrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0, scalar) buffer IndirectCommands {
+    VkDrawIndexedIndirectCommand indirect_commands[2400];
+} indirect_commands;
+
+layout(set = 1, binding = 0, scalar) buffer IndirectCommandsCount {
+    uint count;
+} indirect_commands_count;
+
+layout (constant_id = 2) const uint draw_calls_to_compact = 1;
+
+// TODO: this needs to scale beyond vkCmdDispatch(1, 1, 1)
+layout (local_size_y_id = 1) in;
+
+shared uint localOffset;
+
+void main() {
+    if (gl_LocalInvocationID.y == 0)
+        localOffset = 0;
+
+    VkDrawIndexedIndirectCommand copied = indirect_commands.indirect_commands[gl_LocalInvocationID.y];
+    bool use = copied.indexCount > 0;
+    uvec4 ballot = subgroupBallot(use);
+    uint count = subgroupBallotBitCount(ballot);
+
+    barrier();
+
+    uint subgroupOffset = 0;
+    if (subgroupElect()) {
+        subgroupOffset = atomicAdd(localOffset, count);
+    }
+    subgroupOffset = subgroupBroadcastFirst(subgroupOffset);
+
+    barrier();
+
+    uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
+    uint offset = subgroupOffset + exclusiveBitCount;
+
+    if (use) {
+        indirect_commands.indirect_commands[offset] = copied;
+    }
+    
+    if (gl_LocalInvocationID.y == 0)
+        indirect_commands_count.count = localOffset;
+}

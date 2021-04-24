@@ -30,8 +30,7 @@ struct Debug {
 struct Debug;
 
 impl Instance {
-    pub(crate) fn new() -> Result<(Instance, winit::event_loop::EventLoop<()>), ash::InstanceError>
-    {
+    pub(crate) fn new() -> Result<(Instance, winit::event_loop::EventLoop<()>), ash::InstanceError> {
         let events_loop = winit::event_loop::EventLoop::new();
         let window = winit::window::WindowBuilder::new()
             .with_title("Renderer v3")
@@ -45,10 +44,7 @@ impl Instance {
         } else {
             vec![]
         };
-        let layers_names_raw: Vec<*const i8> = layer_names
-            .iter()
-            .map(|raw_name| raw_name.as_ptr())
-            .collect();
+        let layers_names_raw: Vec<*const i8> = layer_names.iter().map(|raw_name| raw_name.as_ptr()).collect();
         let extension_names_raw = extension_names();
         let name = CString::new("Renderer").unwrap();
         let appinfo = vk::ApplicationInfo::builder()
@@ -57,15 +53,26 @@ impl Instance {
             .engine_name(&name)
             .api_version(vk::make_version(1, 2, 0));
 
+        #[cfg(all(feature = "silence_validation", feature = "sync_validation"))]
+        compile_error!("Can't silence validation while enabling sync validation");
+
+        #[cfg(all(feature = "gpu_validation", feature = "gpu_printf"))]
+        compile_error!("Can't enable GPU validation & printf simultaneously");
+
         let disabled_features = vec![
             #[cfg(feature = "silence_validation")]
             vk::ValidationFeatureDisableEXT::ALL,
         ];
 
         let enabled_features = vec![
-            // TODO: update enum when bindings are available
             #[cfg(feature = "sync_validation")]
-            vk::ValidationFeatureEnableEXT::from_raw(4),
+            vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
+            #[cfg(feature = "gpu_validation")]
+            vk::ValidationFeatureEnableEXT::GPU_ASSISTED,
+            #[cfg(feature = "gpu_validation")]
+            vk::ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT,
+            #[cfg(feature = "gpu_printf")]
+            vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
         ];
 
         let mut validation_features = vk::ValidationFeaturesEXT::builder()
@@ -75,14 +82,10 @@ impl Instance {
         let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&appinfo)
             .enabled_layer_names(&layers_names_raw)
-            .enabled_extension_names(&extension_names_raw);
-        let create_info = create_info.push_next(&mut validation_features);
+            .enabled_extension_names(&extension_names_raw)
+            .push_next(&mut validation_features);
 
-        let instance = unsafe {
-            entry
-                .create_instance(&create_info, None)
-                .expect("create instance")
-        };
+        let instance = unsafe { entry.create_instance(&create_info, None).expect("create instance") };
 
         #[cfg(feature = "vk_names")]
         {
@@ -143,8 +146,13 @@ impl Instance {
 
             let create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
                 .message_severity(
-                    vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                        | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                    vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR | {
+                        if cfg!(feature = "gpu_printf") {
+                            vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+                        } else {
+                            vk::DebugUtilsMessageSeverityFlagsEXT::empty()
+                        }
+                    },
                 )
                 .message_type(message_type)
                 .pfn_user_callback(Some(vulkan_debug_callback));

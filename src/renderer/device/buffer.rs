@@ -1,34 +1,43 @@
 use ash::vk;
-use std::{ptr, sync::Arc};
+use std::{marker::PhantomData, mem::size_of, ptr};
 
-use super::{super::alloc, mapping::MappedBuffer, Device};
+use super::{
+    super::alloc,
+    mapping::{MappedBuffer, MappedStaticBuffer},
+    Device,
+};
 
 pub(crate) struct Buffer {
     pub(crate) handle: vk::Buffer,
     allocation: alloc::VmaAllocation,
-    pub(crate) allocation_info: alloc::VmaAllocationInfo,
-    device: Arc<Device>,
+}
+
+pub(crate) struct StaticBuffer<T: Sized> {
+    pub(crate) buffer: Buffer,
+    _marker: PhantomData<T>,
 }
 
 impl Buffer {
     pub(super) fn new(
-        device: &Arc<Device>,
+        device: &Device,
         buffer_usage: vk::BufferUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
         size: vk::DeviceSize,
     ) -> Buffer {
-        let (queue_family_indices, sharing_mode) =
-            if device.compute_queue_family != device.graphics_queue_family {
-                (
-                    vec![device.graphics_queue_family, device.compute_queue_family],
-                    vk::SharingMode::CONCURRENT,
-                )
-            } else {
-                (
-                    vec![device.graphics_queue_family],
-                    vk::SharingMode::EXCLUSIVE,
-                )
-            };
+        let (queue_family_indices, sharing_mode) = if device.compute_queue_family != device.graphics_queue_family
+            || device.transfer_queue_family != device.graphics_queue_family
+        {
+            (
+                vec![
+                    device.graphics_queue_family,
+                    device.compute_queue_family,
+                    device.transfer_queue_family,
+                ],
+                vk::SharingMode::CONCURRENT,
+            )
+        } else {
+            (vec![device.graphics_queue_family], vk::SharingMode::EXCLUSIVE)
+        };
         let buffer_create_info = vk::BufferCreateInfo::builder()
             .size(size)
             .usage(buffer_usage)
@@ -45,32 +54,51 @@ impl Buffer {
             usage: allocation_usage,
         };
 
-        let (handle, allocation, allocation_info) = alloc::create_buffer(
-            device.allocator,
-            &buffer_create_info,
-            &allocation_create_info,
-        )
-        .unwrap();
+        let (handle, allocation, _) =
+            alloc::create_buffer(device.allocator, &buffer_create_info, &allocation_create_info).unwrap();
 
-        Buffer {
-            handle,
-            allocation,
-            allocation_info,
-            device: Arc::clone(device),
-        }
+        Buffer { handle, allocation }
     }
 
-    pub(crate) fn map<'a, T>(&'a self) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
+    pub(crate) fn map<'a, T>(&'a self, device: &Device) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
         MappedBuffer::import(
-            self.device.allocator,
+            device.allocator,
             self.allocation,
-            &self.allocation_info,
+            &alloc::get_allocation_info(device.allocator, self.allocation),
         )
+    }
+
+    pub(crate) fn destroy(mut self, device: &Device) {
+        alloc::destroy_buffer(device.allocator, self.handle, self.allocation);
+        self.handle = vk::Buffer::null();
     }
 }
 
+impl<T: Sized> StaticBuffer<T> {
+    pub(super) fn new(
+        device: &Device,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+    ) -> Self {
+        let buffer = Buffer::new(device, buffer_usage, allocation_usage, size_of::<T>() as vk::DeviceSize);
+        StaticBuffer {
+            buffer,
+            _marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn map<'a>(&'a self, device: &Device) -> ash::prelude::VkResult<MappedStaticBuffer<'a, T>> {
+        MappedStaticBuffer::import(device.allocator, self.buffer.allocation)
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.buffer.destroy(device);
+    }
+}
+
+#[cfg(debug_assertions)]
 impl Drop for Buffer {
     fn drop(&mut self) {
-        alloc::destroy_buffer(self.device.allocator, self.handle, self.allocation)
+        debug_assert_eq!(self.handle, vk::Buffer::null(), "Buffer not destroyed before drop");
     }
 }

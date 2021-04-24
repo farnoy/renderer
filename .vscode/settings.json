@@ -6,8 +6,12 @@
   "rust-analyzer.cargo.allFeatures": false,
   "rust-analyzer.cargo.features": [
     "standard_validation",
-    "profiling",
     "crash_debugging"
   ],
-  "rust-analyzer.cargo.loadOutDirsFromCheck": true,
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.updates.channel": "nightly",
+  "editor.rulers": [
+    120
+  ],
+  "editor.minimap.maxColumn": 80,
 }

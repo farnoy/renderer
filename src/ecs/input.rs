@@ -9,7 +9,7 @@ use crate::{
 use bevy_ecs::prelude::*;
 use hashbrown::HashSet;
 use imgui_winit_support::WinitPlatform;
-#[cfg(feature = "microprofile")]
+
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
@@ -17,10 +17,7 @@ use std::sync::Arc;
 use winit::{
     self,
     dpi::PhysicalSize,
-    event::{
-        ButtonId, DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode,
-        WindowEvent,
-    },
+    event::{DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode, WindowEvent},
     platform::run_return::EventLoopExtRunReturn,
 };
 
@@ -69,30 +66,6 @@ impl Default for InputActions {
     }
 }
 
-pub(crate) struct InputState {
-    key_presses: Vec<Option<VirtualKeyCode>>,
-    key_releases: Vec<Option<VirtualKeyCode>>,
-    button_presses: Vec<ButtonId>,
-}
-
-impl InputState {
-    fn clear(&mut self) {
-        self.key_presses.clear();
-        self.key_releases.clear();
-        self.button_presses.clear();
-    }
-}
-
-impl Default for InputState {
-    fn default() -> InputState {
-        InputState {
-            key_presses: vec![],
-            key_releases: vec![],
-            button_presses: vec![],
-        }
-    }
-}
-
 pub(crate) struct InputHandler {
     pub(crate) events_loop: winit::event_loop::EventLoop<()>,
     pub(crate) quit_handle: Arc<Mutex<bool>>,
@@ -100,25 +73,24 @@ pub(crate) struct InputHandler {
 }
 
 impl InputHandler {
-    pub(crate) fn run(_world: &mut World, resources: &mut Resources) {
-        #[cfg(feature = "profiling")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run(
+        renderer: Res<RenderFrame>,
+        mut runtime_config: ResMut<RuntimeConfiguration>,
+        mut input_actions: ResMut<InputActions>,
+        mut camera: ResMut<Camera>,
+        mut resized: ResMut<Resized>,
+        mut input_handler: NonSendMut<InputHandler>,
+        mut gui: NonSendMut<Gui>,
+    ) {
         microprofile::scope!("ecs", "InputHandler");
 
-        let renderer = resources.get::<RenderFrame>().unwrap();
-        let mut runtime_config = resources.get_mut::<RuntimeConfiguration>().unwrap();
-        let mut input_state = resources.get_mut::<InputState>().unwrap();
-        let mut input_actions = resources.get_mut::<InputActions>().unwrap();
-        let mut camera = resources.get_mut::<Camera>().unwrap();
-        let mut resized = resources.get_mut::<Resized>().unwrap();
-        let mut input_handler = resources.get_thread_local_mut::<InputHandler>().unwrap();
-        let mut gui = resources.get_thread_local_mut::<Gui>().unwrap();
         let InputHandler {
             ref mut events_loop,
             ref mut imgui_platform,
             ref mut quit_handle,
         } = *input_handler;
 
-        input_state.clear();
         input_actions.promote();
         let fly_mode = runtime_config.fly_mode;
         let mut toggle_fly_mode = false;
@@ -149,6 +121,17 @@ impl InputHandler {
                     *quit_handle.lock() = true;
                 }
                 Event::WindowEvent {
+                    event: WindowEvent::MouseInput { button, state, .. },
+                    ..
+                } => match state {
+                    ElementState::Pressed => {
+                        input_actions.mouse_buttons.insert(button);
+                    }
+                    ElementState::Released => {
+                        input_actions.mouse_buttons.remove(&button);
+                    }
+                },
+                Event::WindowEvent {
                     event:
                         WindowEvent::KeyboardInput {
                             input:
@@ -163,28 +146,18 @@ impl InputHandler {
                     ..
                 } => {
                     match state {
-                        ElementState::Pressed => {
-                            input_state.key_presses.push(virtual_keycode);
-                            match virtual_keycode {
-                                Some(virtual_keycode) => {
-                                    input_actions.record_press(virtual_keycode)
-                                }
-                                None => {
-                                    dbg!(scancode);
-                                }
+                        ElementState::Pressed => match virtual_keycode {
+                            Some(virtual_keycode) => input_actions.record_press(virtual_keycode),
+                            None => {
+                                dbg!(scancode);
                             }
-                        }
-                        ElementState::Released => {
-                            input_state.key_releases.push(virtual_keycode);
-                            match virtual_keycode {
-                                Some(virtual_keycode) => {
-                                    input_actions.record_release(virtual_keycode)
-                                }
-                                None => {
-                                    dbg!(scancode);
-                                }
+                        },
+                        ElementState::Released => match virtual_keycode {
+                            Some(virtual_keycode) => input_actions.record_release(virtual_keycode),
+                            None => {
+                                dbg!(scancode);
                             }
-                        }
+                        },
                     }
                     match virtual_keycode {
                         Some(VirtualKeyCode::G) if state == ElementState::Pressed => {
@@ -203,18 +176,7 @@ impl InputHandler {
                     let y_angle = f32::pi() / 180.0 * y as f32;
                     let x_angle = f32::pi() / 180.0 * x as f32;
                     camera.rotation *= na::Rotation3::from_axis_angle(&right_vector(), y_angle);
-                    camera.rotation =
-                        na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
-                }
-                Event::DeviceEvent {
-                    event:
-                        DeviceEvent::Button {
-                            button,
-                            state: ElementState::Pressed,
-                        },
-                    ..
-                } => {
-                    input_state.button_presses.push(button);
+                    camera.rotation = na::Rotation3::from_axis_angle(&up_vector(), x_angle) * camera.rotation;
                 }
                 _ => (),
             };
