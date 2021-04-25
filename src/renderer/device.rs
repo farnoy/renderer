@@ -239,6 +239,9 @@ impl Device {
                 device.set_object_name(compute_queue, &format!("Compute Queue - {}", ix));
             }
         }
+        for transfer_queue in transfer_queue.iter() {
+            device.set_object_name(*transfer_queue, "Transfer Queue");
+        }
 
         Ok(device)
     }

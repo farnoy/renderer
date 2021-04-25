@@ -54,14 +54,9 @@ fn main() {
     let base_color_descriptor_set = BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
     let model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
-    let cull_pass_data = CullPassData::new(
-        &renderer,
-        &model_data,
-        &mut main_descriptor_pool,
-        &camera_matrices,
-        &consolidated_mesh_buffers,
-    );
-    let cull_pass_data_private = CullPassDataPrivate::new(&renderer, &cull_pass_data);
+    let cull_pass_data = CullPassData::new(&renderer, &mut main_descriptor_pool, &consolidated_mesh_buffers);
+    let cull_pass_data_private = CullPassDataPrivate::new(&renderer, &cull_pass_data, &model_data, &camera_matrices);
+
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
     let main_renderpass = MainRenderpass::new(&renderer, &main_attachments);
     let depth_pass_data = DepthPassData::new(&renderer, &model_data, &camera_matrices, &main_renderpass);
@@ -340,6 +335,7 @@ fn main() {
     app.insert_resource(main_attachments);
     app.insert_resource(gltf_pass);
     app.init_resource::<SwapchainIndexToFrameNumber>();
+    app.init_resource::<GuiCopy<SwapchainIndexToFrameNumber>>();
     app.init_resource::<DebugAABBPassData>();
     app.init_resource::<MainFramebuffer>();
     app.insert_non_send_resource(input_handler);
@@ -523,7 +519,7 @@ fn main() {
 
     app.insert_resource(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
 
-    if cfg!(feature = "standard_validation") {
+    if cfg!(debug_assertions) {
         app.insert_resource(bevy_ecs::schedule::ReportExecutionOrderAmbiguities);
     }
 

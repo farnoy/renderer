@@ -119,10 +119,7 @@ impl Pipeline {
                 .create_compute_pipelines(vk::PipelineCache::null(), infos.as_slice(), None)
                 .expect("Unable to create compute pipelines")
                 .into_iter()
-                .map(|handle| Pipeline {
-                    handle,
-                    // device: Arc::clone(&device),
-                })
+                .map(|handle| Pipeline { handle })
                 .collect()
         }
     }

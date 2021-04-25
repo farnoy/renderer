@@ -92,6 +92,7 @@ pub(crate) struct RenderFrame {
     pub(crate) buffer_count: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct SwapchainIndexToFrameNumber {
     pub(crate) map: DoubleBuffered<u64>,
 }
@@ -1844,6 +1845,7 @@ pub(crate) enum GraphicsPhases {
     CullPassBypass,
     GuiWritebackConfig,
     GuiWritebackCamera,
+    GuiWritebackSwapchainMap,
 }
 
 pub(crate) fn graphics_stage() -> SystemStage {
@@ -1873,8 +1875,10 @@ pub(crate) fn graphics_stage() -> SystemStage {
 
     stage
         .with_system(update_base_color_descriptors.system().before(MainPass))
-        .with_system(cull_pass_bypass.system().label(CullPassBypass))
-        .with_system(cull_pass.system().label(CullPass))
+        // should not need to be before SubmitMainPass or even Present, but crashes on amdvlk eventually
+        .with_system(cull_pass_bypass.system().label(CullPassBypass).before(SubmitMainPass))
+        // should not need to be before SubmitMainPass or even Present, but crashes on amdvlk eventually
+        .with_system(cull_pass.system().label(CullPass).before(SubmitMainPass))
         .with_system(prepare_shadow_maps.system().label(ShadowMapping))
         .with_system(render_frame.system().label(MainPass))
         .with_system(
@@ -1884,19 +1888,20 @@ pub(crate) fn graphics_stage() -> SystemStage {
                 .after(ShadowMapping)
                 .after(MainPass),
         )
-        .with_system(
-            PresentFramebuffer::exec
-                .system()
-                .label(Present)
-                .after(SubmitMainPass)
-                .after(CullPass)
-                .after(CullPassBypass),
-        )
+        .with_system(PresentFramebuffer::exec.system().label(Present).after(SubmitMainPass))
         .with_system(
             gui_writeback::<RuntimeConfiguration>
                 .system()
                 .label(GuiWritebackConfig)
                 .after(MainPass)
+                .after(CullPass)
+                .after(CullPassBypass),
+        )
+        .with_system(
+            gui_writeback::<SwapchainIndexToFrameNumber>
+                .system()
+                .label(GuiWritebackSwapchainMap)
+                .after(Present)
                 .after(CullPass)
                 .after(CullPassBypass),
         )

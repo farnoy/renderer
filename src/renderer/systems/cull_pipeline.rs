@@ -8,7 +8,7 @@ use crate::{
         shaders::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         CameraMatrices, ComputeTimeline, DrawIndex, GltfMesh, LocalTransferCommandPool, MainDescriptorPool, ModelData,
-        Position, RenderFrame, RenderStage, SwapchainIndexToFrameNumber, TransferTimeline,
+        Position, RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
     },
 };
 use ash::{
@@ -29,7 +29,6 @@ pub(crate) struct CullPassData {
     pub(crate) culled_commands_count_buffer:
         DoubleBuffered<cull_commands_count_set::bindings::indirect_commands_count::Buffer>,
     pub(crate) culled_index_buffer: DoubleBuffered<cull_set::bindings::out_index_buffer::Buffer>,
-    cull_pipeline_layout: generate_work::PipelineLayout,
     compact_draw_stream_layout: compact_draw_stream::PipelineLayout,
     compact_draw_stream_pipeline: compact_draw_stream::Pipeline,
     cull_set_layout: cull_set::Layout,
@@ -39,9 +38,11 @@ pub(crate) struct CullPassData {
 }
 
 pub(crate) struct CullPassDataPrivate {
+    cull_pipeline_layout: generate_work::PipelineLayout,
     cull_pipeline: generate_work::Pipeline,
     command_pool: DoubleBuffered<StrictCommandPool>,
     previous_cull_pipeline: DoubleBuffered<Option<generate_work::Pipeline>>,
+    cull_shader: Shader,
 }
 
 pub(crate) const INITIAL_WORKGROUP_SIZE: u32 = 512;
@@ -70,16 +71,30 @@ pub(crate) fn coarse_culling(
 }
 
 impl CullPassDataPrivate {
-    pub(crate) fn new(renderer: &RenderFrame, cull_pass_data: &CullPassData) -> CullPassDataPrivate {
+    pub(crate) fn new(
+        renderer: &RenderFrame,
+        cull_pass_data: &CullPassData,
+        model_data: &ModelData,
+        camera_matrices: &CameraMatrices,
+    ) -> CullPassDataPrivate {
         let cull_specialization = generate_work::Specialization {
             local_workgroup_size: INITIAL_WORKGROUP_SIZE,
         };
+        let cull_shader = renderer.device.new_shader(generate_work::COMPUTE);
+        let cull_pipeline_layout = generate_work::PipelineLayout::new(
+            &renderer.device,
+            &model_data.model_set_layout,
+            &camera_matrices.set_layout,
+            &cull_pass_data.cull_set_layout,
+        );
         let cull_pipeline = generate_work::Pipeline::new(
             &renderer.device,
-            &cull_pass_data.cull_pipeline_layout,
+            &cull_pipeline_layout,
             cull_specialization,
+            Some(&cull_shader),
         );
         CullPassDataPrivate {
+            cull_pipeline_layout,
             cull_pipeline,
             command_pool: renderer.new_buffered(|ix| {
                 StrictCommandPool::new(
@@ -89,37 +104,31 @@ impl CullPassDataPrivate {
                 )
             }),
             previous_cull_pipeline: renderer.new_buffered(|_| None),
+            cull_shader,
         }
     }
 
     pub(crate) fn destroy(self, device: &Device) {
+        self.cull_pipeline_layout.destroy(device);
         self.cull_pipeline.destroy(device);
         for pipe in self.previous_cull_pipeline.into_iter().flatten() {
             pipe.destroy(device);
         }
         self.command_pool.into_iter().for_each(|pool| pool.destroy(device));
+        self.cull_shader.destroy(device);
     }
 }
 
 impl CullPassData {
     pub(crate) fn new(
         renderer: &RenderFrame,
-        model_data: &ModelData,
         main_descriptor_pool: &mut MainDescriptorPool,
-        camera_matrices: &CameraMatrices,
         consolidated_mesh_buffers: &ConsolidatedMeshBuffers,
     ) -> CullPassData {
         let device = &renderer.device;
 
         let cull_set_layout = cull_set::Layout::new(&renderer.device);
         let cull_count_set_layout = cull_commands_count_set::Layout::new(&renderer.device);
-
-        let cull_pipeline_layout = generate_work::PipelineLayout::new(
-            &device,
-            &model_data.model_set_layout,
-            &camera_matrices.set_layout,
-            &cull_set_layout,
-        );
 
         let compact_draw_stream_layout =
             compact_draw_stream::PipelineLayout::new(&device, &cull_set_layout, &cull_count_set_layout);
@@ -131,6 +140,7 @@ impl CullPassData {
                 local_workgroup_size: 1024,
                 draw_calls_to_compact: 2400, // FIXME
             },
+            None,
         );
 
         let culled_index_buffer = renderer.new_buffered(|ix| {
@@ -213,7 +223,6 @@ impl CullPassData {
             culled_commands_buffer,
             culled_commands_count_buffer,
             culled_index_buffer,
-            cull_pipeline_layout,
             compact_draw_stream_layout,
             compact_draw_stream_pipeline,
             cull_set_layout,
@@ -223,9 +232,8 @@ impl CullPassData {
         }
     }
 
-    fn configure_pipeline(
+    pub(crate) fn configure_pipeline(
         renderer: &RenderFrame,
-        cull_pass_data: &CullPassData,
         cull_pass_data_private: &mut CullPassDataPrivate,
         image_index: &ImageIndex,
         runtime_config: &RuntimeConfiguration,
@@ -239,14 +247,13 @@ impl CullPassData {
             local_workgroup_size: runtime_config.compute_cull_workgroup_size,
         };
 
-        dbg!("create test");
-        let cull_pipeline =
-            generate_work::Pipeline::new(&renderer.device, &cull_pass_data.cull_pipeline_layout, spec.clone());
-        cull_pipeline.destroy(&renderer.device);
-
-        *cull_pass_data_private.previous_cull_pipeline.current_mut(image_index.0) = cull_pass_data_private
-            .cull_pipeline
-            .specialize(&renderer.device, &cull_pass_data.cull_pipeline_layout, &spec);
+        *cull_pass_data_private.previous_cull_pipeline.current_mut(image_index.0) =
+            cull_pass_data_private.cull_pipeline.specialize(
+                &renderer.device,
+                &cull_pass_data_private.cull_pipeline_layout,
+                &spec,
+                Some(&cull_pass_data_private.cull_shader),
+            );
     }
 
     pub(crate) fn destroy(self, device: &Device, main_descriptor_pool: &MainDescriptorPool) {
@@ -256,7 +263,6 @@ impl CullPassData {
             .for_each(|b| b.destroy(device));
         self.culled_index_buffer.into_iter().for_each(|b| b.destroy(device));
         self.compact_draw_stream_pipeline.destroy(device);
-        self.cull_pipeline_layout.destroy(device);
         self.compact_draw_stream_layout.destroy(device);
         self.cull_set
             .into_iter()
@@ -404,21 +410,7 @@ pub(crate) fn cull_pass(
         )
         .unwrap();
 
-    renderer
-        .compute_timeline_semaphore
-        .wait(
-            &renderer.device,
-            ComputeTimeline::Perform.as_of_last(renderer.frame_number),
-        )
-        .unwrap();
-
-    CullPassData::configure_pipeline(
-        &renderer,
-        &cull_pass_data,
-        &mut cull_pass_data_private,
-        &image_index,
-        &runtime_config,
-    );
+    CullPassData::configure_pipeline(&renderer, &mut cull_pass_data_private, &image_index, &runtime_config);
 
     let previous_ix = ImageIndex(
         swapchain_index_map
@@ -432,6 +424,7 @@ pub(crate) fn cull_pass(
 
     let CullPassDataPrivate {
         ref mut command_pool,
+        ref cull_pipeline_layout,
         ref cull_pipeline,
         ..
     } = *cull_pass_data_private;
@@ -525,7 +518,7 @@ pub(crate) fn cull_pass(
             renderer
                 .device
                 .cmd_bind_pipeline(*cull_cb, vk::PipelineBindPoint::COMPUTE, *cull_pipeline.pipeline);
-            cull_pass_data.cull_pipeline_layout.bind_descriptor_sets(
+            cull_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *cull_cb,
                 &model_data.model_set.current(image_index.0),
@@ -559,9 +552,7 @@ pub(crate) fn cull_pass(
 
                 index_offset_in_output += index_len.to_u32().unwrap();
 
-                cull_pass_data
-                    .cull_pipeline_layout
-                    .push_constants(&renderer.device, *cull_cb, &push_constants);
+                cull_pipeline_layout.push_constants(&renderer.device, *cull_cb, &push_constants);
                 let index_len = *index_len as u32;
                 let workgroup_size = cull_pipeline.spec().local_workgroup_size;
                 let workgroup_count = index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);

@@ -1344,6 +1344,8 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         SpecificPipe::Graphics(_) => quote!(),
         SpecificPipe::Compute(_) => {
             let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
+            let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
+            let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
 
             quote! {
                 pub(crate) struct Pipeline {
@@ -1356,8 +1358,9 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         device: &Device,
                         layout: &PipelineLayout,
                         spec: Specialization,
+                        shader: Option<&device::Shader>,
                     ) -> Self {
-                        Self::new_internal(device, layout, spec, None)
+                        Self::new_internal(device, layout, spec, None, shader)
                     }
 
                     fn new_internal(
@@ -1365,15 +1368,17 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         layout: &PipelineLayout,
                         specialization: Specialization,
                         base_pipeline: Option<&Self>,
+                        shader: Option<&device::Shader>,
                     ) -> Self {
+                        scope!("macros", #new_internal_msg);
+
                         use std::ffi::CStr;
                         let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
                         let base_pipeline_handle = base_pipeline
                             .map(|pipe| *pipe.pipeline)
                             .unwrap_or_else(vk::Pipeline::null);
-                        // dbg!(&specialization);
-                        // dbg!(&base_pipeline_handle);
-                        let shader = device.new_shader(COMPUTE);
+                        let shader = shader.ok_or_else(|| device.new_shader(COMPUTE));
+                        let shader_handle = shader.as_ref().map(|s| s.vk()).unwrap_or_else(|s| s.vk());
                         let spec_info = specialization.get_spec_info();
                         let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
                         if base_pipeline.is_some() {
@@ -1383,22 +1388,20 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                             vk::ComputePipelineCreateInfo::builder()
                                 .stage(
                                     vk::PipelineShaderStageCreateInfo::builder()
-                                        .module(shader.vk())
+                                        .module(shader_handle)
                                         .name(&shader_entry_name)
                                         .stage(vk::ShaderStageFlags::COMPUTE)
                                         .specialization_info(&spec_info)
                                         .build(),
                                 )
                                 .layout(*layout.layout)
-                                // .flags(flags)
-                                // .base_pipeline_handle(base_pipeline_handle)
-                                // .base_pipeline_index(-1)
+                                .flags(flags)
+                                .base_pipeline_handle(base_pipeline_handle)
+                                .base_pipeline_index(-1)
                         ]).into_iter().next().unwrap();
-                        // dbg!(*pipeline);
-                        shader.destroy(device);
-                        // drop(spec_info);
-
                         device.set_object_name(*pipeline, #pipe_debug_name);
+
+                        shader.err().map(|s| s.destroy(device));
 
                         Pipeline {
                             pipeline,
@@ -1411,13 +1414,20 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         &mut self,
                         device: &Device,
                         layout: &PipelineLayout,
-                        new_spec: &Specialization
+                        new_spec: &Specialization,
+                        shader: Option<&device::Shader>,
                     ) -> Option<Self> {
+                        scope!("macros", #specialize_msg);
                         use std::mem::swap;
 
                         if self.specialization != *new_spec {
-                            dbg!("specializing", &self.specialization, new_spec);
-                            let mut replacement = Self::new_internal(device, layout, new_spec.clone(), Some(&self));
+                            let mut replacement = Self::new_internal(
+                                device,
+                                layout,
+                                new_spec.clone(),
+                                Some(&self),
+                                shader
+                            );
                             swap(&mut *self, &mut replacement);
                             Some(replacement)
                         } else {
@@ -1439,6 +1449,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             use crate::renderer::device::{self, Device};
             use ash::{vk, version::DeviceV1_0};
             use std::{mem::size_of, slice::from_raw_parts};
+            use microprofile::scope;
 
             pub(crate) struct PipelineLayout {
                 pub(crate) layout: device::PipelineLayout,
