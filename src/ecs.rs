@@ -3,13 +3,13 @@ mod input;
 
 pub(crate) mod components;
 pub(crate) mod resources {
+    use std::sync::Arc;
+
+    use super::super::renderer::{Device, GltfMesh, Image};
     pub(crate) use super::{
         camera_controller::Camera,
         input::{InputActions, InputHandler},
     };
-
-    use super::super::renderer::{Device, GltfMesh, Image};
-    use std::sync::Arc;
 
     pub(crate) struct MeshLibrary {
         pub(crate) projectile: GltfMesh,
@@ -24,6 +24,14 @@ pub(crate) mod resources {
     }
 }
 pub(crate) mod systems {
+    use std::{sync::Arc, time::Instant};
+
+    use bevy_ecs::prelude::*;
+    use imgui::im_str;
+    use microprofile::scope;
+    use na::RealField;
+    use winit::{self, event::MouseButton};
+
     use super::{super::renderer::*, components::Deleting};
     pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
     use crate::{
@@ -33,12 +41,6 @@ pub(crate) mod systems {
         },
         renderer::{forward_vector, up_vector, GltfMesh, Swapchain},
     };
-    use bevy_ecs::prelude::*;
-    use imgui::im_str;
-    use microprofile::scope;
-    use na::RealField;
-    use std::{sync::Arc, time::Instant};
-    use winit::{self, event::MouseButton};
 
     pub(crate) fn model_matrix_calculation(
         task_pool: Res<bevy_tasks::ComputeTaskPool>,

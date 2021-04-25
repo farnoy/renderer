@@ -1,5 +1,6 @@
-use ash::{version::DeviceV1_0, vk};
 use std::{mem::size_of, path::Path, u64};
+
+use ash::{version::DeviceV1_0, vk};
 
 use super::{
     alloc,
@@ -137,7 +138,12 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     }
     /*
     // quoting meshopt:
-    When a sequence of LOD meshes is generated that all use the original vertex buffer, care must be taken to order vertices optimally to not penalize mobile GPU architectures that are only capable of transforming a sequential vertex buffer range. It's recommended in this case to first optimize each LOD for vertex cache, then assemble all LODs in one large index buffer starting from the coarsest LOD (the one with fewest triangles), and call meshopt_optimizeVertexFetch on the final large index buffer. This will make sure that coarser LODs require a smaller vertex range and are efficient wrt vertex fetch and transform.
+    When a sequence of LOD meshes is generated that all use the original vertex buffer, care must be taken to order
+    vertices optimally to not penalize mobile GPU architectures that are only capable of transforming a sequential
+    vertex buffer range. It's recommended in this case to first optimize each LOD for vertex cache, then assemble all
+    LODs in one large index buffer starting from the coarsest LOD (the one with fewest triangles), and call
+    meshopt_optimizeVertexFetch on the final large index buffer. This will make sure that coarser LODs require a smaller
+     vertex range and are efficient wrt vertex fetch and transform.
     let remap = meshopt::optimize_vertex_fetch_remap(&indices, positions.len());
     let indices_new = meshopt::remap_index_buffer(Some(&indices), positions.len(), &remap);
     let positions_new = meshopt::remap_vertex_buffer(&positions, positions.len(), &remap);
@@ -268,48 +274,44 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let command_buffer = command_session.record_one_time("upload gltf mesh cb");
     unsafe {
         let device = &renderer.device;
-        device.device.cmd_copy_buffer(
-            *command_buffer,
-            vertex_upload_buffer.handle,
-            vertex_buffer.handle,
-            &[vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: vertex_size,
-            }],
-        );
-        device.device.cmd_copy_buffer(
-            *command_buffer,
-            normal_upload_buffer.handle,
-            normal_buffer.handle,
-            &[vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: normals_size,
-            }],
-        );
-        device.device.cmd_copy_buffer(
-            *command_buffer,
-            uv_upload_buffer.handle,
-            uv_buffer.handle,
-            &[vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: uvs_size,
-            }],
-        );
-        for (index_buffer, index_upload_buffer, index_len) in index_buffers.iter() {
-            let index_size = size_of::<u32>() as u64 * index_len;
-            device.device.cmd_copy_buffer(
-                *command_buffer,
-                index_upload_buffer.handle,
-                index_buffer.handle,
-                &[vk::BufferCopy {
+        device
+            .device
+            .cmd_copy_buffer(*command_buffer, vertex_upload_buffer.handle, vertex_buffer.handle, &[
+                vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
-                    size: index_size,
-                }],
-            );
+                    size: vertex_size,
+                },
+            ]);
+        device
+            .device
+            .cmd_copy_buffer(*command_buffer, normal_upload_buffer.handle, normal_buffer.handle, &[
+                vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: normals_size,
+                },
+            ]);
+        device
+            .device
+            .cmd_copy_buffer(*command_buffer, uv_upload_buffer.handle, uv_buffer.handle, &[
+                vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: uvs_size,
+                },
+            ]);
+        for (index_buffer, index_upload_buffer, index_len) in index_buffers.iter() {
+            let index_size = size_of::<u32>() as u64 * index_len;
+            device
+                .device
+                .cmd_copy_buffer(*command_buffer, index_upload_buffer.handle, index_buffer.handle, &[
+                    vk::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: index_size,
+                    },
+                ]);
         }
         device.device.cmd_pipeline_barrier(
             *command_buffer,

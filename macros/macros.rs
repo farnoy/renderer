@@ -1,5 +1,7 @@
 #![feature(extend_one)]
 
+use std::{env, fs::File, io::Read};
+
 use convert_case::{Case, Casing};
 use derive_more::Deref;
 use derive_syn_parse::Parse;
@@ -12,7 +14,6 @@ use petgraph::{
 };
 use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::{format_ident, quote, ToTokens};
-use std::{env, fs::File, io::Read};
 use syn::{
     braced, bracketed, custom_keyword,
     parse::{Parse, ParseStream, Result},
@@ -193,7 +194,7 @@ struct Pass {
     #[allow(dead_code)]
     layouts_brace: Brace,
     #[inside(layouts_brace)]
-    layouts: UnArray<Sequence<Ident, ArrowPair<Sequence<LoadOp, Expr>, Sequence<Expr, StoreOp>>>>,
+    layouts: UnArray<Sequence<Ident, ArrowPair<Sequence<LoadOp, Expr>, Sequence<StoreOp, Expr>>>>,
     #[inside(brace)]
     #[allow(dead_code)]
     subpasses_kw: kw::subpasses,
@@ -409,13 +410,18 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .flat_map(|(ix, (_, format))| syn::parse2::<Token![dyn]>(format.to_token_stream()).and(Ok(ix)))
         .collect::<Vec<_>>();
 
-    let wait_instance = passes.iter()
+    let wait_instance = passes
+        .iter()
         .map(|pass| &pass.name)
         .chain(async_passes.iter())
-        .map(| pass| {
+        .map(|pass| {
             let signal_out = sync.get(&pass.to_string()).expect("no sync for this pass");
-            let t = syn::parse2::<syn::Path>(signal_out.to_token_stream()).expect("sync values must consist of 2 path segments");
-            let signal_timeline_member = format_ident!("{}_semaphore", t.segments.first().unwrap().ident.to_string().to_case(Case::Snake));
+            let t = syn::parse2::<syn::Path>(signal_out.to_token_stream())
+                .expect("sync values must consist of 2 path segments");
+            let signal_timeline_member = format_ident!(
+                "{}_semaphore",
+                t.segments.first().unwrap().ident.to_string().to_case(Case::Snake)
+            );
 
             let wait_inner = dependency_graph
                 .edges_directed(
@@ -425,15 +431,19 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .map(|edge| {
                     let from = all_passes.get(edge.source().index()).unwrap();
                     let signaled = sync.get(&from.to_string()).unwrap();
-                    let t = syn::parse2::<syn::Path>(signaled.to_token_stream()).expect("sync values must consist of 2 path segments");
-                    let timeline_member = format_ident!("{}_semaphore", t.segments.first().unwrap().ident.to_string().to_case(Case::Snake));
+                    let t = parse2::<Path>(signaled.to_token_stream())
+                        .expect("sync values must consist of 2 path segments");
+                    let timeline_member = format_ident!(
+                        "{}_semaphore",
+                        t.segments.first().unwrap().ident.to_string().to_case(Case::Snake)
+                    );
 
                     let as_of = match edge.weight() {
                         &DependencyType::SameFrame => quote!(as_of(render_frame.frame_number)),
                         &DependencyType::LastFrame => quote!(as_of_last(render_frame.frame_number)),
                         &DependencyType::LastAccess => {
                             quote!(as_of_previous(&image_index, &render_frame))
-                        },
+                        }
                     };
 
                     quote! {
@@ -445,12 +455,14 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
             quote! {
                 impl RenderStage for Stage {
-                    fn prepare_signal(render_frame: &RenderFrame, semaphores: &mut Vec<vk::Semaphore>, values: &mut Vec<u64>) {
+                    fn prepare_signal(render_frame: &RenderFrame, semaphores: &mut Vec<vk::Semaphore>,
+                                      values: &mut Vec<u64>) {
                         semaphores.push(render_frame.#signal_timeline_member.handle);
                         values.push(super::super::#signal_out.as_of(render_frame.frame_number));
                     }
 
-                    fn prepare_wait(image_index: &ImageIndex, render_frame: &RenderFrame, semaphores: &mut Vec<vk::Semaphore>, values: &mut Vec<u64>) {
+                    fn prepare_wait(image_index: &ImageIndex, render_frame: &RenderFrame,
+                                    semaphores: &mut Vec<vk::Semaphore>, values: &mut Vec<u64>) {
                         #(#wait_inner)*
                     }
 
@@ -487,7 +499,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     let format = &formats[attachment_ix];
                     let Sequence((
                         _,
-                        ArrowPair((Sequence((load_op, initial_layout)), Sequence((final_layout, store_op)))),
+                        ArrowPair((Sequence((load_op, initial_layout)), Sequence((store_op, final_layout)))),
                     )) = pass
                         .layouts
                         .iter()
@@ -1896,20 +1908,16 @@ fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStre
                 offsets
             });
 
-            prereq.push((
-                s.name().unwrap().to_string(),
-                spv.clone(),
-                quote! {
-                    #[repr(C)]
-                    pub(crate) struct #name {
-                        #(pub(crate) #field_name : #field_ty),*
-                    }
+            prereq.push((s.name().unwrap().to_string(), spv.clone(), quote! {
+                #[repr(C)]
+                pub(crate) struct #name {
+                    #(pub(crate) #field_name : #field_ty),*
+                }
 
-                    #(
-                        const_assert_eq!(#rust_offset, #field_offset);
-                    )*
-                },
-            ));
+                #(
+                    const_assert_eq!(#rust_offset, #field_offset);
+                )*
+            }));
 
             (prereq, quote!(#name))
         }

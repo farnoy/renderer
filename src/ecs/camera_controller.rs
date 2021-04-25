@@ -1,9 +1,10 @@
+use bevy_ecs::prelude::*;
+use winit::{self, event::VirtualKeyCode};
+
 use crate::{
     ecs::{resources::InputActions, systems::*},
     renderer::{forward_vector, right_vector, up_vector},
 };
-use bevy_ecs::prelude::*;
-use winit::{self, event::VirtualKeyCode};
 
 #[derive(Clone)]
 pub(crate) struct Camera {

@@ -1,5 +1,6 @@
-use ash::vk;
 use std::{marker::PhantomData, mem::size_of, ptr};
+
+use ash::vk;
 
 use super::{
     super::alloc,

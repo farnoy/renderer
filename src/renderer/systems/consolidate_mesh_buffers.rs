@@ -1,3 +1,13 @@
+use std::{mem::size_of, u64};
+
+use ash::{
+    version::DeviceV1_0,
+    vk::{self, Handle},
+};
+use bevy_ecs::prelude::*;
+use hashbrown::{hash_map::Entry, HashMap};
+use microprofile::scope;
+
 use crate::renderer::{
     alloc,
     device::{Buffer, Device},
@@ -5,15 +15,6 @@ use crate::renderer::{
     shaders::cull_set,
     GltfMesh, ImageIndex, LocalGraphicsCommandPool, RenderFrame, RenderStage, SwapchainIndexToFrameNumber,
 };
-use ash::{
-    version::DeviceV1_0,
-    vk::{self, Handle},
-};
-use bevy_ecs::prelude::*;
-use hashbrown::{hash_map::Entry, HashMap};
-
-use microprofile::scope;
-use std::{mem::size_of, u64};
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
 pub(crate) struct ConsolidatedMeshBuffers {
@@ -34,9 +35,6 @@ pub(crate) struct ConsolidatedMeshBuffers {
     pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
     pub(crate) index_buffer: cull_set::bindings::index_buffer::Buffer,
-    // If this semaphore is present, a modification to the consolidated buffer has happened
-    // and the user must synchronize with it
-    // pub(crate) sync_timeline: TimelineSemaphore,
 }
 
 renderer_macros::define_timeline!(pub(crate) ConsolidateTimeline [Perform]);
@@ -110,12 +108,11 @@ pub(crate) fn consolidate_mesh_buffers(
                     &[vk::BufferCopy::builder().size(size_3).dst_offset(offset_3).build()],
                 );
                 // uv
-                renderer.device.cmd_copy_buffer(
-                    *command_buffer,
-                    mesh.uv_buffer.handle,
-                    uv_buffer.handle,
-                    &[vk::BufferCopy::builder().size(size_2).dst_offset(offset_2).build()],
-                );
+                renderer
+                    .device
+                    .cmd_copy_buffer(*command_buffer, mesh.uv_buffer.handle, uv_buffer.handle, &[
+                        vk::BufferCopy::builder().size(size_2).dst_offset(offset_2).build(),
+                    ]);
             }
             *next_vertex_offset += mesh.vertex_len;
             needs_transfer = true;
@@ -149,8 +146,8 @@ pub(crate) fn consolidate_mesh_buffers(
     frame_graph::ConsolidateMeshBuffers::Stage::queue_submit(&image_index, &renderer, *queue, &command_buffers)
         .unwrap();
 
-    // TODO: host_signal is too quick in optimized builds, surpassing last frame's async signal operation
-    //       need to do an empty submit to wait for last frame first, then signal
+    // TODO: host_signal is too quick in optimized builds, surpassing last frame's async signal
+    // operation       need to do an empty submit to wait for last frame first, then signal
     // renderpass3::ConsolidateMeshBuffers::host_signal(&renderer).unwrap();
 }
 

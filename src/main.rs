@@ -11,6 +11,8 @@ extern crate nalgebra_glm as glm;
 pub(crate) mod ecs;
 pub(crate) mod renderer;
 
+use std::sync::Arc;
+
 use ash::version::DeviceV1_0;
 use bevy_app::*;
 use bevy_ecs::{
@@ -19,12 +21,10 @@ use bevy_ecs::{
 };
 use ecs::{components::*, resources::*, systems::*};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
-
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
 use renderer::{DrawIndex, *};
-use std::sync::Arc;
 
 fn main() {
     microprofile::init!();

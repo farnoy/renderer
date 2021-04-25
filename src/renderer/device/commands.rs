@@ -1,7 +1,9 @@
-use super::{sync::Fence, Device};
+use std::{marker::PhantomData, mem::swap, ops::Deref};
+
 use ash::{version::DeviceV1_0, vk};
 use microprofile::scope;
-use std::{marker::PhantomData, mem::swap, ops::Deref};
+
+use super::{sync::Fence, Device};
 
 pub(crate) struct StrictCommandPool {
     handle: vk::CommandPool,

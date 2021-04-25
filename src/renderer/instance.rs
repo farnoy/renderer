@@ -1,12 +1,13 @@
+#[cfg(feature = "vk_names")]
+use std::borrow::Cow;
+use std::{ffi::CString, ops::Deref, sync::Arc};
+
 use ash::{
     self,
     extensions::{ext::DebugUtils, khr::Surface},
     version::{EntryV1_0, InstanceV1_0},
     vk,
 };
-#[cfg(feature = "vk_names")]
-use std::borrow::Cow;
-use std::{ffi::CString, ops::Deref, sync::Arc};
 
 use super::entry::Entry;
 

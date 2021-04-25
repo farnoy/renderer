@@ -1,4 +1,5 @@
-use super::{Device, Instance};
+use std::{sync::Arc, u32};
+
 #[cfg(windows)]
 use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
@@ -8,7 +9,8 @@ use ash::{
     version::{EntryV1_0, InstanceV1_0},
     vk,
 };
-use std::{sync::Arc, u32};
+
+use super::{Device, Instance};
 
 pub(crate) struct Surface {
     pub(crate) surface: vk::SurfaceKHR,
@@ -201,6 +203,7 @@ unsafe fn create_surface<E: EntryV1_0>(
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use std::ffi::c_void;
+
     use winit::platform::windows::WindowExtWindows;
     let hwnd = window.hwnd() as *mut winapi::shared::windef::HWND__;
     let hinstance = winapi::um::winuser::GetWindow(hwnd, 0) as *const c_void;

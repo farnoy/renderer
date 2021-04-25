@@ -1,3 +1,9 @@
+use std::sync::Arc;
+
+use ash::{version::DeviceV1_0, vk};
+use bevy_ecs::prelude::*;
+use microprofile::scope;
+
 use crate::{
     ecs::components::Deleting,
     renderer::{
@@ -5,10 +11,6 @@ use crate::{
         MainDescriptorPool, RenderFrame, SwapchainIndexToFrameNumber,
     },
 };
-use ash::{version::DeviceV1_0, vk};
-use bevy_ecs::prelude::*;
-use microprofile::scope;
-use std::sync::Arc;
 
 pub(crate) struct BaseColorDescriptorSet {
     pub(crate) layout: shaders::base_color_set::Layout,
@@ -156,5 +158,6 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
     }
 
     // the descriptor binding isn't UPDATE_AFTER_BIND (TODO: const assertion would be nice)
-    // so we shouldn't need to overwrite it, if the DrawIndex of that entity gets reused, the binding will be updated
+    // so we shouldn't need to overwrite it, if the DrawIndex of that entity gets reused, the
+    // binding will be updated
 }

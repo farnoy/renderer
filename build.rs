@@ -1,5 +1,6 @@
-use rayon::prelude::*;
 use std::{env, fs, path::Path, process::Command};
+
+use rayon::prelude::*;
 
 fn main() {
     let jobserver = unsafe { jobserver::Client::from_env().expect("failed to obtain jobserver from cargo") };

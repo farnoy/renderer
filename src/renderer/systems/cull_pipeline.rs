@@ -1,3 +1,13 @@
+use std::{cmp::min, mem::take};
+
+use ash::{
+    version::DeviceV1_0,
+    vk::{self, Handle},
+};
+use bevy_ecs::prelude::*;
+use microprofile::scope;
+use num_traits::ToPrimitive;
+
 use crate::{
     ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
     renderer::{
@@ -11,14 +21,6 @@ use crate::{
         Position, RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
     },
 };
-use ash::{
-    version::DeviceV1_0,
-    vk::{self, Handle},
-};
-use bevy_ecs::prelude::*;
-use microprofile::scope;
-use num_traits::ToPrimitive;
-use std::{cmp::min, mem::take};
 
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum

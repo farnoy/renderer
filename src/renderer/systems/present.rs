@@ -1,12 +1,13 @@
+use std::u64;
+
+use ash::{version::DeviceV1_0, vk};
+use bevy_ecs::prelude::*;
+use microprofile::scope;
+
 use super::super::{device::Semaphore, GraphicsTimeline, RenderFrame, Swapchain};
 use crate::renderer::{
     Device, GuiCopy, MainAttachments, MainFramebuffer, MainRenderpass, Resized, SwapchainIndexToFrameNumber,
 };
-use ash::{version::DeviceV1_0, vk};
-use bevy_ecs::prelude::*;
-
-use microprofile::scope;
-use std::u64;
 
 pub(crate) struct PresentData {
     framebuffer_acquire_semaphore: Semaphore,

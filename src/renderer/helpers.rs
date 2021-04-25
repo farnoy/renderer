@@ -1,5 +1,6 @@
-use super::device::Device;
 use ash::{version::DeviceV1_0, vk};
+
+use super::device::Device;
 
 pub(crate) const MP_INDIAN_RED: u32 = 0xcd5c5c;
 

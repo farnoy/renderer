@@ -1,14 +1,15 @@
+#[cfg(feature = "gpu_printf")]
+use std::ffi::CStr;
+#[cfg(feature = "crash_debugging")]
+use std::mem::transmute;
+use std::{ops::Deref, sync::Arc};
+
 use ash::{
     self, extensions,
     version::{DeviceV1_0, InstanceV1_0},
     vk,
 };
 use parking_lot::Mutex;
-#[cfg(feature = "gpu_printf")]
-use std::ffi::CStr;
-#[cfg(feature = "crash_debugging")]
-use std::mem::transmute;
-use std::{ops::Deref, sync::Arc};
 
 mod buffer;
 mod commands;
@@ -20,8 +21,6 @@ mod pipeline;
 mod shader;
 mod sync;
 
-use super::{alloc, Instance, Surface};
-
 pub(crate) use self::{
     buffer::*,
     commands::*,
@@ -32,6 +31,7 @@ pub(crate) use self::{
     shader::Shader,
     sync::*,
 };
+use super::{alloc, Instance, Surface};
 
 type AshDevice = ash::Device;
 

@@ -1,6 +1,7 @@
-use crate::{ecs::components::*, renderer::*, shaders::LightMatrices};
 use ash::vk;
 use bevy_ecs::prelude::*;
+
+use crate::{ecs::components::*, renderer::*, shaders::LightMatrices};
 
 pub(crate) const MAP_SIZE: u32 = 4096;
 // dimensions of the square texture, 4x4 slots = 16 in total
@@ -390,32 +391,24 @@ pub(crate) fn prepare_shadow_maps(
             let column = ix as u32 % DIM;
             let x = MAP_SIZE * column;
             let y = MAP_SIZE * row;
-            renderer.device.cmd_set_viewport(
-                *command_buffer,
-                0,
-                &[vk::Viewport {
-                    x: x as f32,
-                    y: (MAP_SIZE * (row + 1)) as f32,
-                    width: MAP_SIZE as f32,
-                    height: -(MAP_SIZE as f32),
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            renderer.device.cmd_set_scissor(
-                *command_buffer,
-                0,
-                &[vk::Rect2D {
-                    offset: vk::Offset2D {
-                        x: x as i32,
-                        y: y as i32,
-                    },
-                    extent: vk::Extent2D {
-                        width: MAP_SIZE,
-                        height: MAP_SIZE,
-                    },
-                }],
-            );
+            renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
+                x: x as f32,
+                y: (MAP_SIZE * (row + 1)) as f32,
+                width: MAP_SIZE as f32,
+                height: -(MAP_SIZE as f32),
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }]);
+            renderer.device.cmd_set_scissor(*command_buffer, 0, &[vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: x as i32,
+                    y: y as i32,
+                },
+                extent: vk::Extent2D {
+                    width: MAP_SIZE,
+                    height: MAP_SIZE,
+                },
+            }]);
             renderer.device.cmd_clear_attachments(
                 *command_buffer,
                 &[vk::ClearAttachment::builder()

@@ -1,6 +1,8 @@
-use super::{DescriptorSetLayout, Device};
-use ash::{version::DeviceV1_0, vk};
 use std::{ffi::CString, ops::Deref};
+
+use ash::{version::DeviceV1_0, vk};
+
+use super::{DescriptorSetLayout, Device};
 
 pub(crate) struct PipelineLayout {
     handle: vk::PipelineLayout,

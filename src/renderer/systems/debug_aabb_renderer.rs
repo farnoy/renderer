@@ -1,9 +1,10 @@
+use ash::vk;
+use bevy_ecs::prelude::*;
+
 use crate::{
     renderer::device::{Device, Pipeline},
     shaders, CameraMatrices, MainRenderpass, RenderFrame,
 };
-use ash::vk;
-use bevy_ecs::prelude::*;
 
 pub(crate) struct DebugAABBPassData {
     pub(crate) pipeline_layout: shaders::debug_aabb::PipelineLayout,

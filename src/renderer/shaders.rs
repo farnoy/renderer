@@ -1,7 +1,8 @@
 use std::mem::size_of;
 
-use super::{Buffer, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, MainDescriptorPool, StaticBuffer};
 use ash::vk;
+
+use super::{Buffer, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, MainDescriptorPool, StaticBuffer};
 
 pub(crate) type UVBuffer = [[f32; 2]; size_of::<VertexBuffer>() / size_of::<[f32; 3]>()];
 

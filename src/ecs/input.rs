@@ -1,24 +1,24 @@
+use std::sync::Arc;
+
+use bevy_ecs::prelude::*;
+use hashbrown::HashSet;
+use imgui_winit_support::WinitPlatform;
+use microprofile::scope;
+use na::RealField;
+use parking_lot::Mutex;
+use winit::{
+    self,
+    dpi::PhysicalSize,
+    event::{DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode, WindowEvent},
+    platform::run_return::EventLoopExtRunReturn,
+};
+
 use crate::{
     ecs::{
         resources::Camera,
         systems::{Gui, RuntimeConfiguration},
     },
     renderer::{right_vector, up_vector, RenderFrame, Resized},
-};
-
-use bevy_ecs::prelude::*;
-use hashbrown::HashSet;
-use imgui_winit_support::WinitPlatform;
-
-use microprofile::scope;
-use na::RealField;
-use parking_lot::Mutex;
-use std::sync::Arc;
-use winit::{
-    self,
-    dpi::PhysicalSize,
-    event::{DeviceEvent, ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode, WindowEvent},
-    platform::run_return::EventLoopExtRunReturn,
 };
 
 #[derive(Debug)]

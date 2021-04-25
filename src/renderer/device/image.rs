@@ -1,5 +1,6 @@
-use ash::vk;
 use std::ptr;
+
+use ash::vk;
 
 use super::{super::alloc, mapping::MappedBuffer, Device};
 

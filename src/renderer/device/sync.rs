@@ -1,10 +1,10 @@
-use super::Device;
 use ash::{
     version::{DeviceV1_0, DeviceV1_2},
     vk,
 };
-
 use microprofile::scope;
+
+use super::Device;
 
 pub(crate) struct Semaphore {
     pub(crate) handle: vk::Semaphore,

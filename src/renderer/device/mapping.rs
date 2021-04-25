@@ -1,11 +1,12 @@
-use ash::vk;
-use mem::transmute;
 use std::{
     ffi::c_void,
     mem,
     ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFull},
     ptr, slice,
 };
+
+use ash::vk;
+use mem::transmute;
 
 use super::super::alloc;
 

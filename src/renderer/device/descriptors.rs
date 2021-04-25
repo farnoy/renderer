@@ -1,5 +1,6 @@
-use super::Device;
 use ash::{version::DeviceV1_0, vk};
+
+use super::Device;
 
 pub(crate) struct DescriptorPool {
     pub(crate) handle: vk::DescriptorPool,

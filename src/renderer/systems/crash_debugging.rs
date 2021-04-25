@@ -1,10 +1,12 @@
 #[cfg(feature = "crash_debugging")]
-use super::super::{alloc::VmaMemoryUsage, Buffer, DoubleBuffered};
-use super::super::{Device, ImageIndex, RenderFrame};
+use std::{convert::TryInto, mem::size_of};
+
 use ash::vk;
 use bevy_ecs::prelude::*;
+
 #[cfg(feature = "crash_debugging")]
-use std::{convert::TryInto, mem::size_of};
+use super::super::{alloc::VmaMemoryUsage, Buffer, DoubleBuffered};
+use super::super::{Device, ImageIndex, RenderFrame};
 
 pub(crate) type CrashStages = [u32; 2];
 

@@ -7,15 +7,16 @@
     unreachable_pub
 )]
 
-use ash::{
-    self, prelude,
-    version::{EntryV1_0, InstanceV1_0},
-    vk,
-};
 use std::{
     ffi::CStr,
     mem::{self, transmute, MaybeUninit},
     ptr,
+};
+
+use ash::{
+    self, prelude,
+    version::{EntryV1_0, InstanceV1_0},
+    vk,
 };
 
 type VkFlags = vk::Flags;
@@ -212,7 +213,7 @@ pub fn create(
         flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0 as u32,
         vulkanApiVersion: vk::make_version(1, 2, 0),
         instance: instance.handle(),
-        device: device,
+        device,
         physicalDevice: pdevice,
         preferredLargeHeapBlockSize: 0,
         pAllocationCallbacks: ptr::null(),

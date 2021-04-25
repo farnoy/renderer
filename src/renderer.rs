@@ -11,6 +11,15 @@ pub(crate) mod shaders;
 mod swapchain;
 mod systems;
 
+use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, sync::Arc};
+
+use ash::{
+    version::{DeviceV1_0, DeviceV1_2},
+    vk,
+};
+use bevy_ecs::{component::Component, prelude::*};
+use microprofile::scope;
+
 pub(crate) use self::{
     device::*,
     gltf_mesh::{load as load_gltf, LoadedMesh},
@@ -27,13 +36,6 @@ use crate::ecs::{
     resources::Camera,
     systems::*,
 };
-use ash::{
-    version::{DeviceV1_0, DeviceV1_2},
-    vk,
-};
-use bevy_ecs::{component::Component, prelude::*};
-use microprofile::scope;
-use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, sync::Arc};
 
 pub(crate) fn up_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::y())
@@ -126,7 +128,8 @@ renderer_macros::define_frame! {
             ShadowMapping {
                 depth_stencil ShadowMapAtlas
                 layouts {
-                    ShadowMapAtlas load DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL => DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL store
+                    ShadowMapAtlas load DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
+                                => store DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
                 }
                 subpasses {
                     ShadowMappingMain {
@@ -138,8 +141,8 @@ renderer_macros::define_frame! {
                 color [Color]
                 depth_stencil Depth
                 layouts {
-                    Depth clear UNDEFINED => DEPTH_STENCIL_READ_ONLY_OPTIMAL discard,
-                    Color clear UNDEFINED => PRESENT_SRC_KHR store
+                    Depth clear UNDEFINED => discard DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                    Color clear UNDEFINED => store PRESENT_SRC_KHR
                 }
                 subpasses {
                     DepthPrePass {
@@ -172,17 +175,14 @@ renderer_macros::define_frame! {
         }
         dependencies {
             ShadowMapping => Main,
-            // DepthOnly => Main,
-            // Main => Gui,
 
-            // PresentationAcquire => DepthOnly,
             PresentationAcquire => ShadowMapping,
             ShadowMapping => ShadowMapping [last_frame], // because the depth RT is not double buffered
             TransferCull => Main,
             ComputeCull => Main,
             ConsolidateMeshBuffers => Main,
-            ConsolidateMeshBuffers => ConsolidateMeshBuffers [last_frame], // because the buffers are not double buffered
-            // Gui => Gui [last_frame], // because the resources are not buffered
+            // because the buffers are not double buffered
+            ConsolidateMeshBuffers => ConsolidateMeshBuffers [last_frame],
         }
         // TODO: validate so that if two passes signal the same timeline,
         //       there must be a proper dependency between them
@@ -348,23 +348,20 @@ pub(crate) struct MainDescriptorPool(pub(crate) DescriptorPool);
 
 impl MainDescriptorPool {
     pub(crate) fn new(renderer: &RenderFrame) -> MainDescriptorPool {
-        let descriptor_pool = renderer.device.new_descriptor_pool(
-            3_000,
-            &[
-                vk::DescriptorPoolSize {
-                    ty: vk::DescriptorType::UNIFORM_BUFFER,
-                    descriptor_count: 4096_00,
-                },
-                vk::DescriptorPoolSize {
-                    ty: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 16384_00,
-                },
-                vk::DescriptorPoolSize {
-                    ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 4096_00,
-                },
-            ],
-        );
+        let descriptor_pool = renderer.device.new_descriptor_pool(3_000, &[
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 4096_00,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 16384_00,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 4096_00,
+            },
+        ]);
         renderer
             .device
             .set_object_name(descriptor_pool.handle, "Main Descriptor Pool");
@@ -1097,29 +1094,21 @@ pub(crate) fn render_frame(
         renderer
             .device
             .cmd_next_subpass(*command_buffer, vk::SubpassContents::INLINE);
-        renderer.device.cmd_set_viewport(
-            *command_buffer,
-            0,
-            &[vk::Viewport {
-                x: 0.0,
-                y: swapchain.height as f32,
-                width: swapchain.width as f32,
-                height: -(swapchain.height as f32),
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }],
-        );
-        renderer.device.cmd_set_scissor(
-            *command_buffer,
-            0,
-            &[vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: swapchain.width,
-                    height: swapchain.height,
-                },
-            }],
-        );
+        renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
+            x: 0.0,
+            y: swapchain.height as f32,
+            width: swapchain.width as f32,
+            height: -(swapchain.height as f32),
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }]);
+        renderer.device.cmd_set_scissor(*command_buffer, 0, &[vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D {
+                width: swapchain.width,
+                height: swapchain.height,
+            },
+        }]);
         if runtime_config.debug_aabbs {
             microprofile::scope!("ecs", "debug aabb pass");
 
@@ -1606,29 +1595,21 @@ fn render_gui(
 
     let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
     unsafe {
-        renderer.device.cmd_set_viewport(
-            **command_buffer,
-            0,
-            &[vk::Viewport {
-                x: 0.0,
-                y: swapchain.height as f32,
-                width: swapchain.width as f32,
-                height: -(swapchain.height as f32),
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }],
-        );
-        renderer.device.cmd_set_scissor(
-            **command_buffer,
-            0,
-            &[vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: swapchain.width,
-                    height: swapchain.height,
-                },
-            }],
-        );
+        renderer.device.cmd_set_viewport(**command_buffer, 0, &[vk::Viewport {
+            x: 0.0,
+            y: swapchain.height as f32,
+            width: swapchain.width as f32,
+            height: -(swapchain.height as f32),
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }]);
+        renderer.device.cmd_set_scissor(**command_buffer, 0, &[vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D {
+                width: swapchain.width,
+                height: swapchain.height,
+            },
+        }]);
 
         pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, &descriptor_set);
         renderer
@@ -1670,20 +1651,16 @@ fn render_gui(
                 for draw_cmd in draw_list.commands() {
                     match draw_cmd {
                         imgui::DrawCmd::Elements { count, cmd_params } => {
-                            renderer.device.cmd_set_scissor(
-                                **command_buffer,
-                                0,
-                                &[vk::Rect2D {
-                                    offset: vk::Offset2D {
-                                        x: cmd_params.clip_rect[0] as i32,
-                                        y: cmd_params.clip_rect[1] as i32,
-                                    },
-                                    extent: vk::Extent2D {
-                                        width: (cmd_params.clip_rect[2] - cmd_params.clip_rect[0]) as u32,
-                                        height: (cmd_params.clip_rect[3] - cmd_params.clip_rect[1]) as u32,
-                                    },
-                                }],
-                            );
+                            renderer.device.cmd_set_scissor(**command_buffer, 0, &[vk::Rect2D {
+                                offset: vk::Offset2D {
+                                    x: cmd_params.clip_rect[0] as i32,
+                                    y: cmd_params.clip_rect[1] as i32,
+                                },
+                                extent: vk::Extent2D {
+                                    width: (cmd_params.clip_rect[2] - cmd_params.clip_rect[0]) as u32,
+                                    height: (cmd_params.clip_rect[3] - cmd_params.clip_rect[1]) as u32,
+                                },
+                            }]);
                             renderer.device.cmd_draw_indexed(
                                 **command_buffer,
                                 count as u32,
@@ -1761,29 +1738,21 @@ fn depth_only_pass(
         if runtime_config.debug_aabbs {
             return;
         }
-        renderer.device.cmd_set_viewport(
-            **command_buffer,
-            0,
-            &[vk::Viewport {
-                x: 0.0,
-                y: swapchain.height as f32,
-                width: swapchain.width as f32,
-                height: -(swapchain.height as f32),
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }],
-        );
-        renderer.device.cmd_set_scissor(
-            **command_buffer,
-            0,
-            &[vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: swapchain.width,
-                    height: swapchain.height,
-                },
-            }],
-        );
+        renderer.device.cmd_set_viewport(**command_buffer, 0, &[vk::Viewport {
+            x: 0.0,
+            y: swapchain.height as f32,
+            width: swapchain.width as f32,
+            height: -(swapchain.height as f32),
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }]);
+        renderer.device.cmd_set_scissor(**command_buffer, 0, &[vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D {
+                width: swapchain.width,
+                height: swapchain.height,
+            },
+        }]);
         renderer.device.cmd_bind_pipeline(
             **command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
