@@ -1,6 +1,6 @@
 #![feature(extend_one)]
 
-use std::{env, fs::File, io::Read};
+use std::{env, fmt::Debug, fs::File, io::Read};
 
 use convert_case::{Case, Casing};
 use derive_more::Deref;
@@ -20,7 +20,7 @@ use syn::{
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
     token::Brace,
-    Expr, Field, Ident, ItemStruct, LitInt, Path, Token, Visibility,
+    Expr, Field, Ident, ItemStruct, LitBool, LitInt, Path, Token, Visibility,
 };
 
 #[proc_macro]
@@ -116,11 +116,19 @@ impl<A: Parse, B: Parse> Parse for ArrowPair<A, B> {
 #[derive(Clone, Debug, Deref)]
 struct Sequence<A, B>((A, B));
 
-impl<A: Parse, B: Parse> Parse for Sequence<A, B> {
+impl<A: Parse + Debug, B: Parse + Debug> Parse for Sequence<A, B> {
     fn parse(input: ParseStream) -> Result<Self> {
-        let a = input.parse()?;
-        let b = input.parse()?;
-        Ok(Sequence((a, b)))
+        let peeking = input.fork();
+        let a = peeking.parse::<A>();
+        let b = peeking.parse::<B>();
+
+        if a.is_ok() && b.is_ok() {
+            Ok(Sequence((input.parse().unwrap(), input.parse().unwrap())))
+        } else {
+            // This is so that Sequence only consumes anything if it can parse both
+            // otherwise it gets confused when Sequence<A, B> is used back to back with Sequence<A, C>
+            Err(syn::Error::new(Span::call_site(), "asd"))
+        }
     }
 }
 
@@ -167,6 +175,72 @@ struct UnOption<T>(Option<T>);
 impl<T: Parse> Parse for UnOption<T> {
     fn parse(input: ParseStream) -> Result<Self> {
         input.parse::<T>().map(|t| UnOption(Some(t))).or(Ok(UnOption(None)))
+    }
+}
+
+#[derive(Clone, Debug)]
+enum StaticOrDyn<T> {
+    Static(T),
+    Dyn,
+}
+
+impl<T: Parse> Parse for StaticOrDyn<T> {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input
+            .parse::<Token![dyn]>()
+            .map(|_| StaticOrDyn::Dyn)
+            .or_else(|_| input.parse::<T>().map(StaticOrDyn::Static))
+    }
+}
+
+impl<T> StaticOrDyn<T> {
+    fn is_dyn(&self) -> bool {
+        match self {
+            StaticOrDyn::Static(_) => false,
+            StaticOrDyn::Dyn => true,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn unwrap_or(self, default: T) -> T {
+        match self {
+            StaticOrDyn::Static(s) => s,
+            StaticOrDyn::Dyn => default,
+        }
+    }
+
+    fn as_ref(&self) -> StaticOrDyn<&T> {
+        match self {
+            StaticOrDyn::Static(s) => StaticOrDyn::Static(&s),
+            StaticOrDyn::Dyn => StaticOrDyn::Dyn,
+        }
+    }
+}
+
+impl<T: PartialEq + Debug> StaticOrDyn<T> {
+    fn unwrap_or_warn_redundant(self, default: T, error_container: &mut TokenStream) -> T {
+        match self {
+            StaticOrDyn::Static(s) => {
+                if s == default {
+                    let msg = format!(
+                        "redundant static definition, would default to this anyway {:?}",
+                        default,
+                    );
+                    error_container.extend_one(quote!(compile_error!(#msg)));
+                    default
+                } else {
+                    s
+                }
+            }
+            StaticOrDyn::Dyn => default,
+        }
+    }
+}
+
+fn extract_optional_dyn<T, R>(a: &Option<StaticOrDyn<T>>, when_dyn: R) -> Option<R> {
+    match a {
+        Some(StaticOrDyn::Dyn) => Some(when_dyn),
+        _ => None,
     }
 }
 
@@ -261,6 +335,7 @@ impl Parse for LoadOp {
     }
 }
 
+#[derive(Debug)]
 enum StoreOp {
     Store,
     Discard,
@@ -310,7 +385,7 @@ struct FrameInput {
     #[allow(dead_code)]
     formats_brace: Brace,
     #[inside(formats_brace)]
-    formats: UnArray<Expr>,
+    formats: UnArray<StaticOrDyn<Expr>>,
     #[prefix(kw::passes in brace)]
     #[brace]
     #[inside(brace)]
@@ -407,7 +482,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .iter()
         .zip(formats.iter())
         .enumerate()
-        .flat_map(|(ix, (_, format))| syn::parse2::<Token![dyn]>(format.to_token_stream()).and(Ok(ix)))
+        .flat_map(|(ix, (_, format))| if format.is_dyn() { Some(ix) } else { None })
         .collect::<Vec<_>>();
 
     let wait_instance = passes
@@ -487,7 +562,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .filter(|attachment| {
                     let attachment_ix = attachments.iter().position(|at| at == *attachment).unwrap();
                     let format = &formats[attachment_ix];
-                    syn::parse2::<Token![dyn]>(format.to_token_stream()).is_ok()
+                    format.is_dyn()
                 })
                 .map(|_| quote!(vk::Format))
                 .collect_vec();
@@ -514,12 +589,13 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         StoreOp::Store => quote!(STORE),
                         StoreOp::Discard => quote!(DONT_CARE),
                     };
-                    let format = if syn::parse2::<Token![dyn]>(format.to_token_stream()).is_ok() {
-                        let dyn_ix = dynamic_attachments.binary_search(&attachment_ix).unwrap();
-                        let index = syn::Index::from(dyn_ix);
-                        quote!(attachment_formats.#index)
-                    } else {
-                        quote!(vk::Format::#format)
+                    let format = match format {
+                        StaticOrDyn::Dyn => {
+                            let dyn_ix = dynamic_attachments.binary_search(&attachment_ix).unwrap();
+                            let index = syn::Index::from(dyn_ix);
+                            quote!(attachment_formats.#index)
+                        }
+                        StaticOrDyn::Static(format) => quote!(vk::Format::#format),
                     };
                     quote! {
                         vk::AttachmentDescription::builder()
@@ -649,7 +725,7 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         .filter(|attachment| {
             let attachment_ix = frame_input.attachments.iter().position(|at| at == *attachment).unwrap();
             let format = &frame_input.formats[attachment_ix];
-            syn::parse2::<Token![dyn]>(format.to_token_stream()).is_ok()
+            format.is_dyn()
         })
         .map(|_| quote!(vk::Format))
         .collect_vec();
@@ -1184,43 +1260,49 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         specific,
         ..
     } = pipe;
-    let specialization = match specialization_constants {
-        Some(Unbracket(UnArray(s))) => {
-            let (field_id, field_name, field_ty) = split3(s.iter().map(|ArrowPair((id, field))| {
-                let name = field.ident.as_ref().unwrap();
-                let ty = &field.ty;
+    let specialization = {
+        let empty_vec = vec![];
+        let s = match specialization_constants {
+            Some(Unbracket(UnArray(s))) => s,
+            None => &empty_vec,
+        };
+        let (field_id, field_name, field_ty) = split3(s.iter().map(|ArrowPair((id, field))| {
+            let name = field.ident.as_ref().unwrap();
+            let ty = &field.ty;
 
-                (id, name, ty)
-            }));
-            let field_count = s.len();
-            let zero = quote!(0u32);
-            let field_offset = field_ty.iter().fold(vec![zero], |mut offsets, ty| {
-                let last = offsets.last().unwrap();
-                let this = quote!(size_of::<#ty>() as u32);
-                let new = quote!(#last + #this);
-                offsets.push(new);
-                offsets
-            });
-            quote! {
-                #[repr(C)]
-                #[derive(Debug, PartialEq, Clone)]
-                pub(crate) struct Specialization {
-                    #(pub(crate) #field_name : #field_ty),*
-                }
+            (id, name, ty)
+        }));
+        let field_count = s.len();
+        let zero = quote!(0u32);
+        let field_offset = field_ty.iter().fold(vec![zero], |mut offsets, ty| {
+            let last = offsets.last().unwrap();
+            let this = quote!(size_of::<#ty>() as u32);
+            let new = quote!(#last + #this);
+            offsets.push(new);
+            offsets
+        });
 
-                pub(crate) const SPEC_MAP:
-                    [vk::SpecializationMapEntry; #field_count] = [
-                    #(
-                        vk::SpecializationMapEntry {
-                            constant_id: #field_id,
-                            offset: #field_offset,
-                            size: size_of::<#field_ty>(),
-                        }
-                    ),*
-                ];
+        quote! {
+            #[repr(C)]
+            #[derive(Debug, PartialEq, Clone)]
+            pub(crate) struct Specialization {
+                #(pub(crate) #field_name : #field_ty),*
+            }
 
-                impl Specialization {
-                    pub(crate) fn get_spec_info(&self) -> vk::SpecializationInfo {
+            pub(crate) const SPEC_MAP:
+                [vk::SpecializationMapEntry; #field_count] = [
+                #(
+                    vk::SpecializationMapEntry {
+                        constant_id: #field_id,
+                        offset: #field_offset,
+                        size: size_of::<#field_ty>(),
+                    }
+                ),*
+            ];
+
+            impl Specialization {
+                pub(crate) fn get_spec_info(&self) -> vk::SpecializationInfo {
+                    if size_of::<Specialization>() > 0 {
                         let (left, spec_data, right) = unsafe {
                             from_raw_parts(self as *const Specialization, 1)
                             .align_to::<u8>()
@@ -1233,11 +1315,12 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                             .map_entries(&SPEC_MAP)
                             .data(spec_data)
                             .build()
+                    } else {
+                        vk::SpecializationInfo::default()
                     }
                 }
             }
         }
-        None => quote!(),
     };
     let descriptor_ref = descriptors;
     let stage_flags = match specific {
@@ -1352,8 +1435,245 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         });
     }
 
+    let mut errors = quote!();
+
     let pipeline_definition = match specific {
-        SpecificPipe::Graphics(_) => quote!(),
+        SpecificPipe::Graphics(specific) => {
+            let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
+            let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
+            let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
+            let stage_flag = specific.stages.iter().cloned().collect_vec();
+            let stage_ix = stage_flag.iter().enumerate().map(|(ix, _)| ix).collect_vec();
+            let stage_count = specific.stages.len();
+
+            let polygon_mode = parse_quote!(FILL);
+            let polygon_mode = specific
+                .polygon_mode
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&polygon_mode, &mut errors))
+                .unwrap_or(&polygon_mode);
+            let front_face = parse_quote!(CLOCKWISE);
+            let front_face = specific
+                .front_face_mode
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&front_face, &mut errors))
+                .unwrap_or(&front_face);
+            let front_face_dynamic =
+                extract_optional_dyn(&specific.front_face_mode, quote!(vk::DynamicState::FRONT_FACE_EXT,));
+            let topology_mode = parse_quote!(TRIANGLE_LIST);
+            let topology_mode = specific
+                .topology_mode
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&topology_mode, &mut errors))
+                .unwrap_or(&topology_mode);
+            let topology_dynamic = extract_optional_dyn(
+                &specific.topology_mode,
+                quote!(vk::DynamicState::PRIMITIVE_TOPOLOGY_EXT,),
+            );
+            let cull_mode = parse_quote!(NONE);
+            let cull_mode = specific
+                .cull_mode
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&cull_mode, &mut errors))
+                .unwrap_or(&cull_mode);
+            let cull_mode_dynamic = extract_optional_dyn(&specific.cull_mode, quote!(vk::DynamicState::CULL_MODE_EXT,));
+            let depth_test_enable = parse_quote!(false);
+            let depth_test_enable = specific
+                .depth_test_enable
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_test_enable, &mut errors))
+                .unwrap_or(&depth_test_enable);
+            let depth_test_dynamic = extract_optional_dyn(
+                &specific.depth_test_enable,
+                quote!(vk::DynamicState::DEPTH_TEST_ENABLE_EXT,),
+            );
+            let depth_write_enable = parse_quote!(false);
+            let depth_write_enable = specific
+                .depth_write_enable
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_write_enable, &mut errors))
+                .unwrap_or(&depth_write_enable);
+            let depth_write_dynamic = extract_optional_dyn(
+                &specific.depth_write_enable,
+                quote!(vk::DynamicState::DEPTH_WRITE_ENABLE_EXT,),
+            );
+            let depth_bounds_enable = parse_quote!(false);
+            let depth_bounds_enable = specific
+                .depth_bounds_enable
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_bounds_enable, &mut errors))
+                .unwrap_or(&depth_bounds_enable);
+            let depth_bounds_dynamic = extract_optional_dyn(
+                &specific.depth_bounds_enable,
+                quote!(vk::DynamicState::DEPTH_BOUNDS_TEST_ENABLE_EXT,),
+            );
+            let depth_compare_op = parse_quote!(NEVER);
+            let depth_compare_op = specific
+                .depth_compare_op
+                .as_ref()
+                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_compare_op, &mut errors))
+                .unwrap_or(&depth_compare_op);
+            let depth_compare_dynamic = extract_optional_dyn(
+                &specific.depth_compare_op,
+                quote!(vk::DynamicState::DEPTH_COMPARE_OP_EXT,),
+            );
+
+            quote! {
+                pub(crate) struct Pipeline {
+                    pub(crate) pipeline: device::Pipeline,
+                    specialization: Specialization
+                }
+
+                impl Pipeline {
+                    pub(crate) fn new(
+                        device: &Device,
+                        layout: &PipelineLayout,
+                        specialization: Specialization,
+                        base_pipeline: Option<&Self>,
+                        shaders: Option<&[&device::Shader; #stage_count]>,
+                        renderpass: &device::RenderPass,
+                        subpass: u32
+                    ) -> Self {
+                        scope!("macros", #new_internal_msg);
+
+                        use std::ffi::CStr;
+                        let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
+                        let base_pipeline_handle = base_pipeline
+                            .map(|pipe| *pipe.pipeline)
+                            .unwrap_or_else(vk::Pipeline::null);
+                        let shaders = shaders.ok_or_else(|| {
+                            [
+                                #( device.new_shader(#stage_flag) ),*
+                            ]
+                        });
+                        let shader_handles: Vec<&device::Shader> = shaders
+                            .as_ref()
+                            .map(|borrowed| borrowed.iter().map(|b| *b).collect())
+                            .unwrap_or_else(|owned| owned.iter().map(|owned| owned).collect());
+                        let spec_info = specialization.get_spec_info();
+                        let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
+                        if base_pipeline.is_some() {
+                            flags |= vk::PipelineCreateFlags::DERIVATIVE;
+                        }
+
+                        let stage_shaders = [
+                            #( (vk::ShaderStageFlags::#stage_flag, shader_handles[#stage_ix], Some(&spec_info)) ),*
+                        ];
+                        let pipeline = device.new_graphics_pipeline(
+                            &stage_shaders,
+                            vk::GraphicsPipelineCreateInfo::builder()
+                                .vertex_input_state(&vertex_input_state())
+                                .input_assembly_state(
+                                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
+                                        .topology(vk::PrimitiveTopology::#topology_mode)
+                                        .build(),
+                                )
+                                .dynamic_state(&vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&[
+                                    vk::DynamicState::VIEWPORT,
+                                    vk::DynamicState::SCISSOR,
+                                    #front_face_dynamic
+                                    #topology_dynamic
+                                    #cull_mode_dynamic
+                                    #depth_test_dynamic
+                                    #depth_write_dynamic
+                                    #depth_compare_dynamic
+                                    #depth_bounds_dynamic
+                                ]))
+                                .viewport_state(
+                                    &vk::PipelineViewportStateCreateInfo::builder()
+                                        .viewport_count(1)
+                                        .scissor_count(1)
+                                        .build(),
+                                )
+                                .rasterization_state(
+                                    &vk::PipelineRasterizationStateCreateInfo::builder()
+                                        .front_face(vk::FrontFace::#front_face)
+                                        .cull_mode(vk::CullModeFlags::#cull_mode)
+                                        .line_width(1.0)
+                                        .polygon_mode(vk::PolygonMode::#polygon_mode)
+                                        .build(),
+                                )
+                                .multisample_state(
+                                    &vk::PipelineMultisampleStateCreateInfo::builder()
+                                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                        .build(),
+                                )
+                                .depth_stencil_state(
+                                    &vk::PipelineDepthStencilStateCreateInfo::builder()
+                                        .depth_test_enable(#depth_test_enable)
+                                        .depth_write_enable(#depth_write_enable)
+                                        .depth_compare_op(vk::CompareOp::#depth_compare_op)
+                                        .depth_bounds_test_enable(#depth_bounds_enable)
+                                        .max_depth_bounds(1.0)
+                                        .min_depth_bounds(0.0)
+                                        .build(),
+                                )
+                                .color_blend_state(
+                                    &vk::PipelineColorBlendStateCreateInfo::builder()
+                                        .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
+                                            .blend_enable(true)
+                                            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                                            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                            .color_blend_op(vk::BlendOp::ADD)
+                                            .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                                            .alpha_blend_op(vk::BlendOp::ADD)
+                                            .color_write_mask(vk::ColorComponentFlags::all())
+                                            .build()])
+                                        .build(),
+                                )
+                                .layout(*layout.layout)
+                                .render_pass(renderpass.handle)
+                                .subpass(subpass)
+                                .build(),
+                        );
+                        device.set_object_name(*pipeline, #pipe_debug_name);
+
+                        shaders.err().map(|shaders| std::array::IntoIter::new(shaders).for_each(|s| s.destroy(device)));
+
+                        Pipeline {
+                            pipeline,
+                            specialization,
+                        }
+                    }
+
+                    /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
+                    pub(crate) fn specialize(
+                        &mut self,
+                        device: &Device,
+                        layout: &PipelineLayout,
+                        new_spec: &Specialization,
+                        shaders: Option<&[&device::Shader; #stage_count]>,
+                        renderpass: &device::RenderPass,
+                        subpass: u32
+                    ) -> Option<Self> {
+                        scope!("macros", #specialize_msg);
+                        use std::mem::swap;
+
+                        if self.specialization != *new_spec {
+                            let mut replacement = Self::new(
+                                device,
+                                layout,
+                                new_spec.clone(),
+                                Some(&self),
+                                shaders,
+                                renderpass,
+                                subpass
+                            );
+                            swap(&mut *self, &mut replacement);
+                            Some(replacement)
+                        } else {
+                            None
+                        }
+                    }
+
+                    pub(crate) fn spec(&self) -> &Specialization { &self.specialization }
+
+                    pub(crate) fn destroy(self, device: &Device) { self.pipeline.destroy(device); }
+                }
+                use std::ops::Deref;
+            }
+        }
         SpecificPipe::Compute(_) => {
             let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
             let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
@@ -1525,6 +1845,8 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             #vertex_definitions
 
             #spirv_code
+
+            #errors
         }
     }
 }
@@ -1532,6 +1854,18 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 mod kw {
     use syn::custom_keyword;
 
+    custom_keyword!(compare);
+    custom_keyword!(op);
+    custom_keyword!(bounds);
+    custom_keyword!(cull);
+    custom_keyword!(depth);
+    custom_keyword!(test);
+    custom_keyword!(write);
+    custom_keyword!(front);
+    custom_keyword!(face);
+    custom_keyword!(topology);
+    custom_keyword!(polygon);
+    custom_keyword!(mode);
     custom_keyword!(subpasses);
     custom_keyword!(load);
     custom_keyword!(dont_care);
@@ -1626,6 +1960,30 @@ struct GraphicsPipe {
     vertex_inputs: Option<Unbracket<UnArray<NamedField>>>,
     #[prefix(kw::stages)]
     stages: Unbracket<UnArray<Ident>>,
+    polygon_mode_kw: UnOption<Sequence<kw::polygon, kw::mode>>,
+    #[parse_if(polygon_mode_kw.0.is_some())]
+    polygon_mode: Option<StaticOrDyn<Ident>>,
+    topology_kw: Option<kw::topology>,
+    #[parse_if(topology_kw.is_some())]
+    topology_mode: Option<StaticOrDyn<Ident>>,
+    front_face_kw: UnOption<Sequence<kw::front, kw::face>>,
+    #[parse_if(front_face_kw.0.is_some())]
+    front_face_mode: Option<StaticOrDyn<Ident>>,
+    cull_mode_kw: UnOption<Sequence<kw::cull, kw::mode>>,
+    #[parse_if(cull_mode_kw.0.is_some())]
+    cull_mode: Option<StaticOrDyn<Ident>>,
+    depth_test_enable_kw: UnOption<Sequence<kw::depth, kw::test>>,
+    #[parse_if(depth_test_enable_kw.0.is_some())]
+    depth_test_enable: Option<StaticOrDyn<LitBool>>,
+    depth_write_enable_kw: UnOption<Sequence<kw::depth, kw::write>>,
+    #[parse_if(depth_write_enable_kw.0.is_some())]
+    depth_write_enable: Option<StaticOrDyn<LitBool>>,
+    depth_compare_op_kw: UnOption<Sequence<kw::depth, Sequence<kw::compare, kw::op>>>,
+    #[parse_if(depth_compare_op_kw.0.is_some())]
+    depth_compare_op: Option<StaticOrDyn<Ident>>,
+    depth_bounds_enable_kw: UnOption<Sequence<kw::depth, kw::bounds>>,
+    #[parse_if(depth_bounds_enable_kw.0.is_some())]
+    depth_bounds_enable: Option<StaticOrDyn<LitBool>>,
 }
 #[derive(Parse, Debug)]
 struct ComputePipe {}

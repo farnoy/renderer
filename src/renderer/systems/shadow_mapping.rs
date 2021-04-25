@@ -10,7 +10,7 @@ use crate::{
     renderer::{
         device::VmaMemoryUsage, frame_graph, pick_lod, shaders, shaders::LightMatrices, CameraMatrices, DepthPassData,
         Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
-        LocalGraphicsCommandPool, MainDescriptorPool, ModelData, Pipeline, RenderFrame, RenderStage, Sampler,
+        LocalGraphicsCommandPool, MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler,
         ShadowMappingTimeline, StrictCommandPool, SwapchainIndexToFrameNumber,
     },
 };
@@ -20,7 +20,7 @@ pub(crate) const MAP_SIZE: u32 = 4096;
 pub(crate) const DIM: u32 = 4;
 
 pub(crate) struct ShadowMappingData {
-    depth_pipeline: Pipeline,
+    depth_pipeline: shaders::depth_pipe::Pipeline,
     renderpass: frame_graph::ShadowMapping::RenderPass,
     depth_image: Image,
     depth_image_view: ImageView,
@@ -38,54 +38,15 @@ impl ShadowMappingData {
     ) -> ShadowMappingData {
         let renderpass = frame_graph::ShadowMapping::RenderPass::new(renderer, ());
 
-        let depth_pipeline = renderer.device.new_graphics_pipeline(
-            &[(vk::ShaderStageFlags::VERTEX, shaders::depth_pipe::VERTEX, None)],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(&shaders::depth_pipe::vertex_input_state())
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder().topology(vk::PrimitiveTopology::TRIANGLE_LIST),
-                )
-                .dynamic_state(
-                    &vk::PipelineDynamicStateCreateInfo::builder()
-                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .viewport_count(1)
-                        .scissor_count(1)
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::CLOCKWISE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .depth_stencil_state(
-                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
-                        .depth_write_enable(true)
-                        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(false)
-                        .max_depth_bounds(1.0)
-                        .min_depth_bounds(0.0)
-                        .build(),
-                )
-                .layout(*depth_pass_data.depth_pipeline_layout.layout)
-                .render_pass(renderpass.renderpass.handle)
-                .subpass(0)
-                .build(),
+        let depth_pipeline = shaders::depth_pipe::Pipeline::new(
+            &renderer.device,
+            &depth_pass_data.depth_pipeline_layout,
+            shaders::depth_pipe::Specialization {},
+            None,
+            None,
+            &renderpass.renderpass,
+            0,
         );
-        renderer
-            .device
-            .set_object_name(*depth_pipeline, "Shadow mapping depth Pipeline");
 
         let depth_image = renderer.device.new_image(
             vk::Format::D16_UNORM,
@@ -388,7 +349,7 @@ pub(crate) fn prepare_shadow_maps(
         renderer.device.cmd_bind_pipeline(
             *command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            *shadow_mapping.depth_pipeline,
+            *shadow_mapping.depth_pipeline.pipeline,
         );
 
         for (ix, (light_position, shadow_mvp)) in shadow_query.iter().enumerate() {

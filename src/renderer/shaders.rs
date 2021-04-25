@@ -132,6 +132,10 @@ renderer_macros::define_renderer! {
             graphics
             vertex_inputs [position: vec3]
             stages [VERTEX]
+            cull mode BACK
+            depth test true
+            depth write true
+            depth compare op LESS_OR_EQUAL
         },
         gltf_mesh {
             descriptors [model_set, camera_set, shadow_map_set, base_color_set]
@@ -142,11 +146,15 @@ renderer_macros::define_renderer! {
             graphics
             vertex_inputs [position: vec3, normal: vec3, uv: vec2]
             stages [VERTEX, FRAGMENT]
+            cull mode BACK
+            depth test true
+            depth compare op EQUAL
         },
         debug_aabb {
             descriptors [camera_set]
             graphics
             stages [VERTEX, FRAGMENT]
+            polygon mode LINE
         },
         imgui_pipe {
             descriptors [imgui_set]

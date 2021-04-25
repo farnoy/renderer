@@ -1,8 +1,4 @@
-#[cfg(feature = "gpu_printf")]
-use std::ffi::CStr;
-#[cfg(feature = "crash_debugging")]
-use std::mem::transmute;
-use std::{ops::Deref, sync::Arc};
+use std::{ffi::CStr, mem::transmute, ops::Deref, sync::Arc};
 
 use ash::{
     self, extensions,
@@ -58,6 +54,8 @@ pub(crate) struct Device {
     transfer_queue: Option<Mutex<vk::Queue>>,
     #[cfg(feature = "crash_debugging")]
     pub(crate) buffer_marker_fn: vk::AmdBufferMarkerFn,
+    #[allow(dead_code)]
+    pub(crate) extended_dynamic_state_fn: vk::ExtExtendedDynamicStateFn,
 }
 
 impl Device {
@@ -157,6 +155,7 @@ impl Device {
                     .as_ptr(),
                 #[cfg(feature = "crash_debugging")]
                 vk::AmdBufferMarkerFn::name().as_ptr(),
+                vk::ExtExtendedDynamicStateFn::name().as_ptr(),
             ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
@@ -172,6 +171,8 @@ impl Device {
                 shader_storage_buffer_array_dynamic_indexing: 1,
                 ..Default::default()
             };
+            let mut features_dynamic_state =
+                vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT::builder().extended_dynamic_state(true);
             let mut features2 = vk::PhysicalDeviceFeatures2::builder().features(features);
             let mut features12 = vk::PhysicalDeviceVulkan12Features::builder()
                 .descriptor_binding_partially_bound(true)
@@ -200,6 +201,7 @@ impl Device {
             let device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
+                .push_next(&mut features_dynamic_state)
                 .push_next(&mut features2)
                 .push_next(&mut features12);
 
@@ -221,10 +223,13 @@ impl Device {
 
         let compute_queue_family = compute_queues_spec.map(|a| a.0).unwrap_or(graphics_queue_family);
 
+        let fn_ptr_loader =
+            |name: &CStr| unsafe { transmute(instance.get_device_proc_addr(device.handle(), name.as_ptr())) };
+
         #[cfg(feature = "crash_debugging")]
-        let buffer_marker_fn = vk::AmdBufferMarkerFn::load(|name| unsafe {
-            transmute(instance.get_device_proc_addr(device.handle(), name.as_ptr()))
-        });
+        let buffer_marker_fn = vk::AmdBufferMarkerFn::load(fn_ptr_loader);
+
+        let extended_dynamic_state_fn = vk::ExtExtendedDynamicStateFn::load(fn_ptr_loader);
 
         let device = Device {
             device,
@@ -240,6 +245,7 @@ impl Device {
             transfer_queue: transfer_queue.map(Mutex::new),
             #[cfg(feature = "crash_debugging")]
             buffer_marker_fn,
+            extended_dynamic_state_fn,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
@@ -356,7 +362,7 @@ impl Device {
 
     pub(crate) fn new_graphics_pipeline(
         &self,
-        shaders: &[(vk::ShaderStageFlags, &[u8], Option<&vk::SpecializationInfo>)],
+        shaders: &[(vk::ShaderStageFlags, &Shader, Option<&vk::SpecializationInfo>)],
         create_info: vk::GraphicsPipelineCreateInfo,
     ) -> Pipeline {
         Pipeline::new_graphics_pipeline(self, shaders, create_info)

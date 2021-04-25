@@ -21,8 +21,8 @@ use microprofile::scope;
 use static_assertions::const_assert_eq;
 
 use self::device::{
-    Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, Pipeline, RenderPass, Sampler,
-    Shader, StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, TimelineSemaphore, VmaMemoryUsage,
+    Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, RenderPass, Sampler, Shader,
+    StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, TimelineSemaphore, VmaMemoryUsage,
 };
 #[cfg(feature = "crash_debugging")]
 pub(crate) use self::systems::crash_debugging::CrashBuffer;
@@ -681,7 +681,7 @@ impl ModelData {
 }
 
 pub(crate) struct DepthPassData {
-    pub(crate) depth_pipeline: Pipeline,
+    pub(crate) depth_pipeline: shaders::depth_pipe::Pipeline,
     pub(crate) depth_pipeline_layout: shaders::depth_pipe::PipelineLayout,
 }
 
@@ -699,55 +699,15 @@ impl DepthPassData {
             &model_data.model_set_layout,
             &camera_matrices.set_layout,
         );
-        let depth_pipeline = device.new_graphics_pipeline(
-            &[(vk::ShaderStageFlags::VERTEX, shaders::depth_pipe::VERTEX, None)],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(&shaders::depth_pipe::vertex_input_state())
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build(),
-                )
-                .dynamic_state(
-                    &vk::PipelineDynamicStateCreateInfo::builder()
-                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .viewport_count(1)
-                        .scissor_count(1)
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::CLOCKWISE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .depth_stencil_state(
-                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
-                        .depth_write_enable(true)
-                        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-                        .depth_bounds_test_enable(false)
-                        .max_depth_bounds(1.0)
-                        .min_depth_bounds(0.0)
-                        .build(),
-                )
-                .layout(*depth_pipeline_layout.layout)
-                .render_pass(main_renderpass.renderpass.renderpass.handle)
-                .subpass(0) // FIXME
-                .build(),
+        let depth_pipeline = shaders::depth_pipe::Pipeline::new(
+            &device,
+            &depth_pipeline_layout,
+            shaders::depth_pipe::Specialization {},
+            None,
+            None,
+            &main_renderpass.renderpass.renderpass,
+            0,
         );
-
-        device.set_object_name(*depth_pipeline, "Depth Pipeline");
 
         DepthPassData {
             depth_pipeline,
@@ -764,7 +724,7 @@ impl DepthPassData {
 pub(crate) struct Resized(pub(crate) bool);
 
 pub(crate) struct GltfPassData {
-    pub(crate) gltf_pipeline: Pipeline,
+    pub(crate) gltf_pipeline: shaders::gltf_mesh::Pipeline,
     pub(crate) gltf_pipeline_layout: shaders::gltf_mesh::PipelineLayout,
 }
 
@@ -777,8 +737,6 @@ impl GltfPassData {
         shadow_mapping: &ShadowMappingData,
         camera_matrices: &CameraMatrices,
     ) -> GltfPassData {
-        let device = &renderer.device;
-
         /*
         let queue_family_indices = vec![device.graphics_queue_family];
         let image_create_info = vk::ImageCreateInfo::builder()
@@ -921,84 +879,15 @@ impl GltfPassData {
             shadow_map_dim: SHADOW_MAP_DIM,
             shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
         };
-        let spec_info = spec.get_spec_info();
-        let gltf_pipeline = device.new_graphics_pipeline(
-            &[
-                (
-                    vk::ShaderStageFlags::VERTEX,
-                    shaders::gltf_mesh::VERTEX,
-                    Some(&spec_info),
-                ),
-                (
-                    vk::ShaderStageFlags::FRAGMENT,
-                    shaders::gltf_mesh::FRAGMENT,
-                    Some(&spec_info),
-                ),
-            ],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(&shaders::gltf_mesh::vertex_input_state())
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build(),
-                )
-                .dynamic_state(
-                    &vk::PipelineDynamicStateCreateInfo::builder()
-                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .viewport_count(1)
-                        .scissor_count(1)
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::CLOCKWISE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        // magic
-                        // .depth_bias_enable(false)
-                        // .depth_bias_constant_factor(-0.07)
-                        // .depth_bias_slope_factor(-1.0)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .depth_stencil_state(
-                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_write_enable(false)
-                        .depth_test_enable(true)
-                        .depth_compare_op(vk::CompareOp::EQUAL)
-                        .depth_bounds_test_enable(false)
-                        .max_depth_bounds(1.0)
-                        .min_depth_bounds(0.0)
-                        .build(),
-                )
-                .color_blend_state(
-                    &vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
-                            .blend_enable(true)
-                            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .color_blend_op(vk::BlendOp::ADD)
-                            .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                            .alpha_blend_op(vk::BlendOp::ADD)
-                            .color_write_mask(vk::ColorComponentFlags::all())
-                            .build()])
-                        .build(),
-                )
-                .layout(*gltf_pipeline_layout.layout)
-                .render_pass(main_renderpass.renderpass.renderpass.handle)
-                .subpass(1) // FIXME
-                .build(),
+        let gltf_pipeline = shaders::gltf_mesh::Pipeline::new(
+            &renderer.device,
+            &gltf_pipeline_layout,
+            spec,
+            None,
+            None,
+            &main_renderpass.renderpass.renderpass,
+            1, // FIXME
         );
-        device.set_object_name(*gltf_pipeline, "GLTF Pipeline");
 
         GltfPassData {
             gltf_pipeline,
@@ -1123,7 +1012,7 @@ pub(crate) fn render_frame(
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                *debug_aabb_pass_data.pipeline,
+                *debug_aabb_pass_data.pipeline.pipeline,
             );
             debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
@@ -1176,7 +1065,7 @@ pub(crate) fn render_frame(
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                *gltf_pass.gltf_pipeline,
+                *gltf_pass.gltf_pipeline.pipeline,
             );
             gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
@@ -1265,7 +1154,9 @@ fn submit_main_pass(
 }
 
 pub(crate) struct GuiRenderData {
-    vertex_buffer: StaticBuffer<[imgui::DrawVert; 1024 * 1024]>,
+    pos_buffer: StaticBuffer<[glm::Vec2; 1024 * 1024]>,
+    uv_buffer: StaticBuffer<[glm::Vec2; 1024 * 1024]>,
+    col_buffer: StaticBuffer<[glm::Vec4; 1024 * 1024]>,
     index_buffer: StaticBuffer<[imgui::DrawIdx; 1024 * 1024]>,
     texture: Image,
     #[allow(unused)]
@@ -1276,7 +1167,7 @@ pub(crate) struct GuiRenderData {
     descriptor_set_layout: shaders::imgui_set::Layout,
     descriptor_set: shaders::imgui_set::Set,
     pipeline_layout: shaders::imgui_pipe::PipelineLayout,
-    pipeline: Pipeline,
+    pipeline: shaders::imgui_pipe::Pipeline,
     command_pool: DoubleBuffered<StrictCommandPool>,
 }
 
@@ -1302,13 +1193,27 @@ impl GuiRenderData {
             .io_mut()
             .backend_flags
             .insert(imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
-        let vertex_buffer = renderer.device.new_static_buffer(
+        let pos_buffer = renderer.device.new_static_buffer(
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        );
+        let uv_buffer = renderer.device.new_static_buffer(
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        );
+        let col_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER,
             VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         );
         renderer
             .device
-            .set_object_name(vertex_buffer.buffer.handle, "GUI Vertex Buffer");
+            .set_object_name(pos_buffer.buffer.handle, "GUI Vertex Buffer - pos");
+        renderer
+            .device
+            .set_object_name(uv_buffer.buffer.handle, "GUI Vertex Buffer - uv");
+        renderer
+            .device
+            .set_object_name(col_buffer.buffer.handle, "GUI Vertex Buffer - col");
         let index_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::INDEX_BUFFER,
             VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
@@ -1358,88 +1263,15 @@ impl GuiRenderData {
 
         let pipeline_layout = shaders::imgui_pipe::PipelineLayout::new(&renderer.device, &descriptor_set_layout);
 
-        let pipeline = renderer.device.new_graphics_pipeline(
-            &[
-                (vk::ShaderStageFlags::VERTEX, shaders::imgui_pipe::VERTEX, None),
-                (vk::ShaderStageFlags::FRAGMENT, shaders::imgui_pipe::FRAGMENT, None),
-            ],
-            vk::GraphicsPipelineCreateInfo::builder()
-                .vertex_input_state(
-                    &vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_attribute_descriptions(&[
-                            vk::VertexInputAttributeDescription {
-                                location: 0,
-                                binding: 0,
-                                format: vk::Format::R32G32_SFLOAT,
-                                offset: 0,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 1,
-                                binding: 0,
-                                format: vk::Format::R32G32_SFLOAT,
-                                offset: size_of::<f32>() as u32 * 2,
-                            },
-                            vk::VertexInputAttributeDescription {
-                                location: 2,
-                                binding: 0,
-                                format: vk::Format::R8G8B8A8_UNORM,
-                                offset: size_of::<f32>() as u32 * 4,
-                            },
-                        ])
-                        .vertex_binding_descriptions(&[vk::VertexInputBindingDescription {
-                            binding: 0,
-                            stride: size_of::<imgui::DrawVert>() as u32,
-                            input_rate: vk::VertexInputRate::VERTEX,
-                        }])
-                        .build(),
-                )
-                .input_assembly_state(
-                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build(),
-                )
-                .dynamic_state(
-                    &vk::PipelineDynamicStateCreateInfo::builder()
-                        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]),
-                )
-                .viewport_state(
-                    &vk::PipelineViewportStateCreateInfo::builder()
-                        .viewport_count(1)
-                        .scissor_count(1)
-                        .build(),
-                )
-                .rasterization_state(
-                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                        .cull_mode(vk::CullModeFlags::NONE)
-                        .line_width(1.0)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .build(),
-                )
-                .multisample_state(
-                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                        .build(),
-                )
-                .color_blend_state(
-                    &vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
-                            .blend_enable(true)
-                            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .color_blend_op(vk::BlendOp::ADD)
-                            .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                            .alpha_blend_op(vk::BlendOp::ADD)
-                            .color_write_mask(vk::ColorComponentFlags::all())
-                            .build()])
-                        .build(),
-                )
-                .layout(*pipeline_layout.layout)
-                .render_pass(main_renderpass.renderpass.renderpass.handle)
-                .subpass(2) // FIXME
-                .build(),
+        let pipeline = shaders::imgui_pipe::Pipeline::new(
+            &renderer.device,
+            &pipeline_layout,
+            shaders::imgui_pipe::Specialization {},
+            None,
+            None,
+            &main_renderpass.renderpass.renderpass,
+            2,
         );
-        renderer.device.set_object_name(*pipeline, "GUI Pipeline");
 
         let texture_view = renderer.device.new_image_view(
             &vk::ImageViewCreateInfo::builder()
@@ -1532,7 +1364,9 @@ impl GuiRenderData {
         }
 
         GuiRenderData {
-            vertex_buffer,
+            pos_buffer,
+            uv_buffer,
+            col_buffer,
             index_buffer,
             texture,
             texture_view,
@@ -1554,7 +1388,9 @@ impl GuiRenderData {
         self.descriptor_set.destroy(&main_descriptor_pool.0, device);
         self.descriptor_set_layout.destroy(device);
         self.command_pool.into_iter().for_each(|p| p.destroy(device));
-        self.vertex_buffer.destroy(device);
+        self.pos_buffer.destroy(device);
+        self.uv_buffer.destroy(device);
+        self.col_buffer.destroy(device);
         self.index_buffer.destroy(device);
     }
 }
@@ -1582,7 +1418,9 @@ fn render_gui(
     scope!("rendering", "render_gui");
 
     let GuiRenderData {
-        ref vertex_buffer,
+        ref pos_buffer,
+        ref uv_buffer,
+        ref col_buffer,
         ref index_buffer,
         ref pipeline_layout,
         ref pipeline,
@@ -1620,10 +1458,17 @@ fn render_gui(
         pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, &descriptor_set);
         renderer
             .device
-            .cmd_bind_pipeline(**command_buffer, vk::PipelineBindPoint::GRAPHICS, **pipeline);
-        renderer
-            .device
-            .cmd_bind_vertex_buffers(**command_buffer, 0, &[vertex_buffer.buffer.handle], &[0]);
+            .cmd_bind_pipeline(**command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline.pipeline);
+        renderer.device.cmd_bind_vertex_buffers(
+            **command_buffer,
+            0,
+            &[
+                pos_buffer.buffer.handle,
+                uv_buffer.buffer.handle,
+                col_buffer.buffer.handle,
+            ],
+            &[0, 0, 0],
+        );
         renderer
             .device
             .cmd_bind_index_buffer(**command_buffer, index_buffer.buffer.handle, 0, vk::IndexType::UINT16);
@@ -1641,19 +1486,32 @@ fn render_gui(
         {
             let mut vertex_offset_coarse: usize = 0;
             let mut index_offset_coarse: usize = 0;
-            let mut vertex_slice = vertex_buffer
+            let mut pos_slice = pos_buffer
                 .map(&renderer.device)
-                .expect("Failed to map gui vertex buffer");
+                .expect("Failed to map gui vertex buffer - pos");
+            let mut uv_slice = uv_buffer
+                .map(&renderer.device)
+                .expect("Failed to map gui vertex buffer - uv");
+            let mut col_slice = col_buffer
+                .map(&renderer.device)
+                .expect("Failed to map gui vertex buffer - col");
             let mut index_slice = index_buffer
                 .map(&renderer.device)
                 .expect("Failed to map gui index buffer");
             for draw_list in gui_draw_data.draw_lists() {
+                scope!("rendering", "gui draw list");
+
                 let index_len = draw_list.idx_buffer().len();
                 index_slice[index_offset_coarse..index_offset_coarse + index_len]
                     .copy_from_slice(draw_list.idx_buffer());
                 let vertex_len = draw_list.vtx_buffer().len();
-                vertex_slice[vertex_offset_coarse..vertex_offset_coarse + vertex_len]
-                    .copy_from_slice(draw_list.vtx_buffer());
+                for (ix, vertex) in draw_list.vtx_buffer().iter().enumerate() {
+                    pos_slice[ix] = glm::Vec2::from(vertex.pos);
+                    uv_slice[ix] = glm::Vec2::from(vertex.uv);
+                    // TODO: this conversion sucks, need to add customizable vertex attribute formats
+                    let byte_color = na::SVector::<u8, 4>::from(vertex.col);
+                    col_slice[ix] = byte_color.map(|byte| byte as f32 / 255.0);
+                }
                 for draw_cmd in draw_list.commands() {
                     match draw_cmd {
                         imgui::DrawCmd::Elements { count, cmd_params } => {
@@ -1769,7 +1627,7 @@ fn depth_only_pass(
         renderer.device.cmd_bind_pipeline(
             **command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            *depth_pass.depth_pipeline,
+            *depth_pass.depth_pipeline.pipeline,
         );
         depth_pass.depth_pipeline_layout.bind_descriptor_sets(
             &renderer.device,

@@ -2,7 +2,7 @@ use std::{ffi::CString, ops::Deref};
 
 use ash::{version::DeviceV1_0, vk};
 
-use super::{descriptors::DescriptorSetLayout, Device};
+use super::{descriptors::DescriptorSetLayout, Device, Shader};
 
 pub(crate) struct PipelineLayout {
     handle: vk::PipelineLayout,
@@ -58,30 +58,15 @@ impl Drop for PipelineLayout {
 impl Pipeline {
     pub(super) fn new_graphics_pipeline(
         device: &Device,
-        shaders: &[(vk::ShaderStageFlags, &[u8], Option<&vk::SpecializationInfo>)],
+        shaders: &[(vk::ShaderStageFlags, &Shader, Option<&vk::SpecializationInfo>)],
         mut create_info: vk::GraphicsPipelineCreateInfo,
     ) -> Pipeline {
-        let shader_modules = shaders
-            .iter()
-            .map(|&(stage, ref bytes, spec_info)| {
-                let (l, aligned, r) = unsafe { bytes.align_to() };
-                assert!(l.is_empty() && r.is_empty(), "failed to realign code");
-                let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);
-                let shader_module = unsafe {
-                    device
-                        .device
-                        .create_shader_module(&shader_info, None)
-                        .expect("Vertex shader module error")
-                };
-                (shader_module, stage, spec_info)
-            })
-            .collect::<Vec<_>>();
         let shader_entry_name = CString::new("main").unwrap();
-        let shader_stage_create_infos = shader_modules
+        let shader_stage_create_infos = shaders
             .iter()
-            .map(|&(module, stage, spec_info)| {
+            .map(|&(stage, shader, spec_info)| {
                 let create_info = vk::PipelineShaderStageCreateInfo::builder()
-                    .module(module)
+                    .module(shader.vk())
                     .name(&shader_entry_name)
                     .stage(stage);
                 match spec_info {
@@ -98,11 +83,6 @@ impl Pipeline {
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
                 .expect("Unable to create graphics pipeline")
         };
-        for (shader_module, _stage, _spec_info) in shader_modules {
-            unsafe {
-                device.device.destroy_shader_module(shader_module, None);
-            }
-        }
 
         Pipeline {
             handle: graphics_pipelines[0],
