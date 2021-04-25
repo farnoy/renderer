@@ -9,16 +9,19 @@ use microprofile::scope;
 use num_traits::ToPrimitive;
 
 use crate::{
-    ecs::{components::AABB, resources::Camera, systems::RuntimeConfiguration},
+    ecs::{
+        components::{Position, AABB},
+        resources::Camera,
+        systems::RuntimeConfiguration,
+    },
     renderer::{
-        alloc,
-        device::{Device, DoubleBuffered, StrictCommandPool},
+        device::{Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
         frame_graph,
         helpers::{pick_lod, MP_INDIAN_RED},
         shaders::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         CameraMatrices, ComputeTimeline, DrawIndex, GltfMesh, LocalTransferCommandPool, MainDescriptorPool, ModelData,
-        Position, RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
+        RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
     },
 };
 
@@ -151,7 +154,7 @@ impl CullPassData {
                     | vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             device.set_object_name(b.buffer.handle, &format!("Global culled index buffer - {}", ix));
             b
@@ -163,7 +166,7 @@ impl CullPassData {
                     | vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             device.set_object_name(b.buffer.handle, &format!("indirect draw commands buffer - {}", ix));
             b
@@ -201,7 +204,7 @@ impl CullPassData {
                     | vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             device.set_object_name(
                 b.buffer.handle,

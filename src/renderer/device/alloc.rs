@@ -45,7 +45,7 @@ unsafe impl Sync for VmaAllocator {}
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
-pub struct VmaAllocation(*mut VmaAllocation_T);
+pub struct VmaAllocation(pub(super) *mut VmaAllocation_T);
 
 unsafe impl Send for VmaAllocation {}
 unsafe impl Sync for VmaAllocation {}

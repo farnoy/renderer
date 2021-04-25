@@ -179,7 +179,7 @@ impl<'c, 'p> StrictRecordingCommandBuffer<'c, 'p> {
     }
 }
 
-impl<'c, 'p> Deref for StrictRecordingCommandBuffer<'c, 'p> {
+impl Deref for StrictRecordingCommandBuffer<'_, '_> {
     type Target = vk::CommandBuffer;
 
     fn deref(&self) -> &Self::Target {
@@ -187,7 +187,7 @@ impl<'c, 'p> Deref for StrictRecordingCommandBuffer<'c, 'p> {
     }
 }
 
-impl<'a, 'c, 'p> Drop for StrictDebugMarkerGuard<'a, 'c, 'p> {
+impl Drop for StrictDebugMarkerGuard<'_, '_, '_> {
     fn drop(&mut self) {
         #[cfg(feature = "vk_names")]
         unsafe {
@@ -201,7 +201,7 @@ impl<'a, 'c, 'p> Drop for StrictDebugMarkerGuard<'a, 'c, 'p> {
     }
 }
 
-impl<'p> Deref for StrictCommandBuffer<'p> {
+impl Deref for StrictCommandBuffer<'_> {
     type Target = vk::CommandBuffer;
 
     fn deref(&self) -> &Self::Target {

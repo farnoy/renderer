@@ -8,7 +8,7 @@ use std::{
 use ash::vk;
 use mem::transmute;
 
-use super::super::alloc;
+use super::alloc;
 
 // Wrapper to safely map buffer contents
 pub(crate) struct MappedBuffer<'a, T> {
@@ -17,14 +17,15 @@ pub(crate) struct MappedBuffer<'a, T> {
     allocation: alloc::VmaAllocation,
 }
 
+#[must_use]
 pub(crate) struct MappedStaticBuffer<'a, T> {
     ptr: &'a mut T,
     allocator: alloc::VmaAllocator,
     allocation: alloc::VmaAllocation,
 }
 
-impl<'a, T> MappedBuffer<'a, T> {
-    pub(crate) fn import(
+impl<T> MappedBuffer<'_, T> {
+    pub(super) fn import(
         allocator: alloc::VmaAllocator,
         allocation: alloc::VmaAllocation,
         allocation_info: &alloc::VmaAllocationInfo,
@@ -44,8 +45,8 @@ impl<'a, T> MappedBuffer<'a, T> {
     }
 }
 
-impl<'a, T> MappedStaticBuffer<'a, T> {
-    pub(crate) fn import(
+impl<T> MappedStaticBuffer<'_, T> {
+    pub(super) fn import(
         allocator: alloc::VmaAllocator,
         allocation: alloc::VmaAllocation,
     ) -> ash::prelude::VkResult<Self> {
@@ -63,9 +64,17 @@ impl<'a, T> MappedStaticBuffer<'a, T> {
             }
         }
     }
+
+    pub(crate) fn unmap_used_range(mut self, range: Range<vk::DeviceSize>) {
+        unsafe {
+            alloc::vmaFlushAllocation(self.allocator, self.allocation, range.start, range.end);
+            alloc::vmaUnmapMemory(self.allocator, self.allocation);
+        }
+        self.allocation = alloc::VmaAllocation(ptr::null_mut());
+    }
 }
 
-impl<'a, T> Index<usize> for MappedBuffer<'a, T> {
+impl<T> Index<usize> for MappedBuffer<'_, T> {
     type Output = T;
 
     fn index(&self, ix: usize) -> &T {
@@ -73,7 +82,7 @@ impl<'a, T> Index<usize> for MappedBuffer<'a, T> {
     }
 }
 
-impl<'a, T> Index<Range<usize>> for MappedBuffer<'a, T> {
+impl<T> Index<Range<usize>> for MappedBuffer<'_, T> {
     type Output = [T];
 
     fn index(&self, ix: Range<usize>) -> &[T] {
@@ -81,7 +90,7 @@ impl<'a, T> Index<Range<usize>> for MappedBuffer<'a, T> {
     }
 }
 
-impl<'a, T> Index<RangeFull> for MappedBuffer<'a, T> {
+impl<T> Index<RangeFull> for MappedBuffer<'_, T> {
     type Output = [T];
 
     fn index(&self, ix: RangeFull) -> &[T] {
@@ -89,25 +98,25 @@ impl<'a, T> Index<RangeFull> for MappedBuffer<'a, T> {
     }
 }
 
-impl<'a, T> IndexMut<usize> for MappedBuffer<'a, T> {
+impl<T> IndexMut<usize> for MappedBuffer<'_, T> {
     fn index_mut(&mut self, ix: usize) -> &mut T {
         &mut self.ptr[ix]
     }
 }
 
-impl<'a, T> IndexMut<Range<usize>> for MappedBuffer<'a, T> {
+impl<T> IndexMut<Range<usize>> for MappedBuffer<'_, T> {
     fn index_mut(&mut self, ix: Range<usize>) -> &mut [T] {
         &mut self.ptr[ix]
     }
 }
 
-impl<'a, T> IndexMut<RangeFull> for MappedBuffer<'a, T> {
+impl<T> IndexMut<RangeFull> for MappedBuffer<'_, T> {
     fn index_mut(&mut self, _ix: RangeFull) -> &mut [T] {
         &mut *self.ptr
     }
 }
 
-impl<'a, T> Deref for MappedStaticBuffer<'a, T> {
+impl<T> Deref for MappedStaticBuffer<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -115,13 +124,13 @@ impl<'a, T> Deref for MappedStaticBuffer<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for MappedStaticBuffer<'a, T> {
+impl<T> DerefMut for MappedStaticBuffer<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ptr
     }
 }
 
-impl<'a, T> Drop for MappedBuffer<'a, T> {
+impl<T> Drop for MappedBuffer<'_, T> {
     fn drop(&mut self) {
         unsafe {
             alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE);
@@ -130,11 +139,13 @@ impl<'a, T> Drop for MappedBuffer<'a, T> {
     }
 }
 
-impl<'a, T> Drop for MappedStaticBuffer<'a, T> {
+impl<T> Drop for MappedStaticBuffer<'_, T> {
     fn drop(&mut self) {
-        unsafe {
-            alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE);
-            alloc::vmaUnmapMemory(self.allocator, self.allocation);
+        if self.allocation.0 != ptr::null_mut() {
+            unsafe {
+                alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE);
+                alloc::vmaUnmapMemory(self.allocator, self.allocation);
+            }
         }
     }
 }

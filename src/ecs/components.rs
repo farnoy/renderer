@@ -1,5 +1,9 @@
 use crate::renderer::ImageIndex;
 
+pub(crate) struct Position(pub(crate) na::Point3<f32>);
+pub(crate) struct Rotation(pub(crate) na::UnitQuaternion<f32>);
+pub(crate) struct Scale(pub(crate) f32);
+
 pub(crate) struct Light {
     #[allow(unused)]
     pub(crate) strength: f32,

@@ -1,4 +1,5 @@
 pub(crate) mod consolidate_mesh_buffers;
+#[cfg(feature = "crash_debugging")]
 pub(crate) mod crash_debugging;
 pub(crate) mod cull_pipeline;
 pub(crate) mod debug_aabb_renderer;

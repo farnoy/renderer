@@ -1,7 +1,19 @@
-use ash::vk;
-use bevy_ecs::prelude::*;
+use std::{convert::TryInto, mem::size_of};
 
-use crate::{ecs::components::*, renderer::*, shaders::LightMatrices};
+use ash::{version::DeviceV1_0, vk};
+use bevy_ecs::prelude::*;
+use microprofile::scope;
+use static_assertions::const_assert_eq;
+
+use crate::{
+    ecs::components::{Light, Position, Rotation},
+    renderer::{
+        device::VmaMemoryUsage, frame_graph, pick_lod, shaders, shaders::LightMatrices, CameraMatrices, DepthPassData,
+        Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
+        LocalGraphicsCommandPool, MainDescriptorPool, ModelData, Pipeline, RenderFrame, RenderStage, Sampler,
+        ShadowMappingTimeline, StrictCommandPool, SwapchainIndexToFrameNumber,
+    },
+};
 
 pub(crate) const MAP_SIZE: u32 = 4096;
 // dimensions of the square texture, 4x4 slots = 16 in total
@@ -89,7 +101,7 @@ impl ShadowMappingData {
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
                 | vk::ImageUsageFlags::TRANSFER_DST
                 | vk::ImageUsageFlags::SAMPLED,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         );
         renderer
             .device
@@ -177,8 +189,7 @@ impl ShadowMappingData {
 
         let user_set_layout = shaders::shadow_map_set::Layout::new(&renderer.device);
 
-        let user_sampler = new_sampler(
-            &renderer.device,
+        let user_sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
                 .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -258,7 +269,7 @@ impl ShadowMappingLightMatrices {
         let matrices_buffer = renderer.new_buffered(|ix| {
             let b = renderer.device.new_static_buffer(
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
             renderer.device.set_object_name(
                 b.buffer.handle,
@@ -305,7 +316,8 @@ pub(crate) fn shadow_mapping_mvp_calculation(
 ) {
     const_assert_eq!(size_of::<LightMatrices>(), 208);
 
-    microprofile::scope!("ecs", "shadow mapping light matrices calculation");
+    scope!("ecs", "shadow mapping light matrices calculation");
+
     query.for_each_mut(|(light_position, light_rotation, mut light_matrix)| {
         let near = 10.0;
         let far = 400.0;

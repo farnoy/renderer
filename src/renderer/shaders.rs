@@ -1,8 +1,12 @@
 use std::mem::size_of;
 
 use ash::vk;
+use static_assertions::const_assert_eq;
 
-use super::{Buffer, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, MainDescriptorPool, StaticBuffer};
+use super::{
+    device::{DescriptorSet, DescriptorSetLayout, Device},
+    Buffer, DescriptorPool, MainDescriptorPool, StaticBuffer,
+};
 
 pub(crate) type UVBuffer = [[f32; 2]; size_of::<VertexBuffer>() / size_of::<[f32; 3]>()];
 

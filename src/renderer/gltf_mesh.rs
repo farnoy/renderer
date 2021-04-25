@@ -3,8 +3,7 @@ use std::{mem::size_of, path::Path, u64};
 use ash::{version::DeviceV1_0, vk};
 
 use super::{
-    alloc,
-    device::{Buffer, Image},
+    device::{Buffer, Image, VmaMemoryUsage},
     RenderFrame, StrictCommandPool,
 };
 
@@ -90,14 +89,14 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         vk::ImageTiling::LINEAR, // todo use optimal?
         vk::ImageLayout::PREINITIALIZED,
         vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
     );
     renderer
         .device
         .set_object_name(base_color_vkimage.handle, "Gltf mesh Base color image");
     let base_color_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         vk::DeviceSize::from(base_color_image.width()) * vk::DeviceSize::from(base_color_image.height()) * 4,
     );
     renderer.device.set_object_name(
@@ -166,7 +165,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             | vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::TRANSFER_SRC
             | vk::BufferUsageFlags::STORAGE_BUFFER,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         vertex_size,
     );
     renderer
@@ -174,7 +173,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .set_object_name(vertex_buffer.handle, "Gltf mesh Vertex buffer");
     let vertex_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         vertex_size,
     );
     renderer
@@ -190,7 +189,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     }
     let normal_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         normals_size,
     );
     renderer
@@ -198,7 +197,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .set_object_name(normal_buffer.handle, "Gltf mesh Normal buffer");
     let normal_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         normals_size,
     );
     renderer
@@ -214,13 +213,13 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     }
     let uv_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         uvs_size,
     );
     renderer.device.set_object_name(uv_buffer.handle, "Gltf mesh UV buffer");
     let uv_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
-        alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         uvs_size,
     );
     renderer
@@ -245,7 +244,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                     | vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::STORAGE_BUFFER,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 index_size,
             );
             renderer.device.set_object_name(
@@ -254,7 +253,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             );
             let index_upload_buffer = renderer.device.new_buffer(
                 vk::BufferUsageFlags::TRANSFER_SRC,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
                 index_size,
             );
             renderer.device.set_object_name(

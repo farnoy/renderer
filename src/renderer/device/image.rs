@@ -2,7 +2,7 @@ use std::ptr;
 
 use ash::vk;
 
-use super::{super::alloc, mapping::MappedBuffer, Device};
+use super::{alloc, mapping::MappedBuffer, Device};
 
 pub(crate) struct Image {
     pub(crate) handle: vk::Image,

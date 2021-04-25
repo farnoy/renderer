@@ -1,8 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 
 // TODO: pub(crate) should disappear?
-mod alloc;
-mod device;
+pub(crate) mod device;
 mod entry;
 mod gltf_mesh;
 mod helpers;
@@ -11,7 +10,7 @@ pub(crate) mod shaders;
 mod swapchain;
 mod systems;
 
-use std::{convert::TryInto, mem::size_of, os::raw::c_uchar, sync::Arc};
+use std::{cmp::max, mem::size_of, os::raw::c_uchar, sync::Arc};
 
 use ash::{
     version::{DeviceV1_0, DeviceV1_2},
@@ -19,16 +18,35 @@ use ash::{
 };
 use bevy_ecs::{component::Component, prelude::*};
 use microprofile::scope;
+use static_assertions::const_assert_eq;
 
+use self::device::{
+    Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, Pipeline, RenderPass, Sampler,
+    Shader, StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, TimelineSemaphore, VmaMemoryUsage,
+};
+#[cfg(feature = "crash_debugging")]
+pub(crate) use self::systems::crash_debugging::CrashBuffer;
 pub(crate) use self::{
-    device::*,
     gltf_mesh::{load as load_gltf, LoadedMesh},
-    helpers::*,
+    helpers::{pick_lod, MP_INDIAN_RED},
     instance::Instance,
-    swapchain::*,
+    swapchain::{Surface, Swapchain},
     systems::{
-        consolidate_mesh_buffers::*, crash_debugging::*, cull_pipeline::*, debug_aabb_renderer::*, present::*,
-        shadow_mapping::*, textures::*,
+        consolidate_mesh_buffers::{consolidate_mesh_buffers, ConsolidateTimeline, ConsolidatedMeshBuffers},
+        cull_pipeline::{
+            coarse_culling, cull_pass, cull_pass_bypass, CoarseCulled, CullPassData, CullPassDataPrivate,
+            INITIAL_WORKGROUP_SIZE,
+        },
+        debug_aabb_renderer::DebugAABBPassData,
+        present::{acquire_framebuffer, ImageIndex, PresentData, PresentFramebuffer},
+        shadow_mapping::{
+            prepare_shadow_maps, shadow_mapping_mvp_calculation, update_shadow_map_descriptors, ShadowMappingData,
+            ShadowMappingLightMatrices,
+        },
+        textures::{
+            cleanup_base_color_markers, synchronize_base_color_textures_visit, update_base_color_descriptors,
+            BaseColorDescriptorSet, BaseColorVisitedMarker, GltfMeshBaseColorTexture,
+        },
     },
 };
 use crate::ecs::{
@@ -76,10 +94,6 @@ impl GltfMesh {
 
 #[derive(Debug, Default)]
 pub(crate) struct DrawIndex(pub(crate) u32);
-
-pub(crate) struct Position(pub(crate) na::Point3<f32>);
-pub(crate) struct Rotation(pub(crate) na::UnitQuaternion<f32>);
-pub(crate) struct Scale(pub(crate) f32);
 
 // TODO: rename
 pub(crate) struct RenderFrame {
@@ -264,7 +278,7 @@ pub(crate) struct MainRenderpass {
 impl MainRenderpass {
     pub(crate) fn new(renderer: &RenderFrame, attachments: &MainAttachments) -> Self {
         MainRenderpass {
-            renderpass: frame_graph::Main::RenderPass::new(renderer, (attachments.swapchain_images[0].format,)),
+            renderpass: frame_graph::Main::RenderPass::new(renderer, (attachments.swapchain_format,)),
         }
     }
 
@@ -376,8 +390,8 @@ impl MainDescriptorPool {
 
 pub(crate) struct MainAttachments {
     #[allow(unused)]
-    swapchain_images: Vec<SwapchainImage>,
     swapchain_image_views: Vec<ImageView>,
+    swapchain_format: vk::Format,
     #[allow(unused)]
     depth_images: Vec<Image>,
     depth_image_views: Vec<ImageView>,
@@ -400,7 +414,7 @@ impl MainAttachments {
                     vk::ImageTiling::OPTIMAL,
                     vk::ImageLayout::UNDEFINED,
                     vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
-                    alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                    VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 );
                 renderer
                     .device
@@ -459,15 +473,8 @@ impl MainAttachments {
             .collect::<Vec<_>>();
 
         MainAttachments {
-            swapchain_images: images
-                .iter()
-                .cloned()
-                .map(|handle| SwapchainImage {
-                    handle,
-                    format: swapchain.surface.surface_format.format,
-                })
-                .collect(),
             swapchain_image_views: image_views,
+            swapchain_format: swapchain.surface.surface_format.format,
             depth_images,
             depth_image_views,
         }
@@ -595,7 +602,7 @@ impl CameraMatrices {
         let buffer = renderer.new_buffered(|ix| {
             let b = renderer.device.new_static_buffer(
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
             renderer
                 .device
@@ -642,7 +649,7 @@ impl ModelData {
         let model_buffer = renderer.new_buffered(|ix| {
             let b = device.new_static_buffer(
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
             device.set_object_name(b.buffer.handle, &format!("Model Buffer - {}", ix));
             b
@@ -1041,7 +1048,7 @@ pub(crate) fn render_frame(
         NonSendMut<InputHandler>,
         NonSendMut<Gui>,
     ),
-    crash_buffer: Res<CrashBuffer>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
     query: Query<&AABB>,
 ) {
     microprofile::scope!("ecs", "render_frame");
@@ -1212,6 +1219,7 @@ pub(crate) fn render_frame(
                 total,
                 size_of::<shaders::VkDrawIndexedIndirectCommand>() as u32,
             );
+            #[cfg(feature = "crash_debugging")]
             crash_buffer.record(
                 &renderer,
                 *command_buffer,
@@ -1257,8 +1265,8 @@ fn submit_main_pass(
 }
 
 pub(crate) struct GuiRenderData {
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
+    vertex_buffer: StaticBuffer<[imgui::DrawVert; 1024 * 1024]>,
+    index_buffer: StaticBuffer<[imgui::DrawIdx; 1024 * 1024]>,
     texture: Image,
     #[allow(unused)]
     texture_view: ImageView,
@@ -1294,20 +1302,20 @@ impl GuiRenderData {
             .io_mut()
             .backend_flags
             .insert(imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
-        let vertex_buffer = renderer.device.new_buffer(
+        let vertex_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            1024 * 1024 * size_of::<imgui::DrawVert>() as vk::DeviceSize,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         );
         renderer
             .device
-            .set_object_name(vertex_buffer.handle, "GUI Vertex Buffer");
-        let index_buffer = renderer.device.new_buffer(
+            .set_object_name(vertex_buffer.buffer.handle, "GUI Vertex Buffer");
+        let index_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::INDEX_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-            1024 * 1024 * size_of::<imgui::DrawIdx>() as vk::DeviceSize,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
         );
-        renderer.device.set_object_name(index_buffer.handle, "GUI Index Buffer");
+        renderer
+            .device
+            .set_object_name(index_buffer.buffer.handle, "GUI Index Buffer");
         let texture = {
             let mut fonts = imgui.fonts();
             let imgui_texture = fonts.build_rgba32_texture();
@@ -1322,7 +1330,7 @@ impl GuiRenderData {
                 vk::ImageTiling::LINEAR, // todo use optimal?
                 vk::ImageLayout::PREINITIALIZED,
                 vk::ImageUsageFlags::SAMPLED,
-                alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
             {
                 let mut texture_data = texture
@@ -1332,8 +1340,7 @@ impl GuiRenderData {
             }
             texture
         };
-        let sampler = new_sampler(
-            &renderer.device,
+        let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
                 .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -1434,8 +1441,7 @@ impl GuiRenderData {
         );
         renderer.device.set_object_name(*pipeline, "GUI Pipeline");
 
-        let texture_view = new_image_view(
-            &renderer.device,
+        let texture_view = renderer.device.new_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .view_type(vk::ImageViewType::TYPE_2D)
                 .format(vk::Format::R8G8B8A8_UNORM)
@@ -1617,10 +1623,10 @@ fn render_gui(
             .cmd_bind_pipeline(**command_buffer, vk::PipelineBindPoint::GRAPHICS, **pipeline);
         renderer
             .device
-            .cmd_bind_vertex_buffers(**command_buffer, 0, &[vertex_buffer.handle], &[0]);
+            .cmd_bind_vertex_buffers(**command_buffer, 0, &[vertex_buffer.buffer.handle], &[0]);
         renderer
             .device
-            .cmd_bind_index_buffer(**command_buffer, index_buffer.handle, 0, vk::IndexType::UINT16);
+            .cmd_bind_index_buffer(**command_buffer, index_buffer.buffer.handle, 0, vk::IndexType::UINT16);
         let [x, y] = gui_draw_data.display_size;
         {
             pipeline_layout.push_constants(
@@ -1636,10 +1642,10 @@ fn render_gui(
             let mut vertex_offset_coarse: usize = 0;
             let mut index_offset_coarse: usize = 0;
             let mut vertex_slice = vertex_buffer
-                .map::<imgui::DrawVert>(&renderer.device)
+                .map(&renderer.device)
                 .expect("Failed to map gui vertex buffer");
             let mut index_slice = index_buffer
-                .map::<imgui::DrawIdx>(&renderer.device)
+                .map(&renderer.device)
                 .expect("Failed to map gui index buffer");
             for draw_list in gui_draw_data.draw_lists() {
                 let index_len = draw_list.idx_buffer().len();
@@ -1692,9 +1698,16 @@ pub(crate) fn model_matrices_upload(
         .current_mut(image_index.0)
         .map(&renderer.device)
         .expect("failed to map Model buffer");
+
+    let mut max_accessed = 0;
     query.for_each(|(draw_index, model_matrix)| {
         model_mapped.model[draw_index.0 as usize] = model_matrix.0;
+        max_accessed = max(max_accessed, draw_index.0);
     });
+
+    // sanity check for the following flush calculation
+    const_assert_eq!(size_of::<glm::Mat4>(), size_of::<shaders::ModelMatrices>() / 4096,);
+    model_mapped.unmap_used_range(0..(max_accessed as vk::DeviceSize * size_of::<glm::Mat4>() as vk::DeviceSize));
 }
 
 pub(crate) fn camera_matrices_upload(

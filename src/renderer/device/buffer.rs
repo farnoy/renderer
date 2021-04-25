@@ -3,7 +3,7 @@ use std::{marker::PhantomData, mem::size_of, ptr};
 use ash::vk;
 
 use super::{
-    super::alloc,
+    alloc,
     mapping::{MappedBuffer, MappedStaticBuffer},
     Device,
 };

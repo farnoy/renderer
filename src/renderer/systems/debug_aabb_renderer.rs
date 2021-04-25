@@ -2,8 +2,11 @@ use ash::vk;
 use bevy_ecs::prelude::*;
 
 use crate::{
-    renderer::device::{Device, Pipeline},
-    shaders, CameraMatrices, MainRenderpass, RenderFrame,
+    renderer::{
+        device::{Device, Pipeline},
+        shaders,
+    },
+    CameraMatrices, MainRenderpass, RenderFrame,
 };
 
 pub(crate) struct DebugAABBPassData {

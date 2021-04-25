@@ -11,27 +11,35 @@ use ash::{
 };
 use parking_lot::Mutex;
 
+mod alloc;
 mod buffer;
 mod commands;
 mod descriptors;
 mod double_buffered;
+mod framebuffer;
 mod image;
+mod image_view;
 mod mapping;
 mod pipeline;
+mod sampler;
 mod shader;
 mod sync;
 
 pub(crate) use self::{
-    buffer::*,
-    commands::*,
-    descriptors::*,
-    double_buffered::*,
-    image::*,
+    alloc::VmaMemoryUsage,
+    buffer::{Buffer, StaticBuffer},
+    commands::{StrictCommandPool, StrictRecordingCommandBuffer},
+    descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
+    double_buffered::DoubleBuffered,
+    framebuffer::Framebuffer,
+    image::Image,
+    image_view::ImageView,
     pipeline::{Pipeline, PipelineLayout},
+    sampler::Sampler,
     shader::Shader,
-    sync::*,
+    sync::{Fence, Semaphore, TimelineSemaphore},
 };
-use super::{alloc, Instance, Surface};
+use super::{Instance, Surface};
 
 type AshDevice = ash::Device;
 
@@ -293,7 +301,7 @@ impl Device {
     pub(crate) fn new_buffer(
         &self,
         buffer_usage: vk::BufferUsageFlags,
-        allocation_usage: alloc::VmaMemoryUsage,
+        allocation_usage: VmaMemoryUsage,
         size: vk::DeviceSize,
     ) -> Buffer {
         Buffer::new(self, buffer_usage, allocation_usage, size)
@@ -302,7 +310,7 @@ impl Device {
     pub(crate) fn new_static_buffer<T: Sized>(
         &self,
         buffer_usage: vk::BufferUsageFlags,
-        allocation_usage: alloc::VmaMemoryUsage,
+        allocation_usage: VmaMemoryUsage,
     ) -> StaticBuffer<T> {
         StaticBuffer::new(self, buffer_usage, allocation_usage)
     }
@@ -316,7 +324,7 @@ impl Device {
         tiling: vk::ImageTiling,
         initial_layout: vk::ImageLayout,
         usage: vk::ImageUsageFlags,
-        allocation_usage: alloc::VmaMemoryUsage,
+        allocation_usage: VmaMemoryUsage,
     ) -> Image {
         Image::new(
             self,
@@ -328,6 +336,14 @@ impl Device {
             usage,
             allocation_usage,
         )
+    }
+
+    pub(crate) fn new_image_view(&self, create_info: &vk::ImageViewCreateInfo) -> ImageView {
+        ImageView::new(self, create_info)
+    }
+
+    pub(crate) fn new_sampler(&self, create_info: &vk::SamplerCreateInfo) -> Sampler {
+        Sampler::new(self, create_info)
     }
 
     pub(crate) fn new_pipeline_layout(
@@ -346,14 +362,14 @@ impl Device {
         Pipeline::new_graphics_pipeline(self, shaders, create_info)
     }
 
-    pub(crate) fn new_compute_pipelines(
+    pub(super) fn new_compute_pipelines(
         &self,
         create_infos: &[vk::ComputePipelineCreateInfoBuilder<'_>],
     ) -> Vec<Pipeline> {
         Pipeline::new_compute_pipelines(self, create_infos)
     }
 
-    pub(crate) fn new_renderpass(&self, create_info: &vk::RenderPassCreateInfoBuilder) -> RenderPass {
+    pub(super) fn new_renderpass(&self, create_info: &vk::RenderPassCreateInfoBuilder) -> RenderPass {
         RenderPass::new(self, create_info)
     }
 

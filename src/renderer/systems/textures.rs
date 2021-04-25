@@ -7,20 +7,19 @@ use microprofile::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        helpers, shaders, systems::present::ImageIndex, Device, DoubleBuffered, DrawIndex, GraphicsTimeline, Image,
-        MainDescriptorPool, RenderFrame, SwapchainIndexToFrameNumber,
+        shaders, systems::present::ImageIndex, Device, DoubleBuffered, DrawIndex, GraphicsTimeline, Image, ImageView,
+        MainDescriptorPool, RenderFrame, Sampler, SwapchainIndexToFrameNumber,
     },
 };
 
 pub(crate) struct BaseColorDescriptorSet {
     pub(crate) layout: shaders::base_color_set::Layout,
     pub(in super::super) set: DoubleBuffered<shaders::base_color_set::Set>,
-    sampler: helpers::Sampler,
+    sampler: Sampler,
 }
 
-#[derive(Debug)]
 pub(crate) struct BaseColorVisitedMarker {
-    image_view: helpers::ImageView,
+    image_view: ImageView,
 }
 
 // Holds the base color texture that will be mapped into a single,
@@ -34,8 +33,7 @@ impl BaseColorDescriptorSet {
         let set = renderer
             .new_buffered(|ix| shaders::base_color_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, ix));
 
-        let sampler = helpers::new_sampler(
-            &renderer.device,
+        let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
                 .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -66,8 +64,7 @@ pub(crate) fn synchronize_base_color_textures_visit(
     query: Query<(Entity, &GltfMeshBaseColorTexture), Without<BaseColorVisitedMarker>>,
 ) {
     for (entity, base_color) in &mut query.iter() {
-        let image_view = helpers::new_image_view(
-            &renderer.device,
+        let image_view = renderer.device.new_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .components(
                     vk::ComponentMapping::builder()

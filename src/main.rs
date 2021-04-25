@@ -1,8 +1,14 @@
 #![feature(backtrace)]
 #![allow(clippy::new_without_default)]
-#![warn(unreachable_pub, unused_qualifications)]
+#![warn(clippy::cast_lossless)]
+#![warn(
+    unreachable_pub,
+    single_use_lifetimes,
+    unused_qualifications,
+    absolute_paths_not_starting_with_crate,
+    macro_use_extern_crate
+)]
 
-#[macro_use]
 extern crate static_assertions;
 
 extern crate nalgebra as na;
@@ -19,12 +25,31 @@ use bevy_ecs::{
     component::{ComponentDescriptor, StorageType},
     prelude::*,
 };
-use ecs::{components::*, resources::*, systems::*};
+use ecs::{
+    components::{Deleting, Light, ModelMatrix, Position, Rotation, Scale, AABB},
+    resources::{Camera, InputActions, MeshLibrary},
+    systems::{
+        aabb_calculation, assign_draw_index, calculate_frame_timing, camera_controller, cleanup_deleted_entities,
+        launch_projectiles_test, model_matrix_calculation, project_camera, update_projectiles, FrameTiming, Gui,
+        InputHandler, RuntimeConfiguration,
+    },
+};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
-use renderer::{DrawIndex, *};
+#[cfg(feature = "crash_debugging")]
+use renderer::CrashBuffer;
+use renderer::{
+    acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, consolidate_mesh_buffers,
+    graphics_stage, load_gltf, model_matrices_upload, shadow_mapping_mvp_calculation,
+    synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, BaseColorDescriptorSet,
+    BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CullPassData, CullPassDataPrivate,
+    DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfPassData, GuiCopy,
+    GuiRenderData, ImageIndex, LoadedMesh, LocalGraphicsCommandPool, LocalTransferCommandPool, MainAttachments,
+    MainDescriptorPool, MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame,
+    Resized, ShadowMappingData, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
+};
 
 fn main() {
     microprofile::init!();
@@ -341,6 +366,7 @@ fn main() {
     app.insert_non_send_resource(input_handler);
     app.insert_non_send_resource(gui);
     app.init_resource::<GuiRenderData>();
+    #[cfg(feature = "crash_debugging")]
     app.init_resource::<CrashBuffer>();
     app.init_resource::<LocalTransferCommandPool<0>>();
     app.init_resource::<LocalGraphicsCommandPool<0>>();
@@ -686,6 +712,7 @@ fn main() {
             .destroy(&render_frame.device);
     }
 
+    #[cfg(feature = "crash_debugging")]
     app.app
         .world
         .remove_resource::<CrashBuffer>()

@@ -2,7 +2,7 @@ use std::{ffi::CString, ops::Deref};
 
 use ash::{version::DeviceV1_0, vk};
 
-use super::{DescriptorSetLayout, Device};
+use super::{descriptors::DescriptorSetLayout, Device};
 
 pub(crate) struct PipelineLayout {
     handle: vk::PipelineLayout,
@@ -56,7 +56,7 @@ impl Drop for PipelineLayout {
 }
 
 impl Pipeline {
-    pub(crate) fn new_graphics_pipeline(
+    pub(super) fn new_graphics_pipeline(
         device: &Device,
         shaders: &[(vk::ShaderStageFlags, &[u8], Option<&vk::SpecializationInfo>)],
         mut create_info: vk::GraphicsPipelineCreateInfo,
@@ -106,11 +106,10 @@ impl Pipeline {
 
         Pipeline {
             handle: graphics_pipelines[0],
-            // device,
         }
     }
 
-    pub(crate) fn new_compute_pipelines(
+    pub(super) fn new_compute_pipelines(
         device: &Device,
         create_infos: &[vk::ComputePipelineCreateInfoBuilder<'_>],
     ) -> Vec<Pipeline> {
@@ -146,29 +145,3 @@ impl Drop for Pipeline {
         debug_assert_eq!(self.handle, vk::Pipeline::null(), "Pipeline not destroyed before Drop");
     }
 }
-
-/*
-#[derive(PartialEq, Eq)]
-pub(crate) enum Viewport {
-    Dynamic,
-    Static(usize, usize),
-}
-
-pub(crate) struct StaticPipeline<const VIEWPORT: Viewport> {
-    inner: Pipeline,
-}
-
-impl<const VIEWPORT: Viewport> StaticPipeline<VIEWPORT> {
-    pub(crate) fn bind(device: &Device, command_buffer: vk::CommandBuffer) {
-        match VIEWPORT {
-            Viewport::Dynamic => {
-                unsafe {
-                    device.cmd_set_viewport(command_buffer, 0, &[]);
-                }
-            },
-            Viewport::Static(w, h) => {
-            }
-        }
-    }
-}
-*/

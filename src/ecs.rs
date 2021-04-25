@@ -5,10 +5,10 @@ pub(crate) mod components;
 pub(crate) mod resources {
     use std::sync::Arc;
 
-    use super::super::renderer::{Device, GltfMesh, Image};
-    pub(crate) use super::{
-        camera_controller::Camera,
-        input::{InputActions, InputHandler},
+    pub(crate) use super::{camera_controller::Camera, input::InputActions};
+    use crate::renderer::{
+        device::{Device, Image},
+        GltfMesh,
     };
 
     pub(crate) struct MeshLibrary {
@@ -32,14 +32,18 @@ pub(crate) mod systems {
     use na::RealField;
     use winit::{self, event::MouseButton};
 
-    use super::{super::renderer::*, components::Deleting};
     pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
     use crate::{
         ecs::{
-            components::{ModelMatrix, ProjectileTarget, ProjectileVelocity, AABB},
+            components::{
+                Deleting, ModelMatrix, Position, ProjectileTarget, ProjectileVelocity, Rotation, Scale, AABB,
+            },
             resources::{Camera, InputActions, MeshLibrary},
         },
-        renderer::{forward_vector, up_vector, GltfMesh, Swapchain},
+        renderer::{
+            forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GuiCopy,
+            ImageIndex, RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE, MP_INDIAN_RED,
+        },
     };
 
     pub(crate) fn model_matrix_calculation(

@@ -9,8 +9,7 @@ use hashbrown::{hash_map::Entry, HashMap};
 use microprofile::scope;
 
 use crate::renderer::{
-    alloc,
-    device::{Buffer, Device},
+    device::{Buffer, Device, VmaMemoryUsage},
     frame_graph,
     shaders::cull_set,
     GltfMesh, ImageIndex, LocalGraphicsCommandPool, RenderFrame, RenderStage, SwapchainIndexToFrameNumber,
@@ -163,21 +162,21 @@ impl ConsolidatedMeshBuffers {
             vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::STORAGE_BUFFER, // storage_buffer not needed?
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         );
         renderer
             .device
             .set_object_name(position_buffer.buffer.handle, "Consolidated position buffer");
         let normal_buffer = renderer.device.new_static_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         );
         renderer
             .device
             .set_object_name(normal_buffer.buffer.handle, "Consolidated normals buffer");
         let uv_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             size_of::<super::super::shaders::UVBuffer>() as vk::DeviceSize,
         );
         renderer
@@ -187,7 +186,7 @@ impl ConsolidatedMeshBuffers {
             vk::BufferUsageFlags::INDEX_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::STORAGE_BUFFER,
-            alloc::VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         );
         renderer
             .device
