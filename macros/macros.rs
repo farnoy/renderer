@@ -431,7 +431,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .map(|edge| {
                     let from = all_passes.get(edge.source().index()).unwrap();
                     let signaled = sync.get(&from.to_string()).unwrap();
-                    let t = parse2::<Path>(signaled.to_token_stream())
+                    let t = syn::parse2::<Path>(signaled.to_token_stream())
                         .expect("sync values must consist of 2 path segments");
                     let timeline_member = format_ident!(
                         "{}_semaphore",
@@ -1462,6 +1462,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             use ash::{vk, version::DeviceV1_0};
             use std::{mem::size_of, slice::from_raw_parts};
             use microprofile::scope;
+            use static_assertions::const_assert_eq;
 
             pub(crate) struct PipelineLayout {
                 pub(crate) layout: device::PipelineLayout,
