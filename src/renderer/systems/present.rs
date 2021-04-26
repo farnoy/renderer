@@ -1,4 +1,4 @@
-use std::u64;
+use std::{mem::swap, u64};
 
 use ash::{version::DeviceV1_0, vk};
 use bevy_ecs::prelude::*;
@@ -62,26 +62,34 @@ pub(crate) fn acquire_framebuffer(
     microprofile::scope!("ecs", "AcquireFramebuffer");
 
     if resized.0 {
+        microprofile::scope!("ecs", "recreate framebuffer from resize");
         unsafe {
             renderer.device.device_wait_idle().unwrap();
         }
         swapchain.resize_to_fit(&renderer.device);
-        *main_attachments = MainAttachments::new(&renderer, &swapchain);
-        *main_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &main_attachments, &swapchain);
-        *present_data = PresentData::new(&renderer);
+        let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
+        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &new_attachments, &swapchain);
+        swap(&mut *main_attachments, &mut new_attachments);
+        swap(&mut *main_framebuffer, &mut new_framebuffer);
+        new_attachments.destroy(&renderer.device);
+        new_framebuffer.destroy(&renderer.device);
     }
 
     let swapchain_needs_recreating =
         AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
 
     if swapchain_needs_recreating {
+        microprofile::scope!("ecs", "recreate framebuffer from out of date");
         unsafe {
             renderer.device.device_wait_idle().unwrap();
         }
         swapchain.resize_to_fit(&renderer.device);
-        *main_attachments = MainAttachments::new(&renderer, &swapchain);
-        *main_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &main_attachments, &swapchain);
-        *present_data = PresentData::new(&renderer);
+        let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
+        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &new_attachments, &swapchain);
+        swap(&mut *main_attachments, &mut new_attachments);
+        swap(&mut *main_framebuffer, &mut new_framebuffer);
+        new_attachments.destroy(&renderer.device);
+        new_framebuffer.destroy(&renderer.device);
         AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
     }
 }
