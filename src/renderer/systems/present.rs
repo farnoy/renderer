@@ -5,9 +5,7 @@ use bevy_ecs::prelude::*;
 use microprofile::scope;
 
 use super::super::{device::Semaphore, GraphicsTimeline, RenderFrame, Swapchain};
-use crate::renderer::{
-    Device, GuiCopy, MainAttachments, MainFramebuffer, MainRenderpass, Resized, SwapchainIndexToFrameNumber,
-};
+use crate::renderer::{Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized, SwapchainIndexToFrameNumber};
 
 pub(crate) struct PresentData {
     framebuffer_acquire_semaphore: Semaphore,
@@ -165,8 +163,7 @@ impl PresentFramebuffer {
         present_data: Res<PresentData>,
         swapchain: Res<Swapchain>,
         image_index: Res<ImageIndex>,
-        swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
-        mut swapchain_index_map_copy: ResMut<GuiCopy<SwapchainIndexToFrameNumber>>,
+        mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
     ) {
         microprofile::scope!("ecs", "PresentFramebuffer");
 
@@ -218,7 +215,6 @@ impl PresentFramebuffer {
         }
         drop(queue);
 
-        swapchain_index_map_copy.0.clone_from(&swapchain_index_map);
-        swapchain_index_map_copy.0.map[image_index.0 as usize] = renderer.frame_number;
+        swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;
     }
 }

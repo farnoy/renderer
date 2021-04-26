@@ -44,8 +44,8 @@ use renderer::{
     acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, consolidate_mesh_buffers,
     graphics_stage, load_gltf, model_matrices_upload, shadow_mapping_mvp_calculation,
     synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, BaseColorDescriptorSet,
-    BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CullPassData, CullPassDataPrivate,
-    DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfPassData, GuiCopy,
+    BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
+    CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfPassData,
     GuiRenderData, ImageIndex, LoadedMesh, LocalGraphicsCommandPool, LocalTransferCommandPool, MainAttachments,
     MainDescriptorPool, MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame,
     Resized, ShadowMappingData, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
@@ -342,8 +342,8 @@ fn main() {
     app.init_resource::<InputActions>();
     app.init_resource::<Camera>();
     app.init_resource::<RuntimeConfiguration>();
-    app.init_resource::<GuiCopy<RuntimeConfiguration>>();
-    app.init_resource::<GuiCopy<Camera>>();
+    app.init_resource::<CopiedResource<RuntimeConfiguration>>();
+    app.init_resource::<CopiedResource<Camera>>();
     app.insert_resource(renderer);
     app.insert_resource(image_index);
     app.insert_resource(consolidated_mesh_buffers);
@@ -360,7 +360,7 @@ fn main() {
     app.insert_resource(main_attachments);
     app.insert_resource(gltf_pass);
     app.init_resource::<SwapchainIndexToFrameNumber>();
-    app.init_resource::<GuiCopy<SwapchainIndexToFrameNumber>>();
+    app.init_resource::<CopiedResource<SwapchainIndexToFrameNumber>>();
     app.init_resource::<DebugAABBPassData>();
     app.init_resource::<MainFramebuffer>();
     app.insert_non_send_resource(input_handler);

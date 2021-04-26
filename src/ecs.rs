@@ -41,8 +41,8 @@ pub(crate) mod systems {
             resources::{Camera, InputActions, MeshLibrary},
         },
         renderer::{
-            forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GuiCopy,
-            ImageIndex, RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE, MP_INDIAN_RED,
+            forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, ImageIndex,
+            RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE, MP_INDIAN_RED,
         },
     };
 
@@ -271,15 +271,10 @@ pub(crate) mod systems {
             renderer: &RenderFrame,
             input_handler: &mut InputHandler,
             swapchain: &Swapchain,
-            camera: &Camera,
-            camera_gui: &mut GuiCopy<Camera>,
-            runtime_config: &RuntimeConfiguration,
-            runtime_config_gui: &mut GuiCopy<RuntimeConfiguration>,
+            camera: &mut Camera,
+            runtime_config: &mut RuntimeConfiguration,
         ) -> &'a imgui::DrawData {
             scope!("gui", "update");
-
-            camera_gui.0.clone_from(camera);
-            runtime_config_gui.0.clone_from(runtime_config);
 
             let imgui = &mut self.imgui;
             imgui.io_mut().display_size = [swapchain.width as f32, swapchain.height as f32];
@@ -315,7 +310,7 @@ pub(crate) mod systems {
                         ui.set_next_item_width(100.0);
                         imgui::Slider::new(im_str!("Compute cull workgroup size"))
                             .range(1..=renderer.device.limits.max_compute_work_group_size[0])
-                            .build(&ui, &mut runtime_config_gui.0.compute_cull_workgroup_size);
+                            .build(&ui, &mut runtime_config.compute_cull_workgroup_size);
                     }
 
                     if imgui::CollapsingHeader::new(&im_str!("Camera"))
@@ -324,30 +319,27 @@ pub(crate) mod systems {
                     {
                         ui.input_float3(&im_str!("position"), &mut position).build();
                         ui.input_float3(&im_str!("rotation"), &mut rotation).build();
-                        ui.checkbox(&im_str!("[G] Fly mode"), &mut runtime_config_gui.0.fly_mode);
+                        ui.checkbox(&im_str!("[G] Fly mode"), &mut runtime_config.fly_mode);
                     }
 
                     if imgui::CollapsingHeader::new(&im_str!("Debug options"))
                         .default_open(true)
                         .build(&ui)
                     {
-                        ui.checkbox(&im_str!("Debug collision AABBs"), &mut runtime_config_gui.0.debug_aabbs);
-                        ui.checkbox(
-                            &im_str!("Freeze culling data"),
-                            &mut runtime_config_gui.0.freeze_culling,
-                        );
+                        ui.checkbox(&im_str!("Debug collision AABBs"), &mut runtime_config.debug_aabbs);
+                        ui.checkbox(&im_str!("Freeze culling data"), &mut runtime_config.freeze_culling);
                     }
                 });
 
-            camera_gui.0.position = position.into();
-            camera_gui.0.rotation = na::UnitQuaternion::from_euler_angles(
+            camera.position = position.into();
+            camera.rotation = na::UnitQuaternion::from_euler_angles(
                 rotation[0] * f32::pi() / 180.0,
                 rotation[1] * f32::pi() / 180.0,
                 rotation[2] * f32::pi() / 180.0,
             );
 
-            runtime_config_gui.0.compute_cull_workgroup_size = na::clamp(
-                runtime_config_gui.0.compute_cull_workgroup_size,
+            runtime_config.compute_cull_workgroup_size = na::clamp(
+                runtime_config.compute_cull_workgroup_size,
                 1,
                 renderer.device.limits.max_compute_work_group_size[0],
             );

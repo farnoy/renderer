@@ -908,7 +908,7 @@ pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
     main_renderpass: Res<MainRenderpass>,
     (image_index, model_data): (Res<ImageIndex>, Res<ModelData>),
-    (runtime_config, mut runtime_config_gui): (Res<RuntimeConfiguration>, ResMut<GuiCopy<RuntimeConfiguration>>),
+    mut runtime_config: ResMut<RuntimeConfiguration>,
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
@@ -918,22 +918,12 @@ pub(crate) fn render_frame(
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
     main_framebuffer: Res<MainFramebuffer>,
-    (
-        mut main_pass_cb,
-        depth_pass_data,
-        gltf_pass,
-        mut gui_render_data,
-        camera,
-        mut camera_gui,
-        mut input_handler,
-        mut gui,
-    ): (
+    (mut main_pass_cb, depth_pass_data, gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
         ResMut<MainPassCommandBuffer>,
         Res<DepthPassData>,
         Res<GltfPassData>,
         ResMut<GuiRenderData>,
-        Res<Camera>,
-        ResMut<GuiCopy<Camera>>,
+        ResMut<Camera>,
         NonSendMut<InputHandler>,
         NonSendMut<Gui>,
     ),
@@ -1123,11 +1113,9 @@ pub(crate) fn render_frame(
         render_gui(
             &renderer,
             &mut gui_render_data,
-            &runtime_config,
-            &mut runtime_config_gui,
+            &mut runtime_config,
             &swapchain,
-            &camera,
-            &mut camera_gui,
+            &mut camera,
             &mut input_handler,
             &mut gui,
             &command_buffer,
@@ -1395,22 +1383,57 @@ impl GuiRenderData {
     }
 }
 
-pub(crate) struct GuiCopy<T>(pub(crate) T);
+/// This wrapper is used to break dependency chains and let otherwise conflicting systems operate on
+/// the same resources as long as the writer can afford a delay in making the mutation available to
+/// other users. See [copy_resource] and [writeback_resource] for the complete toolset.
+/// To avoid exclusive access to the [World], this wrapper must be initialized ahead of time.
+///
+/// It can be used the opposite way, with the readers being redirected to the wrapper (with stale
+/// data) while the writes are made available immedietaly. There is no need to write back any data
+/// in this mode.
+pub(crate) struct CopiedResource<T>(pub(crate) T);
 
-impl<T: FromWorld> FromWorld for GuiCopy<T> {
-    fn from_world(world: &mut World) -> Self {
-        GuiCopy(<T as FromWorld>::from_world(world))
+impl<T> std::ops::Deref for CopiedResource<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
+}
+
+impl<T: FromWorld> FromWorld for CopiedResource<T> {
+    fn from_world(world: &mut World) -> Self {
+        CopiedResource(<T as FromWorld>::from_world(world))
+    }
+}
+
+/// This system can be used to copy data from a resource and place it in the [CopiedResource]
+/// wrapper. This requires the wrapper to already be present on the [World].
+/// Remember to use [writeback_resource] if the mutations are made to the wrapper.
+pub(crate) fn copy_resource<T: Component + Clone>(from: Res<T>, mut to: ResMut<CopiedResource<T>>) {
+    let scope_name = format!("copy_resource<{}>", std::any::type_name::<T>());
+    scope!("ecs", scope_name);
+
+    to.0.clone_from(&from);
+}
+
+/// This system writes back the changes from the coppied wrapper to the original resource.
+/// The mode of operation where writes are redirected to [CopiedResource] are probably less
+/// efficient as they require a writeback
+#[allow(dead_code)]
+pub(crate) fn writeback_resource<T: Component + Clone>(from: Res<CopiedResource<T>>, mut to: ResMut<T>) {
+    let scope_name = format!("writeback_resource<{}>", std::any::type_name::<T>());
+    scope!("ecs", scope_name);
+
+    to.clone_from(&from.0);
 }
 
 fn render_gui(
     renderer: &RenderFrame,
     gui_render_data: &mut GuiRenderData,
-    runtime_config: &RuntimeConfiguration,
-    runtime_config_copy: &mut GuiCopy<RuntimeConfiguration>,
+    runtime_config: &mut RuntimeConfiguration,
     swapchain: &Swapchain,
-    camera: &Camera,
-    camera_copy: &mut GuiCopy<Camera>,
+    camera: &mut Camera,
     input_handler: &mut InputHandler,
     gui: &mut Gui,
     command_buffer: &StrictRecordingCommandBuffer,
@@ -1427,15 +1450,7 @@ fn render_gui(
         ref descriptor_set,
         ..
     } = *gui_render_data;
-    let gui_draw_data = gui.update(
-        &renderer,
-        input_handler,
-        &swapchain,
-        camera,
-        camera_copy,
-        runtime_config,
-        runtime_config_copy,
-    );
+    let gui_draw_data = gui.update(&renderer, input_handler, &swapchain, camera, runtime_config);
 
     let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
     unsafe {
@@ -1668,13 +1683,6 @@ fn depth_only_pass(
     }
 }
 
-fn gui_writeback<T: Component + Clone>(mut to: ResMut<T>, from: Res<GuiCopy<T>>) {
-    let scope_name = format!("gui_writeback<{}>", std::any::type_name::<T>());
-    scope!("ecs", scope_name);
-
-    to.clone_from(&from.0);
-}
-
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
 pub(crate) enum GraphicsPhases {
     ShadowMapping,
@@ -1683,9 +1691,7 @@ pub(crate) enum GraphicsPhases {
     Present,
     CullPass,
     CullPassBypass,
-    GuiWritebackConfig,
-    GuiWritebackCamera,
-    GuiWritebackSwapchainMap,
+    CopyResource(u8),
 }
 
 pub(crate) fn graphics_stage() -> SystemStage {
@@ -1720,6 +1726,29 @@ pub(crate) fn graphics_stage() -> SystemStage {
         // should not need to be before SubmitMainPass or even Present, but crashes on amdvlk eventually
         .with_system(cull_pass.system().label(CullPass).before(SubmitMainPass))
         .with_system(prepare_shadow_maps.system().label(ShadowMapping))
+        .with_system(
+            copy_resource::<RuntimeConfiguration>
+                .system()
+                .label(CopyResource(1))
+                .before(MainPass)
+                .before(CullPass)
+                .before(CullPassBypass),
+        )
+        .with_system(
+            copy_resource::<Camera>
+                .system()
+                .label(CopyResource(2))
+                .before(MainPass)
+                .before(CullPass),
+        )
+        .with_system(
+            copy_resource::<SwapchainIndexToFrameNumber>
+                .system()
+                .label(CopyResource(2))
+                .before(Present)
+                .before(CullPass)
+                .before(CullPassBypass),
+        )
         .with_system(render_frame.system().label(MainPass))
         .with_system(
             submit_main_pass
@@ -1729,27 +1758,4 @@ pub(crate) fn graphics_stage() -> SystemStage {
                 .after(MainPass),
         )
         .with_system(PresentFramebuffer::exec.system().label(Present).after(SubmitMainPass))
-        .with_system(
-            gui_writeback::<RuntimeConfiguration>
-                .system()
-                .label(GuiWritebackConfig)
-                .after(MainPass)
-                .after(CullPass)
-                .after(CullPassBypass),
-        )
-        .with_system(
-            gui_writeback::<SwapchainIndexToFrameNumber>
-                .system()
-                .label(GuiWritebackSwapchainMap)
-                .after(Present)
-                .after(CullPass)
-                .after(CullPassBypass),
-        )
-        .with_system(
-            gui_writeback::<Camera>
-                .system()
-                .label(GuiWritebackCamera)
-                .after(MainPass)
-                .after(CullPass),
-        )
 }

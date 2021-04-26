@@ -20,8 +20,8 @@ use crate::{
         helpers::{pick_lod, MP_INDIAN_RED},
         shaders::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
-        CameraMatrices, ComputeTimeline, DrawIndex, GltfMesh, LocalTransferCommandPool, MainDescriptorPool, ModelData,
-        RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
+        CameraMatrices, ComputeTimeline, CopiedResource, DrawIndex, GltfMesh, LocalTransferCommandPool,
+        MainDescriptorPool, ModelData, RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
     },
 };
 
@@ -283,10 +283,10 @@ impl CullPassData {
 pub(crate) fn cull_pass_bypass(
     renderer: Res<RenderFrame>,
     cull_pass_data: Res<CullPassData>,
-    runtime_config: Res<RuntimeConfiguration>,
+    runtime_config: Res<CopiedResource<RuntimeConfiguration>>,
     mut transfer_command_pool: ResMut<LocalTransferCommandPool<0>>,
     image_index: Res<ImageIndex>,
-    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
+    swapchain_index_map: Res<CopiedResource<SwapchainIndexToFrameNumber>>,
 ) {
     scope!("ecs", "cull pass bypass");
 
@@ -389,11 +389,11 @@ pub(crate) fn cull_pass(
     renderer: Res<RenderFrame>,
     cull_pass_data: Res<CullPassData>,
     mut cull_pass_data_private: ResMut<CullPassDataPrivate>,
-    runtime_config: Res<RuntimeConfiguration>,
+    runtime_config: Res<CopiedResource<RuntimeConfiguration>>,
     image_index: Res<ImageIndex>,
-    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
+    swapchain_index_map: Res<CopiedResource<SwapchainIndexToFrameNumber>>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
-    camera: Res<Camera>,
+    camera: Res<CopiedResource<Camera>>,
     model_data: Res<ModelData>,
     camera_matrices: Res<CameraMatrices>,
     query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
