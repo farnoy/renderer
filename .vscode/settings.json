@@ -6,7 +6,8 @@
   "rust-analyzer.cargo.allFeatures": false,
   "rust-analyzer.cargo.features": [
     "standard_validation",
-    "crash_debugging"
+    "crash_debugging",
+    "shader_reload"
   ],
   "rust-analyzer.procMacro.enable": true,
   "rust-analyzer.updates.channel": "nightly",

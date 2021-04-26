@@ -4,5 +4,7 @@ pub(crate) mod crash_debugging;
 pub(crate) mod cull_pipeline;
 pub(crate) mod debug_aabb_renderer;
 pub(crate) mod present;
+#[cfg(feature = "shader_reload")]
+pub(crate) mod shader_reload;
 pub(crate) mod shadow_mapping;
 pub(crate) mod textures;

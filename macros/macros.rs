@@ -1430,8 +1430,17 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             shader_stage_to_file_extension(&shader_stage),
         ));
         let shader_path = shader_path.to_str().unwrap();
+        let shader_src_path = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join(format!(
+            "src/shaders/{}.{}",
+            pipe.name.to_string(),
+            shader_stage_to_file_extension(&shader_stage),
+        ));
+        let shader_src_path = shader_src_path.to_str().unwrap();
+        let shader_stage_path = format_ident!("{}_PATH", &shader_stage);
         spirv_code.extend_one(quote! {
             pub(crate) static #shader_stage: &'static [u8] = include_bytes_align_as!(u32, #shader_path);
+            #[cfg(feature = "shader_reload")]
+            pub(crate) static #shader_stage_path: &'static str = #shader_src_path;
         });
     }
 
@@ -1680,9 +1689,17 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
 
             quote! {
+                use std::time::Instant;
+                #[cfg(feature = "shader_reload")]
+                use super::super::{device::Shader, ReloadedShaders};
+
                 pub(crate) struct Pipeline {
                     pub(crate) pipeline: device::Pipeline,
-                    specialization: Specialization
+                    specialization: Specialization,
+                    #[cfg(feature = "shader_reload")]
+                    last_reloaded_shader: Option<Shader>,
+                    #[cfg(feature = "shader_reload")]
+                    last_update: Instant,
                 }
 
                 impl Pipeline {
@@ -1738,6 +1755,10 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         Pipeline {
                             pipeline,
                             specialization,
+                            #[cfg(feature = "shader_reload")]
+                            last_reloaded_shader: None,
+                            #[cfg(feature = "shader_reload")]
+                            last_update: Instant::now(),
                         }
                     }
 
@@ -1748,18 +1769,38 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         layout: &PipelineLayout,
                         new_spec: &Specialization,
                         shader: Option<&device::Shader>,
+                        #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
                     ) -> Option<Self> {
                         scope!("macros", #specialize_msg);
                         use std::mem::swap;
 
-                        if self.specialization != *new_spec {
+                        #[cfg(feature = "shader_reload")]
+                        let (new_ts, new_shader) = match reloaded_shaders.0.get(COMPUTE_PATH) {
+                            Some((ts, code)) if *ts > self.last_update => {
+                                (ts.clone(), Some(device.new_shader(&code)))
+                            }
+                            _ => (Instant::now(), None)
+                        };
+
+                        #[cfg(not(feature = "shader_reload"))]
+                        let new_shader: Option<()> = None;
+
+                        if self.specialization != *new_spec || new_shader.is_some() {
                             let mut replacement = Self::new_internal(
                                 device,
                                 layout,
                                 new_spec.clone(),
                                 Some(&self),
+                                #[cfg(feature = "shader_reload")]
+                                new_shader.as_ref().or(shader),
+                                #[cfg(not(feature = "shader_reload"))]
                                 shader
                             );
+                            #[cfg(feature = "shader_reload")]
+                            {
+                                replacement.last_reloaded_shader = new_shader;
+                                replacement.last_update = new_ts;
+                            }
                             swap(&mut *self, &mut replacement);
                             Some(replacement)
                         } else {
@@ -1769,7 +1810,11 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
                     pub(crate) fn spec(&self) -> &Specialization { &self.specialization }
 
-                    pub(crate) fn destroy(self, device: &Device) { self.pipeline.destroy(device); }
+                    pub(crate) fn destroy(self, device: &Device) {
+                        self.pipeline.destroy(device);
+                        #[cfg(feature = "shader_reload")]
+                        self.last_reloaded_shader.into_iter().for_each(|s| s.destroy(device));
+                    }
                 }
             }
         }

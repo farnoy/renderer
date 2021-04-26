@@ -105,6 +105,9 @@ void main() {
             cull = false; // disable for now
         }
 
+        // live reloading playground - reject triangles after a certain number of them per mesh
+        // cull = cull || (gl_GlobalInvocationID.x > 10000);
+
         uvec4 ballot = subgroupBallot(!cull);
         uint count = subgroupBallotBitCount(ballot);
         uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);

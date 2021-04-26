@@ -34,6 +34,7 @@ microprofile = "0.2.0"
 nalgebra = "0.26.1"
 nalgebra-glm = "0.12.0"
 ncollide3d = "0.29.0"
+notify = { version = "4.0.16", optional = true }
 num-traits = "0.2.6"
 simba = "0.4.0"
 smallvec = "1.2.0"
@@ -64,6 +65,7 @@ sync_validation = ["crash_debugging", "standard_validation"]
 uncapped = []
 no_profiling = ["microprofile/disabled"]
 profiling_bevy = ["bevy_ecs/trace", "bevy_log/tracing-chrome"]
+shader_reload = ["notify"]
 
 [profile.dev.package.image]
 opt-level = 3

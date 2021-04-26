@@ -50,6 +50,8 @@ use renderer::{
     MainDescriptorPool, MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame,
     Resized, ShadowMappingData, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
 };
+#[cfg(feature = "shader_reload")]
+use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
 
 fn main() {
     microprofile::init!();
@@ -368,6 +370,11 @@ fn main() {
     app.init_resource::<GuiRenderData>();
     #[cfg(feature = "crash_debugging")]
     app.init_resource::<CrashBuffer>();
+    #[cfg(feature = "shader_reload")]
+    {
+        app.init_non_send_resource::<ShaderReload>();
+        app.init_resource::<ReloadedShaders>();
+    }
     app.init_resource::<LocalTransferCommandPool<0>>();
     app.init_resource::<LocalGraphicsCommandPool<0>>();
     app.init_resource::<LocalGraphicsCommandPool<1>>();
@@ -388,11 +395,15 @@ fn main() {
         LaunchProjectiles,
         UpdateProjectiles,
         Gameplay,
+        #[cfg(feature = "shader_reload")]
+        ReloadShaders,
     }
 
     use UpdatePhase::*;
 
     app.add_system(InputHandler::run.system().label(Input));
+    #[cfg(feature = "shader_reload")]
+    app.add_system(reload_shaders.system().label(ReloadShaders));
     app.add_system(acquire_framebuffer.system().label(AcquireFramebuffer).after(Input));
     app.add_system(
         calculate_frame_timing

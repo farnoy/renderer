@@ -26,6 +26,8 @@ use self::device::{
 };
 #[cfg(feature = "crash_debugging")]
 pub(crate) use self::systems::crash_debugging::CrashBuffer;
+#[cfg(feature = "shader_reload")]
+pub(crate) use self::systems::shader_reload::{reload_shaders, ReloadedShaders, ShaderReload};
 pub(crate) use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
     helpers::{pick_lod, MP_INDIAN_RED},

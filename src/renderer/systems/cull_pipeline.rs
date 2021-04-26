@@ -8,6 +8,8 @@ use bevy_ecs::prelude::*;
 use microprofile::scope;
 use num_traits::ToPrimitive;
 
+#[cfg(feature = "shader_reload")]
+use crate::renderer::ReloadedShaders;
 use crate::{
     ecs::{
         components::{Position, AABB},
@@ -242,6 +244,7 @@ impl CullPassData {
         cull_pass_data_private: &mut CullPassDataPrivate,
         image_index: &ImageIndex,
         runtime_config: &RuntimeConfiguration,
+        #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
     ) {
         // clean up the old pipeline that was used N frames ago
         if let Some(previous) = take(cull_pass_data_private.previous_cull_pipeline.current_mut(image_index.0)) {
@@ -258,6 +261,8 @@ impl CullPassData {
                 &cull_pass_data_private.cull_pipeline_layout,
                 &spec,
                 Some(&cull_pass_data_private.cull_shader),
+                #[cfg(feature = "shader_reload")]
+                reloaded_shaders,
             );
     }
 
@@ -397,6 +402,7 @@ pub(crate) fn cull_pass(
     model_data: Res<ModelData>,
     camera_matrices: Res<CameraMatrices>,
     query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
+    #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
 ) {
     microprofile::scope!("ecs", "cull pass");
 
@@ -415,7 +421,14 @@ pub(crate) fn cull_pass(
         )
         .unwrap();
 
-    CullPassData::configure_pipeline(&renderer, &mut cull_pass_data_private, &image_index, &runtime_config);
+    CullPassData::configure_pipeline(
+        &renderer,
+        &mut cull_pass_data_private,
+        &image_index,
+        &runtime_config,
+        #[cfg(feature = "shader_reload")]
+        &reloaded_shaders,
+    );
 
     let previous_ix = ImageIndex(
         swapchain_index_map
