@@ -948,6 +948,7 @@ pub(crate) fn render_frame(
     let GltfPassData {
         ref mut gltf_pipeline,
         ref gltf_pipeline_layout,
+        #[cfg(feature = "shader_reload")]
         ref mut previous_gltf_pipeline,
     } = &mut *gltf_pass;
 
@@ -955,25 +956,28 @@ pub(crate) fn render_frame(
     let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
         / size_of::<shaders::VkDrawIndexedIndirectCommand>() as u32;
 
-    // clean up the old pipeline that was used N frames ago
-    if let Some(previous) = previous_gltf_pipeline.current_mut(image_index.0).take() {
-        previous.destroy(&renderer.device);
-    }
+    #[cfg(feature = "shader_reload")]
+    {
+        // clean up the old pipeline that was used N frames ago
+        if let Some(previous) = previous_gltf_pipeline.current_mut(image_index.0).take() {
+            previous.destroy(&renderer.device);
+        }
 
-    use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
-    *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize(
-        &renderer.device,
-        &gltf_pipeline_layout,
-        &shaders::gltf_mesh::Specialization {
-            shadow_map_dim: SHADOW_MAP_DIM,
-            shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
-        },
-        [None, None],
-        &main_renderpass.renderpass.renderpass,
-        1, // FIXME
-        #[cfg(feature = "shader_reload")]
-        &reloaded_shaders,
-    );
+        use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
+        *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize(
+            &renderer.device,
+            &gltf_pipeline_layout,
+            &shaders::gltf_mesh::Specialization {
+                shadow_map_dim: SHADOW_MAP_DIM,
+                shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
+            },
+            [None, None],
+            &main_renderpass.renderpass.renderpass,
+            1, // FIXME
+            #[cfg(feature = "shader_reload")]
+            &reloaded_shaders,
+        );
+    }
 
     let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
 
@@ -1129,6 +1133,8 @@ pub(crate) fn render_frame(
             &mut input_handler,
             &mut gui,
             &command_buffer,
+            #[cfg(feature = "shader_reload")]
+            &reloaded_shaders,
         );
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
@@ -1446,6 +1452,7 @@ fn render_gui(
     input_handler: &mut InputHandler,
     gui: &mut Gui,
     command_buffer: &StrictRecordingCommandBuffer,
+    #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
 ) {
     scope!("rendering", "render_gui");
 
@@ -1459,7 +1466,15 @@ fn render_gui(
         ref descriptor_set,
         ..
     } = *gui_render_data;
-    let gui_draw_data = gui.update(&renderer, input_handler, &swapchain, camera, runtime_config);
+    let gui_draw_data = gui.update(
+        &renderer,
+        input_handler,
+        &swapchain,
+        camera,
+        runtime_config,
+        #[cfg(feature = "shader_reload")]
+        reloaded_shaders,
+    );
 
     let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
     unsafe {

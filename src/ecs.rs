@@ -33,6 +33,8 @@ pub(crate) mod systems {
     use winit::{self, event::MouseButton};
 
     pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
+    #[cfg(feature = "shader_reload")]
+    pub(crate) use crate::renderer::ReloadedShaders;
     use crate::{
         ecs::{
             components::{
@@ -273,6 +275,7 @@ pub(crate) mod systems {
             swapchain: &Swapchain,
             camera: &mut Camera,
             runtime_config: &mut RuntimeConfiguration,
+            #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
         ) -> &'a imgui::DrawData {
             scope!("gui", "update");
 
@@ -328,6 +331,24 @@ pub(crate) mod systems {
                     {
                         ui.checkbox(&im_str!("Debug collision AABBs"), &mut runtime_config.debug_aabbs);
                         ui.checkbox(&im_str!("Freeze culling data"), &mut runtime_config.freeze_culling);
+                    }
+
+                    #[cfg(feature = "shader_reload")]
+                    if imgui::CollapsingHeader::new(&im_str!("Shader reloader"))
+                        .default_open(true)
+                        .build(&ui)
+                    {
+                        use std::path::Path;
+
+                        ui.label_text(&im_str!("age"), &im_str!("shader"));
+                        for (path, (instant, _)) in reloaded_shaders.0.iter() {
+                            let parsed = Path::new(path);
+                            let relative = parsed
+                                .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders"))
+                                .unwrap();
+                            let path_im = imgui::ImString::new(relative.to_str().unwrap());
+                            ui.label_text(&im_str!("{:?}s", instant.elapsed().as_secs()), &path_im)
+                        }
                     }
                 });
 

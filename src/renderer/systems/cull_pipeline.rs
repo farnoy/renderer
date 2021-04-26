@@ -1,4 +1,4 @@
-use std::{cmp::min, mem::take};
+use std::cmp::min;
 
 use ash::{
     version::DeviceV1_0,

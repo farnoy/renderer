@@ -589,8 +589,7 @@ fn main() {
         .unwrap()
         .destroy(&render_frame.device);
 
-    let gltf_pass_data = app
-        .app
+    app.app
         .world
         .remove_resource::<GltfPassData>()
         .unwrap()
