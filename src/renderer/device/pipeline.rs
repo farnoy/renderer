@@ -2,7 +2,7 @@ use std::{ffi::CString, ops::Deref};
 
 use ash::{version::DeviceV1_0, vk};
 
-use super::{descriptors::DescriptorSetLayout, Device, Shader};
+use super::{descriptors::DescriptorSetLayout, Device};
 
 pub(crate) struct PipelineLayout {
     handle: vk::PipelineLayout,
@@ -58,7 +58,7 @@ impl Drop for PipelineLayout {
 impl Pipeline {
     pub(super) fn new_graphics_pipeline(
         device: &Device,
-        shaders: &[(vk::ShaderStageFlags, &Shader, Option<&vk::SpecializationInfo>)],
+        shaders: &[(vk::ShaderStageFlags, vk::ShaderModule, Option<&vk::SpecializationInfo>)],
         mut create_info: vk::GraphicsPipelineCreateInfo,
     ) -> Pipeline {
         let shader_entry_name = CString::new("main").unwrap();
@@ -66,7 +66,7 @@ impl Pipeline {
             .iter()
             .map(|&(stage, shader, spec_info)| {
                 let create_info = vk::PipelineShaderStageCreateInfo::builder()
-                    .module(shader.vk())
+                    .module(shader)
                     .name(&shader_entry_name)
                     .stage(stage);
                 match spec_info {

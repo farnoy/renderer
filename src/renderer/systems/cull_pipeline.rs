@@ -94,12 +94,10 @@ impl CullPassDataPrivate {
             &camera_matrices.set_layout,
             &cull_pass_data.cull_set_layout,
         );
-        let cull_pipeline = generate_work::Pipeline::new(
-            &renderer.device,
-            &cull_pipeline_layout,
-            cull_specialization,
-            Some(&cull_shader),
-        );
+        let cull_pipeline =
+            generate_work::Pipeline::new(&renderer.device, &cull_pipeline_layout, cull_specialization, [Some(
+                &cull_shader,
+            )]);
         CullPassDataPrivate {
             cull_pipeline_layout,
             cull_pipeline,
@@ -147,7 +145,7 @@ impl CullPassData {
                 local_workgroup_size: 1024,
                 draw_calls_to_compact: 2400, // FIXME
             },
-            None,
+            [None],
         );
 
         let culled_index_buffer = renderer.new_buffered(|ix| {
@@ -260,7 +258,7 @@ impl CullPassData {
                 &renderer.device,
                 &cull_pass_data_private.cull_pipeline_layout,
                 &spec,
-                Some(&cull_pass_data_private.cull_shader),
+                [Some(&cull_pass_data_private.cull_shader)],
                 #[cfg(feature = "shader_reload")]
                 reloaded_shaders,
             );

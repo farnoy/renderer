@@ -1446,14 +1446,34 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
     let mut errors = quote!();
 
-    let pipeline_definition = match specific {
+    let stage_count = specific.stages().len();
+
+    let pipe_arguments = match specific {
+        SpecificPipe::Graphics(_) => {
+            quote! {
+                renderpass: &device::RenderPass,
+                subpass: u32,
+            }
+        }
+        SpecificPipe::Compute(_) => quote!(),
+    };
+    let pipe_argument_short = match specific {
+        SpecificPipe::Graphics(_) => {
+            vec![quote!(renderpass), quote!(subpass)]
+        }
+        SpecificPipe::Compute(_) => vec![],
+    };
+    let shader_stage = specific.stages();
+    let stage_ix = shader_stage.iter().enumerate().map(|(ix, _)| ix).collect_vec();
+    let shader_stage_path = shader_stage
+        .iter()
+        .map(|shader_stage| format_ident!("{}_PATH", &shader_stage))
+        .collect_vec();
+
+    let pipeline_definition_inner = match specific {
         SpecificPipe::Graphics(specific) => {
-            let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
-            let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
-            let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
             let stage_flag = specific.stages.iter().cloned().collect_vec();
             let stage_ix = stage_flag.iter().enumerate().map(|(ix, _)| ix).collect_vec();
-            let stage_count = specific.stages.len();
 
             let polygon_mode = parse_quote!(FILL);
             let polygon_mode = specific
@@ -1528,294 +1548,257 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             );
 
             quote! {
-                pub(crate) struct Pipeline {
-                    pub(crate) pipeline: device::Pipeline,
-                    specialization: Specialization
-                }
-
-                impl Pipeline {
-                    pub(crate) fn new(
-                        device: &Device,
-                        layout: &PipelineLayout,
-                        specialization: Specialization,
-                        base_pipeline: Option<&Self>,
-                        shaders: Option<&[&device::Shader; #stage_count]>,
-                        renderpass: &device::RenderPass,
-                        subpass: u32
-                    ) -> Self {
-                        scope!("macros", #new_internal_msg);
-
-                        use std::ffi::CStr;
-                        let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
-                        let base_pipeline_handle = base_pipeline
-                            .map(|pipe| *pipe.pipeline)
-                            .unwrap_or_else(vk::Pipeline::null);
-                        let shaders = shaders.ok_or_else(|| {
-                            [
-                                #( device.new_shader(#stage_flag) ),*
-                            ]
-                        });
-                        let shader_handles: Vec<&device::Shader> = shaders
-                            .as_ref()
-                            .map(|borrowed| borrowed.iter().map(|b| *b).collect())
-                            .unwrap_or_else(|owned| owned.iter().map(|owned| owned).collect());
-                        let spec_info = specialization.get_spec_info();
-                        let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
-                        if base_pipeline.is_some() {
-                            flags |= vk::PipelineCreateFlags::DERIVATIVE;
-                        }
-
-                        let stage_shaders = [
-                            #( (vk::ShaderStageFlags::#stage_flag, shader_handles[#stage_ix], Some(&spec_info)) ),*
-                        ];
-                        let pipeline = device.new_graphics_pipeline(
-                            &stage_shaders,
-                            vk::GraphicsPipelineCreateInfo::builder()
-                                .vertex_input_state(&vertex_input_state())
-                                .input_assembly_state(
-                                    &vk::PipelineInputAssemblyStateCreateInfo::builder()
-                                        .topology(vk::PrimitiveTopology::#topology_mode)
-                                        .build(),
-                                )
-                                .dynamic_state(&vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&[
-                                    vk::DynamicState::VIEWPORT,
-                                    vk::DynamicState::SCISSOR,
-                                    #front_face_dynamic
-                                    #topology_dynamic
-                                    #cull_mode_dynamic
-                                    #depth_test_dynamic
-                                    #depth_write_dynamic
-                                    #depth_compare_dynamic
-                                    #depth_bounds_dynamic
-                                ]))
-                                .viewport_state(
-                                    &vk::PipelineViewportStateCreateInfo::builder()
-                                        .viewport_count(1)
-                                        .scissor_count(1)
-                                        .build(),
-                                )
-                                .rasterization_state(
-                                    &vk::PipelineRasterizationStateCreateInfo::builder()
-                                        .front_face(vk::FrontFace::#front_face)
-                                        .cull_mode(vk::CullModeFlags::#cull_mode)
-                                        .line_width(1.0)
-                                        .polygon_mode(vk::PolygonMode::#polygon_mode)
-                                        .build(),
-                                )
-                                .multisample_state(
-                                    &vk::PipelineMultisampleStateCreateInfo::builder()
-                                        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                                        .build(),
-                                )
-                                .depth_stencil_state(
-                                    &vk::PipelineDepthStencilStateCreateInfo::builder()
-                                        .depth_test_enable(#depth_test_enable)
-                                        .depth_write_enable(#depth_write_enable)
-                                        .depth_compare_op(vk::CompareOp::#depth_compare_op)
-                                        .depth_bounds_test_enable(#depth_bounds_enable)
-                                        .max_depth_bounds(1.0)
-                                        .min_depth_bounds(0.0)
-                                        .build(),
-                                )
-                                .color_blend_state(
-                                    &vk::PipelineColorBlendStateCreateInfo::builder()
-                                        .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
-                                            .blend_enable(true)
-                                            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                                            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                                            .color_blend_op(vk::BlendOp::ADD)
-                                            .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                                            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                                            .alpha_blend_op(vk::BlendOp::ADD)
-                                            .color_write_mask(vk::ColorComponentFlags::all())
-                                            .build()])
-                                        .build(),
-                                )
-                                .layout(*layout.layout)
-                                .render_pass(renderpass.handle)
-                                .subpass(subpass)
+                let stage_shaders = [
+                    #( (vk::ShaderStageFlags::#stage_flag, shader_handles[#stage_ix], Some(&spec_info)) ),*
+                ];
+                let pipeline = device.new_graphics_pipeline(
+                    &stage_shaders,
+                    vk::GraphicsPipelineCreateInfo::builder()
+                        .vertex_input_state(&vertex_input_state())
+                        .input_assembly_state(
+                            &vk::PipelineInputAssemblyStateCreateInfo::builder()
+                                .topology(vk::PrimitiveTopology::#topology_mode)
                                 .build(),
-                        );
-                        device.set_object_name(*pipeline, #pipe_debug_name);
-
-                        shaders.err().map(|shaders| std::array::IntoIter::new(shaders).for_each(|s| s.destroy(device)));
-
-                        Pipeline {
-                            pipeline,
-                            specialization,
-                        }
-                    }
-
-                    /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
-                    pub(crate) fn specialize(
-                        &mut self,
-                        device: &Device,
-                        layout: &PipelineLayout,
-                        new_spec: &Specialization,
-                        shaders: Option<&[&device::Shader; #stage_count]>,
-                        renderpass: &device::RenderPass,
-                        subpass: u32
-                    ) -> Option<Self> {
-                        scope!("macros", #specialize_msg);
-                        use std::mem::swap;
-
-                        if self.specialization != *new_spec {
-                            let mut replacement = Self::new(
-                                device,
-                                layout,
-                                new_spec.clone(),
-                                Some(&self),
-                                shaders,
-                                renderpass,
-                                subpass
-                            );
-                            swap(&mut *self, &mut replacement);
-                            Some(replacement)
-                        } else {
-                            None
-                        }
-                    }
-
-                    pub(crate) fn spec(&self) -> &Specialization { &self.specialization }
-
-                    pub(crate) fn destroy(self, device: &Device) { self.pipeline.destroy(device); }
-                }
-                use std::ops::Deref;
+                        )
+                        .dynamic_state(&vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&[
+                            vk::DynamicState::VIEWPORT,
+                            vk::DynamicState::SCISSOR,
+                            #front_face_dynamic
+                            #topology_dynamic
+                            #cull_mode_dynamic
+                            #depth_test_dynamic
+                            #depth_write_dynamic
+                            #depth_compare_dynamic
+                            #depth_bounds_dynamic
+                        ]))
+                        .viewport_state(
+                            &vk::PipelineViewportStateCreateInfo::builder()
+                                .viewport_count(1)
+                                .scissor_count(1)
+                                .build(),
+                        )
+                        .rasterization_state(
+                            &vk::PipelineRasterizationStateCreateInfo::builder()
+                                .front_face(vk::FrontFace::#front_face)
+                                .cull_mode(vk::CullModeFlags::#cull_mode)
+                                .line_width(1.0)
+                                .polygon_mode(vk::PolygonMode::#polygon_mode)
+                                .build(),
+                        )
+                        .multisample_state(
+                            &vk::PipelineMultisampleStateCreateInfo::builder()
+                                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                .build(),
+                        )
+                        .depth_stencil_state(
+                            &vk::PipelineDepthStencilStateCreateInfo::builder()
+                                .depth_test_enable(#depth_test_enable)
+                                .depth_write_enable(#depth_write_enable)
+                                .depth_compare_op(vk::CompareOp::#depth_compare_op)
+                                .depth_bounds_test_enable(#depth_bounds_enable)
+                                .max_depth_bounds(1.0)
+                                .min_depth_bounds(0.0)
+                                .build(),
+                        )
+                        .color_blend_state(
+                            &vk::PipelineColorBlendStateCreateInfo::builder()
+                                .attachments(&[vk::PipelineColorBlendAttachmentState::builder()
+                                    .blend_enable(true)
+                                    .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                                    .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                    .color_blend_op(vk::BlendOp::ADD)
+                                    .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                    .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                                    .alpha_blend_op(vk::BlendOp::ADD)
+                                    .color_write_mask(vk::ColorComponentFlags::all())
+                                    .build()])
+                                .build(),
+                        )
+                        .layout(*layout.layout)
+                        .render_pass(renderpass.handle)
+                        .subpass(subpass)
+                        .build(),
+                );
             }
         }
         SpecificPipe::Compute(_) => {
-            let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
-            let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
-            let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
-
             quote! {
-                use std::time::Instant;
-                #[cfg(feature = "shader_reload")]
-                use super::super::{device::Shader, ReloadedShaders};
+                let pipeline = device.new_compute_pipelines(&[
+                    vk::ComputePipelineCreateInfo::builder()
+                        .stage(
+                            vk::PipelineShaderStageCreateInfo::builder()
+                                .module(shader_handles[0])
+                                .name(&shader_entry_name)
+                                .stage(vk::ShaderStageFlags::COMPUTE)
+                                .specialization_info(&spec_info)
+                                .build(),
+                        )
+                        .layout(*layout.layout)
+                        .flags(flags)
+                        .base_pipeline_handle(base_pipeline_handle)
+                        .base_pipeline_index(-1)
+                ]).into_iter().next().unwrap();
+            }
+        }
+    };
 
-                pub(crate) struct Pipeline {
-                    pub(crate) pipeline: device::Pipeline,
-                    specialization: Specialization,
-                    #[cfg(feature = "shader_reload")]
-                    last_reloaded_shader: Option<Shader>,
-                    #[cfg(feature = "shader_reload")]
-                    last_update: Instant,
+    let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
+    let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
+    let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
+    let pipeline_definition2 = quote! {
+        use std::time::Instant;
+        #[cfg(feature = "shader_reload")]
+        use super::super::{device::Shader, ReloadedShaders};
+
+        pub(crate) struct Pipeline {
+            pub(crate) pipeline: device::Pipeline,
+            specialization: Specialization,
+            #[cfg(feature = "shader_reload")]
+            last_reloaded_shaders: [Option<Shader>; #stage_count],
+            #[cfg(feature = "shader_reload")]
+            last_updates: [Instant; #stage_count],
+        }
+
+        impl Pipeline {
+            pub(crate) fn new(
+                device: &Device,
+                layout: &PipelineLayout,
+                spec: Specialization,
+                shader: [Option<&device::Shader>; #stage_count],
+                #pipe_arguments
+            ) -> Self {
+                Self::new_internal(device, layout, spec, None, shader, #(#pipe_argument_short),*)
+            }
+
+            fn new_internal(
+                device: &Device,
+                layout: &PipelineLayout,
+                specialization: Specialization,
+                base_pipeline: Option<&Self>,
+                shaders: [Option<&device::Shader>; #stage_count],
+                #pipe_arguments
+            ) -> Self {
+                scope!("macros", #new_internal_msg);
+
+                use std::ffi::CStr;
+                let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
+                let base_pipeline_handle = base_pipeline
+                    .map(|pipe| *pipe.pipeline)
+                    .unwrap_or_else(vk::Pipeline::null);
+                let shaders: [Result<&device::Shader, device::Shader>; #stage_count] = [
+                    #(
+                        shaders[#stage_ix].ok_or_else(|| device.new_shader(#shader_stage))
+                    ),*
+                ];
+                let shader_handles = shaders
+                    .iter()
+                    .map(|s| s.as_ref().map(|s| s.vk()).unwrap_or_else(|s| s.vk()))
+                    .collect::<Vec<_>>();
+                let spec_info = specialization.get_spec_info();
+                let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
+                if base_pipeline.is_some() {
+                    flags |= vk::PipelineCreateFlags::DERIVATIVE;
                 }
 
-                impl Pipeline {
-                    pub(crate) fn new(
-                        device: &Device,
-                        layout: &PipelineLayout,
-                        spec: Specialization,
-                        shader: Option<&device::Shader>,
-                    ) -> Self {
-                        Self::new_internal(device, layout, spec, None, shader)
-                    }
+                #pipeline_definition_inner;
 
-                    fn new_internal(
-                        device: &Device,
-                        layout: &PipelineLayout,
-                        specialization: Specialization,
-                        base_pipeline: Option<&Self>,
-                        shader: Option<&device::Shader>,
-                    ) -> Self {
-                        scope!("macros", #new_internal_msg);
+                device.set_object_name(*pipeline, #pipe_debug_name);
 
-                        use std::ffi::CStr;
-                        let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
-                        let base_pipeline_handle = base_pipeline
-                            .map(|pipe| *pipe.pipeline)
-                            .unwrap_or_else(vk::Pipeline::null);
-                        let shader = shader.ok_or_else(|| device.new_shader(COMPUTE));
-                        let shader_handle = shader.as_ref().map(|s| s.vk()).unwrap_or_else(|s| s.vk());
-                        let spec_info = specialization.get_spec_info();
-                        let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
-                        if base_pipeline.is_some() {
-                            flags |= vk::PipelineCreateFlags::DERIVATIVE;
-                        }
-                        let pipeline = device.new_compute_pipelines(&[
-                            vk::ComputePipelineCreateInfo::builder()
-                                .stage(
-                                    vk::PipelineShaderStageCreateInfo::builder()
-                                        .module(shader_handle)
-                                        .name(&shader_entry_name)
-                                        .stage(vk::ShaderStageFlags::COMPUTE)
-                                        .specialization_info(&spec_info)
-                                        .build(),
-                                )
-                                .layout(*layout.layout)
-                                .flags(flags)
-                                .base_pipeline_handle(base_pipeline_handle)
-                                .base_pipeline_index(-1)
-                        ]).into_iter().next().unwrap();
-                        device.set_object_name(*pipeline, #pipe_debug_name);
+                std::array::IntoIter::new(shaders)
+                    .for_each(|s| s.err().into_iter().for_each(|s| s.destroy(device)));
 
-                        shader.err().map(|s| s.destroy(device));
+                Pipeline {
+                    pipeline,
+                    specialization,
+                    #[cfg(feature = "shader_reload")]
+                    last_reloaded_shaders: [
+                        #(
+                            {
+                                let _utilize = #stage_ix;
+                                None
+                            }
+                        ),*
+                    ],
+                    #[cfg(feature = "shader_reload")]
+                    last_updates: [Instant::now(); #stage_count],
+                }
+            }
 
-                        Pipeline {
-                            pipeline,
-                            specialization,
-                            #[cfg(feature = "shader_reload")]
-                            last_reloaded_shader: None,
-                            #[cfg(feature = "shader_reload")]
-                            last_update: Instant::now(),
-                        }
-                    }
+            /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
+            pub(crate) fn specialize(
+                &mut self,
+                device: &Device,
+                layout: &PipelineLayout,
+                new_spec: &Specialization,
+                shaders: [Option<&device::Shader>; #stage_count],
+                #pipe_arguments
+                #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
+            ) -> Option<Self> {
+                scope!("macros", #specialize_msg);
+                use std::mem::swap;
 
-                    /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
-                    pub(crate) fn specialize(
-                        &mut self,
-                        device: &Device,
-                        layout: &PipelineLayout,
-                        new_spec: &Specialization,
-                        shader: Option<&device::Shader>,
-                        #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
-                    ) -> Option<Self> {
-                        scope!("macros", #specialize_msg);
-                        use std::mem::swap;
-
-                        #[cfg(feature = "shader_reload")]
-                        let (new_ts, new_shader) = match reloaded_shaders.0.get(COMPUTE_PATH) {
-                            Some((ts, code)) if *ts > self.last_update => {
+                #[cfg(feature = "shader_reload")]
+                let mut new_shaders: [(Instant, Option<device::Shader>); #stage_count] = [
+                    #(
+                        match reloaded_shaders.0.get(#shader_stage_path) {
+                            Some((ts, code)) if *ts > self.last_updates[#stage_ix] => {
                                 (ts.clone(), Some(device.new_shader(&code)))
                             }
                             _ => (Instant::now(), None)
-                        };
-
-                        #[cfg(not(feature = "shader_reload"))]
-                        let new_shader: Option<()> = None;
-
-                        if self.specialization != *new_spec || new_shader.is_some() {
-                            let mut replacement = Self::new_internal(
-                                device,
-                                layout,
-                                new_spec.clone(),
-                                Some(&self),
-                                #[cfg(feature = "shader_reload")]
-                                new_shader.as_ref().or(shader),
-                                #[cfg(not(feature = "shader_reload"))]
-                                shader
-                            );
-                            #[cfg(feature = "shader_reload")]
-                            {
-                                replacement.last_reloaded_shader = new_shader;
-                                replacement.last_update = new_ts;
-                            }
-                            swap(&mut *self, &mut replacement);
-                            Some(replacement)
-                        } else {
-                            None
                         }
-                    }
+                    ),*
+                ];
 
-                    pub(crate) fn spec(&self) -> &Specialization { &self.specialization }
+                #[cfg(feature = "shader_reload")]
+                let any_new_shaders: bool = new_shaders.iter().any(|(_ts, s)| s.is_some());
 
-                    pub(crate) fn destroy(self, device: &Device) {
-                        self.pipeline.destroy(device);
+                #[cfg(not(feature = "shader_reload"))]
+                let any_new_shaders: bool = false;
+
+                if self.specialization != *new_spec || any_new_shaders {
+                    let mut replacement = Self::new_internal(
+                        device,
+                        layout,
+                        new_spec.clone(),
+                        Some(&self),
                         #[cfg(feature = "shader_reload")]
-                        self.last_reloaded_shader.into_iter().for_each(|s| s.destroy(device));
+                        [
+                            #(
+                                new_shaders[#stage_ix].1.as_ref().or(shaders[#stage_ix])
+                            ),*
+                        ],
+                        #[cfg(not(feature = "shader_reload"))]
+                        shaders,
+                        #(#pipe_argument_short),*
+                    );
+                    #[cfg(feature = "shader_reload")]
+                    {
+                        replacement.last_updates = [
+                            #(
+                                new_shaders[#stage_ix].0.clone()
+                            ),*
+                        ];
+
+                        replacement.last_reloaded_shaders = [
+                            #(
+                                new_shaders[#stage_ix].1.take()
+                            ),*
+                        ];
                     }
+                    swap(&mut *self, &mut replacement);
+                    Some(replacement)
+                } else {
+                    None
                 }
+            }
+
+            pub(crate) fn spec(&self) -> &Specialization { &self.specialization }
+
+            pub(crate) fn destroy(self, device: &Device) {
+                self.pipeline.destroy(device);
+                #[cfg(feature = "shader_reload")]
+                std::array::IntoIter::new(self.last_reloaded_shaders)
+                    .for_each(|s| s.into_iter().for_each(|s| s.destroy(device)));
             }
         }
     };
@@ -1880,7 +1863,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                 }
             }
 
-            #pipeline_definition
+            #pipeline_definition2
 
             #push_constant_type
 

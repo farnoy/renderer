@@ -705,8 +705,7 @@ impl DepthPassData {
             &device,
             &depth_pipeline_layout,
             shaders::depth_pipe::Specialization {},
-            None,
-            None,
+            [None],
             &main_renderpass.renderpass.renderpass,
             0,
         );
@@ -885,8 +884,7 @@ impl GltfPassData {
             &renderer.device,
             &gltf_pipeline_layout,
             spec,
-            None,
-            None,
+            [None, None],
             &main_renderpass.renderpass.renderpass,
             1, // FIXME
         );
@@ -1257,8 +1255,7 @@ impl GuiRenderData {
             &renderer.device,
             &pipeline_layout,
             shaders::imgui_pipe::Specialization {},
-            None,
-            None,
+            [None, None],
             &main_renderpass.renderpass.renderpass,
             2,
         );

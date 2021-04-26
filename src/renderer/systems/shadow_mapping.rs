@@ -42,8 +42,7 @@ impl ShadowMappingData {
             &renderer.device,
             &depth_pass_data.depth_pipeline_layout,
             shaders::depth_pipe::Specialization {},
-            None,
-            None,
+            [None],
             &renderpass.renderpass,
             0,
         );

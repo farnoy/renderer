@@ -362,7 +362,7 @@ impl Device {
 
     pub(crate) fn new_graphics_pipeline(
         &self,
-        shaders: &[(vk::ShaderStageFlags, &Shader, Option<&vk::SpecializationInfo>)],
+        shaders: &[(vk::ShaderStageFlags, vk::ShaderModule, Option<&vk::SpecializationInfo>)],
         create_info: vk::GraphicsPipelineCreateInfo,
     ) -> Pipeline {
         Pipeline::new_graphics_pipeline(self, shaders, create_info)

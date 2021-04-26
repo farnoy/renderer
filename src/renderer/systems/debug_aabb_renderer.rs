@@ -22,8 +22,7 @@ impl FromWorld for DebugAABBPassData {
             &renderer.device,
             &pipeline_layout,
             shaders::debug_aabb::Specialization {},
-            None,
-            None,
+            [None, None],
             &main_renderpass.renderpass.renderpass,
             1,
         );
