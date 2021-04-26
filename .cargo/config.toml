@@ -1,2 +1,2 @@
 [build]
-rustflags = ["-C", "linker=lld", "-Z", "macro-backtrace"]
+rustflags = ["-C", "linker=lld"]

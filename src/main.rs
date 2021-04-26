@@ -589,9 +589,12 @@ fn main() {
         .unwrap()
         .destroy(&render_frame.device);
 
-    let gltf_pass_data = app.app.world.remove_resource::<GltfPassData>().unwrap();
-    gltf_pass_data.gltf_pipeline.destroy(&render_frame.device);
-    gltf_pass_data.gltf_pipeline_layout.destroy(&render_frame.device);
+    let gltf_pass_data = app
+        .app
+        .world
+        .remove_resource::<GltfPassData>()
+        .unwrap()
+        .destroy(&render_frame.device);
 
     app.app
         .world

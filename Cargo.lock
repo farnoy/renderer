@@ -2135,6 +2135,7 @@ dependencies = [
  "parking_lot",
  "rayon",
  "renderer-macros",
+ "renderer-vma",
  "simba",
  "smallvec",
  "static_assertions",
@@ -2156,6 +2157,15 @@ dependencies = [
  "quote",
  "spirq",
  "syn",
+]
+
+[[package]]
+name = "renderer-vma"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "bindgen",
+ "cc",
 ]
 
 [[package]]

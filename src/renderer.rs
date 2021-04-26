@@ -726,6 +726,8 @@ pub(crate) struct Resized(pub(crate) bool);
 
 pub(crate) struct GltfPassData {
     pub(crate) gltf_pipeline: shaders::gltf_mesh::Pipeline,
+    #[cfg(feature = "shader_reload")]
+    pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<shaders::gltf_mesh::Pipeline>>,
     pub(crate) gltf_pipeline_layout: shaders::gltf_mesh::PipelineLayout,
 }
 
@@ -891,8 +893,19 @@ impl GltfPassData {
 
         GltfPassData {
             gltf_pipeline,
+            #[cfg(feature = "shader_reload")]
+            previous_gltf_pipeline: renderer.new_buffered(|_| None),
             gltf_pipeline_layout,
         }
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.gltf_pipeline.destroy(device);
+        #[cfg(feature = "shader_reload")]
+        self.previous_gltf_pipeline
+            .into_iter()
+            .for_each(|p| p.into_iter().for_each(|p| p.destroy(device)));
+        self.gltf_pipeline_layout.destroy(device);
     }
 }
 
@@ -913,28 +926,54 @@ pub(crate) fn render_frame(
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
     mut local_graphics_command_pool: ResMut<LocalGraphicsCommandPool<2>>,
-    debug_aabb_pass_data: Res<DebugAABBPassData>,
-    shadow_mapping_data: Res<ShadowMappingData>,
+    (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
     main_framebuffer: Res<MainFramebuffer>,
-    (mut main_pass_cb, depth_pass_data, gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
+    (mut main_pass_cb, depth_pass_data, mut gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
         ResMut<MainPassCommandBuffer>,
         Res<DepthPassData>,
-        Res<GltfPassData>,
+        ResMut<GltfPassData>,
         ResMut<GuiRenderData>,
         ResMut<Camera>,
         NonSendMut<InputHandler>,
         NonSendMut<Gui>,
     ),
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
+    #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
     query: Query<&AABB>,
 ) {
     microprofile::scope!("ecs", "render_frame");
 
+    let GltfPassData {
+        ref mut gltf_pipeline,
+        ref gltf_pipeline_layout,
+        ref mut previous_gltf_pipeline,
+    } = &mut *gltf_pass;
+
     // TODO: count this? pack and defragment draw calls?
     let total = shaders::cull_set::bindings::indirect_commands::SIZE as u32
         / size_of::<shaders::VkDrawIndexedIndirectCommand>() as u32;
+
+    // clean up the old pipeline that was used N frames ago
+    if let Some(previous) = previous_gltf_pipeline.current_mut(image_index.0).take() {
+        previous.destroy(&renderer.device);
+    }
+
+    use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
+    *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize(
+        &renderer.device,
+        &gltf_pipeline_layout,
+        &shaders::gltf_mesh::Specialization {
+            shadow_map_dim: SHADOW_MAP_DIM,
+            shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
+        },
+        [None, None],
+        &main_renderpass.renderpass.renderpass,
+        1, // FIXME
+        #[cfg(feature = "shader_reload")]
+        &reloaded_shaders,
+    );
 
     let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
 
@@ -989,7 +1028,6 @@ pub(crate) fn render_frame(
             &model_data,
             &runtime_config,
             &camera_matrices,
-            &swapchain,
             &command_buffer,
         );
         renderer
@@ -1023,41 +1061,13 @@ pub(crate) fn render_frame(
             }
         } else {
             let _gltf_meshes_marker = command_buffer.debug_marker_around("gltf meshes", [1.0, 0.0, 0.0, 1.0]);
-            /*
-            renderer.device.cmd_clear_attachments(
-                *command_buffer,
-                &[vk::ClearAttachment::builder()
-                    .clear_value(vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 1,
-                        },
-                    })
-                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                    .build()],
-                &[vk::ClearRect::builder()
-                    .rect(vk::Rect2D {
-                        offset: vk::Offset2D {
-                            x: 0,
-                            y: 0,
-                        },
-                        extent: vk::Extent2D {
-                            width: swapchain.width,
-                            height: swapchain.height,
-                        },
-                    })
-                    .layer_count(1)
-                    .base_array_layer(0)
-                    .build()],
-            );
-            */
             // gltf mesh
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                *gltf_pass.gltf_pipeline.pipeline,
+                *gltf_pipeline.pipeline,
             );
-            gltf_pass.gltf_pipeline_layout.bind_descriptor_sets(
+            gltf_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
                 &model_data.model_set.current(image_index.0),
@@ -1595,7 +1605,6 @@ fn depth_only_pass(
     model_data: &ModelData,
     runtime_config: &RuntimeConfiguration,
     camera_matrices: &CameraMatrices,
-    swapchain: &Swapchain,
     command_buffer: &StrictRecordingCommandBuffer, // vk::CommandBuffer
 ) {
     scope!("rendering", "depth_only_pass");

@@ -245,7 +245,11 @@ impl CullPassData {
         #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
     ) {
         // clean up the old pipeline that was used N frames ago
-        if let Some(previous) = take(cull_pass_data_private.previous_cull_pipeline.current_mut(image_index.0)) {
+        if let Some(previous) = cull_pass_data_private
+            .previous_cull_pipeline
+            .current_mut(image_index.0)
+            .take()
+        {
             previous.destroy(&renderer.device);
         }
 

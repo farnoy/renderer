@@ -1,0 +1,13 @@
+[package]
+name = "renderer-vma"
+version = "0.1.0"
+build = "build.rs"
+edition =  "2018"
+resolver = "2"
+
+[dependencies]
+ash = "0.32.0"
+
+[build-dependencies]
+bindgen = "0.58.1"
+cc = "1.0"

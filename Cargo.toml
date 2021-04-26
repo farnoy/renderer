@@ -16,6 +16,7 @@ bench = false
 
 [dependencies]
 renderer-macros = { path = "macros" }
+renderer-vma = { path = "vma" }
 ash = "0.32.0"
 bevy_app = "0.5.0"
 bevy_ecs = "0.5.0"
@@ -96,6 +97,7 @@ opt-level = 3
 
 [profile.dev]
 opt-level = 1
+debug = false # to speedup incremental compilaton, uncomment to use a debugger
 lto = "off"
 
 [profile.release]
