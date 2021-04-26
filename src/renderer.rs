@@ -945,6 +945,21 @@ pub(crate) fn render_frame(
     let command_buffer = command_session.record_one_time("Main Render CommandBuffer");
     unsafe {
         let _main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
+        renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
+            x: 0.0,
+            y: swapchain.height as f32,
+            width: swapchain.width as f32,
+            height: -(swapchain.height as f32),
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }]);
+        renderer.device.cmd_set_scissor(*command_buffer, 0, &[vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D {
+                width: swapchain.width,
+                height: swapchain.height,
+            },
+        }]);
         main_renderpass.renderpass.begin(
             &renderer,
             main_framebuffer.handles.current(image_index.0),
@@ -980,21 +995,6 @@ pub(crate) fn render_frame(
         renderer
             .device
             .cmd_next_subpass(*command_buffer, vk::SubpassContents::INLINE);
-        renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
-            x: 0.0,
-            y: swapchain.height as f32,
-            width: swapchain.width as f32,
-            height: -(swapchain.height as f32),
-            min_depth: 0.0,
-            max_depth: 1.0,
-        }]);
-        renderer.device.cmd_set_scissor(*command_buffer, 0, &[vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D {
-                width: swapchain.width,
-                height: swapchain.height,
-            },
-        }]);
         if runtime_config.debug_aabbs {
             microprofile::scope!("ecs", "debug aabb pass");
 
@@ -1453,22 +1453,6 @@ fn render_gui(
 
     let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
     unsafe {
-        renderer.device.cmd_set_viewport(**command_buffer, 0, &[vk::Viewport {
-            x: 0.0,
-            y: swapchain.height as f32,
-            width: swapchain.width as f32,
-            height: -(swapchain.height as f32),
-            min_depth: 0.0,
-            max_depth: 1.0,
-        }]);
-        renderer.device.cmd_set_scissor(**command_buffer, 0, &[vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D {
-                width: swapchain.width,
-                height: swapchain.height,
-            },
-        }]);
-
         pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, &descriptor_set);
         renderer
             .device
@@ -1623,21 +1607,6 @@ fn depth_only_pass(
         if runtime_config.debug_aabbs {
             return;
         }
-        renderer.device.cmd_set_viewport(**command_buffer, 0, &[vk::Viewport {
-            x: 0.0,
-            y: swapchain.height as f32,
-            width: swapchain.width as f32,
-            height: -(swapchain.height as f32),
-            min_depth: 0.0,
-            max_depth: 1.0,
-        }]);
-        renderer.device.cmd_set_scissor(**command_buffer, 0, &[vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D {
-                width: swapchain.width,
-                height: swapchain.height,
-            },
-        }]);
         renderer.device.cmd_bind_pipeline(
             **command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
