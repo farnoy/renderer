@@ -78,6 +78,7 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .flag_if_supported("--std=c++14")
+        .flag_if_supported("-w") // don't care for this noise
         .flag_if_supported("/std:c++14")
         .file("amd_alloc.cc")
         .includes(if cfg!(windows) {
