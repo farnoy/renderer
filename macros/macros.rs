@@ -1771,7 +1771,6 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
                     pub(crate) fn destroy(self, device: &Device) { self.pipeline.destroy(device); }
                 }
-                use std::ops::Deref;
             }
         }
     };
