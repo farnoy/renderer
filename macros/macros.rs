@@ -1756,7 +1756,49 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                     #(
                         match reloaded_shaders.0.get(#shader_stage_path) {
                             Some((ts, code)) if *ts > self.last_updates[#stage_ix] => {
-                                (ts.clone(), Some(device.new_shader(&code)))
+                                let static_spv = spirq::SpirvBinary::from(#shader_stage);
+                                let static_entry = static_spv.reflect_vec().unwrap()
+                                    .into_iter().find(|entry| entry.name == "main").unwrap();
+                                let mut static_descs = static_entry.descs().collect::<Vec<_>>();
+                                static_descs.sort_by_key(|d| d.desc_bind);
+                                let mut static_inputs = static_entry.inputs().collect::<Vec<_>>();
+                                static_inputs.sort_by_key(|d| d.location);
+                                let mut static_outputs = static_entry.outputs().collect::<Vec<_>>();
+                                static_outputs.sort_by_key(|d| d.location);
+                                let mut static_spec_consts = static_entry.spec.spec_consts().collect::<Vec<_>>();
+                                static_spec_consts.sort_by_key(|d| d.spec_id);
+
+                                let new_spv = spirq::SpirvBinary::from(code.as_slice());
+                                if let Ok(entry_points) = new_spv.reflect_vec() {
+                                    if let Some(entry) = entry_points.into_iter().find(|entry| entry.name == "main") {
+                                        let mut entry_descs = entry.descs().collect::<Vec<_>>();
+                                        entry_descs.sort_by_key(|d| d.desc_bind);
+                                        let mut entry_inputs = entry.inputs().collect::<Vec<_>>();
+                                        entry_inputs.sort_by_key(|d| d.location);
+                                        let mut entry_outputs = entry.outputs().collect::<Vec<_>>();
+                                        entry_outputs.sort_by_key(|d| d.location);
+                                        let mut entry_spec_consts = entry.spec.spec_consts().collect::<Vec<_>>();
+                                        entry_spec_consts.sort_by_key(|d| d.spec_id);
+                                        if static_entry.exec_model == entry.exec_model
+                                           && static_descs == entry_descs
+                                           && static_inputs == entry_inputs
+                                           && static_outputs == entry_outputs
+                                           && static_spec_consts == entry_spec_consts {
+                                            (ts.clone(), Some(device.new_shader(&code)))
+                                        } else {
+                                            eprintln!("Failed to validate live reloaded shader interface \
+                                                       against the static. Restart the application");
+                                            (Instant::now(), None)
+                                        }
+                                    }
+                                    else {
+                                        eprintln!("Failed to find the main entry point in live reloaded spirv");
+                                        (Instant::now(), None)
+                                    }
+                                } else {
+                                    eprintln!("Failed to reflect on live reloaded spirv");
+                                    (Instant::now(), None)
+                                }
                             }
                             _ => (Instant::now(), None)
                         }

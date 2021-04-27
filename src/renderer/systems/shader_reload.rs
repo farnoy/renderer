@@ -49,7 +49,7 @@ pub(crate) fn reload_shaders(shader_reload: NonSend<ShaderReload>, mut reloaded_
                     .spawn()
                     .unwrap();
 
-                // TODO: async, parallel & error recovery
+                // TODO: async, parallel
                 let Output { stdout, status, .. } = c.wait_with_output().unwrap();
                 if status.success() {
                     let now = Instant::now();

@@ -41,6 +41,7 @@ notify = { version = "4.0.16", optional = true }
 num-traits = "0.2.6"
 simba = "0.4.0"
 smallvec = "1.2.0"
+spirq = { version = "0.4.6", optional = true }
 static_assertions= "1.1.0"
 winit = "0.24.0"
 
@@ -68,7 +69,7 @@ sync_validation = ["crash_debugging", "standard_validation"]
 uncapped = []
 no_profiling = ["microprofile/disabled"]
 profiling_bevy = ["bevy_ecs/trace", "bevy_log/tracing-chrome"]
-shader_reload = ["notify"]
+shader_reload = ["notify", "spirq"]
 
 [profile.dev.package.image]
 opt-level = 3

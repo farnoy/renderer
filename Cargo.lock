@@ -2138,6 +2138,7 @@ dependencies = [
  "renderer-vma",
  "simba",
  "smallvec",
+ "spirq",
  "static_assertions",
  "winapi 0.3.9",
  "winit",
