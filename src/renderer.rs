@@ -43,7 +43,7 @@ pub(crate) use self::{
         present::{acquire_framebuffer, ImageIndex, PresentData, PresentFramebuffer},
         shadow_mapping::{
             prepare_shadow_maps, shadow_mapping_mvp_calculation, update_shadow_map_descriptors, ShadowMappingData,
-            ShadowMappingLightMatrices,
+            ShadowMappingDataInternal, ShadowMappingLightMatrices,
         },
         textures::{
             cleanup_base_color_markers, synchronize_base_color_textures_visit, update_base_color_descriptors,
@@ -543,33 +543,22 @@ impl MainFramebuffer {
     }
 }
 
-pub(crate) struct LocalGraphicsCommandPool<const NAME: usize> {
+pub(crate) struct LocalTransferCommandPool<const NAME: usize> {
     pub(crate) pools: DoubleBuffered<StrictCommandPool>,
 }
 
-impl<const NAME: usize> FromWorld for LocalGraphicsCommandPool<NAME> {
-    fn from_world(world: &mut World) -> Self {
-        let renderer = world.get_resource::<RenderFrame>().unwrap();
-        LocalGraphicsCommandPool {
+impl<const NAME: usize> LocalTransferCommandPool<NAME> {
+    pub(crate) fn new(renderer: &RenderFrame) -> Self {
+        LocalTransferCommandPool {
             pools: renderer.new_buffered(|ix| {
                 StrictCommandPool::new(
                     &renderer.device,
-                    renderer.device.graphics_queue_family,
-                    &format!("Local[{}] Graphics Command Pool[{}]", NAME, ix),
+                    renderer.device.transfer_queue_family,
+                    &format!("Local[{}] Transfer Command Pool[{}]", NAME, ix),
                 )
             }),
         }
     }
-}
-
-impl<const NAME: usize> LocalTransferCommandPool<NAME> {
-    pub(crate) fn destroy(self, device: &Device) {
-        self.pools.into_iter().for_each(|p| p.destroy(device));
-    }
-}
-
-pub(crate) struct LocalTransferCommandPool<const NAME: usize> {
-    pub(crate) pools: DoubleBuffered<StrictCommandPool>,
 }
 
 impl<const NAME: usize> FromWorld for LocalTransferCommandPool<NAME> {
@@ -587,7 +576,7 @@ impl<const NAME: usize> FromWorld for LocalTransferCommandPool<NAME> {
     }
 }
 
-impl<const NAME: usize> LocalGraphicsCommandPool<NAME> {
+impl<const NAME: usize> LocalTransferCommandPool<NAME> {
     pub(crate) fn destroy(self, device: &Device) {
         self.pools.into_iter().for_each(|p| p.destroy(device));
     }
@@ -909,11 +898,36 @@ impl GltfPassData {
     }
 }
 
-pub(crate) struct MainPassCommandBuffer(vk::CommandBuffer);
+pub(crate) struct MainPassCommandBuffer {
+    command_pools: DoubleBuffered<StrictCommandPool>,
+    command_buffers: DoubleBuffered<vk::CommandBuffer>,
+}
 
-impl Default for MainPassCommandBuffer {
-    fn default() -> Self {
-        MainPassCommandBuffer(vk::CommandBuffer::null())
+impl FromWorld for MainPassCommandBuffer {
+    fn from_world(world: &mut World) -> Self {
+        let renderer = world.get_resource::<RenderFrame>().unwrap();
+        let mut command_pools = renderer.new_buffered(|ix| {
+            StrictCommandPool::new(
+                &renderer.device,
+                renderer.device.graphics_queue_family,
+                &format!("Main Pass Command Pool[{}]", ix),
+            )
+        });
+        let command_buffers = renderer.new_buffered(|ix| {
+            command_pools
+                .current_mut(ix)
+                .allocate(&format!("Main Pass CB[{}]", ix), &renderer.device)
+        });
+        MainPassCommandBuffer {
+            command_pools,
+            command_buffers,
+        }
+    }
+}
+
+impl MainPassCommandBuffer {
+    pub(crate) fn destroy(self, device: &Device) {
+        self.command_pools.into_iter().for_each(|p| p.destroy(device));
     }
 }
 
@@ -925,7 +939,6 @@ pub(crate) fn render_frame(
     camera_matrices: Res<CameraMatrices>,
     swapchain: Res<Swapchain>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
-    mut local_graphics_command_pool: ResMut<LocalGraphicsCommandPool<2>>,
     (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
@@ -979,13 +992,19 @@ pub(crate) fn render_frame(
         );
     }
 
-    let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
+    let MainPassCommandBuffer {
+        ref mut command_pools,
+        ref command_buffers,
+    } = *main_pass_cb;
+
+    let command_pool = command_pools.current_mut(image_index.0);
 
     command_pool.reset(&renderer.device);
 
     let mut command_session = command_pool.session(&renderer.device);
 
-    let command_buffer = command_session.record_one_time("Main Render CommandBuffer");
+    let command_buffer = command_session.record_to_specific(*command_buffers
+    .current(image_index.0));
     unsafe {
         let _main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
         renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
@@ -1141,7 +1160,7 @@ pub(crate) fn render_frame(
 
     let command_buffer = *command_buffer.end();
 
-    main_pass_cb.0 = command_buffer;
+    *main_pass_cb.command_buffers.current_mut(image_index.0) = command_buffer;
 }
 
 fn submit_main_pass(
@@ -1150,11 +1169,12 @@ fn submit_main_pass(
     main_pass_cb: Res<MainPassCommandBuffer>,
 ) {
     scope!("ecs", "submit_main_pass");
-    debug_assert_ne!(main_pass_cb.0, vk::CommandBuffer::null());
+    let command_buffer = *main_pass_cb.command_buffers.current(image_index.0);
+    debug_assert_ne!(command_buffer, vk::CommandBuffer::null());
 
     let queue = renderer.device.graphics_queue().lock();
 
-    frame_graph::Main::Stage::queue_submit(&image_index, &renderer, *queue, &[main_pass_cb.0]).unwrap();
+    frame_graph::Main::Stage::queue_submit(&image_index, &renderer, *queue, &[command_buffer]).unwrap();
 }
 
 pub(crate) struct GuiRenderData {
@@ -1172,7 +1192,6 @@ pub(crate) struct GuiRenderData {
     descriptor_set: shaders::imgui_set::Set,
     pipeline_layout: shaders::imgui_pipe::PipelineLayout,
     pipeline: shaders::imgui_pipe::Pipeline,
-    command_pool: DoubleBuffered<StrictCommandPool>,
 }
 
 impl FromWorld for GuiRenderData {
@@ -1313,15 +1332,13 @@ impl GuiRenderData {
             );
         }
 
-        let mut command_pool = renderer.new_buffered(|ix| {
-            StrictCommandPool::new(
-                &renderer.device,
-                renderer.device.graphics_queue_family,
-                &format!("GuiRender Command Pool[{}]", ix),
-            )
-        });
+        let mut command_pool = StrictCommandPool::new(
+            &renderer.device,
+            renderer.device.graphics_queue_family,
+            &"GuiRender Initialization Command Pool",
+        );
 
-        let mut session = command_pool.current_mut(0).session(&renderer.device);
+        let mut session = command_pool.session(&renderer.device);
         let cb = session.record_one_time("prepare gui texture");
         unsafe {
             renderer.device.cmd_pipeline_barrier(
@@ -1366,6 +1383,8 @@ impl GuiRenderData {
             fence.destroy(&renderer.device);
         }
 
+        command_pool.destroy(&renderer.device);
+
         GuiRenderData {
             pos_buffer,
             uv_buffer,
@@ -1378,7 +1397,6 @@ impl GuiRenderData {
             descriptor_set,
             pipeline_layout,
             pipeline,
-            command_pool,
         }
     }
 
@@ -1390,7 +1408,6 @@ impl GuiRenderData {
         self.texture.destroy(device);
         self.descriptor_set.destroy(&main_descriptor_pool.0, device);
         self.descriptor_set_layout.destroy(device);
-        self.command_pool.into_iter().for_each(|p| p.destroy(device));
         self.pos_buffer.destroy(device);
         self.uv_buffer.destroy(device);
         self.col_buffer.destroy(device);

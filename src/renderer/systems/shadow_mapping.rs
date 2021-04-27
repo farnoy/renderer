@@ -10,8 +10,8 @@ use crate::{
     renderer::{
         device::VmaMemoryUsage, frame_graph, pick_lod, shaders, shaders::LightMatrices, CameraMatrices, DepthPassData,
         Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
-        LocalGraphicsCommandPool, MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler,
-        ShadowMappingTimeline, StrictCommandPool, SwapchainIndexToFrameNumber,
+        MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler, ShadowMappingTimeline, StrictCommandPool,
+        SwapchainIndexToFrameNumber,
     },
 };
 
@@ -28,6 +28,11 @@ pub(crate) struct ShadowMappingData {
     pub(crate) user_set_layout: shaders::shadow_map_set::Layout,
     pub(crate) user_set: DoubleBuffered<shaders::shadow_map_set::Set>,
     user_sampler: Sampler,
+}
+
+pub(crate) struct ShadowMappingDataInternal {
+    command_pools: DoubleBuffered<StrictCommandPool>,
+    command_buffers: DoubleBuffered<vk::CommandBuffer>,
 }
 
 impl ShadowMappingData {
@@ -213,6 +218,36 @@ impl ShadowMappingData {
     }
 }
 
+impl FromWorld for ShadowMappingDataInternal {
+    fn from_world(world: &mut World) -> Self {
+        let renderer = world.get_resource::<RenderFrame>().unwrap();
+
+        let mut command_pools = renderer.new_buffered(|ix| {
+            StrictCommandPool::new(
+                &renderer.device,
+                renderer.device.graphics_queue_family,
+                &format!("Shadow Mapping Command Pool[{}]", ix),
+            )
+        });
+        let command_buffers = renderer.new_buffered(|ix| {
+            command_pools
+                .current_mut(ix)
+                .allocate(&format!("Shadow Mapping CB[{}]", ix), &renderer.device)
+        });
+
+        Self {
+            command_pools,
+            command_buffers,
+        }
+    }
+}
+
+impl ShadowMappingDataInternal {
+    pub(crate) fn destroy(self, device: &Device) {
+        self.command_pools.into_iter().for_each(|p| p.destroy(device));
+    }
+}
+
 /// Holds Projection and view matrices for each light.
 pub(crate) struct ShadowMappingLightMatrices {
     matrices_set: DoubleBuffered<shaders::camera_set::Set>,
@@ -306,8 +341,8 @@ pub(crate) fn prepare_shadow_maps(
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     shadow_mapping: Res<ShadowMappingData>,
+    mut shadow_mapping_internal: ResMut<ShadowMappingDataInternal>,
     model_data: Res<ModelData>,
-    mut local_graphics_command_pool: ResMut<LocalGraphicsCommandPool<1>>,
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
 ) {
@@ -321,13 +356,18 @@ pub(crate) fn prepare_shadow_maps(
         )
         .unwrap();
 
-    let command_pool = local_graphics_command_pool.pools.current_mut(image_index.0);
+    let ShadowMappingDataInternal {
+        ref mut command_pools,
+        ref command_buffers,
+    } = *shadow_mapping_internal;
+
+    let command_pool = command_pools.current_mut(image_index.0);
 
     command_pool.reset(&renderer.device);
 
     let mut command_session = command_pool.session(&renderer.device);
 
-    let command_buffer = command_session.record_one_time("Shadow Mapping CommandBuffer");
+    let command_buffer = command_session.record_to_specific(*command_buffers.current(image_index.0));
 
     unsafe {
         let _shadow_mapping_marker = command_buffer.debug_marker_around("shadow mapping", [0.8, 0.1, 0.1, 1.0]);

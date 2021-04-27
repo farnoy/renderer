@@ -46,9 +46,9 @@ use renderer::{
     synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, BaseColorDescriptorSet,
     BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
     CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfPassData,
-    GuiRenderData, ImageIndex, LoadedMesh, LocalGraphicsCommandPool, LocalTransferCommandPool, MainAttachments,
+    GuiRenderData, ImageIndex, LoadedMesh, LocalTransferCommandPool, MainAttachments,
     MainDescriptorPool, MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame,
-    Resized, ShadowMappingData, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
+    Resized, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
@@ -81,7 +81,13 @@ fn main() {
     let base_color_descriptor_set = BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
     let model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
-    let cull_pass_data = CullPassData::new(&renderer, &mut main_descriptor_pool, &consolidated_mesh_buffers);
+    let mut cull_bypass_transfer_command_pool = LocalTransferCommandPool::<0>::new(&renderer);
+    let cull_pass_data = CullPassData::new(
+        &renderer,
+        &mut main_descriptor_pool,
+        &consolidated_mesh_buffers,
+        &mut cull_bypass_transfer_command_pool,
+    );
     let cull_pass_data_private = CullPassDataPrivate::new(&renderer, &cull_pass_data, &model_data, &camera_matrices);
 
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
@@ -356,6 +362,7 @@ fn main() {
     app.insert_resource(cull_pass_data);
     app.insert_resource(cull_pass_data_private);
     app.insert_resource(shadow_mapping_data);
+    app.init_resource::<ShadowMappingDataInternal>();
     app.insert_resource(depth_pass_data);
     app.insert_resource(present_data);
     app.insert_resource(main_renderpass);
@@ -375,10 +382,7 @@ fn main() {
         app.init_non_send_resource::<ShaderReload>();
         app.init_resource::<ReloadedShaders>();
     }
-    app.init_resource::<LocalTransferCommandPool<0>>();
-    app.init_resource::<LocalGraphicsCommandPool<0>>();
-    app.init_resource::<LocalGraphicsCommandPool<1>>();
-    app.init_resource::<LocalGraphicsCommandPool<2>>();
+    app.insert_resource(cull_bypass_transfer_command_pool);
     app.init_resource::<MainPassCommandBuffer>();
 
     app.add_plugin(bevy_log::LogPlugin);
@@ -638,6 +642,11 @@ fn main() {
         .destroy(&render_frame.device, &main_descriptor_pool);
     app.app
         .world
+        .remove_resource::<ShadowMappingDataInternal>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
         .remove_resource::<GuiRenderData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
@@ -738,17 +747,7 @@ fn main() {
         .destroy(&render_frame.device);
     app.app
         .world
-        .remove_resource::<LocalGraphicsCommandPool<0>>()
-        .unwrap()
-        .destroy(&render_frame.device);
-    app.app
-        .world
-        .remove_resource::<LocalGraphicsCommandPool<1>>()
-        .unwrap()
-        .destroy(&render_frame.device);
-    app.app
-        .world
-        .remove_resource::<LocalGraphicsCommandPool<2>>()
+        .remove_resource::<MainPassCommandBuffer>()
         .unwrap()
         .destroy(&render_frame.device);
     app.app

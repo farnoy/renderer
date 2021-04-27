@@ -1,3 +1,5 @@
+cargo-features = ["named-profiles"]
+
 [package]
 name = "renderer"
 version = "0.1.0"
@@ -102,3 +104,7 @@ lto = "off"
 
 [profile.release]
 lto = "thin"
+
+[profile.rel_with_deb_info]
+inherits = "release"
+debug = true

@@ -1,14 +1,16 @@
-use std::{marker::PhantomData, mem::swap, ops::Deref};
+use std::{marker::PhantomData, ops::Deref};
 
 use ash::{version::DeviceV1_0, vk};
+#[cfg(debug_assertions)]
+use hashbrown::HashSet;
 use microprofile::scope;
 
 use super::{sync::Fence, Device};
 
 pub(crate) struct StrictCommandPool {
     handle: vk::CommandPool,
-    queue_family: u32, // only needed for recreate(), remove later
-    name: String,      // only needed for recreate(), remove later
+    #[cfg(debug_assertions)]
+    allocated_command_buffers: HashSet<vk::CommandBuffer>,
 }
 
 pub(crate) struct StrictCommandPoolSession<'p> {
@@ -41,8 +43,8 @@ impl StrictCommandPool {
 
         StrictCommandPool {
             handle: pool,
-            queue_family,
-            name: name.into(),
+            #[cfg(debug_assertions)]
+            allocated_command_buffers: HashSet::new(),
         }
     }
 
@@ -51,24 +53,30 @@ impl StrictCommandPool {
     }
 
     pub(crate) fn reset(&mut self, device: &Device) {
-        if true {
-            scope!("vk", "vkResetCommandPool");
+        scope!("vk", "vkResetCommandPool");
 
-            unsafe {
-                device
-                    .reset_command_pool(self.handle, vk::CommandPoolResetFlags::empty())
-                    .unwrap();
-            }
-        } else {
-            scope!("vk", "vkResetCommandPool(recreate workaround)");
-
-            // To work around a performance cliff in AMDVLK
-            let mut new_command_pool = StrictCommandPool::new(device, self.queue_family, &self.name);
-
-            swap(self, &mut new_command_pool);
-
-            new_command_pool.destroy(device);
+        unsafe {
+            device
+                .reset_command_pool(self.handle, vk::CommandPoolResetFlags::empty())
+                .unwrap();
         }
+    }
+
+    pub(crate) fn allocate(&mut self, name: &str, device: &Device) -> vk::CommandBuffer {
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
+            .command_buffer_count(1)
+            .command_pool(self.handle)
+            .level(vk::CommandBufferLevel::PRIMARY);
+
+        let command_buffers = unsafe {
+            scope!("vk", "vkAllocateCommandBuffers");
+            device.allocate_command_buffers(&command_buffer_allocate_info).unwrap()
+        };
+        let command_buffer = command_buffers[0];
+        device.set_object_name(command_buffer, name);
+        #[cfg(debug_assertions)]
+        self.allocated_command_buffers.insert(command_buffer);
+        command_buffer
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {
@@ -91,21 +99,30 @@ impl Drop for StrictCommandPool {
 }
 
 impl<'p> StrictCommandPoolSession<'p> {
+    pub(crate) fn record_to_specific<'c>(
+        &'c mut self,
+        handle: vk::CommandBuffer,
+    ) -> StrictRecordingCommandBuffer<'c, 'p> {
+        scope!("helpers", "record_to_command_buffer");
+
+        debug_assert!(handle != vk::CommandBuffer::null());
+        #[cfg(debug_assertions)]
+        debug_assert!(self.pool.allocated_command_buffers.contains(&handle));
+
+        let begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            scope!("vk", "vkBeginCommandBuffer");
+            self.device.begin_command_buffer(handle, &begin_info).unwrap();
+        }
+
+        StrictRecordingCommandBuffer { session: self, handle }
+    }
+
     pub(crate) fn record_one_time<'c>(&'c mut self, name: &str) -> StrictRecordingCommandBuffer<'c, 'p> {
         scope!("helpers", "record_one_time");
 
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
-            .command_buffer_count(1)
-            .command_pool(self.pool.handle)
-            .level(vk::CommandBufferLevel::PRIMARY);
-
-        let command_buffers = unsafe {
-            scope!("vk", "vkAllocateCommandBuffers");
-            self.device
-                .allocate_command_buffers(&command_buffer_allocate_info)
-                .unwrap()
-        };
-        let command_buffer = command_buffers[0];
+        let command_buffer = self.pool.allocate(name, self.device);
         self.device.set_object_name(command_buffer, name);
 
         let begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);

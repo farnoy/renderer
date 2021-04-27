@@ -42,12 +42,15 @@ pub(crate) struct CullPassData {
     cull_count_set_layout: cull_commands_count_set::Layout,
     cull_set: DoubleBuffered<cull_set::Set>,
     cull_count_set: DoubleBuffered<cull_commands_count_set::Set>,
+    // TODO: reorganize this
+    bypass_command_buffers: DoubleBuffered<vk::CommandBuffer>,
 }
 
 pub(crate) struct CullPassDataPrivate {
     cull_pipeline_layout: generate_work::PipelineLayout,
     cull_pipeline: generate_work::Pipeline,
     command_pool: DoubleBuffered<StrictCommandPool>,
+    command_buffers: DoubleBuffered<vk::CommandBuffer>,
     previous_cull_pipeline: DoubleBuffered<Option<generate_work::Pipeline>>,
     cull_shader: Shader,
 }
@@ -98,16 +101,24 @@ impl CullPassDataPrivate {
             generate_work::Pipeline::new(&renderer.device, &cull_pipeline_layout, cull_specialization, [Some(
                 &cull_shader,
             )]);
+        let mut command_pool = renderer.new_buffered(|ix| {
+            StrictCommandPool::new(
+                &renderer.device,
+                renderer.device.compute_queue_family,
+                &format!("Cull pass Command Pool[{}]", ix),
+            )
+        });
+        let command_buffers = renderer.new_buffered(|ix| {
+            command_pool
+                .current_mut(ix)
+                .allocate(&format!("Cull pass CB[{}]", ix), &renderer.device)
+        });
+
         CullPassDataPrivate {
             cull_pipeline_layout,
             cull_pipeline,
-            command_pool: renderer.new_buffered(|ix| {
-                StrictCommandPool::new(
-                    &renderer.device,
-                    renderer.device.compute_queue_family,
-                    &format!("Cull pass Command Pool[{}]", ix),
-                )
-            }),
+            command_pool,
+            command_buffers,
             previous_cull_pipeline: renderer.new_buffered(|_| None),
             cull_shader,
         }
@@ -129,6 +140,7 @@ impl CullPassData {
         renderer: &RenderFrame,
         main_descriptor_pool: &mut MainDescriptorPool,
         consolidated_mesh_buffers: &ConsolidatedMeshBuffers,
+        transfer_command_pool: &mut LocalTransferCommandPool<0>,
     ) -> CullPassData {
         let device = &renderer.device;
 
@@ -223,6 +235,12 @@ impl CullPassData {
             );
             s
         });
+        let bypass_command_buffers = renderer.new_buffered(|ix| {
+            transfer_command_pool
+                .pools
+                .current_mut(ix)
+                .allocate(&format!("Cull Pass Bypass CB[{}]", ix), &renderer.device)
+        });
 
         CullPassData {
             culled_commands_buffer,
@@ -234,6 +252,7 @@ impl CullPassData {
             cull_count_set_layout,
             cull_set,
             cull_count_set,
+            bypass_command_buffers,
         }
     }
 
@@ -327,7 +346,7 @@ pub(crate) fn cull_pass_bypass(
 
     let mut command_session = command_pool.session(&renderer.device);
 
-    let cull_cb = command_session.record_one_time(&format!("Cull Pass Bypass CB[{}]", image_index.0));
+    let cull_cb = command_session.record_to_specific(*cull_pass_data.bypass_command_buffers.current(image_index.0));
     unsafe {
         scope!("cull pass", "cb recording");
         let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
@@ -444,6 +463,7 @@ pub(crate) fn cull_pass(
 
     let CullPassDataPrivate {
         ref mut command_pool,
+        ref command_buffers,
         ref cull_pipeline_layout,
         ref cull_pipeline,
         ..
@@ -455,7 +475,7 @@ pub(crate) fn cull_pass(
 
     let mut command_session = command_pool.session(&renderer.device);
 
-    let cull_cb = command_session.record_one_time(&format!("Cull Pass CB[{}]", image_index.0));
+    let cull_cb = command_session.record_to_specific(*command_buffers.current(image_index.0));
     unsafe {
         scope!("cull pass", "cb recording");
 

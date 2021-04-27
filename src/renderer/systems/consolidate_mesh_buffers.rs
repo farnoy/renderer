@@ -9,10 +9,10 @@ use hashbrown::{hash_map::Entry, HashMap};
 use microprofile::scope;
 
 use crate::renderer::{
-    device::{Buffer, Device, VmaMemoryUsage},
+    device::{Buffer, Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
     frame_graph,
     shaders::cull_set,
-    GltfMesh, ImageIndex, LocalGraphicsCommandPool, RenderFrame, RenderStage, SwapchainIndexToFrameNumber,
+    GltfMesh, ImageIndex, RenderFrame, RenderStage, SwapchainIndexToFrameNumber,
 };
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
@@ -34,6 +34,8 @@ pub(crate) struct ConsolidatedMeshBuffers {
     pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
     pub(crate) index_buffer: cull_set::bindings::index_buffer::Buffer,
+    command_pools: DoubleBuffered<StrictCommandPool>,
+    command_buffers: DoubleBuffered<vk::CommandBuffer>,
 }
 
 renderer_macros::define_timeline!(pub(crate) ConsolidateTimeline [Perform]);
@@ -44,7 +46,6 @@ pub(crate) fn consolidate_mesh_buffers(
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
-    mut command_pool: ResMut<LocalGraphicsCommandPool<0>>,
     query: Query<&GltfMesh>,
 ) {
     microprofile::scope!("ecs", "consolidate mesh buffers");
@@ -58,8 +59,8 @@ pub(crate) fn consolidate_mesh_buffers(
         ref index_buffer,
         ref mut vertex_offsets,
         ref mut index_offsets,
-        // ref sync_timeline,
-        ..
+        ref mut command_pools,
+        ref command_buffers,
     } = *consolidated_mesh_buffers;
 
     // Wait until we can reuse the command pool
@@ -71,14 +72,14 @@ pub(crate) fn consolidate_mesh_buffers(
         )
         .unwrap();
 
-    let command_pool = command_pool.pools.current_mut(image_index.0);
+    let command_pool = command_pools.current_mut(image_index.0);
 
     command_pool.reset(&renderer.device);
 
     let mut command_session = command_pool.session(&renderer.device);
 
     let mut needs_transfer = false;
-    let command_buffer = command_session.record_one_time("consolidate mesh buffers cb");
+    let command_buffer = command_session.record_to_specific(*command_buffers.current(image_index.0));
     for mesh in &mut query.iter() {
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
             debug_assert!(
@@ -191,13 +192,18 @@ impl ConsolidatedMeshBuffers {
         renderer
             .device
             .set_object_name(index_buffer.buffer.handle, "Consolidated Index buffer");
-        // let sync_timeline = renderer
-        //     .device
-        //     .new_semaphore_timeline(ConsolidateTimeline::Perform.as_of_last(renderer.frame_number));
-        // renderer.device.set_object_name(
-        //     sync_timeline.handle,
-        //     "Consolidate mesh buffers sync timeline",
-        // );
+        let mut command_pools = renderer.new_buffered(|ix| {
+            StrictCommandPool::new(
+                &renderer.device,
+                renderer.device.graphics_queue_family,
+                &format!("Consolidate Mesh Buffers Command Pool[{}]", ix),
+            )
+        });
+        let command_buffers = renderer.new_buffered(|ix| {
+            command_pools
+                .current_mut(ix)
+                .allocate(&format!("Consolidate Mesh Buffers CB[{}]", ix), &renderer.device)
+        });
 
         ConsolidatedMeshBuffers {
             vertex_offsets,
@@ -208,7 +214,8 @@ impl ConsolidatedMeshBuffers {
             normal_buffer,
             uv_buffer,
             index_buffer,
-            // sync_timeline,
+            command_pools,
+            command_buffers,
         }
     }
 
@@ -217,6 +224,6 @@ impl ConsolidatedMeshBuffers {
         self.normal_buffer.destroy(device);
         self.uv_buffer.destroy(device);
         self.index_buffer.destroy(device);
-        // self.sync_timeline.destroy(device);
+        self.command_pools.into_iter().for_each(|p| p.destroy(device));
     }
 }
