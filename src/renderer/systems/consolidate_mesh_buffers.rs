@@ -48,7 +48,7 @@ pub(crate) fn consolidate_mesh_buffers(
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
     query: Query<&GltfMesh>,
 ) {
-    microprofile::scope!("ecs", "consolidate mesh buffers");
+    scope!("ecs", "consolidate mesh buffers");
 
     let ConsolidatedMeshBuffers {
         ref mut next_vertex_offset,

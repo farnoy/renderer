@@ -83,7 +83,7 @@ impl InputHandler {
         mut input_handler: NonSendMut<InputHandler>,
         mut gui: NonSendMut<Gui>,
     ) {
-        microprofile::scope!("ecs", "InputHandler");
+        scope!("ecs", "InputHandler");
 
         let InputHandler {
             ref mut events_loop,

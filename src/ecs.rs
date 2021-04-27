@@ -33,6 +33,8 @@ pub(crate) mod systems {
     use winit::{self, event::MouseButton};
 
     pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
+    #[cfg(not(feature = "no_profiling"))]
+    pub(crate) use crate::renderer::MP_INDIAN_RED;
     #[cfg(feature = "shader_reload")]
     pub(crate) use crate::renderer::ReloadedShaders;
     use crate::{
@@ -44,7 +46,7 @@ pub(crate) mod systems {
         },
         renderer::{
             forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, ImageIndex,
-            RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE, MP_INDIAN_RED,
+            RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE,
         },
     };
 
@@ -63,7 +65,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn project_camera(swapchain: Res<Swapchain>, mut camera: ResMut<Camera>) {
-        microprofile::scope!("ecs", "project camera");
+        scope!("ecs", "project camera");
 
         let near = 0.1;
         let far = 100.0;
@@ -104,7 +106,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn calculate_frame_timing(mut frame_timing: ResMut<FrameTiming>) {
-        microprofile::scope!("ecs", "CalculateFrameTiming");
+        scope!("ecs", "CalculateFrameTiming");
 
         let now = Instant::now();
         let duration = now - frame_timing.previous_frame;
@@ -124,7 +126,7 @@ pub(crate) mod systems {
             ),
         >,
     ) {
-        microprofile::scope!("ecs", "AssignDrawIndex");
+        scope!("ecs", "AssignDrawIndex");
 
         let mut counter = 0u32;
 

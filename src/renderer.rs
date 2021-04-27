@@ -24,13 +24,15 @@ use self::device::{
     Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, RenderPass, Sampler, Shader,
     StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, TimelineSemaphore, VmaMemoryUsage,
 };
+#[cfg(not(feature = "no_profiling"))]
+pub(crate) use self::helpers::MP_INDIAN_RED;
 #[cfg(feature = "crash_debugging")]
 pub(crate) use self::systems::crash_debugging::CrashBuffer;
 #[cfg(feature = "shader_reload")]
 pub(crate) use self::systems::shader_reload::{reload_shaders, ReloadedShaders, ShaderReload};
 pub(crate) use self::{
     gltf_mesh::{load as load_gltf, LoadedMesh},
-    helpers::{pick_lod, MP_INDIAN_RED},
+    helpers::pick_lod,
     instance::Instance,
     swapchain::{Surface, Swapchain},
     systems::{
@@ -956,7 +958,7 @@ pub(crate) fn render_frame(
     #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
     query: Query<&AABB>,
 ) {
-    microprofile::scope!("ecs", "render_frame");
+    scope!("ecs", "render_frame");
 
     let GltfPassData {
         ref mut gltf_pipeline,
@@ -1003,8 +1005,7 @@ pub(crate) fn render_frame(
 
     let mut command_session = command_pool.session(&renderer.device);
 
-    let command_buffer = command_session.record_to_specific(*command_buffers
-    .current(image_index.0));
+    let command_buffer = command_session.record_to_specific(*command_buffers.current(image_index.0));
     unsafe {
         let _main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
         renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
@@ -1057,7 +1058,7 @@ pub(crate) fn render_frame(
             .device
             .cmd_next_subpass(*command_buffer, vk::SubpassContents::INLINE);
         if runtime_config.debug_aabbs {
-            microprofile::scope!("ecs", "debug aabb pass");
+            scope!("ecs", "debug aabb pass");
 
             let _aabb_marker = command_buffer.debug_marker_around("aabb debug", [1.0, 0.0, 0.0, 1.0]);
             renderer.device.cmd_bind_pipeline(
@@ -1443,6 +1444,7 @@ impl<T: FromWorld> FromWorld for CopiedResource<T> {
 /// wrapper. This requires the wrapper to already be present on the [World].
 /// Remember to use [writeback_resource] if the mutations are made to the wrapper.
 pub(crate) fn copy_resource<T: Component + Clone>(from: Res<T>, mut to: ResMut<CopiedResource<T>>) {
+    #[allow(unused_variables)]
     let scope_name = format!("copy_resource<{}>", std::any::type_name::<T>());
     scope!("ecs", scope_name);
 
@@ -1454,6 +1456,7 @@ pub(crate) fn copy_resource<T: Component + Clone>(from: Res<T>, mut to: ResMut<C
 /// efficient as they require a writeback
 #[allow(dead_code)]
 pub(crate) fn writeback_resource<T: Component + Clone>(from: Res<CopiedResource<T>>, mut to: ResMut<T>) {
+    #[allow(unused_variables)]
     let scope_name = format!("writeback_resource<{}>", std::any::type_name::<T>());
     scope!("ecs", scope_name);
 
@@ -1614,7 +1617,7 @@ pub(crate) fn camera_matrices_upload(
     camera: Res<Camera>,
     mut camera_matrices: ResMut<CameraMatrices>,
 ) {
-    microprofile::scope!("ecs", "CameraMatricesUpload");
+    scope!("ecs", "CameraMatricesUpload");
     let mut model_mapped = camera_matrices
         .buffer
         .current_mut(image_index.0)

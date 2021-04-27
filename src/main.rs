@@ -46,9 +46,9 @@ use renderer::{
     synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, BaseColorDescriptorSet,
     BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
     CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfPassData,
-    GuiRenderData, ImageIndex, LoadedMesh, LocalTransferCommandPool, MainAttachments,
-    MainDescriptorPool, MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame,
-    Resized, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
+    GuiRenderData, ImageIndex, LoadedMesh, LocalTransferCommandPool, MainAttachments, MainDescriptorPool,
+    MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame, Resized,
+    ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
@@ -567,7 +567,7 @@ fn main() {
     'frame: loop {
         microprofile::flip!();
 
-        microprofile::scope!("game-loop", "all");
+        scope!("game-loop", "all");
 
         app.app.update();
 

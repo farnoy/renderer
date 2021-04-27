@@ -59,10 +59,10 @@ pub(crate) fn acquire_framebuffer(
     mut image_index: ResMut<ImageIndex>,
     resized: Res<Resized>,
 ) {
-    microprofile::scope!("ecs", "AcquireFramebuffer");
+    scope!("ecs", "AcquireFramebuffer");
 
     if resized.0 {
-        microprofile::scope!("ecs", "recreate framebuffer from resize");
+        scope!("ecs", "recreate framebuffer from resize");
         unsafe {
             renderer.device.device_wait_idle().unwrap();
         }
@@ -79,7 +79,7 @@ pub(crate) fn acquire_framebuffer(
         AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
 
     if swapchain_needs_recreating {
-        microprofile::scope!("ecs", "recreate framebuffer from out of date");
+        scope!("ecs", "recreate framebuffer from out of date");
         unsafe {
             renderer.device.device_wait_idle().unwrap();
         }
@@ -102,9 +102,9 @@ impl AcquireFramebuffer {
         present_data: &mut PresentData,
         image_index: &mut ImageIndex,
     ) -> bool {
-        microprofile::scope!("presentation", "acquire framebuffer");
+        scope!("presentation", "acquire framebuffer");
         let result = unsafe {
-            microprofile::scope!("presentation", "vkAcquireNextImageKHR");
+            scope!("presentation", "vkAcquireNextImageKHR");
             swapchain.ext.acquire_next_image(
                 swapchain.swapchain,
                 u64::MAX,
@@ -173,7 +173,7 @@ impl PresentFramebuffer {
         image_index: Res<ImageIndex>,
         mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
     ) {
-        microprofile::scope!("ecs", "PresentFramebuffer");
+        scope!("ecs", "PresentFramebuffer");
 
         {
             let wait_values = &[GraphicsTimeline::SceneDraw.as_of(renderer.frame_number)];

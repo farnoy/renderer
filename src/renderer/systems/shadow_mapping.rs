@@ -346,7 +346,7 @@ pub(crate) fn prepare_shadow_maps(
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
 ) {
-    microprofile::scope!("ecs", "shadow_mapping");
+    scope!("ecs", "shadow_mapping");
 
     renderer
         .shadow_mapping_timeline_semaphore
@@ -508,7 +508,7 @@ pub(crate) fn update_shadow_map_descriptors(
         );
     }
     {
-        microprofile::scope!("shadow mapping", "vkUpdateDescriptorSets");
+        scope!("shadow mapping", "vkUpdateDescriptorSets");
 
         unsafe {
             renderer.device.update_descriptor_sets(&write_descriptors, &[]);

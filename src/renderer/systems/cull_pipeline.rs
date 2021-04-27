@@ -8,6 +8,8 @@ use bevy_ecs::prelude::*;
 use microprofile::scope;
 use num_traits::ToPrimitive;
 
+#[cfg(not(feature = "no_profiling"))]
+use crate::renderer::helpers::MP_INDIAN_RED;
 #[cfg(feature = "shader_reload")]
 use crate::renderer::ReloadedShaders;
 use crate::{
@@ -19,7 +21,7 @@ use crate::{
     renderer::{
         device::{Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
         frame_graph,
-        helpers::{pick_lod, MP_INDIAN_RED},
+        helpers::pick_lod,
         shaders::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         CameraMatrices, ComputeTimeline, CopiedResource, DrawIndex, GltfMesh, LocalTransferCommandPool,
@@ -425,7 +427,7 @@ pub(crate) fn cull_pass(
     query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
     #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
 ) {
-    microprofile::scope!("ecs", "cull pass");
+    scope!("ecs", "cull pass");
 
     if runtime_config.debug_aabbs {
         let queue = renderer.device.compute_queue(0).lock();
