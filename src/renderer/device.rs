@@ -184,7 +184,8 @@ impl Device {
                 .shader_storage_image_array_non_uniform_indexing(true)
                 .timeline_semaphore(true)
                 .scalar_block_layout(true)
-                .descriptor_indexing(true);
+                .descriptor_indexing(true)
+                .descriptor_binding_sampled_image_update_after_bind(true);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()

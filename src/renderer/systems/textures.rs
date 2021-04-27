@@ -7,14 +7,14 @@ use microprofile::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        shaders, systems::present::ImageIndex, Device, DoubleBuffered, DrawIndex, GraphicsTimeline, Image, ImageView,
+        shaders, systems::present::ImageIndex, Device, DrawIndex, GraphicsTimeline, Image, ImageView,
         MainDescriptorPool, RenderFrame, Sampler, SwapchainIndexToFrameNumber,
     },
 };
 
 pub(crate) struct BaseColorDescriptorSet {
     pub(crate) layout: shaders::base_color_set::Layout,
-    pub(in super::super) set: DoubleBuffered<shaders::base_color_set::Set>,
+    pub(crate) set: shaders::base_color_set::Set,
     sampler: Sampler,
 }
 
@@ -30,8 +30,7 @@ impl BaseColorDescriptorSet {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &mut MainDescriptorPool) -> BaseColorDescriptorSet {
         let layout = shaders::base_color_set::Layout::new(&renderer.device);
 
-        let set = renderer
-            .new_buffered(|ix| shaders::base_color_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, ix));
+        let set = shaders::base_color_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, 0);
 
         let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -45,9 +44,7 @@ impl BaseColorDescriptorSet {
 
     pub(crate) fn destroy(self, device: &Device, main_descriptor_pool: &MainDescriptorPool) {
         self.sampler.destroy(device);
-        self.set
-            .into_iter()
-            .for_each(|s| s.destroy(&main_descriptor_pool.0, device));
+        self.set.destroy(&main_descriptor_pool.0, device);
         self.layout.destroy(device);
     }
 }
@@ -115,7 +112,7 @@ pub(crate) fn update_base_color_descriptors(
         unsafe {
             renderer.device.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::builder()
-                    .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
+                    .dst_set(base_color_descriptor_set.set.set.handle)
                     .dst_binding(0)
                     .dst_array_element(draw_id.0)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)

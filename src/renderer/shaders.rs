@@ -59,6 +59,7 @@ renderer_macros::define_renderer! {
             texture {
                 type COMBINED_IMAGE_SAMPLER
                 partially bound
+                update after bind
                 count 3072
                 stages [FRAGMENT]
             }

@@ -17,7 +17,9 @@ pub(crate) struct DescriptorSet {
 impl DescriptorPool {
     pub(super) fn new(device: &Device, max_sets: u32, pool_sizes: &[vk::DescriptorPoolSize]) -> DescriptorPool {
         let create_info = vk::DescriptorPoolCreateInfo::builder()
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .flags(
+                vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET | vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND,
+            )
             .max_sets(max_sets)
             .pool_sizes(pool_sizes);
 

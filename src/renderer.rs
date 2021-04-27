@@ -367,15 +367,15 @@ impl MainDescriptorPool {
         let descriptor_pool = renderer.device.new_descriptor_pool(3_000, &[
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 4096_00,
+                descriptor_count: 4096,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 16384_00,
+                descriptor_count: 16384,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: 4096_00,
+                descriptor_count: 4096,
             },
         ]);
         renderer
@@ -1077,7 +1077,7 @@ pub(crate) fn render_frame(
                 &model_data.model_set.current(image_index.0),
                 &camera_matrices.set.current(image_index.0),
                 &shadow_mapping_data.user_set.current(image_index.0),
-                &base_color_descriptor_set.set.current(image_index.0),
+                &base_color_descriptor_set.set,
             );
             renderer.device.cmd_bind_index_buffer(
                 *command_buffer,
@@ -1712,7 +1712,8 @@ pub(crate) fn graphics_stage() -> SystemStage {
     };
 
     stage
-        .with_system(update_base_color_descriptors.system().before(MainPass))
+        // uses update_after_bind descriptors so it needs to finish before submitting
+        .with_system(update_base_color_descriptors.system().before(SubmitMainPass))
         // should not need to be before SubmitMainPass or even Present, but crashes on amdvlk eventually
         .with_system(cull_pass_bypass.system().label(CullPassBypass).before(SubmitMainPass))
         // should not need to be before SubmitMainPass or even Present, but crashes on amdvlk eventually

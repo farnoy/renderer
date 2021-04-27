@@ -1085,11 +1085,12 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
     } = set;
 
     let binding_count = bindings.len();
-    let (binding_ix, partially_bound, desc_type, desc_count, stage) =
-        split5(bindings.iter().enumerate().map(|(ix, binding)| {
+    let (binding_ix, partially_bound, update_after_bind, desc_type, desc_count, stage) =
+        split6(bindings.iter().enumerate().map(|(ix, binding)| {
             let Binding {
                 descriptor_type,
                 partially_bound,
+                update_after_bind,
                 count,
                 stages,
                 ..
@@ -1097,6 +1098,7 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
             (
                 ix,
                 partially_bound.is_some(),
+                update_after_bind.is_some(),
                 quote! { vk::DescriptorType::#descriptor_type },
                 count,
                 stages
@@ -1177,20 +1179,29 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                         #(
                             {
                                 let _x = #binding_ix;
+                                let mut flags = vk::DescriptorBindingFlags::empty();
                                 if #partially_bound {
-                                    vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                                } else {
-                                    vk::DescriptorBindingFlags::default()
+                                    flags |= vk::DescriptorBindingFlags::PARTIALLY_BOUND;
                                 }
+                                if #update_after_bind {
+                                    flags |= vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
+                                }
+                                flags
                             }
                         ),*
                     ];
+                    let flags = if #( #update_after_bind )||* {
+                        vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
+                    } else {
+                        vk::DescriptorSetLayoutCreateFlags::empty()
+                    };
                     let mut binding_flags =
                         vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
                             .binding_flags(binding_flags);
                     let bindings = Layout::bindings();
                     let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
                         .bindings(&bindings)
+                        .flags(flags)
                         .push_next(&mut binding_flags);
                     let inner = device.new_descriptor_set_layout(&create_info);
                     device.set_object_name(inner.handle, #layout_debug_name);
@@ -1925,6 +1936,9 @@ mod kw {
     custom_keyword!(stages);
     custom_keyword!(partially);
     custom_keyword!(bound);
+    custom_keyword!(update);
+    custom_keyword!(after);
+    custom_keyword!(bind);
     custom_keyword!(pipelines);
     custom_keyword!(sets);
     custom_keyword!(data_types);
@@ -1955,6 +1969,8 @@ struct Binding {
     descriptor_type: Ident,
     #[inside(brace)]
     partially_bound: UnOption<Sequence<kw::partially, kw::bound>>,
+    #[inside(brace)]
+    update_after_bind: UnOption<Sequence<kw::update, Sequence<kw::after, kw::bind>>>,
     #[prefix(kw::count in brace)]
     #[inside(brace)]
     count: LitInt,
