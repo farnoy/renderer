@@ -24,7 +24,7 @@ impl Default for ShaderReload {
         let mut watcher = watcher(tx, Duration::from_millis(100)).unwrap();
         watcher
             .watch(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders"),
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("shaders"),
                 RecursiveMode::NonRecursive,
             )
             .unwrap();

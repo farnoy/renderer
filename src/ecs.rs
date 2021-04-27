@@ -33,10 +33,10 @@ pub(crate) mod systems {
     use winit::{self, event::MouseButton};
 
     pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
-    #[cfg(not(feature = "no_profiling"))]
-    pub(crate) use crate::renderer::MP_INDIAN_RED;
     #[cfg(feature = "shader_reload")]
     pub(crate) use crate::renderer::ReloadedShaders;
+    #[cfg(not(feature = "no_profiling"))]
+    pub(crate) use crate::renderer::MP_INDIAN_RED;
     use crate::{
         ecs::{
             components::{
@@ -346,7 +346,7 @@ pub(crate) mod systems {
                         for (path, (instant, _)) in reloaded_shaders.0.iter() {
                             let parsed = Path::new(path);
                             let relative = parsed
-                                .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders"))
+                                .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("shaders"))
                                 .unwrap();
                             let path_im = imgui::ImString::new(relative.to_str().unwrap());
                             ui.label_text(&im_str!("{:?}s", instant.elapsed().as_secs()), &path_im)

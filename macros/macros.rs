@@ -1441,11 +1441,14 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             shader_stage_to_file_extension(&shader_stage),
         ));
         let shader_path = shader_path.to_str().unwrap();
-        let shader_src_path = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join(format!(
-            "src/shaders/{}.{}",
-            pipe.name.to_string(),
-            shader_stage_to_file_extension(&shader_stage),
-        ));
+        let shader_src_path = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("src")
+            .join("shaders")
+            .join(format!(
+                "{}.{}",
+                pipe.name.to_string(),
+                shader_stage_to_file_extension(&shader_stage),
+            ));
         let shader_src_path = shader_src_path.to_str().unwrap();
         let shader_stage_path = format_ident!("{}_PATH", &shader_stage);
         spirv_code.extend_one(quote! {
