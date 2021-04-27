@@ -46,16 +46,17 @@ pub(crate) fn reload_shaders(shader_reload: NonSend<ShaderReload>, mut reloaded_
                         path.to_str().unwrap(),
                     ])
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
                     .spawn()
                     .unwrap();
 
                 // TODO: async, parallel & error recovery
-                let Output { stdout, .. } = c.wait_with_output().unwrap();
-                let now = Instant::now();
-                reloaded_shaders
-                    .0
-                    .insert(path.to_str().unwrap().to_owned(), (now, stdout));
+                let Output { stdout, status, .. } = c.wait_with_output().unwrap();
+                if status.success() {
+                    let now = Instant::now();
+                    reloaded_shaders
+                        .0
+                        .insert(path.to_str().unwrap().to_owned(), (now, stdout));
+                }
             }
             Ok(_) => {}
             Err(std::sync::mpsc::TryRecvError::Empty) => break,

@@ -1778,7 +1778,9 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         #[cfg(feature = "shader_reload")]
                         [
                             #(
-                                new_shaders[#stage_ix].1.as_ref().or(shaders[#stage_ix])
+                                new_shaders[#stage_ix].1.as_ref()
+                                    .or(shaders[#stage_ix])
+                                    .or(self.last_reloaded_shaders[#stage_ix].as_ref())
                             ),*
                         ],
                         #[cfg(not(feature = "shader_reload"))]
@@ -1789,13 +1791,16 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                     {
                         replacement.last_updates = [
                             #(
-                                new_shaders[#stage_ix].0.clone()
+                                new_shaders[#stage_ix].1.as_ref()
+                                    .map(|s| new_shaders[#stage_ix].0.clone())
+                                    .unwrap_or(self.last_updates[#stage_ix])
                             ),*
                         ];
 
                         replacement.last_reloaded_shaders = [
                             #(
                                 new_shaders[#stage_ix].1.take()
+                                    .or_else(|| self.last_reloaded_shaders[#stage_ix].take())
                             ),*
                         ];
                     }
