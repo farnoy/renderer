@@ -429,7 +429,7 @@ impl MainAttachments {
                     vk::SampleCountFlags::TYPE_4,
                     vk::ImageTiling::OPTIMAL,
                     vk::ImageLayout::UNDEFINED,
-                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 );
                 renderer.device.set_object_name(im.handle, &format!("Depth RT[{}]", ix));
@@ -448,7 +448,7 @@ impl MainAttachments {
                     vk::SampleCountFlags::TYPE_4,
                     vk::ImageTiling::OPTIMAL,
                     vk::ImageLayout::UNDEFINED,
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC, // todo transfer needed?
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 );
                 renderer.device.set_object_name(im.handle, &format!("Color RT[{}]", ix));
