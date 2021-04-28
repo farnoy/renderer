@@ -50,6 +50,7 @@ impl ShadowMappingData {
             [None],
             &renderpass.renderpass,
             0,
+            vk::SampleCountFlags::TYPE_1,
         );
 
         let depth_image = renderer.device.new_image(

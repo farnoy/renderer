@@ -250,18 +250,9 @@ struct Pass {
     #[brace]
     #[allow(dead_code)]
     brace: Brace,
+    #[prefix(kw::attachments in brace)]
     #[inside(brace)]
-    #[allow(dead_code)]
-    color_kw: Option<kw::color>,
-    #[inside(brace)]
-    #[parse_if(color_kw.is_some())]
-    color: Option<Unbracket<UnArray<Ident>>>,
-    #[inside(brace)]
-    #[allow(dead_code)]
-    depth_stencil_kw: Option<kw::depth_stencil>,
-    #[inside(brace)]
-    #[parse_if(depth_stencil_kw.is_some())]
-    depth_stencil: Option<Ident>,
+    attachments: Unbracket<UnArray<Ident>>,
     #[prefix(kw::layouts in brace)]
     #[brace]
     #[inside(brace)]
@@ -300,6 +291,12 @@ struct Subpass {
     #[inside(brace)]
     #[parse_if(depth_stencil_kw.is_some())]
     depth_stencil: Option<Unbrace<ArrowPair<Ident, Ident>>>,
+    #[inside(brace)]
+    #[allow(dead_code)]
+    resolve_kw: Option<kw::resolve>,
+    #[inside(brace)]
+    #[parse_if(resolve_kw.is_some())]
+    resolve: Option<Unbracket<UnArray<ArrowPair<Ident, Ident>>>>,
 }
 
 #[derive(Parse)]
@@ -350,20 +347,6 @@ impl Parse for StoreOp {
     }
 }
 
-impl Pass {
-    fn attachments(&self) -> Vec<Ident> {
-        let zero = vec![];
-        self.color
-            .as_ref()
-            .map(|Unbracket(UnArray(color_attachments))| color_attachments)
-            .unwrap_or(&zero)
-            .iter()
-            .chain(self.depth_stencil.iter())
-            .cloned()
-            .collect()
-    }
-}
-
 #[derive(Parse)]
 struct FrameInput {
     visibility: Visibility,
@@ -386,6 +369,13 @@ struct FrameInput {
     formats_brace: Brace,
     #[inside(formats_brace)]
     formats: UnArray<StaticOrDyn<Expr>>,
+    #[prefix(kw::samples in brace)]
+    #[brace]
+    #[inside(brace)]
+    #[allow(dead_code)]
+    samples_brace: Brace,
+    #[inside(samples_brace)]
+    samples: UnArray<LitInt>,
     #[prefix(kw::passes in brace)]
     #[brace]
     #[inside(brace)]
@@ -442,6 +432,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         visibility,
         attachments,
         formats,
+        samples,
         passes: UnArray(passes),
         async_passes: UnArray(async_passes),
         dependencies,
@@ -557,7 +548,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|(pass, wait_instance)| {
             let pass_name = &pass.name;
             let format_param_ty = pass
-                .attachments()
+                .attachments
                 .iter()
                 .filter(|attachment| {
                     let attachment_ix = attachments.iter().position(|at| at == *attachment).unwrap();
@@ -567,7 +558,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .map(|_| quote!(vk::Format))
                 .collect_vec();
             let attachment_desc = pass
-                .attachments()
+                .attachments
                 .iter()
                 .map(|attachment| {
                     let attachment_ix = attachments.iter().position(|at| at == attachment).unwrap();
@@ -597,10 +588,11 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         }
                         StaticOrDyn::Static(format) => quote!(vk::Format::#format),
                     };
+                    let samples = format_ident!("TYPE_{}", samples.0[attachment_ix].base10_parse::<u8>().unwrap());
                     quote! {
                         vk::AttachmentDescription::builder()
                             .format(#format)
-                            .samples(vk::SampleCountFlags::TYPE_1)
+                            .samples(vk::SampleCountFlags::#samples)
                             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                             .initial_layout(vk::ImageLayout::#initial_layout)
@@ -684,8 +676,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
-    let pass_attachments = pass.attachments();
-    let passes_that_need_clearing = pass_attachments.iter().enumerate().map(|(ix, attachment)| {
+    let passes_that_need_clearing = pass.attachments.iter().enumerate().map(|(ix, attachment)| {
         let Sequence((_, ArrowPair((Sequence((load_op, _)), _)))) = pass
             .layouts
             .iter()
@@ -720,7 +711,8 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         })
         .collect_vec();
     let passes_that_need_clearing_len = passes_that_need_clearing_compact.len();
-    let format_param_ty = pass_attachments
+    let format_param_ty = pass
+        .attachments
         .iter()
         .filter(|attachment| {
             let attachment_ix = frame_input.attachments.iter().position(|at| at == *attachment).unwrap();
@@ -742,8 +734,21 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
                 .iter()
                 .map(|ArrowPair(pair)| pair.clone()),
         );
+        let (resolve_attachment_name, resolve_attachment_layout) = split2(
+            subpass
+                .resolve
+                .as_ref()
+                .unwrap_or(&Unbracket(UnArray(vec![])))
+                .iter()
+                .map(|ArrowPair(pair)| pair.clone()),
+        );
+        assert!(
+            resolve_attachment_name.is_empty() || (color_attachment_name.len() == resolve_attachment_name.len()),
+            "If resolving any attachments, must provide one for\
+            each color attachment, ATTACHMENT_UNUSED not supported yet"
+        );
         let color_attachment_ix = color_attachment_name.iter().map(|needle| {
-            pass.attachments()
+            pass.attachments
                 .iter()
                 .position(|candidate| candidate == needle)
                 .expect("subpass color refers to nonexistent attachment")
@@ -756,10 +761,16 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
                 .map(|Unbrace(ArrowPair(pair))| pair.clone()),
         );
         let depth_stencil_attachment_ix = depth_stencil_attachment_name.iter().map(|needle| {
-            pass.attachments()
+            pass.attachments
                 .iter()
                 .position(|candidate| candidate == needle)
                 .expect("subpass depth stencil refers to nonexistent attachment")
+        });
+        let resolve_attachment_ix = resolve_attachment_name.iter().map(|needle| {
+            pass.attachments
+                .iter()
+                .position(|candidate| candidate == needle)
+                .expect("subpass color refers to nonexistent attachment")
         });
 
         let color_attachment_var = format_ident!(
@@ -777,6 +788,25 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
                 )
             })
             .collect_vec();
+        let resolve_attachment_var = resolve_attachment_name
+            .iter()
+            .map(|_| {
+                format_ident!(
+                    "resolve_attachments_{}_{}",
+                    pass.name.to_string(),
+                    subpass.name.to_string()
+                )
+            })
+            .collect_vec();
+
+        let resolve_attachment_references = quote! {
+            #(
+                vk::AttachmentReference {
+                    attachment: #resolve_attachment_ix as u32,
+                    layout: vk::ImageLayout::#resolve_attachment_layout,
+                }
+            ),*
+        };
 
         (
             quote! {
@@ -795,12 +825,17 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
                             layout: vk::ImageLayout::#depth_stencil_attachment_layout,
                         };
                 )*
+                #(
+                    let #resolve_attachment_var = &[
+                        #resolve_attachment_references
+                    ];
+                )*
             },
             quote! {
                 vk::SubpassDescription::builder()
                     .color_attachments(#color_attachment_var)
                     #( .depth_stencil_attachment(&#depth_stencil_var) )*
-                    // #( #bind_depth_stencil  )*
+                    #( .resolve_attachments(#resolve_attachment_var) )*
                     .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
                     .build()
             },
@@ -924,7 +959,7 @@ fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         frame_input.name.to_string(),
         pass.name.to_string()
     );
-    let attachment_count = pass.attachments().len();
+    let attachment_count = pass.attachments.len();
 
     quote! {
         pub(crate) struct Framebuffer {
@@ -1463,17 +1498,28 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     let stage_count = specific.stages().len();
 
     let pipe_arguments = match specific {
-        SpecificPipe::Graphics(_) => {
+        SpecificPipe::Graphics(specific) => {
+            let dynamic_samples =
+                extract_optional_dyn(&specific.samples, quote!(dynamic_samples: vk::SampleCountFlags,))
+                    .unwrap_or(quote!());
             quote! {
                 renderpass: &device::RenderPass,
                 subpass: u32,
+                #dynamic_samples
             }
         }
         SpecificPipe::Compute(_) => quote!(),
     };
     let pipe_argument_short = match specific {
-        SpecificPipe::Graphics(_) => {
-            vec![quote!(renderpass), quote!(subpass)]
+        SpecificPipe::Graphics(specific) => {
+            let mut args = vec![quote!(renderpass), quote!(subpass)];
+            match extract_optional_dyn(&specific.samples, quote!(dynamic_samples)) {
+                Some(arg) => {
+                    args.push(arg);
+                }
+                None => {}
+            }
+            args
         }
         SpecificPipe::Compute(_) => vec![],
     };
@@ -1560,6 +1606,14 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                 &specific.depth_compare_op,
                 quote!(vk::DynamicState::DEPTH_COMPARE_OP_EXT,),
             );
+            let sample_count = match &specific.samples {
+                Some(StaticOrDyn::Static(c)) => {
+                    let s = format_ident!("TYPE_{}", c.base10_parse::<u8>().unwrap());
+                    quote!(vk::SampleCountFlags::#s)
+                }
+                Some(StaticOrDyn::Dyn) => quote!(dynamic_samples),
+                None => quote!(vk::SampleCountFlags::TYPE_1),
+            };
 
             quote! {
                 let stage_shaders = [
@@ -1601,7 +1655,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         )
                         .multisample_state(
                             &vk::PipelineMultisampleStateCreateInfo::builder()
-                                .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                                .rasterization_samples(#sample_count)
                                 .build(),
                         )
                         .depth_stencil_state(
@@ -1962,10 +2016,12 @@ mod kw {
     custom_keyword!(discard);
     custom_keyword!(color);
     custom_keyword!(depth_stencil);
+    custom_keyword!(resolve);
     custom_keyword!(preserve);
     custom_keyword!(input);
     custom_keyword!(attachments);
     custom_keyword!(formats);
+    custom_keyword!(samples);
     custom_keyword!(passes);
     custom_keyword!(retain);
     custom_keyword!(layouts);
@@ -2048,6 +2104,9 @@ struct Pipe {
 }
 #[derive(Parse, Debug)]
 struct GraphicsPipe {
+    samples_kw: Option<kw::samples>,
+    #[parse_if(samples_kw.is_some())]
+    samples: Option<StaticOrDyn<LitInt>>,
     vertex_inputs_kw: Option<kw::vertex_inputs>,
     #[parse_if(vertex_inputs_kw.is_some())]
     vertex_inputs: Option<Unbracket<UnArray<NamedField>>>,

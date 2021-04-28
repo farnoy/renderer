@@ -131,6 +131,7 @@ renderer_macros::define_renderer! {
         depth_pipe {
             descriptors [model_set, camera_set]
             graphics
+            samples dyn
             vertex_inputs [position: vec3]
             stages [VERTEX]
             cull mode BACK
@@ -145,6 +146,7 @@ renderer_macros::define_renderer! {
                 11 => shadow_map_dim_squared: u32,
             ]
             graphics
+            samples 4
             vertex_inputs [position: vec3, normal: vec3, uv: vec2]
             stages [VERTEX, FRAGMENT]
             cull mode BACK
@@ -154,12 +156,14 @@ renderer_macros::define_renderer! {
         debug_aabb {
             descriptors [camera_set]
             graphics
+            samples 4
             stages [VERTEX, FRAGMENT]
             polygon mode LINE
         },
         imgui_pipe {
             descriptors [imgui_set]
             graphics
+            samples 4
             vertex_inputs [pos: vec2, uv: vec2, col: vec4]
             stages [VERTEX, FRAGMENT]
         }

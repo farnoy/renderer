@@ -134,17 +134,25 @@ renderer_macros::define_frame! {
     pub(crate) frame_graph {
         attachments {
             Color,
+            PresentSurface,
             Depth,
             ShadowMapAtlas
         }
         formats {
+            R8G8B8A8_UNORM,
             dyn,
             D16_UNORM,
             D16_UNORM
         }
+        samples {
+            4,
+            1,
+            4,
+            1
+        }
         passes {
             ShadowMapping {
-                depth_stencil ShadowMapAtlas
+                attachments [ShadowMapAtlas]
                 layouts {
                     ShadowMapAtlas load DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
                                 => store DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
@@ -156,11 +164,11 @@ renderer_macros::define_frame! {
                 }
             },
             Main {
-                color [Color]
-                depth_stencil Depth
+                attachments [Color, Depth, PresentSurface]
                 layouts {
                     Depth clear UNDEFINED => discard DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-                    Color clear UNDEFINED => store PRESENT_SRC_KHR
+                    Color clear UNDEFINED => discard COLOR_ATTACHMENT_OPTIMAL,
+                    PresentSurface clear UNDEFINED => store PRESENT_SRC_KHR
                 }
                 subpasses {
                     DepthPrePass {
@@ -172,6 +180,7 @@ renderer_macros::define_frame! {
                     },
                     GuiPass {
                         color [Color => COLOR_ATTACHMENT_OPTIMAL]
+                        resolve [PresentSurface => COLOR_ATTACHMENT_OPTIMAL]
                     }
                 }
                 dependencies {
@@ -399,6 +408,9 @@ pub(crate) struct MainAttachments {
     #[allow(unused)]
     depth_images: Vec<Image>,
     depth_image_views: Vec<ImageView>,
+    #[allow(unused)]
+    color_images: Vec<Image>,
+    color_image_views: Vec<ImageView>,
 }
 
 impl MainAttachments {
@@ -414,15 +426,32 @@ impl MainAttachments {
                         height: swapchain.height,
                         depth: 1,
                     },
-                    vk::SampleCountFlags::TYPE_1,
+                    vk::SampleCountFlags::TYPE_4,
                     vk::ImageTiling::OPTIMAL,
                     vk::ImageLayout::UNDEFINED,
                     vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 );
-                renderer
-                    .device
-                    .set_object_name(im.handle, &format!("Depth Target[{}]", ix));
+                renderer.device.set_object_name(im.handle, &format!("Depth RT[{}]", ix));
+                im
+            })
+            .collect::<Vec<_>>();
+        let color_images = (0..images.len())
+            .map(|ix| {
+                let im = renderer.device.new_image(
+                    vk::Format::R8G8B8A8_UNORM,
+                    vk::Extent3D {
+                        width: swapchain.width,
+                        height: swapchain.height,
+                        depth: 1,
+                    },
+                    vk::SampleCountFlags::TYPE_4,
+                    vk::ImageTiling::OPTIMAL,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC, // todo transfer needed?
+                    VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                );
+                renderer.device.set_object_name(im.handle, &format!("Color RT[{}]", ix));
                 im
             })
             .collect::<Vec<_>>();
@@ -451,6 +480,29 @@ impl MainAttachments {
                 ImageView { handle }
             })
             .collect::<Vec<_>>();
+        let color_image_views = color_images
+            .iter()
+            .map(|ref image| {
+                let create_view_info = vk::ImageViewCreateInfo::builder()
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .components(vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::IDENTITY,
+                        g: vk::ComponentSwizzle::IDENTITY,
+                        b: vk::ComponentSwizzle::IDENTITY,
+                        a: vk::ComponentSwizzle::IDENTITY,
+                    })
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image(image.handle);
+                renderer.device.new_image_view(&create_view_info)
+            })
+            .collect::<Vec<_>>();
         let depth_image_views = depth_images
             .iter()
             .map(|ref image| {
@@ -471,8 +523,7 @@ impl MainAttachments {
                         layer_count: 1,
                     })
                     .image(image.handle);
-                let handle = unsafe { renderer.device.create_image_view(&create_view_info, None).unwrap() };
-                ImageView { handle }
+                renderer.device.new_image_view(&create_view_info)
             })
             .collect::<Vec<_>>();
 
@@ -481,6 +532,8 @@ impl MainAttachments {
             swapchain_format: swapchain.surface.surface_format.format,
             depth_images,
             depth_image_views,
+            color_images,
+            color_image_views,
         }
     }
 
@@ -491,8 +544,14 @@ impl MainAttachments {
         for view in self.depth_image_views.into_iter() {
             view.destroy(device);
         }
+        for view in self.color_image_views.into_iter() {
+            view.destroy(device);
+        }
         for depth in self.depth_images.into_iter() {
             depth.destroy(device);
+        }
+        for color in self.color_images.into_iter() {
+            color.destroy(device);
         }
     }
 }
@@ -522,9 +581,14 @@ impl MainFramebuffer {
             .swapchain_image_views
             .iter()
             .zip(main_attachments.depth_image_views.iter())
+            .zip(main_attachments.color_image_views.iter())
             .enumerate()
-            .map(|(ix, (present_image_view, depth_image_view))| {
-                let framebuffer_attachments = [present_image_view.handle, depth_image_view.handle];
+            .map(|(ix, ((present_image_view, depth_image_view), color_image_view))| {
+                let framebuffer_attachments = [
+                    color_image_view.handle,
+                    depth_image_view.handle,
+                    present_image_view.handle,
+                ];
                 frame_graph::Main::Framebuffer::new(
                     renderer,
                     &main_renderpass.renderpass,
@@ -699,6 +763,7 @@ impl DepthPassData {
             [None],
             &main_renderpass.renderpass.renderpass,
             0,
+            vk::SampleCountFlags::TYPE_4,
         );
 
         DepthPassData {
@@ -1040,6 +1105,9 @@ pub(crate) fn render_frame(
                 },
                 vk::ClearValue {
                     depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                },
+                vk::ClearValue {
+                    color: vk::ClearColorValue { float32: [0.0; 4] },
                 },
             ],
         );

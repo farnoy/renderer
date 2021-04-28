@@ -32,17 +32,20 @@ impl Surface {
                 .get_physical_device_surface_formats(physical_device, surface)
                 .unwrap()
         };
+        let desired_format = vk::SurfaceFormatKHR {
+            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            format: vk::Format::R8G8B8A8_UNORM,
+        };
         let surface_format = surface_formats
             .iter()
-            .map(|sfmt| match sfmt.format {
-                vk::Format::UNDEFINED => vk::SurfaceFormatKHR {
-                    format: vk::Format::B8G8R8_UNORM,
-                    color_space: sfmt.color_space,
-                },
-                _ => *sfmt,
-            })
-            .next()
-            .expect("Unable to find suitable surface format.");
+            .cloned()
+            .find(|&sfmt| sfmt == desired_format)
+            .unwrap_or_else(|| {
+                surface_formats
+                    .first()
+                    .cloned()
+                    .expect("Unable to find suitable surface format.")
+            });
 
         Surface {
             surface,
