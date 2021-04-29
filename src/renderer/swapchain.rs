@@ -68,18 +68,31 @@ pub(crate) struct Swapchain {
     pub(crate) surface: Surface,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) desired_image_count: u32,
+    pub(crate) supports_present_from_compute: bool,
 }
 
 impl Swapchain {
     pub(crate) fn new(instance: &Arc<Instance>, device: &Device, surface: Surface) -> Swapchain {
+        let supports_present_from_compute = unsafe {
+            surface
+                .ext
+                .get_physical_device_surface_support(
+                    device.physical_device,
+                    device.compute_queue_family,
+                    surface.surface,
+                )
+                .unwrap()
+        };
         let surface_capabilities = unsafe {
             surface
                 .ext
                 .get_physical_device_surface_capabilities(device.physical_device, surface.surface)
                 .unwrap()
         };
+        println!("new swapchain surface capabilities {:?}", surface_capabilities);
         let desired_image_count = na::clamp(
-            3,
+            if cfg!(feature = "uncapped") { 999 } else { 3 },
             surface_capabilities.min_image_count,
             surface_capabilities.max_image_count,
         );
@@ -124,6 +137,8 @@ impl Swapchain {
             surface,
             width: surface_resolution.width,
             height: surface_resolution.height,
+            desired_image_count,
+            supports_present_from_compute,
         }
     }
 
@@ -135,11 +150,6 @@ impl Swapchain {
                 .unwrap()
         };
         println!("resizing surface capabilities {:?}", surface_capabilities);
-        let desired_image_count = na::clamp(
-            3,
-            surface_capabilities.min_image_count,
-            surface_capabilities.max_image_count,
-        );
         let pre_transform = if surface_capabilities
             .supported_transforms
             .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
@@ -150,7 +160,7 @@ impl Swapchain {
         };
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
             .surface(self.surface.surface)
-            .min_image_count(desired_image_count)
+            .min_image_count(self.desired_image_count)
             .image_color_space(self.surface.surface_format.color_space)
             .image_format(self.surface.surface_format.format)
             .image_extent(surface_capabilities.current_extent)

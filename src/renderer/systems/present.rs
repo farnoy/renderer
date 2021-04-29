@@ -104,7 +104,7 @@ impl AcquireFramebuffer {
     ) -> bool {
         scope!("presentation", "acquire framebuffer");
         let result = unsafe {
-            scope!("presentation", "vkAcquireNextImageKHR");
+            scope!("vk", "vkAcquireNextImageKHR");
             swapchain.ext.acquire_next_image(
                 swapchain.swapchain,
                 u64::MAX,
@@ -175,7 +175,14 @@ impl PresentFramebuffer {
     ) {
         scope!("ecs", "PresentFramebuffer");
 
+        let queue = if swapchain.supports_present_from_compute {
+            renderer.device.compute_queue(0).lock()
+        } else {
+            renderer.device.graphics_queue().lock()
+        };
+
         {
+            scope!("present", "first_submit");
             let wait_values = &[GraphicsTimeline::SceneDraw.as_of(renderer.frame_number)];
 
             // TODO: only needed to avoid segfault in vk validation layers
@@ -186,7 +193,6 @@ impl PresentFramebuffer {
                 .signal_semaphore_values(signal_values);
 
             let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-            let queue = renderer.device.graphics_queue().lock();
             let signal_semaphores = &[present_data.render_complete_semaphore.handle];
             let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE];
             let submit = vk::SubmitInfo::builder()
@@ -197,6 +203,8 @@ impl PresentFramebuffer {
                 .build();
 
             unsafe {
+                scope!("vk", "vkQueueSubmit");
+
                 renderer
                     .device
                     .queue_submit(*queue, &[submit], vk::Fence::null())
@@ -212,8 +220,11 @@ impl PresentFramebuffer {
             .swapchains(swapchains)
             .image_indices(image_indices);
 
-        let queue = renderer.device.graphics_queue().lock();
-        let result = unsafe { swapchain.ext.queue_present(*queue, &present_info) };
+        let result = {
+            scope!("vk", "vkQueuePresentKHR");
+            unsafe { swapchain.ext.queue_present(*queue, &present_info) }
+        };
+        drop(queue);
         match result {
             Ok(false) => (),
             Ok(true) => println!("PresentFramebuffer image suboptimal"),
@@ -221,7 +232,6 @@ impl PresentFramebuffer {
             Err(vk::Result::ERROR_DEVICE_LOST) => panic!("device lost in PresentFramebuffer"),
             _ => panic!("unknown condition in PresentFramebuffer"),
         }
-        drop(queue);
 
         swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;
     }

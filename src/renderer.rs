@@ -18,6 +18,7 @@ use ash::{
 };
 use bevy_ecs::{component::Component, prelude::*};
 use microprofile::scope;
+use num_traits::ToPrimitive;
 use static_assertions::const_assert_eq;
 
 use self::device::{
@@ -201,17 +202,18 @@ renderer_macros::define_frame! {
             ConsolidateMeshBuffers,
         }
         dependencies {
-            ShadowMapping => Main,
-
+            // These passes have resources that are not double buffered, so they can't start processing until the
+            // previous frame frame finished using them. This should perhaps become implicit, there's no use case
+            // so far for overlapping computation across frame boundaries
             PresentationAcquire => ShadowMapping,
-            Main => ShadowMapping [last_frame], // because the depth RT is not double buffered
-            Main => TransferCull [last_frame], // cull data is not double buffered
-            Main => ComputeCull [last_frame],
+            PresentationAcquire => TransferCull,
+            PresentationAcquire => ComputeCull,
+            PresentationAcquire => ConsolidateMeshBuffers,
+
             TransferCull => Main,
             ComputeCull => Main,
             ConsolidateMeshBuffers => Main,
-            // because the buffers are not double buffered
-            ConsolidateMeshBuffers => ConsolidateMeshBuffers [last_frame],
+            ShadowMapping => Main,
         }
         // TODO: validate so that if two passes signal the same timeline,
         //       there must be a proper dependency between them
@@ -341,7 +343,7 @@ impl RenderFrame {
             device.new_semaphore_timeline(TransferTimeline::Perform.as_of_last(frame_number));
         device.set_object_name(transfer_timeline_semaphore.handle, "Transfer timeline semaphore");
 
-        let buffer_count = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap().len() };
+        let buffer_count = swapchain.desired_image_count.to_usize().unwrap();
 
         (
             RenderFrame {
@@ -418,8 +420,9 @@ pub(crate) struct MainAttachments {
 impl MainAttachments {
     pub(crate) fn new(renderer: &RenderFrame, swapchain: &Swapchain) -> MainAttachments {
         let images = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap() };
+        assert!(images.len().to_u32().unwrap() >= swapchain.desired_image_count);
         println!("swapchain images len {}", images.len());
-        let depth_images = (0..images.len())
+        let depth_images = (0..swapchain.desired_image_count)
             .map(|ix| {
                 let im = renderer.device.new_image(
                     vk::Format::D16_UNORM,
@@ -438,7 +441,7 @@ impl MainAttachments {
                 im
             })
             .collect::<Vec<_>>();
-        let color_images = (0..images.len())
+        let color_images = (0..swapchain.desired_image_count)
             .map(|ix| {
                 let im = renderer.device.new_image(
                     vk::Format::R8G8B8A8_UNORM,
