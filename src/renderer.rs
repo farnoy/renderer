@@ -204,7 +204,9 @@ renderer_macros::define_frame! {
             ShadowMapping => Main,
 
             PresentationAcquire => ShadowMapping,
-            ShadowMapping => ShadowMapping [last_frame], // because the depth RT is not double buffered
+            Main => ShadowMapping [last_frame], // because the depth RT is not double buffered
+            Main => TransferCull [last_frame], // cull data is not double buffered
+            Main => ComputeCull [last_frame],
             TransferCull => Main,
             ComputeCull => Main,
             ConsolidateMeshBuffers => Main,
@@ -1169,7 +1171,7 @@ pub(crate) fn render_frame(
             );
             renderer.device.cmd_bind_index_buffer(
                 *command_buffer,
-                cull_pass_data.culled_index_buffer.current(image_index.0).buffer.handle,
+                cull_pass_data.culled_index_buffer.buffer.handle,
                 0,
                 vk::IndexType::UINT32,
             );
@@ -1185,17 +1187,9 @@ pub(crate) fn render_frame(
             );
             renderer.device.cmd_draw_indexed_indirect_count(
                 *command_buffer,
-                cull_pass_data
-                    .culled_commands_buffer
-                    .current(image_index.0)
-                    .buffer
-                    .handle,
+                cull_pass_data.culled_commands_buffer.buffer.handle,
                 0,
-                cull_pass_data
-                    .culled_commands_count_buffer
-                    .current(image_index.0)
-                    .buffer
-                    .handle,
+                cull_pass_data.culled_commands_count_buffer.buffer.handle,
                 0,
                 total,
                 size_of::<shaders::VkDrawIndexedIndirectCommand>() as u32,
@@ -1732,7 +1726,7 @@ fn depth_only_pass(
         );
         renderer.device.cmd_bind_index_buffer(
             **command_buffer,
-            cull_pass_data.culled_index_buffer.current(image_index.0).buffer.handle,
+            cull_pass_data.culled_index_buffer.buffer.handle,
             0,
             vk::IndexType::UINT32,
         );
@@ -1744,17 +1738,9 @@ fn depth_only_pass(
         );
         renderer.device.cmd_draw_indexed_indirect_count(
             **command_buffer,
-            cull_pass_data
-                .culled_commands_buffer
-                .current(image_index.0)
-                .buffer
-                .handle,
+            cull_pass_data.culled_commands_buffer.buffer.handle,
             0,
-            cull_pass_data
-                .culled_commands_count_buffer
-                .current(image_index.0)
-                .buffer
-                .handle,
+            cull_pass_data.culled_commands_count_buffer.buffer.handle,
             0,
             shaders::cull_set::bindings::indirect_commands::SIZE as u32
                 / size_of::<shaders::VkDrawIndexedIndirectCommand>() as u32,
