@@ -480,6 +480,8 @@ pub(crate) fn update_shadow_map_descriptors(
     shadow_mapping: Res<ShadowMappingData>,
     shadow_query: Query<&ShadowMappingLightMatrices, With<Light>>,
 ) {
+    scope!("ecs", "update_shadow_map_descriptors");
+
     renderer
         .graphics_timeline_semaphore
         .wait(
@@ -508,11 +510,8 @@ pub(crate) fn update_shadow_map_descriptors(
                 .build(),
         );
     }
-    {
-        scope!("shadow mapping", "vkUpdateDescriptorSets");
 
-        unsafe {
-            renderer.device.update_descriptor_sets(&write_descriptors, &[]);
-        }
+    unsafe {
+        renderer.device.update_descriptor_sets(&write_descriptors, &[]);
     }
 }

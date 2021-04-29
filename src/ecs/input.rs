@@ -96,7 +96,11 @@ impl InputHandler {
         let mut toggle_fly_mode = false;
         resized.0 = false;
         events_loop.run_return(|event, _window_target, control_flow| {
-            imgui_platform.handle_event(gui.imgui.io_mut(), &renderer.instance.window, &event);
+            scope!("input", "event_loop");
+            {
+                scope!("input", "imgui handle_event");
+                imgui_platform.handle_event(gui.imgui.io_mut(), &renderer.instance.window, &event);
+            }
             match event {
                 Event::WindowEvent {
                     event: WindowEvent::Resized(PhysicalSize { width, height }),
@@ -183,8 +187,12 @@ impl InputHandler {
             *control_flow = winit::event_loop::ControlFlow::Exit;
         });
         runtime_config.fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
-        imgui_platform
-            .prepare_frame(gui.imgui.io_mut(), &renderer.instance.window)
-            .expect("Failed to prepare frame");
+
+        {
+            scope!("input", "imgui prepare_frame");
+            imgui_platform
+                .prepare_frame(gui.imgui.io_mut(), &renderer.instance.window)
+                .expect("Failed to prepare frame");
+        }
     }
 }
