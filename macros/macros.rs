@@ -880,6 +880,8 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
             }
         });
 
+    let attachment_count = pass.attachments.len();
+
     quote! {
         // TODO: beginning & clearing
         pub(crate) struct RenderPass {
@@ -919,17 +921,21 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
                 framebuffer: &Framebuffer, // TODO: or compatible
                 command_buffer: vk::CommandBuffer,
                 render_area: vk::Rect2D,
+                attachments: &[vk::ImageView; #attachment_count],
                 clear_values: &[vk::ClearValue; #passes_that_need_clearing_len],
             ) {
                 use microprofile::scope;
                 scope!("macros", #renderpass_begin);
 
+                let mut attachment_info = vk::RenderPassAttachmentBeginInfo::builder()
+                    .attachments(attachments);
                 let clear_values = [
                     #(
                         #passes_that_need_clearing_fetch
                     ),*
                 ];
                 let begin_info = vk::RenderPassBeginInfo::builder()
+                    .push_next(&mut attachment_info)
                     .render_pass(self.renderpass.handle)
                     .framebuffer(framebuffer.framebuffer.handle)
                     .render_area(render_area)
@@ -960,6 +966,41 @@ fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         pass.name.to_string()
     );
     let attachment_count = pass.attachments.len();
+    let attachment_ix = pass.attachments.iter().enumerate().map(|(ix, _)| ix).collect_vec();
+
+    let dynamic_attachments = frame_input
+        .attachments
+        .iter()
+        .zip(frame_input.formats.iter())
+        .enumerate()
+        .flat_map(|(ix, (_, format))| if format.is_dyn() { Some(ix) } else { None })
+        .collect::<Vec<_>>();
+    let format_param_ty = pass
+        .attachments
+        .iter()
+        .filter(|attachment| {
+            let attachment_ix = frame_input.attachments.iter().position(|at| at == *attachment).unwrap();
+            let format = &frame_input.formats[attachment_ix];
+            format.is_dyn()
+        })
+        .map(|_| quote!(vk::Format))
+        .collect_vec();
+    let attachment_formats_expr = pass
+        .attachments
+        .iter()
+        .map(|attachment| {
+            let attachment_ix = frame_input.attachments.iter().position(|at| at == attachment).unwrap();
+            let format = &frame_input.formats[attachment_ix];
+            match format {
+                StaticOrDyn::Dyn => {
+                    let dyn_ix = dynamic_attachments.binary_search(&attachment_ix).unwrap();
+                    let index = syn::Index::from(dyn_ix);
+                    quote!(dyn_attachment_formats.#index)
+                }
+                StaticOrDyn::Static(format) => quote!(vk::Format::#format),
+            }
+        })
+        .collect_vec();
 
     quote! {
         pub(crate) struct Framebuffer {
@@ -970,13 +1011,32 @@ fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
             pub(crate) fn new(
                 renderer: &RenderFrame,
                 renderpass: &RenderPass,
-                attachments: &[vk::ImageView; #attachment_count],
+                image_usages: &[vk::ImageUsageFlags; #attachment_count],
+                dyn_attachment_formats: (#(#format_param_ty,)*),
                 (width, height): (u32, u32),
-                ix: u32,
             ) -> Self {
+                let view_formats: [[vk::Format; 1]; #attachment_count] = [
+                    #([#attachment_formats_expr]),*
+                ];
+                let image_infos: [vk::FramebufferAttachmentImageInfo; #attachment_count] = [
+                    #(
+                        vk::FramebufferAttachmentImageInfo::builder()
+                            .view_formats(&view_formats[#attachment_ix])
+                            .width(width)
+                            .height(height)
+                            .layer_count(1)
+                            .usage(image_usages[#attachment_ix])
+                            .build()
+                    ),*
+                ];
+                let mut attachments_info = vk::FramebufferAttachmentsCreateInfo::builder()
+                    .attachment_image_infos(&image_infos);
+                let attachments = [vk::ImageView::null(); #attachment_count];
                 let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
+                    .flags(vk::FramebufferCreateFlags::IMAGELESS)
+                    .push_next(&mut attachments_info)
                     .render_pass(renderpass.renderpass.handle)
-                    .attachments(attachments)
+                    .attachments(&attachments)
                     .width(width)
                     .height(height)
                     .layers(1);
@@ -988,7 +1048,7 @@ fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
                 };
                 renderer
                     .device
-                    .set_object_name(handle, &format!(#debug_name, ix));
+                    .set_object_name(handle, #debug_name);
                 Framebuffer { framebuffer: OriginalFramebuffer { handle } }
             }
 

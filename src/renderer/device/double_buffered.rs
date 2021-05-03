@@ -14,12 +14,6 @@ impl<T> DoubleBuffered<T> {
         }
     }
 
-    pub(crate) fn import(data: Vec<T>) -> DoubleBuffered<T> {
-        DoubleBuffered {
-            data: SmallVec::from(data),
-        }
-    }
-
     pub(crate) fn current(&self, ix: u32) -> &T {
         &self.data[ix as usize % self.data.len()]
     }

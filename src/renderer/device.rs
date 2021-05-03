@@ -183,6 +183,7 @@ impl Device {
                 .shader_sampled_image_array_non_uniform_indexing(true)
                 .shader_storage_image_array_non_uniform_indexing(true)
                 .timeline_semaphore(true)
+                .imageless_framebuffer(true)
                 .scalar_block_layout(true)
                 .descriptor_indexing(true)
                 .descriptor_binding_sampled_image_update_after_bind(true);

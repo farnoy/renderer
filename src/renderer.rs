@@ -562,16 +562,15 @@ impl MainAttachments {
 }
 
 pub(crate) struct MainFramebuffer {
-    pub(crate) handles: DoubleBuffered<frame_graph::Main::Framebuffer>,
+    pub(crate) framebuffer: frame_graph::Main::Framebuffer,
 }
 
 impl FromWorld for MainFramebuffer {
     fn from_world(world: &mut World) -> Self {
         let renderer = world.get_resource::<RenderFrame>().unwrap();
-        let main_attachments = world.get_resource::<MainAttachments>().unwrap();
         let main_renderpass = world.get_resource::<MainRenderpass>().unwrap();
         let swapchain = world.get_resource::<Swapchain>().unwrap();
-        Self::new(&renderer, &main_renderpass, &main_attachments, &swapchain)
+        Self::new(&renderer, &main_renderpass, &swapchain)
     }
 }
 
@@ -579,38 +578,25 @@ impl MainFramebuffer {
     pub(crate) fn new(
         renderer: &RenderFrame,
         main_renderpass: &MainRenderpass,
-        main_attachments: &MainAttachments,
         swapchain: &Swapchain,
     ) -> MainFramebuffer {
-        let handles = main_attachments
-            .swapchain_image_views
-            .iter()
-            .zip(main_attachments.depth_image_views.iter())
-            .zip(main_attachments.color_image_views.iter())
-            .enumerate()
-            .map(|(ix, ((present_image_view, depth_image_view), color_image_view))| {
-                let framebuffer_attachments = [
-                    color_image_view.handle,
-                    depth_image_view.handle,
-                    present_image_view.handle,
-                ];
-                frame_graph::Main::Framebuffer::new(
-                    renderer,
-                    &main_renderpass.renderpass,
-                    &framebuffer_attachments,
-                    (swapchain.width, swapchain.height),
-                    ix as u32,
-                )
-            })
-            .collect::<Vec<_>>();
+        let framebuffer = frame_graph::Main::Framebuffer::new(
+            renderer,
+            &main_renderpass.renderpass,
+            &[
+                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            ],
+            (swapchain.surface.surface_format.format,),
+            (swapchain.width, swapchain.height),
+        );
 
-        MainFramebuffer {
-            handles: DoubleBuffered::import(handles),
-        }
+        MainFramebuffer { framebuffer }
     }
 
     pub(crate) fn destroy(self, device: &Device) {
-        self.handles.into_iter().for_each(|f| f.destroy(device));
+        self.framebuffer.destroy(device);
     }
 }
 
@@ -1005,7 +991,7 @@ impl MainPassCommandBuffer {
 
 pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
-    main_renderpass: Res<MainRenderpass>,
+    (main_renderpass, main_attachments): (Res<MainRenderpass>, Res<MainAttachments>),
     (image_index, model_data): (Res<ImageIndex>, Res<ModelData>),
     mut runtime_config: ResMut<RuntimeConfiguration>,
     camera_matrices: Res<CameraMatrices>,
@@ -1095,7 +1081,7 @@ pub(crate) fn render_frame(
         }]);
         main_renderpass.renderpass.begin(
             &renderer,
-            main_framebuffer.handles.current(image_index.0),
+            &main_framebuffer.framebuffer,
             *command_buffer,
             vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
@@ -1104,6 +1090,11 @@ pub(crate) fn render_frame(
                     height: swapchain.height,
                 },
             },
+            &[
+                main_attachments.color_image_views[image_index.0 as usize].handle,
+                main_attachments.depth_image_views[image_index.0 as usize].handle,
+                main_attachments.swapchain_image_views[image_index.0 as usize].handle,
+            ],
             &[
                 vk::ClearValue {
                     color: vk::ClearColorValue { float32: [0.0; 4] },

@@ -68,7 +68,7 @@ pub(crate) fn acquire_framebuffer(
         }
         swapchain.resize_to_fit(&renderer.device);
         let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
-        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &new_attachments, &swapchain);
+        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &swapchain);
         swap(&mut *main_attachments, &mut new_attachments);
         swap(&mut *main_framebuffer, &mut new_framebuffer);
         new_attachments.destroy(&renderer.device);
@@ -85,7 +85,7 @@ pub(crate) fn acquire_framebuffer(
         }
         swapchain.resize_to_fit(&renderer.device);
         let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
-        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &new_attachments, &swapchain);
+        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &swapchain);
         swap(&mut *main_attachments, &mut new_attachments);
         swap(&mut *main_framebuffer, &mut new_framebuffer);
         new_attachments.destroy(&renderer.device);

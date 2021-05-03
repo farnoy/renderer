@@ -148,9 +148,11 @@ impl ShadowMappingData {
         let framebuffer = frame_graph::ShadowMapping::Framebuffer::new(
             renderer,
             &renderpass,
-            &[depth_image_view.handle],
+            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::SAMPLED],
+            (),
             (MAP_SIZE * DIM, MAP_SIZE * DIM),
-            0,
         );
 
         let user_set_layout = shaders::shadow_map_set::Layout::new(&renderer.device);
@@ -384,6 +386,7 @@ pub(crate) fn prepare_shadow_maps(
                     height: DIM * MAP_SIZE,
                 },
             },
+            &[shadow_mapping.depth_image_view.handle],
             &[],
         );
         renderer.device.cmd_bind_pipeline(
