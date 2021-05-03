@@ -2149,6 +2149,7 @@ dependencies = [
 name = "renderer-macros"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "convert_case",
  "derive-syn-parse",
  "derive_more",
@@ -2157,6 +2158,8 @@ dependencies = [
  "petgraph",
  "proc-macro2",
  "quote",
+ "serde",
+ "serde_json",
  "spirq",
  "syn",
 ]

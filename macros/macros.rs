@@ -1,5 +1,7 @@
 #![feature(extend_one)]
 
+mod rga;
+
 use std::{env, fmt::Debug, fs::File, io::Read};
 
 use convert_case::{Case, Casing};
@@ -2260,6 +2262,7 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 
     for pipe in pipelines.iter() {
         let mut push_constant_type = None;
+        let mut push_constant_spir_type = None;
 
         for shader_stage in pipe.specific.stages() {
             let shader_path = std::path::Path::new(&env::var("OUT_DIR").unwrap()).join(format!(
@@ -2285,7 +2288,7 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
             ) {
                 match spec_const {
                     itertools::EitherOrBoth::Both(spv, rusty) => {
-                        let rust_id = rusty.0.base10_parse().unwrap();
+                        let rust_id: u32 = rusty.0.base10_parse().unwrap();
                         if spv.spec_id != rust_id {
                             let msg = format!(
                                 "shader {} spec constant mismatch shader id = {}, rusty id = {}",
@@ -2348,7 +2351,7 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 match desc.desc_ty {
                     spirq::ty::DescriptorType::StorageBuffer(n, spirq::Type::Struct(s))
                     | spirq::ty::DescriptorType::UniformBuffer(n, spirq::Type::Struct(s)) => {
-                        if *n != rusty_binding.count.base10_parse().unwrap() {
+                        if *n != rusty_binding.count.base10_parse::<u32>().unwrap() {
                             let msg = format!(
                                 "Wrong descriptor count for set {} binding {}, shader needs {}",
                                 rusty.name.to_string(),
@@ -2408,9 +2411,11 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                     "no support for reused/multiple push constant ranges between shader stages"
                 );
                 push_constant_type = Some(prereqs.into_iter().map(|(_, _, tokens)| tokens).collect());
+                push_constant_spir_type = Some(push_const.clone());
             }
         }
 
+        rga::dump_rga(&sets.0, pipe, push_constant_spir_type.as_ref());
         output.extend_one(define_pipe(pipe, push_constant_type))
     }
 

@@ -22,6 +22,11 @@ layout(set = 1, binding = 0, scalar) buffer IndirectCommandsCount {
 
 layout (constant_id = 2) const uint draw_calls_to_compact = 1;
 
+#ifdef RGA
+// RGA generates a scalar wavefront without it
+layout (local_size_x = 999) in;
+#endif
+
 // TODO: this needs to scale beyond vkCmdDispatch(1, 1, 1)
 layout (local_size_y_id = 1) in;
 

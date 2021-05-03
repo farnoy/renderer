@@ -48,6 +48,10 @@ layout(set = 2, binding = 3, scalar) buffer readonly IndexBuffer {
     uvec3 index_buffer[300000];
 };
 
+#ifdef RGA
+// RGA generates a scalar wavefront without it
+layout (local_size_x = 999) in;
+#endif
 layout (local_size_x_id = 1) in;
 
 shared uint localOffset;
