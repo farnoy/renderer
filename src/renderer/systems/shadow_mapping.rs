@@ -64,9 +64,7 @@ impl ShadowMappingData {
             vk::SampleCountFlags::TYPE_1,
             vk::ImageTiling::OPTIMAL,
             vk::ImageLayout::PREINITIALIZED,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         );
         renderer
@@ -148,9 +146,7 @@ impl ShadowMappingData {
         let framebuffer = frame_graph::ShadowMapping::Framebuffer::new(
             renderer,
             &renderpass,
-            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::SAMPLED],
+            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED],
             (),
             (MAP_SIZE * DIM, MAP_SIZE * DIM),
         );
