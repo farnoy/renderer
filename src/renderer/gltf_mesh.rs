@@ -111,7 +111,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             mapped[ix] = *pixel;
         }
     }
-    let mut index_lods = if true {
+    let index_lods = if true {
         let mut lods = Vec::with_capacity(6);
         for x in 1..6 {
             let factor = 0.5f32.powf(x as f32);
@@ -129,12 +129,13 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     } else {
         vec![indices]
     };
-    for mut indices in index_lods.iter_mut() {
-        // This is a bug in the library
-        #[allow(clippy::unnecessary_mut_passed)]
-        meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
-        meshopt::optimize_overdraw_in_place_decoder(&mut indices, &positions, 1.05);
-    }
+    // Disabling as it ruins sort order of indices and affects locality
+    // for mut indices in index_lods.iter_mut() {
+    //     // This is a bug in the library
+    //     #[allow(clippy::unnecessary_mut_passed)]
+    //     meshopt::optimize_vertex_cache_in_place(&mut indices, positions.len());
+    //     meshopt::optimize_overdraw_in_place_decoder(&mut indices, &positions, 1.05);
+    // }
     /*
     // quoting meshopt:
     When a sequence of LOD meshes is generated that all use the original vertex buffer, care must be taken to order

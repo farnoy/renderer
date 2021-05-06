@@ -2,6 +2,7 @@
 
 #extension GL_KHR_shader_subgroup_basic: require
 #extension GL_KHR_shader_subgroup_ballot: require
+#extension GL_KHR_shader_subgroup_shuffle: require
 #extension GL_EXT_scalar_block_layout: require
 #extension GL_KHR_shader_subgroup_vote : require
 
@@ -50,7 +51,7 @@ layout(set = 2, binding = 3, scalar) buffer readonly IndexBuffer {
 
 #ifdef RGA
 // RGA generates a scalar wavefront without it
-layout (local_size_x = 999) in;
+layout (local_size_x = 512) in;
 #endif
 layout (local_size_x_id = 1) in;
 
@@ -72,15 +73,71 @@ void main() {
 
     bool cull = false;
 
+    uvec3 ix;
+    vec3[3] input_vertex;
+
+    if (gl_GlobalInvocationID.x < indexCount / 3)
+        ix = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x];
+
+    // subgroup magic to exploit 3-tuple locality of indices
+    const uint subgroup_vertices = 3; // how many vertices to load with subgroups
+    const uint cluster_size = 4; // next power of two of subgroup_vertices
+    // visual example for the algorithm, loading 3 elements from each invocation on gl_SubgroupSize=8
+    // base=0
+    // load:
+    // 0           1        2        3        4        5         6        7
+    // ix[0][0] ix[0][1] ix[0][2]   off    ix[4][0] ix[4][1] ix[4][2]    off
+    // shuffle:
+    // 0           1        2        3        4        5         6        7
+    // 0,1,2      off      off      off     4,5,6     off       off      off 
+
+    // base=1
+    // load:
+    // 0           1        2        3        4        5         6        7
+    // ix[1][0] ix[1][1] ix[1][2]   off    ix[5][0] ix[5][1] ix[5][2]    off
+    // shuffle:
+    // 0           1        2        3        4        5         6        7
+    // off       0,1,2     off      off      off     4,5,6      off      off
+    // ...
+    // base=3
+    // load:
+    // 0           1        2        3        4        5         6        7
+    // ix[3][0] ix[3][1] ix[3][2]   off    ix[7][0] ix[7][1] ix[7][2]    off
+    // shuffle:
+    // 0           1        2        3        4        5         6        7
+    // off        off      off     0,1,2     off      off       off     4,5,6
+    for (uint base = 0; subgroup_vertices > 0 && base < cluster_size; base++) {
+        uint load_lane;
+        vec3 vertex;
+
+        // shuffle addresses, invocations 0 .. subgroup_vertices will load the vertices of the first invocation
+        // second cluster will start at the next power of two
+        for (uint cluster_ix = 0; cluster_ix < subgroup_vertices; cluster_ix++) {
+            uint shuffled_ix = subgroupShuffleXor(ix[cluster_ix], base ^ cluster_ix);
+            if (gl_SubgroupInvocationID % cluster_size == cluster_ix)
+                load_lane = shuffled_ix;
+        }
+
+        // load the data, predicated for invocations doing the load
+        if (gl_SubgroupInvocationID % cluster_size < subgroup_vertices)
+            vertex = vertex_buffer[vertexOffset + load_lane];
+
+        for (uint vertex_offset = 0; vertex_offset < subgroup_vertices; vertex_offset++) {
+            vec3 shuffled_load = subgroupShuffleXor(vertex, base ^ vertex_offset);
+            if (gl_SubgroupInvocationID % cluster_size == base)
+                input_vertex[vertex_offset] = shuffled_load;
+        }
+    }
+
     if (gl_GlobalInvocationID.x < indexCount / 3) {
-        uvec3 ix = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x];
-        vec4 input0 = vec4(vertex_buffer[vertexOffset + ix.x], 1.0);
-        vec4 input1 = vec4(vertex_buffer[vertexOffset + ix.y], 1.0);
-        vec4 input2 = vec4(vertex_buffer[vertexOffset + ix.z], 1.0);
-        mat4 mvp = pv * model[gltfIndex];
-        vec4 vertex0 = mvp * input0;
-        vec4 vertex1 = mvp * input1;
-        vec4 vertex2 = mvp * input2;
+        // load those vertices that were not loaded with the subgroup method
+        for (uint vertex_offset = subgroup_vertices; vertex_offset < 3; vertex_offset++)
+            input_vertex[vertex_offset] = vertex_buffer[vertexOffset + ix[vertex_offset]];
+
+        mat4 model_mat = model[gltfIndex];
+        vec4 vertex0 = pv * (model_mat * vec4(input_vertex[0], 1.0));
+        vec4 vertex1 = pv * (model_mat * vec4(input_vertex[1], 1.0));
+        vec4 vertex2 = pv * (model_mat * vec4(input_vertex[2], 1.0));
 
         // backface culling in counter clockwise front-facing order, left handed projection
         cull = determinant(mat3(vertex0.xyw, vertex1.xyw, vertex2.xyw)) > 0;
