@@ -55,7 +55,6 @@ layout (local_size_x = 512) in;
 #endif
 layout (local_size_x_id = 1) in;
 
-shared uint localOffset;
 shared uint globalOffset;
 
 void main() {
@@ -67,7 +66,7 @@ void main() {
         indirect_commands[gltfIndex].vertexOffset = vertexOffset;
     }
     if (gl_LocalInvocationID.x == 0) {
-        localOffset = 0;
+        globalOffset = 0;
     }
     barrier();
 
@@ -118,9 +117,10 @@ void main() {
                 load_lane = shuffled_ix;
         }
 
-        // load the data, predicated for invocations doing the load
-        if (gl_SubgroupInvocationID % cluster_size < subgroup_vertices)
-            vertex = vertex_buffer[vertexOffset + load_lane];
+        // this should be predicated to save bandwidth? but not predicating makes AMDVLK pull loads
+        // as early as possible and hide latency that way
+        // if (gl_SubgroupInvocationID % cluster_size < subgroup_vertices)
+        vertex = vertex_buffer[vertexOffset + load_lane];
 
         for (uint vertex_offset = 0; vertex_offset < subgroup_vertices; vertex_offset++) {
             vec3 shuffled_load = subgroupShuffleXor(vertex, base ^ vertex_offset);
@@ -175,21 +175,25 @@ void main() {
 
         uint offset = 0;
         if (subgroupElect()) {
-            offset = atomicAdd(localOffset, count);
+            offset = atomicAdd(globalOffset, count);
         }
         offset = subgroupBroadcastFirst(offset);
 
         barrier();
 
         if (gl_LocalInvocationID.x == 0) {
-            globalOffset = atomicAdd(indirect_commands[gltfIndex].indexCount, localOffset * 3);
-            globalOffset += indexOffsetInOutput; // to resume where previous mesh ended
-            globalOffset /= 3;
+            uint ix = atomicAdd(indirect_commands[gltfIndex].indexCount, globalOffset * 3);
+            ix += indexOffsetInOutput; // to resume where previous mesh ended
+            ix /= 3;
+            globalOffset = ix;
         }
 
         barrier();
 
         if (!cull) {
+            // repeating this load frees up register space needed in the previous section
+            ix = index_buffer[indexOffset / 3 + gl_GlobalInvocationID.x];
+
             uint local_offset = globalOffset + offset + exclusiveBitCount;
             out_index_buffer[local_offset] = ix;
         }
