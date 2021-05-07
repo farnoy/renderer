@@ -413,11 +413,11 @@ pub(crate) struct MainAttachments {
     swapchain_image_views: Vec<ImageView>,
     swapchain_format: vk::Format,
     #[allow(unused)]
-    depth_images: Vec<Image>,
-    depth_image_views: Vec<ImageView>,
+    depth_image: Image,
+    depth_image_view: ImageView,
     #[allow(unused)]
-    color_images: Vec<Image>,
-    color_image_views: Vec<ImageView>,
+    color_image: Image,
+    color_image_view: ImageView,
 }
 
 impl MainAttachments {
@@ -425,8 +425,7 @@ impl MainAttachments {
         let images = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap() };
         assert!(images.len().to_u32().unwrap() >= swapchain.desired_image_count);
         println!("swapchain images len {}", images.len());
-        let depth_images = (0..swapchain.desired_image_count)
-            .map(|ix| {
+        let depth_image = {
                 let im = renderer.device.new_image(
                     vk::Format::D16_UNORM,
                     vk::Extent3D {
@@ -440,12 +439,10 @@ impl MainAttachments {
                     vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 );
-                renderer.device.set_object_name(im.handle, &format!("Depth RT[{}]", ix));
+                renderer.device.set_object_name(im.handle, "Depth RT");
                 im
-            })
-            .collect::<Vec<_>>();
-        let color_images = (0..swapchain.desired_image_count)
-            .map(|ix| {
+            };
+        let color_image = {
                 let im = renderer.device.new_image(
                     swapchain.surface.surface_format.format,
                     vk::Extent3D {
@@ -459,10 +456,9 @@ impl MainAttachments {
                     vk::ImageUsageFlags::COLOR_ATTACHMENT,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 );
-                renderer.device.set_object_name(im.handle, &format!("Color RT[{}]", ix));
+                renderer.device.set_object_name(im.handle, "Color RT");
                 im
-            })
-            .collect::<Vec<_>>();
+            };
         let image_views = images
             .iter()
             .map(|&image| {
@@ -488,9 +484,7 @@ impl MainAttachments {
                 ImageView { handle }
             })
             .collect::<Vec<_>>();
-        let color_image_views = color_images
-            .iter()
-            .map(|ref image| {
+        let color_image_view = {
                 let create_view_info = vk::ImageViewCreateInfo::builder()
                     .view_type(vk::ImageViewType::TYPE_2D)
                     .format(swapchain.surface.surface_format.format)
@@ -507,13 +501,10 @@ impl MainAttachments {
                         base_array_layer: 0,
                         layer_count: 1,
                     })
-                    .image(image.handle);
+                    .image(color_image.handle);
                 renderer.device.new_image_view(&create_view_info)
-            })
-            .collect::<Vec<_>>();
-        let depth_image_views = depth_images
-            .iter()
-            .map(|ref image| {
+            };
+        let depth_image_view = {
                 let create_view_info = vk::ImageViewCreateInfo::builder()
                     .view_type(vk::ImageViewType::TYPE_2D)
                     .format(vk::Format::D16_UNORM)
@@ -530,18 +521,17 @@ impl MainAttachments {
                         base_array_layer: 0,
                         layer_count: 1,
                     })
-                    .image(image.handle);
+                    .image(depth_image.handle);
                 renderer.device.new_image_view(&create_view_info)
-            })
-            .collect::<Vec<_>>();
+            };
 
         MainAttachments {
             swapchain_image_views: image_views,
             swapchain_format: swapchain.surface.surface_format.format,
-            depth_images,
-            depth_image_views,
-            color_images,
-            color_image_views,
+            depth_image,
+            depth_image_view,
+            color_image,
+            color_image_view,
         }
     }
 
@@ -549,18 +539,10 @@ impl MainAttachments {
         for view in self.swapchain_image_views.into_iter() {
             view.destroy(device);
         }
-        for view in self.depth_image_views.into_iter() {
-            view.destroy(device);
-        }
-        for view in self.color_image_views.into_iter() {
-            view.destroy(device);
-        }
-        for depth in self.depth_images.into_iter() {
-            depth.destroy(device);
-        }
-        for color in self.color_images.into_iter() {
-            color.destroy(device);
-        }
+        self.depth_image_view.destroy(device);
+        self.color_image_view.destroy(device);
+        self.depth_image.destroy(device);
+        self.color_image.destroy(device);
     }
 }
 
@@ -1097,8 +1079,8 @@ pub(crate) fn render_frame(
                 },
             },
             &[
-                main_attachments.color_image_views[image_index.0 as usize].handle,
-                main_attachments.depth_image_views[image_index.0 as usize].handle,
+                main_attachments.color_image_view.handle,
+                main_attachments.depth_image_view.handle,
                 main_attachments.swapchain_image_views[image_index.0 as usize].handle,
             ],
             &[
