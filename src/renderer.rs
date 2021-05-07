@@ -140,7 +140,7 @@ renderer_macros::define_frame! {
             ShadowMapAtlas
         }
         formats {
-            R8G8B8A8_UNORM,
+            dyn,
             dyn,
             D16_UNORM,
             D16_UNORM
@@ -295,7 +295,10 @@ pub(crate) struct MainRenderpass {
 impl MainRenderpass {
     pub(crate) fn new(renderer: &RenderFrame, attachments: &MainAttachments) -> Self {
         MainRenderpass {
-            renderpass: frame_graph::Main::RenderPass::new(renderer, (attachments.swapchain_format,)),
+            renderpass: frame_graph::Main::RenderPass::new(
+                renderer,
+                (attachments.swapchain_format, attachments.swapchain_format),
+            ),
         }
     }
 
@@ -444,7 +447,7 @@ impl MainAttachments {
         let color_images = (0..swapchain.desired_image_count)
             .map(|ix| {
                 let im = renderer.device.new_image(
-                    vk::Format::R8G8B8A8_UNORM,
+                    swapchain.surface.surface_format.format,
                     vk::Extent3D {
                         width: swapchain.width,
                         height: swapchain.height,
@@ -490,7 +493,7 @@ impl MainAttachments {
             .map(|ref image| {
                 let create_view_info = vk::ImageViewCreateInfo::builder()
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .format(swapchain.surface.surface_format.format)
                     .components(vk::ComponentMapping {
                         r: vk::ComponentSwizzle::IDENTITY,
                         g: vk::ComponentSwizzle::IDENTITY,
@@ -588,7 +591,10 @@ impl MainFramebuffer {
                 vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT,
             ],
-            (swapchain.surface.surface_format.format,),
+            (
+                swapchain.surface.surface_format.format,
+                swapchain.surface.surface_format.format,
+            ),
             (swapchain.width, swapchain.height),
         );
 
