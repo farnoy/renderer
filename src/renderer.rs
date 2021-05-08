@@ -10,7 +10,7 @@ pub(crate) mod shaders;
 mod swapchain;
 mod systems;
 
-use std::{cmp::max, mem::size_of, os::raw::c_uchar, sync::Arc};
+use std::{cmp::max, mem::size_of, sync::Arc};
 
 use ash::{
     version::{DeviceV1_0, DeviceV1_2},
@@ -1289,29 +1289,46 @@ impl GuiRenderData {
         renderer
             .device
             .set_object_name(index_buffer.buffer.handle, "GUI Index Buffer");
-        let texture = {
+        let texture_staging = {
             let mut fonts = imgui.fonts();
-            let imgui_texture = fonts.build_rgba32_texture();
+            let imgui_texture = fonts.build_alpha8_texture();
             let texture = renderer.device.new_image(
-                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::R8_UNORM,
                 vk::Extent3D {
                     width: imgui_texture.width,
                     height: imgui_texture.height,
                     depth: 1,
                 },
                 vk::SampleCountFlags::TYPE_1,
-                vk::ImageTiling::LINEAR, // todo use optimal?
+                vk::ImageTiling::LINEAR,
                 vk::ImageLayout::PREINITIALIZED,
-                vk::ImageUsageFlags::SAMPLED,
+                vk::ImageUsageFlags::TRANSFER_SRC,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
             {
                 let mut texture_data = texture
-                    .map::<c_uchar>(&renderer.device)
+                    .map::<u8>(&renderer.device)
                     .expect("failed to map imgui texture");
                 texture_data[0..imgui_texture.data.len()].copy_from_slice(imgui_texture.data);
             }
             texture
+        };
+        let mut fonts = imgui.fonts();
+        let imgui_texture = fonts.build_alpha8_texture();
+        let texture = {
+            renderer.device.new_image(
+                vk::Format::R8_UNORM,
+                vk::Extent3D {
+                    width: imgui_texture.width,
+                    height: imgui_texture.height,
+                    depth: 1,
+                },
+                vk::SampleCountFlags::TYPE_1,
+                vk::ImageTiling::OPTIMAL,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            )
         };
         let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -1343,12 +1360,12 @@ impl GuiRenderData {
         let texture_view = renderer.device.new_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_UNORM)
+                .format(vk::Format::R8_UNORM)
                 .components(vk::ComponentMapping {
                     r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::ZERO,
+                    b: vk::ComponentSwizzle::ZERO,
+                    a: vk::ComponentSwizzle::ZERO,
                 })
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -1370,7 +1387,7 @@ impl GuiRenderData {
                     .image_info(&[vk::DescriptorImageInfo::builder()
                         .sampler(sampler.handle)
                         .image_view(texture_view.handle)
-                        .image_layout(vk::ImageLayout::GENERAL)
+                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                         .build()])
                     .build()],
                 &[],
@@ -1389,7 +1406,77 @@ impl GuiRenderData {
             renderer.device.cmd_pipeline_barrier(
                 *cb,
                 vk::PipelineStageFlags::HOST,
-                vk::PipelineStageFlags::HOST,
+                vk::PipelineStageFlags::TRANSFER,
+                Default::default(),
+                &[],
+                &[],
+                &[
+                    vk::ImageMemoryBarrier::builder()
+                        .image(texture_staging.handle)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .old_layout(vk::ImageLayout::PREINITIALIZED)
+                        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .build(),
+                    vk::ImageMemoryBarrier::builder()
+                        .image(texture.handle)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .src_access_mask(vk::AccessFlags::empty())
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .build(),
+                ],
+            );
+            renderer.device.cmd_copy_image(
+                *cb,
+                texture_staging.handle,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                texture.handle,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::ImageCopy {
+                    src_offset: vk::Offset3D::default(),
+                    src_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    dst_offset: vk::Offset3D::default(),
+                    dst_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    extent: vk::Extent3D {
+                        width: imgui_texture.width,
+                        height: imgui_texture.height,
+                        depth: 1,
+                    },
+                }],
+            );
+            renderer.device.cmd_pipeline_barrier(
+                *cb,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
                 Default::default(),
                 &[],
                 &[],
@@ -1402,10 +1489,10 @@ impl GuiRenderData {
                         base_array_layer: 0,
                         layer_count: 1,
                     })
-                    .old_layout(vk::ImageLayout::PREINITIALIZED)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                    .dst_access_mask(vk::AccessFlags::HOST_WRITE)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::empty())
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .build()],
@@ -1426,6 +1513,7 @@ impl GuiRenderData {
                 .wait_for_fences(&[fence.handle], true, u64::MAX)
                 .unwrap();
             fence.destroy(&renderer.device);
+            texture_staging.destroy(&renderer.device);
         }
 
         command_pool.destroy(&renderer.device);
