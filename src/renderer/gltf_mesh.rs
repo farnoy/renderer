@@ -1,6 +1,7 @@
 use std::{mem::size_of, path::Path, u64};
 
 use ash::{version::DeviceV1_0, vk};
+use num_traits::ToPrimitive;
 
 use super::{
     device::{Buffer, Image, VmaMemoryUsage},
@@ -79,15 +80,15 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         }
     };
     let base_color_vkimage = renderer.device.new_image(
-        vk::Format::R8G8B8A8_UNORM,
+        vk::Format::BC7_UNORM_BLOCK,
         vk::Extent3D {
             height: base_color_image.height(),
             width: base_color_image.width(),
             depth: 1,
         },
         vk::SampleCountFlags::TYPE_1,
-        vk::ImageTiling::LINEAR, // todo use optimal?
-        vk::ImageLayout::PREINITIALIZED,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageLayout::UNDEFINED,
         vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
         VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
     );
@@ -97,7 +98,9 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let base_color_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
         VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
-        vk::DeviceSize::from(base_color_image.width()) * vk::DeviceSize::from(base_color_image.height()) * 4,
+        intel_tex::bc7::calc_output_size(base_color_image.width(), base_color_image.height())
+            .to_u64()
+            .unwrap(),
     );
     renderer.device.set_object_name(
         base_color_upload_buffer.handle,
@@ -105,11 +108,18 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     );
     {
         let mut mapped = base_color_upload_buffer
-            .map::<image::Rgba<u8>>(&renderer.device)
+            .map::<u8>(&renderer.device)
             .expect("Failed to map base color upload buffer");
-        for (ix, pixel) in base_color_image.pixels().enumerate() {
-            mapped[ix] = *pixel;
-        }
+        intel_tex::bc7::compress_blocks_into(
+            &intel_tex::bc7::opaque_fast_settings(),
+            &intel_tex::RgbaSurface {
+                data: base_color_image.as_raw(),
+                width: base_color_image.width(),
+                height: base_color_image.height(),
+                stride: base_color_image.width() * 4,
+            },
+            &mut mapped[..],
+        );
     }
     let index_lods = if true {
         let mut lods = Vec::with_capacity(6);
@@ -323,7 +333,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             &[vk::ImageMemoryBarrier::builder()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::PREINITIALIZED)
+                .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)

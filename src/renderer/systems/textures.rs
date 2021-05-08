@@ -68,12 +68,12 @@ pub(crate) fn synchronize_base_color_textures_visit(
                         .r(vk::ComponentSwizzle::IDENTITY)
                         .g(vk::ComponentSwizzle::IDENTITY)
                         .b(vk::ComponentSwizzle::IDENTITY)
-                        .a(vk::ComponentSwizzle::IDENTITY)
+                        .a(vk::ComponentSwizzle::ONE)
                         .build(),
                 )
                 .image(base_color.0.handle)
                 .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_UNORM)
+                .format(vk::Format::BC7_UNORM_BLOCK)
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
