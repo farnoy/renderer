@@ -2340,6 +2340,7 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                     .0
                     .iter()
                     .find(|set| {
+                        // TODO: more validation
                         &set.name
                             == pipe.descriptors[desc.desc_bind.set() as usize]
                                 .get_ident()
@@ -2440,6 +2441,7 @@ fn compare_types(spv: &spirq::Type, rust: &syn::Type) -> bool {
     match (spv, rust) {
         (spirq::Type::Scalar(spirq::ty::ScalarType::Signed(4)), syn::Type::Path(p)) => p.path == parse_quote!(i32),
         (spirq::Type::Scalar(spirq::ty::ScalarType::Unsigned(4)), syn::Type::Path(p)) => p.path == parse_quote!(u32),
+        (spirq::Type::Scalar(spirq::ty::ScalarType::Unsigned(2)), syn::Type::Path(p)) => p.path == parse_quote!(u16),
         _ => unimplemented!("unimplemented spirq type comparison {:?} and {:?}", spv, rust,),
     }
 }
@@ -2461,6 +2463,7 @@ fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStre
         Type::Scalar(ty::ScalarType::Float(4)) => (vec![], quote!(f32)),
         Type::Scalar(ty::ScalarType::Signed(4)) => (vec![], quote!(i32)),
         Type::Scalar(ty::ScalarType::Unsigned(4)) => (vec![], quote!(u32)),
+        Type::Scalar(ty::ScalarType::Unsigned(2)) => (vec![], quote!(u16)),
         Type::Struct(s) => {
             let name = Ident::new(s.name().unwrap(), Span::call_site());
             let (field_name, field_offset, field_ty) = split3((0..s.nmember()).map(|ix| {

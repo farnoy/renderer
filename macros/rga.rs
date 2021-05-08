@@ -232,6 +232,8 @@ fn ident_to_descriptor_type(id: &Ident) -> vk::DescriptorType {
         vk::DescriptorType::UNIFORM_BUFFER
     } else if id == "STORAGE_BUFFER" {
         vk::DescriptorType::STORAGE_BUFFER
+    } else if id == "STORAGE_BUFFER_DYNAMIC" {
+        vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
     } else if id == "COMBINED_IMAGE_SAMPLER" {
         vk::DescriptorType::COMBINED_IMAGE_SAMPLER
     } else {
