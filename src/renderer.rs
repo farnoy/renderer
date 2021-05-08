@@ -426,39 +426,39 @@ impl MainAttachments {
         assert!(images.len().to_u32().unwrap() >= swapchain.desired_image_count);
         println!("swapchain images len {}", images.len());
         let depth_image = {
-                let im = renderer.device.new_image(
-                    vk::Format::D16_UNORM,
-                    vk::Extent3D {
-                        width: swapchain.width,
-                        height: swapchain.height,
-                        depth: 1,
-                    },
-                    vk::SampleCountFlags::TYPE_4,
-                    vk::ImageTiling::OPTIMAL,
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                    VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                );
-                renderer.device.set_object_name(im.handle, "Depth RT");
-                im
-            };
+            let im = renderer.device.new_image(
+                vk::Format::D16_UNORM,
+                vk::Extent3D {
+                    width: swapchain.width,
+                    height: swapchain.height,
+                    depth: 1,
+                },
+                vk::SampleCountFlags::TYPE_4,
+                vk::ImageTiling::OPTIMAL,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            );
+            renderer.device.set_object_name(im.handle, "Depth RT");
+            im
+        };
         let color_image = {
-                let im = renderer.device.new_image(
-                    swapchain.surface.surface_format.format,
-                    vk::Extent3D {
-                        width: swapchain.width,
-                        height: swapchain.height,
-                        depth: 1,
-                    },
-                    vk::SampleCountFlags::TYPE_4,
-                    vk::ImageTiling::OPTIMAL,
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                    VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                );
-                renderer.device.set_object_name(im.handle, "Color RT");
-                im
-            };
+            let im = renderer.device.new_image(
+                swapchain.surface.surface_format.format,
+                vk::Extent3D {
+                    width: swapchain.width,
+                    height: swapchain.height,
+                    depth: 1,
+                },
+                vk::SampleCountFlags::TYPE_4,
+                vk::ImageTiling::OPTIMAL,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            );
+            renderer.device.set_object_name(im.handle, "Color RT");
+            im
+        };
         let image_views = images
             .iter()
             .map(|&image| {
@@ -485,45 +485,45 @@ impl MainAttachments {
             })
             .collect::<Vec<_>>();
         let color_image_view = {
-                let create_view_info = vk::ImageViewCreateInfo::builder()
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(swapchain.surface.surface_format.format)
-                    .components(vk::ComponentMapping {
-                        r: vk::ComponentSwizzle::IDENTITY,
-                        g: vk::ComponentSwizzle::IDENTITY,
-                        b: vk::ComponentSwizzle::IDENTITY,
-                        a: vk::ComponentSwizzle::IDENTITY,
-                    })
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image(color_image.handle);
-                renderer.device.new_image_view(&create_view_info)
-            };
+            let create_view_info = vk::ImageViewCreateInfo::builder()
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(swapchain.surface.surface_format.format)
+                .components(vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                })
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image(color_image.handle);
+            renderer.device.new_image_view(&create_view_info)
+        };
         let depth_image_view = {
-                let create_view_info = vk::ImageViewCreateInfo::builder()
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::D16_UNORM)
-                    .components(vk::ComponentMapping {
-                        r: vk::ComponentSwizzle::IDENTITY,
-                        g: vk::ComponentSwizzle::IDENTITY,
-                        b: vk::ComponentSwizzle::IDENTITY,
-                        a: vk::ComponentSwizzle::IDENTITY,
-                    })
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::DEPTH,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image(depth_image.handle);
-                renderer.device.new_image_view(&create_view_info)
-            };
+            let create_view_info = vk::ImageViewCreateInfo::builder()
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::D16_UNORM)
+                .components(vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                })
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image(depth_image.handle);
+            renderer.device.new_image_view(&create_view_info)
+        };
 
         MainAttachments {
             swapchain_image_views: image_views,
