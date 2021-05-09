@@ -1,6 +1,7 @@
 use std::{mem::size_of, path::Path, u64};
 
 use ash::{version::DeviceV1_0, vk};
+#[cfg(feature = "compress_textures")]
 use num_traits::ToPrimitive;
 
 use super::{
@@ -80,7 +81,10 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         }
     };
     let base_color_vkimage = renderer.device.new_image(
+        #[cfg(feature = "compress_textures")]
         vk::Format::BC7_UNORM_BLOCK,
+        #[cfg(not(feature = "compress_textures"))]
+        vk::Format::R8G8B8A8_UNORM,
         vk::Extent3D {
             height: base_color_image.height(),
             width: base_color_image.width(),
@@ -98,9 +102,14 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let base_color_upload_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::TRANSFER_SRC,
         VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        #[cfg(feature = "compress_textures")]
         intel_tex::bc7::calc_output_size(base_color_image.width(), base_color_image.height())
             .to_u64()
             .unwrap(),
+        #[cfg(not(feature = "compress_textures"))]
+        {
+            vk::DeviceSize::from(base_color_image.width()) * vk::DeviceSize::from(base_color_image.height()) * 4
+        },
     );
     renderer.device.set_object_name(
         base_color_upload_buffer.handle,
@@ -108,8 +117,14 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     );
     {
         let mut mapped = base_color_upload_buffer
-            .map::<u8>(&renderer.device)
+            .map::<image::Rgba<u8>>(&renderer.device)
             .expect("Failed to map base color upload buffer");
+        #[cfg(not(feature = "compress_textures"))]
+        for (ix, pixel) in base_color_image.pixels().enumerate() {
+            mapped[ix] = *pixel;
+        }
+
+        #[cfg(feature = "compress_textures")]
         intel_tex::bc7::compress_blocks_into(
             &intel_tex::bc7::opaque_fast_settings(),
             &intel_tex::RgbaSurface {

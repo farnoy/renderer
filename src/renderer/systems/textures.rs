@@ -73,7 +73,11 @@ pub(crate) fn synchronize_base_color_textures_visit(
                 )
                 .image(base_color.0.handle)
                 .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::BC7_UNORM_BLOCK)
+                .format(if cfg!(feature = "compress_textures") {
+                    vk::Format::BC7_UNORM_BLOCK
+                } else {
+                    vk::Format::R8G8B8A8_UNORM
+                })
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
