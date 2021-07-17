@@ -51,7 +51,7 @@ impl<T> MappedStaticBuffer<'_, T> {
         allocation: alloc::VmaAllocation,
     ) -> ash::prelude::VkResult<Self> {
         let allocation_info = alloc::get_allocation_info(allocator, allocation);
-        assert!(allocation_info.size as usize == mem::size_of::<T>());
+        assert!(allocation_info.size as usize >= mem::size_of::<T>());
         unsafe {
             let mut ptr: *mut c_void = ptr::null_mut();
             match alloc::vmaMapMemory(allocator, allocation, &mut ptr) {

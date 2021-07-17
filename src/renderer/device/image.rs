@@ -67,6 +67,49 @@ impl Image {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_exclusive(
+        device: &Device,
+        format: vk::Format,
+        extent: vk::Extent3D,
+        samples: vk::SampleCountFlags,
+        tiling: vk::ImageTiling,
+        initial_layout: vk::ImageLayout,
+        usage: vk::ImageUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+    ) -> Image {
+        let image_create_info = vk::ImageCreateInfo::builder()
+            .format(format)
+            .extent(extent)
+            .samples(samples)
+            .usage(usage)
+            .mip_levels(1)
+            .array_layers(1)
+            .image_type(vk::ImageType::TYPE_2D)
+            .tiling(tiling)
+            .initial_layout(initial_layout)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let allocation_create_info = alloc::VmaAllocationCreateInfo {
+            flags: alloc::VmaAllocationCreateFlagBits(0),
+            memoryTypeBits: 0,
+            pUserData: ptr::null_mut(),
+            pool: ptr::null_mut(),
+            preferredFlags: 0,
+            requiredFlags: 0,
+            usage: allocation_usage,
+        };
+
+        let (handle, allocation, allocation_info) =
+            alloc::create_image(device.allocator, &image_create_info, &allocation_create_info).unwrap();
+
+        Image {
+            handle,
+            allocation,
+            allocation_info,
+        }
+    }
+
     pub(crate) fn map<'a, T>(&'a self, device: &Device) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
         MappedBuffer::import(device.allocator, self.allocation, &self.allocation_info)
     }

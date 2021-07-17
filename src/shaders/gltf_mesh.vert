@@ -4,7 +4,7 @@
 layout(constant_id = 10) const uint SHADOW_MAP_DIM = 4;
 layout(constant_id = 11) const uint SHADOW_MAP_DIM_SQUARED = 4 * 4;
 
-layout(set = 0, binding = 0, scalar) uniform ModelMatrices {
+layout(set = 0, binding = 0, scalar) readonly buffer ModelMatrices {
     mat4 model[4096];
 };
 layout(set = 1, binding = 0, scalar) uniform CameraMatrices {
@@ -13,7 +13,7 @@ layout(set = 1, binding = 0, scalar) uniform CameraMatrices {
     vec4 position;
     mat4 pv;
 } camera;
-layout(set = 2, binding = 0, scalar) uniform LightMatrices {
+layout(set = 2, binding = 0, scalar) readonly buffer LightMatrices {
     mat4 projection;
     mat4 view;
     vec4 position;
@@ -23,17 +23,23 @@ layout(set = 2, binding = 0, scalar) uniform LightMatrices {
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
 layout (location = 2) in vec2 uv;
+layout (location = 3) in vec4 tangent;
 
 layout (location = 0) out vec3 o_normal;
 layout (location = 1) out vec2 o_uv;
-layout (location = 2) out uint o_entity_id;
-layout (location = 3) out vec3 o_world_pos;
-layout (location = 4) out vec4 position_lightspace[2];
+layout (location = 2) out vec4 o_tangent;
+layout (location = 3) out uint o_entity_id;
+layout (location = 4) out vec3 o_world_pos;
+layout (location = 5) out vec4 position_lightspace[2];
+layout (location = 7) out uint draw_id;
 
 void main() {
     uint entity_id = gl_InstanceIndex;
+    draw_id = entity_id;
     // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
     o_normal = transpose(inverse(mat3(model[entity_id]))) * normal;
+    o_tangent.xyz = transpose(inverse(mat3(model[entity_id]))) * tangent.xyz;
+    o_tangent.a = tangent.a;
     vec4 world_pos = model[entity_id] * vec4(position, 1.0);
     o_world_pos = world_pos.xyz;
     gl_Position = camera.pv * world_pos;

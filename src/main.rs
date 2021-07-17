@@ -19,12 +19,12 @@ pub(crate) mod renderer;
 
 use std::sync::Arc;
 
-use ash::version::DeviceV1_0;
 use bevy_app::*;
 use bevy_ecs::{
     component::{ComponentDescriptor, StorageType},
     prelude::*,
 };
+use crossbeam_channel::{bounded, unbounded};
 use ecs::{
     components::{Deleting, Light, ModelMatrix, Position, Rotation, Scale, AABB},
     resources::{Camera, InputActions, MeshLibrary},
@@ -43,12 +43,14 @@ use renderer::CrashBuffer;
 use renderer::{
     acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, consolidate_mesh_buffers,
     graphics_stage, load_gltf, model_matrices_upload, shadow_mapping_mvp_calculation,
-    synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, BaseColorDescriptorSet,
-    BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
-    CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfPassData,
+    synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, AccelerationStructures,
+    AccelerationStructuresInternal, BaseColorDescriptorSet, BaseColorVisitedMarker, CameraMatrices, CoarseCulled,
+    ConsolidatedMeshBuffers, CopiedResource, CullPassData, CullPassDataPrivate, DebugAABBPassData, DepthPassData,
+    DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture, GltfPassData, GraphicsTimeline,
     GuiRenderData, ImageIndex, LoadedMesh, LocalTransferCommandPool, MainAttachments, MainDescriptorPool,
-    MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, PresentData, RenderFrame, Resized,
-    ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, SwapchainIndexToFrameNumber,
+    MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, NormalMapVisitedMarker, PresentData,
+    RenderFrame, Resized, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions,
+    SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
@@ -64,6 +66,9 @@ fn main() {
     let mut app = App::build();
 
     app.register_component(ComponentDescriptor::new::<BaseColorVisitedMarker>(
+        StorageType::SparseSet,
+    ));
+    app.register_component(ComponentDescriptor::new::<NormalMapVisitedMarker>(
         StorageType::SparseSet,
     ));
 
@@ -92,8 +97,8 @@ fn main() {
 
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
     let main_renderpass = MainRenderpass::new(&renderer, &main_attachments);
-    let depth_pass_data = DepthPassData::new(&renderer, &model_data, &camera_matrices, &main_renderpass);
-    let shadow_mapping_data = ShadowMappingData::new(&renderer, &depth_pass_data, &mut main_descriptor_pool);
+    let shadow_mapping_data =
+        ShadowMappingData::new(&renderer, &model_data, &camera_matrices, &mut main_descriptor_pool);
 
     let mut gui = Gui::new();
     let mut imgui_platform = WinitPlatform::init(&mut gui.imgui);
@@ -109,6 +114,8 @@ fn main() {
         imgui_platform,
     };
 
+    let acceleration_structures = AccelerationStructures::new(&renderer, &main_descriptor_pool);
+
     let gltf_pass = GltfPassData::new(
         &renderer,
         &main_renderpass,
@@ -116,26 +123,32 @@ fn main() {
         &base_color_descriptor_set,
         &shadow_mapping_data,
         &camera_matrices,
+        &acceleration_structures,
     );
 
     let LoadedMesh {
         vertex_buffer,
         normal_buffer,
+        tangent_buffer,
         uv_buffer,
         index_buffers,
         vertex_len,
         aabb,
         base_color,
+        normal_map,
     } = load_gltf(
         &renderer,
         "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
+        // "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
     );
 
     let vertex_buffer = Arc::new(vertex_buffer);
     let normal_buffer = Arc::new(normal_buffer);
     let uv_buffer = Arc::new(uv_buffer);
+    let tangent_buffer = Arc::new(tangent_buffer);
     let index_buffers = Arc::new(index_buffers);
     let base_color = Arc::new(base_color);
+    let normal_map = Arc::new(normal_map);
 
     let max_entities = 30;
     debug_assert!(max_entities > 7); // 7 static ones
@@ -162,36 +175,72 @@ fn main() {
         ),
     ]);
 
+    // let (
+    //     box_vertex_buffer,
+    //     box_normal_buffer,
+    //     box_uv_buffer,
+    //     box_index_buffers,
+    //     box_base_color,
+    //     box_vertex_len,
+    //     box_aabb,
+    // ) = {
+    //     let LoadedMesh {
+    //         vertex_buffer,
+    //         normal_buffer,
+    //         uv_buffer,
+    //         index_buffers,
+    //         vertex_len,
+    //         aabb,
+    //         base_color,
+    //     } = {
+    //         load_gltf(
+    //             &renderer,
+    //             "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
+    //         )
+    //     };
+
+    //     (
+    //         Arc::new(vertex_buffer),
+    //         Arc::new(normal_buffer),
+    //         Arc::new(uv_buffer),
+    //         Arc::new(index_buffers),
+    //         Arc::new(base_color),
+    //         vertex_len,
+    //         aabb,
+    //     )
+    // };
+
     let (
-        box_vertex_buffer,
-        box_normal_buffer,
-        box_uv_buffer,
-        box_index_buffers,
-        box_base_color,
-        box_vertex_len,
-        box_aabb,
+        dmgh_vertex_buffer,
+        dmgh_normal_buffer,
+        dmgh_tangent_buffer,
+        dmgh_uv_buffer,
+        dmgh_index_buffers,
+        dmgh_base_color,
+        dmgh_normal_map,
+        dmgh_vertex_len,
+        dmgh_aabb,
     ) = {
         let LoadedMesh {
             vertex_buffer,
             normal_buffer,
+            tangent_buffer,
             uv_buffer,
             index_buffers,
             vertex_len,
             aabb,
             base_color,
-        } = {
-            load_gltf(
-                &renderer,
-                "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
-            )
-        };
+            normal_map,
+        } = { load_gltf(&renderer, "vendor/glTF-Sample-Models/2.0/Corset/glTF/Corset.gltf") };
 
         (
             Arc::new(vertex_buffer),
             Arc::new(normal_buffer),
+            Arc::new(tangent_buffer),
             Arc::new(uv_buffer),
             Arc::new(index_buffers),
             Arc::new(base_color),
+            Arc::new(normal_map),
             vertex_len,
             aabb,
         )
@@ -199,14 +248,16 @@ fn main() {
 
     let mesh_library = MeshLibrary {
         projectile: GltfMesh {
-            vertex_buffer: Arc::clone(&box_vertex_buffer),
-            normal_buffer: Arc::clone(&box_normal_buffer),
-            uv_buffer: Arc::clone(&box_uv_buffer),
-            index_buffers: Arc::clone(&box_index_buffers),
-            vertex_len: box_vertex_len,
-            aabb: box_aabb,
+            vertex_buffer: Arc::clone(&vertex_buffer),
+            normal_buffer: Arc::clone(&normal_buffer),
+            tangent_buffer: Arc::clone(&tangent_buffer),
+            uv_buffer: Arc::clone(&uv_buffer),
+            index_buffers: Arc::clone(&index_buffers),
+            vertex_len,
+            aabb,
         },
-        projectile_texture: Arc::clone(&box_base_color),
+        projectile_base_color: Arc::clone(&base_color),
+        projectile_normal_map: Arc::clone(&normal_map),
     };
 
     // objects
@@ -217,9 +268,11 @@ fn main() {
             Scale(1.0),
             ModelMatrix::default(),
             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+            GltfMeshNormalTexture(Arc::clone(&normal_map)),
             GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
+                tangent_buffer: Arc::clone(&tangent_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
                 index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
@@ -235,9 +288,11 @@ fn main() {
             Scale(1.0),
             ModelMatrix::default(),
             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+            GltfMeshNormalTexture(Arc::clone(&normal_map)),
             GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
+                tangent_buffer: Arc::clone(&tangent_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
                 index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
@@ -253,9 +308,11 @@ fn main() {
             Scale(1.0),
             ModelMatrix::default(),
             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+            GltfMeshNormalTexture(Arc::clone(&normal_map)),
             GltfMesh {
                 vertex_buffer: Arc::clone(&vertex_buffer),
                 normal_buffer: Arc::clone(&normal_buffer),
+                tangent_buffer: Arc::clone(&tangent_buffer),
                 uv_buffer: Arc::clone(&uv_buffer),
                 index_buffers: Arc::clone(&index_buffers),
                 vertex_len,
@@ -265,54 +322,86 @@ fn main() {
             CoarseCulled(false),
             DrawIndex::default(),
         ),
-        (
-            Position(na::Point3::new(5.0, 3.0, 2.0)),
-            Rotation(na::UnitQuaternion::identity()),
-            Scale(1.0),
-            ModelMatrix::default(),
-            GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
-            GltfMesh {
-                vertex_buffer: Arc::clone(&box_vertex_buffer),
-                normal_buffer: Arc::clone(&box_normal_buffer),
-                uv_buffer: Arc::clone(&box_uv_buffer),
-                index_buffers: Arc::clone(&box_index_buffers),
-                vertex_len: box_vertex_len,
-                aabb: box_aabb,
-            },
-            AABB::default(),
-            CoarseCulled(false),
-            DrawIndex::default(),
-        ),
-        (
-            Position(na::Point3::new(0.0, -29.0, 0.0)),
-            Rotation(na::UnitQuaternion::identity()),
-            Scale(50.0),
-            ModelMatrix::default(),
-            GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
-            GltfMesh {
-                vertex_buffer: Arc::clone(&box_vertex_buffer),
-                normal_buffer: Arc::clone(&box_normal_buffer),
-                uv_buffer: Arc::clone(&box_uv_buffer),
-                index_buffers: Arc::clone(&box_index_buffers),
-                vertex_len: box_vertex_len,
-                aabb: box_aabb,
-            },
-            AABB::default(),
-            CoarseCulled(false),
-            DrawIndex::default(),
-        ),
+        /* (
+         *     Position(na::Point3::new(5.0, 3.0, 2.0)),
+         *     Rotation(na::UnitQuaternion::identity()),
+         *     Scale(1.0),
+         *     ModelMatrix::default(),
+         *     GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
+         *     GltfMesh {
+         *         vertex_buffer: Arc::clone(&box_vertex_buffer),
+         *         normal_buffer: Arc::clone(&box_normal_buffer),
+         *         uv_buffer: Arc::clone(&box_uv_buffer),
+         *         index_buffers: Arc::clone(&box_index_buffers),
+         *         vertex_len: box_vertex_len,
+         *         aabb: box_aabb,
+         *     },
+         *     AABB::default(),
+         *     CoarseCulled(false),
+         *     DrawIndex::default(),
+         * ),
+         * (
+         *     Position(na::Point3::new(0.0, -29.0, 0.0)),
+         *     Rotation(na::UnitQuaternion::identity()),
+         *     Scale(50.0),
+         *     ModelMatrix::default(),
+         *     GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
+         *     GltfMesh {
+         *         vertex_buffer: Arc::clone(&box_vertex_buffer),
+         *         normal_buffer: Arc::clone(&box_normal_buffer),
+         *         uv_buffer: Arc::clone(&box_uv_buffer),
+         *         index_buffers: Arc::clone(&box_index_buffers),
+         *         vertex_len: box_vertex_len,
+         *         aabb: box_aabb,
+         *     },
+         *     AABB::default(),
+         *     CoarseCulled(false),
+         *     DrawIndex::default(),
+         * ), */
     ]);
 
-    drop(box_vertex_buffer);
-    drop(box_normal_buffer);
-    drop(box_uv_buffer);
-    drop(box_index_buffers);
-    drop(box_base_color);
+    // drop(box_vertex_buffer);
+    // drop(box_normal_buffer);
+    // drop(box_uv_buffer);
+    // drop(box_index_buffers);
+    // drop(box_base_color);
 
     app.app.world.spawn_batch((7..max_entities).map(|ix| {
         let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
         let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
         let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix / 10) as f32));
+
+        let (scale, base_color, normal_map, mesh) = if ix % 2 == 0 {
+            (
+                Scale(0.6),
+                GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+                GltfMeshNormalTexture(Arc::clone(&normal_map)),
+                GltfMesh {
+                    vertex_buffer: Arc::clone(&vertex_buffer),
+                    normal_buffer: Arc::clone(&normal_buffer),
+                    tangent_buffer: Arc::clone(&tangent_buffer),
+                    uv_buffer: Arc::clone(&uv_buffer),
+                    index_buffers: Arc::clone(&index_buffers),
+                    vertex_len,
+                    aabb,
+                },
+            )
+        } else {
+            (
+                Scale(20.),
+                GltfMeshBaseColorTexture(Arc::clone(&dmgh_base_color)),
+                GltfMeshNormalTexture(Arc::clone(&dmgh_normal_map)),
+                GltfMesh {
+                    vertex_buffer: Arc::clone(&dmgh_vertex_buffer),
+                    normal_buffer: Arc::clone(&dmgh_normal_buffer),
+                    tangent_buffer: Arc::clone(&dmgh_tangent_buffer),
+                    uv_buffer: Arc::clone(&dmgh_uv_buffer),
+                    index_buffers: Arc::clone(&dmgh_index_buffers),
+                    vertex_len: dmgh_vertex_len,
+                    aabb: dmgh_aabb,
+                },
+            )
+        };
 
         (
             Position(pos),
@@ -320,17 +409,11 @@ fn main() {
                 &na::Unit::new_normalize(na::Vector3::y()),
                 angle,
             )),
-            Scale(0.6),
+            scale,
             ModelMatrix::default(),
-            GltfMeshBaseColorTexture(Arc::clone(&base_color)),
-            GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb,
-            },
+            base_color,
+            normal_map,
+            mesh,
             AABB::default(),
             CoarseCulled(false),
             DrawIndex::default(),
@@ -339,10 +422,23 @@ fn main() {
 
     drop(vertex_buffer);
     drop(normal_buffer);
+    drop(tangent_buffer);
     drop(uv_buffer);
     drop(index_buffers);
     drop(base_color);
+    drop(normal_map);
 
+    drop(dmgh_vertex_buffer);
+    drop(dmgh_normal_buffer);
+    drop(dmgh_tangent_buffer);
+    drop(dmgh_uv_buffer);
+    drop(dmgh_index_buffers);
+    drop(dmgh_base_color);
+    drop(dmgh_normal_map);
+
+    let (sender, receiver) = unbounded();
+
+    app.insert_resource(Submissions { sender, receiver });
     app.insert_resource(swapchain);
     app.insert_resource(mesh_library);
     app.insert_resource(Resized(false));
@@ -363,10 +459,12 @@ fn main() {
     app.insert_resource(cull_pass_data_private);
     app.insert_resource(shadow_mapping_data);
     app.init_resource::<ShadowMappingDataInternal>();
-    app.insert_resource(depth_pass_data);
+    app.init_resource::<DepthPassData>();
     app.insert_resource(present_data);
     app.insert_resource(main_renderpass);
     app.insert_resource(main_attachments);
+    app.insert_resource(acceleration_structures);
+    app.init_resource::<AccelerationStructuresInternal>();
     app.insert_resource(gltf_pass);
     app.init_resource::<SwapchainIndexToFrameNumber>();
     app.init_resource::<CopiedResource<SwapchainIndexToFrameNumber>>();
@@ -627,6 +725,11 @@ fn main() {
     let main_descriptor_pool = app.app.world.remove_resource::<MainDescriptorPool>().unwrap();
     app.app
         .world
+        .remove_resource::<AccelerationStructures>()
+        .unwrap()
+        .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
         .remove_resource::<CullPassData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
@@ -643,6 +746,11 @@ fn main() {
     app.app
         .world
         .remove_resource::<ShadowMappingDataInternal>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<AccelerationStructuresInternal>()
         .unwrap()
         .destroy(&render_frame.device);
     app.app
@@ -690,6 +798,22 @@ fn main() {
     let entities = app
         .app
         .world
+        .query_filtered::<Entity, With<NormalMapVisitedMarker>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let marker = app
+            .app
+            .world
+            .entity_mut(entity)
+            .remove::<NormalMapVisitedMarker>()
+            .unwrap();
+        marker.destroy(&render_frame.device);
+    }
+
+    let entities = app
+        .app
+        .world
         .query_filtered::<Entity, With<GltfMeshBaseColorTexture>>()
         .iter(&app.app.world)
         .collect::<Vec<_>>();
@@ -699,6 +823,22 @@ fn main() {
             .world
             .entity_mut(entity)
             .remove::<GltfMeshBaseColorTexture>()
+            .unwrap();
+        drop(Arc::try_unwrap(marker.0).map(|im| im.destroy(&render_frame.device)));
+    }
+
+    let entities = app
+        .app
+        .world
+        .query_filtered::<Entity, With<GltfMeshNormalTexture>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let marker = app
+            .app
+            .world
+            .entity_mut(entity)
+            .remove::<GltfMeshNormalTexture>()
             .unwrap();
         drop(Arc::try_unwrap(marker.0).map(|im| im.destroy(&render_frame.device)));
     }

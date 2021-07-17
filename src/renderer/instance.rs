@@ -5,7 +5,6 @@ use std::{ffi::CString, ops::Deref, sync::Arc};
 use ash::{
     self,
     extensions::{ext::DebugUtils, khr::Surface},
-    version::{EntryV1_0, InstanceV1_0},
     vk,
 };
 
@@ -52,7 +51,7 @@ impl Instance {
             .application_name(&name)
             .application_version(0)
             .engine_name(&name)
-            .api_version(vk::make_version(1, 2, 0));
+            .api_version(vk::API_VERSION_1_2);
 
         #[cfg(all(feature = "silence_validation", feature = "sync_validation"))]
         compile_error!("Can't silence validation while enabling sync validation");
@@ -135,6 +134,9 @@ impl Instance {
                         "    Object[{}] - Type {:?}, Value 0x{:x?}, Name \"{}\"",
                         ix, object.object_type, object.object_handle, name
                     );
+                }
+                if severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+                    panic!();
                 }
                 0
             }

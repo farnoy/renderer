@@ -10,5 +10,5 @@ layout (location = 1) in vec2 uv;
 layout (location = 0) out vec4 out_color;
 
 void main() {
-  out_color = color * texture(tex, uv.st) * test();
+  out_color = color * texture(tex, uv.st).r * test();
 }

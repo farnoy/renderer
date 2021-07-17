@@ -1,6 +1,6 @@
 use std::{convert::TryInto, mem::size_of};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 use bevy_ecs::prelude::*;
 use microprofile::scope;
 use static_assertions::const_assert_eq;
@@ -8,10 +8,10 @@ use static_assertions::const_assert_eq;
 use crate::{
     ecs::components::{Light, Position, Rotation},
     renderer::{
-        device::VmaMemoryUsage, frame_graph, pick_lod, shaders, shaders::LightMatrices, CameraMatrices, DepthPassData,
+        device::VmaMemoryUsage, frame_graph, frame_graph::LightMatrices, pick_lod, CameraMatrices, DepthPassData,
         Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
         MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler, ShadowMappingTimeline, StrictCommandPool,
-        SwapchainIndexToFrameNumber,
+        Submissions, SwapchainIndexToFrameNumber,
     },
 };
 
@@ -20,13 +20,14 @@ pub(crate) const MAP_SIZE: u32 = 4096;
 pub(crate) const DIM: u32 = 4;
 
 pub(crate) struct ShadowMappingData {
-    depth_pipeline: shaders::depth_pipe::Pipeline,
+    depth_pipeline_layout: frame_graph::depth_pipe::PipelineLayout,
+    depth_pipeline: frame_graph::depth_pipe::Pipeline,
     renderpass: frame_graph::ShadowMapping::RenderPass,
-    depth_image: Image,
+    depth_image: frame_graph::resources::shadow_map_atlas,
     depth_image_view: ImageView,
     framebuffer: frame_graph::ShadowMapping::Framebuffer,
-    pub(crate) user_set_layout: shaders::shadow_map_set::Layout,
-    pub(crate) user_set: DoubleBuffered<shaders::shadow_map_set::Set>,
+    pub(crate) user_set_layout: frame_graph::shadow_map_set::Layout,
+    pub(crate) user_set: DoubleBuffered<frame_graph::shadow_map_set::Set>,
     user_sampler: Sampler,
 }
 
@@ -38,38 +39,44 @@ pub(crate) struct ShadowMappingDataInternal {
 impl ShadowMappingData {
     pub(crate) fn new(
         renderer: &RenderFrame,
-        depth_pass_data: &DepthPassData,
+        model_data: &ModelData,
+        camera_matrices: &CameraMatrices,
         main_descriptor_pool: &mut MainDescriptorPool,
     ) -> ShadowMappingData {
         let renderpass = frame_graph::ShadowMapping::RenderPass::new(renderer, ());
 
-        let depth_pipeline = shaders::depth_pipe::Pipeline::new(
+        let depth_pipeline_layout = frame_graph::depth_pipe::PipelineLayout::new(
             &renderer.device,
-            &depth_pass_data.depth_pipeline_layout,
-            shaders::depth_pipe::Specialization {},
+            &model_data.model_set_layout,
+            &camera_matrices.set_layout,
+        );
+        let depth_pipeline = frame_graph::depth_pipe::Pipeline::new(
+            &renderer.device,
+            &depth_pipeline_layout,
+            frame_graph::depth_pipe::Specialization {},
             [None],
             &renderpass.renderpass,
             0,
             vk::SampleCountFlags::TYPE_1,
         );
 
-        let depth_image = renderer.device.new_image(
-            vk::Format::D16_UNORM,
-            // 16 slots in total
-            vk::Extent3D {
-                height: MAP_SIZE * DIM,
-                width: MAP_SIZE * DIM,
-                depth: 1,
-            },
-            vk::SampleCountFlags::TYPE_1,
-            vk::ImageTiling::OPTIMAL,
-            vk::ImageLayout::PREINITIALIZED,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        let depth_image = frame_graph::resources::shadow_map_atlas::import(
+            &renderer.device,
+            renderer.device.new_image_exclusive(
+                vk::Format::D16_UNORM,
+                // 16 slots in total
+                vk::Extent3D {
+                    height: MAP_SIZE * DIM,
+                    width: MAP_SIZE * DIM,
+                    depth: 1,
+                },
+                vk::SampleCountFlags::TYPE_1,
+                vk::ImageTiling::OPTIMAL,
+                vk::ImageLayout::PREINITIALIZED,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            ),
         );
-        renderer
-            .device
-            .set_object_name(depth_image.handle, "Shadow mapping depth image");
 
         let depth_image_view = unsafe {
             let handle = renderer
@@ -99,8 +106,7 @@ impl ShadowMappingData {
             "Quick command pool for ShadowMapping constructor",
         );
 
-        let mut session = command_pool.session(&renderer.device);
-        let cb = session.record_one_time("transition shadow mapping texture");
+        let cb = command_pool.record_one_time(&renderer.device, "transition shadow mapping texture");
         unsafe {
             renderer.device.cmd_pipeline_barrier(
                 *cb,
@@ -151,7 +157,7 @@ impl ShadowMappingData {
             (MAP_SIZE * DIM, MAP_SIZE * DIM),
         );
 
-        let user_set_layout = shaders::shadow_map_set::Layout::new(&renderer.device);
+        let user_set_layout = frame_graph::shadow_map_set::Layout::new(&renderer.device);
 
         let user_sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -167,7 +173,8 @@ impl ShadowMappingData {
         );
 
         let user_set = renderer.new_buffered(|ix| {
-            let s = shaders::shadow_map_set::Set::new(&renderer.device, &main_descriptor_pool, &user_set_layout, ix);
+            let s =
+                frame_graph::shadow_map_set::Set::new(&renderer.device, &main_descriptor_pool, &user_set_layout, ix);
 
             {
                 let sampler_updates = &[vk::DescriptorImageInfo::builder()
@@ -195,6 +202,7 @@ impl ShadowMappingData {
             renderpass,
             depth_image,
             depth_image_view,
+            depth_pipeline_layout,
             depth_pipeline,
             framebuffer,
             user_set_layout,
@@ -205,6 +213,7 @@ impl ShadowMappingData {
 
     pub(crate) fn destroy(self, device: &Device, main_descriptor_pool: &MainDescriptorPool) {
         self.depth_pipeline.destroy(device);
+        self.depth_pipeline_layout.destroy(device);
         self.renderpass.destroy(device);
         self.user_sampler.destroy(device);
         self.depth_image_view.destroy(device);
@@ -249,8 +258,8 @@ impl ShadowMappingDataInternal {
 
 /// Holds Projection and view matrices for each light.
 pub(crate) struct ShadowMappingLightMatrices {
-    matrices_set: DoubleBuffered<shaders::camera_set::Set>,
-    matrices_buffer: DoubleBuffered<shaders::camera_set::bindings::matrices::Buffer>,
+    matrices_set: DoubleBuffered<frame_graph::camera_set::Set>,
+    matrices_buffer: DoubleBuffered<frame_graph::camera_set::bindings::matrices::Buffer>,
 }
 
 impl ShadowMappingLightMatrices {
@@ -262,7 +271,7 @@ impl ShadowMappingLightMatrices {
     ) -> ShadowMappingLightMatrices {
         let matrices_buffer = renderer.new_buffered(|ix| {
             let b = renderer.device.new_static_buffer(
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::UNIFORM_BUFFER,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
             renderer.device.set_object_name(
@@ -275,13 +284,17 @@ impl ShadowMappingLightMatrices {
             b
         });
         let matrices_set = renderer.new_buffered(|ix| {
-            let mut s =
-                shaders::camera_set::Set::new(&renderer.device, &main_descriptor_pool, &camera_matrices.set_layout, ix);
+            let mut s = frame_graph::camera_set::Set::new(
+                &renderer.device,
+                &main_descriptor_pool,
+                &camera_matrices.set_layout,
+                ix,
+            );
             renderer.device.set_object_name(
                 s.set.handle,
                 &format!("camera_set Set [{}] - entity={:?}", ix, entity_ix),
             );
-            shaders::camera_set::bindings::matrices::update_whole_buffer(
+            frame_graph::camera_set::bindings::matrices::update_whole_buffer(
                 &renderer.device,
                 &mut s,
                 &matrices_buffer.current(ix),
@@ -324,7 +337,7 @@ pub(crate) fn shadow_mapping_mvp_calculation(
             .current_mut(image_index.0)
             .map(&renderer.device)
             .expect("failed to map Light matrices buffer");
-        *matrices_mapped = shaders::CameraMatrices {
+        *matrices_mapped = frame_graph::CameraMatrices {
             projection,
             view,
             position: light_position.0.coords.push(1.0),
@@ -336,12 +349,12 @@ pub(crate) fn shadow_mapping_mvp_calculation(
 /// Identifies stale shadow maps in the atlas and refreshes them
 pub(crate) fn prepare_shadow_maps(
     renderer: Res<RenderFrame>,
-    depth_pass: Res<DepthPassData>,
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     shadow_mapping: Res<ShadowMappingData>,
     mut shadow_mapping_internal: ResMut<ShadowMappingDataInternal>,
     model_data: Res<ModelData>,
+    submissions: Res<Submissions>,
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
 ) {
@@ -364,9 +377,7 @@ pub(crate) fn prepare_shadow_maps(
 
     command_pool.reset(&renderer.device);
 
-    let mut command_session = command_pool.session(&renderer.device);
-
-    let command_buffer = command_session.record_to_specific(*command_buffers.current(image_index.0));
+    let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
 
     unsafe {
         let _shadow_mapping_marker = command_buffer.debug_marker_around("shadow mapping", [0.8, 0.1, 0.1, 1.0]);
@@ -392,7 +403,7 @@ pub(crate) fn prepare_shadow_maps(
         );
 
         for (ix, (light_position, shadow_mvp)) in shadow_query.iter().enumerate() {
-            depth_pass.depth_pipeline_layout.bind_descriptor_sets(
+            shadow_mapping.depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
                 &model_data.model_set.current(image_index.0),
@@ -467,9 +478,16 @@ pub(crate) fn prepare_shadow_maps(
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
     let command_buffer = command_buffer.end();
-    let queue = renderer.device.graphics_queue().lock();
 
-    frame_graph::ShadowMapping::Stage::queue_submit(&image_index, &renderer, *queue, &[*command_buffer]).unwrap();
+    submissions
+        .sender
+        .send(("ShadowMapping", Some(*command_buffer)))
+        .unwrap();
+
+    // let queue = renderer.device.graphics_queue().lock();
+
+    // frame_graph::ShadowMapping::Stage::queue_submit(&image_index, &renderer, *queue,
+    // &[*command_buffer]).unwrap();
 }
 
 pub(crate) fn update_shadow_map_descriptors(
@@ -504,7 +522,7 @@ pub(crate) fn update_shadow_map_descriptors(
                 .dst_set(shadow_mapping.user_set.current(image_index.0).set.handle)
                 .dst_binding(0)
                 .dst_array_element(ix as u32)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&mvp_updates[ix])
                 .build(),
         );

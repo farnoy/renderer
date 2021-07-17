@@ -1,9 +1,6 @@
 use std::cmp::min;
 
-use ash::{
-    version::DeviceV1_0,
-    vk::{self, Handle},
-};
+use ash::vk::{self, Handle};
 use bevy_ecs::prelude::*;
 use microprofile::scope;
 use num_traits::ToPrimitive;
@@ -20,12 +17,12 @@ use crate::{
     },
     renderer::{
         device::{Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
-        frame_graph,
+        frame_graph::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         helpers::pick_lod,
-        shaders::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
         CameraMatrices, ComputeTimeline, CopiedResource, DrawIndex, GltfMesh, LocalTransferCommandPool,
-        MainDescriptorPool, ModelData, RenderFrame, RenderStage, Shader, SwapchainIndexToFrameNumber, TransferTimeline,
+        MainDescriptorPool, ModelData, RenderFrame, RenderStage, Shader, Submissions, SwapchainIndexToFrameNumber,
+        TransferTimeline,
     },
 };
 
@@ -34,8 +31,8 @@ use crate::{
 pub(crate) struct CoarseCulled(pub(crate) bool);
 
 pub(crate) struct CullPassData {
-    pub(crate) culled_commands_buffer: cull_set::bindings::indirect_commands::Buffer,
-    pub(crate) culled_commands_count_buffer: cull_commands_count_set::bindings::indirect_commands_count::Buffer,
+    pub(crate) culled_commands_buffer: frame_graph::resources::indirect_commands_buffer,
+    pub(crate) culled_commands_count_buffer: frame_graph::resources::indirect_commands_count,
     pub(crate) culled_index_buffer: cull_set::bindings::out_index_buffer::Buffer,
     compact_draw_stream_layout: compact_draw_stream::PipelineLayout,
     compact_draw_stream_pipeline: compact_draw_stream::Pipeline,
@@ -50,13 +47,13 @@ pub(crate) struct CullPassData {
 pub(crate) struct CullPassDataPrivate {
     cull_pipeline_layout: generate_work::PipelineLayout,
     cull_pipeline: generate_work::Pipeline,
-    command_pool: DoubleBuffered<StrictCommandPool>,
+    command_pools: DoubleBuffered<StrictCommandPool>,
     command_buffers: DoubleBuffered<vk::CommandBuffer>,
     previous_cull_pipeline: DoubleBuffered<Option<generate_work::Pipeline>>,
     cull_shader: Shader,
 }
 
-pub(crate) const INITIAL_WORKGROUP_SIZE: u32 = 512;
+pub(crate) const INITIAL_WORKGROUP_SIZE: u32 = 384;
 
 pub(crate) fn coarse_culling(
     task_pool: Res<bevy_tasks::ComputeTaskPool>,
@@ -102,7 +99,7 @@ impl CullPassDataPrivate {
             generate_work::Pipeline::new(&renderer.device, &cull_pipeline_layout, cull_specialization, [Some(
                 &cull_shader,
             )]);
-        let mut command_pool = renderer.new_buffered(|ix| {
+        let mut command_pools = renderer.new_buffered(|ix| {
             StrictCommandPool::new(
                 &renderer.device,
                 renderer.device.compute_queue_family,
@@ -110,7 +107,7 @@ impl CullPassDataPrivate {
             )
         });
         let command_buffers = renderer.new_buffered(|ix| {
-            command_pool
+            command_pools
                 .current_mut(ix)
                 .allocate(&format!("Cull pass CB[{}]", ix), &renderer.device)
         });
@@ -118,7 +115,7 @@ impl CullPassDataPrivate {
         CullPassDataPrivate {
             cull_pipeline_layout,
             cull_pipeline,
-            command_pool,
+            command_pools,
             command_buffers,
             previous_cull_pipeline: renderer.new_buffered(|_| None),
             cull_shader,
@@ -131,7 +128,7 @@ impl CullPassDataPrivate {
         for pipe in self.previous_cull_pipeline.into_iter().flatten() {
             pipe.destroy(device);
         }
-        self.command_pool.into_iter().for_each(|pool| pool.destroy(device));
+        self.command_pools.into_iter().for_each(|pool| pool.destroy(device));
         self.cull_shader.destroy(device);
     }
 }
@@ -173,24 +170,25 @@ impl CullPassData {
             b
         };
 
-        let culled_commands_buffer = {
-            let b = device.new_static_buffer(
-                vk::BufferUsageFlags::INDIRECT_BUFFER
-                    | vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            );
-            device.set_object_name(b.buffer.handle, "indirect draw commands buffer");
-            b
-        };
+        // let culled_commands_buffer = {
+        //     let b = device.new_static_buffer(
+        //         vk::BufferUsageFlags::INDIRECT_BUFFER
+        //             | vk::BufferUsageFlags::STORAGE_BUFFER
+        //             | vk::BufferUsageFlags::TRANSFER_SRC
+        //             | vk::BufferUsageFlags::TRANSFER_DST,
+        //         VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        //     );
+        //     device.set_object_name(b.buffer.handle, "indirect draw commands buffer");
+        //     b
+        // };
+        let culled_commands_buffer = frame_graph::resources::indirect_commands_buffer::new(device);
 
         let cull_set = {
             let mut s = cull_set::Set::new(&renderer.device, &main_descriptor_pool, &cull_set_layout, 0);
             cull_set::bindings::indirect_commands::update_whole_buffer(
                 &renderer.device,
                 &mut s,
-                &culled_commands_buffer,
+                &culled_commands_buffer.0,
             );
             cull_set::bindings::out_index_buffer::update_whole_buffer(&renderer.device, &mut s, &culled_index_buffer);
             cull_set::bindings::vertex_buffer::update_whole_buffer(
@@ -207,17 +205,7 @@ impl CullPassData {
             s
         };
 
-        let culled_commands_count_buffer = {
-            let b = device.new_static_buffer(
-                vk::BufferUsageFlags::INDIRECT_BUFFER
-                    | vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            );
-            device.set_object_name(b.buffer.handle, "indirect draw commands count buffer");
-            b
-        };
+        let culled_commands_count_buffer = frame_graph::resources::indirect_commands_count::new(&device);
 
         let cull_count_set = {
             let mut s =
@@ -225,7 +213,7 @@ impl CullPassData {
             cull_commands_count_set::bindings::indirect_commands_count::update_whole_buffer(
                 &renderer.device,
                 &mut s,
-                &culled_commands_count_buffer,
+                &culled_commands_count_buffer.0,
             );
             s
         };
@@ -301,12 +289,14 @@ pub(crate) fn cull_pass_bypass(
     mut transfer_command_pool: ResMut<LocalTransferCommandPool<0>>,
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<CopiedResource<SwapchainIndexToFrameNumber>>,
+    submissions: Res<Submissions>,
 ) {
     scope!("ecs", "cull pass bypass");
 
     if runtime_config.debug_aabbs {
-        let queue = renderer.device.compute_queue(0).lock();
-        frame_graph::TransferCull::Stage::queue_submit(&image_index, &renderer, *queue, &[]).unwrap();
+        submissions.sender.send(("TransferCull", None)).unwrap();
+        // let queue = renderer.device.compute_queue_balanced();
+        // frame_graph::TransferCull::Stage::queue_submit(&image_index, &renderer, *queue, &[]).unwrap();
         return;
     }
 
@@ -322,12 +312,16 @@ pub(crate) fn cull_pass_bypass(
 
     command_pool.reset(&renderer.device);
 
-    let mut command_session = command_pool.session(&renderer.device);
-
-    let cull_cb = command_session.record_to_specific(*cull_pass_data.bypass_command_buffers.current(image_index.0));
+    let cull_cb = command_pool.record_to_specific(
+        &renderer.device,
+        *cull_pass_data.bypass_command_buffers.current(image_index.0),
+    );
     unsafe {
         scope!("cull pass", "cb recording");
         let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
+        cull_pass_data
+            .culled_commands_buffer
+            .acquire_copy_frozen(&renderer, *cull_cb);
         renderer.device.cmd_copy_buffer(
             *cull_cb,
             cull_pass_data.culled_commands_buffer.buffer.handle,
@@ -374,11 +368,16 @@ pub(crate) fn cull_pass_bypass(
         //         size: cull_set::bindings::out_index_buffer::SIZE,
         //     }],
         // );
+        cull_pass_data
+            .culled_commands_buffer
+            .release_copy_frozen(&renderer, *cull_cb);
     }
     let cull_cb = cull_cb.end();
 
-    let queue = renderer.device.transfer_queue().lock();
-    frame_graph::TransferCull::Stage::queue_submit(&image_index, &renderer, *queue, &[*cull_cb]).unwrap();
+    // let queue = renderer.device.transfer_queue().lock();
+    // frame_graph::TransferCull::Stage::queue_submit(&image_index, &renderer, *queue,
+    // &[*cull_cb]).unwrap();
+    submissions.sender.send(("TransferCull", Some(*cull_cb))).unwrap();
 }
 
 pub(crate) fn cull_pass(
@@ -392,14 +391,16 @@ pub(crate) fn cull_pass(
     camera: Res<CopiedResource<Camera>>,
     model_data: Res<ModelData>,
     camera_matrices: Res<CameraMatrices>,
+    submissions: Res<Submissions>,
     query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
     #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
 ) {
     scope!("ecs", "cull pass");
 
     if runtime_config.debug_aabbs {
-        let queue = renderer.device.compute_queue(0).lock();
-        frame_graph::ComputeCull::Stage::queue_submit(&image_index, &renderer, *queue, &[]).unwrap();
+        submissions.sender.send(("ComputeCull", None)).unwrap();
+        // let queue = renderer.device.compute_queue_balanced();
+        // frame_graph::ComputeCull::Stage::queue_submit(&image_index, &renderer, *queue, &[]).unwrap();
 
         return;
     }
@@ -422,7 +423,7 @@ pub(crate) fn cull_pass(
     );
 
     let CullPassDataPrivate {
-        ref mut command_pool,
+        command_pools: ref mut command_pool,
         ref command_buffers,
         ref cull_pipeline_layout,
         ref cull_pipeline,
@@ -433,11 +434,15 @@ pub(crate) fn cull_pass(
 
     command_pool.reset(&renderer.device);
 
-    let mut command_session = command_pool.session(&renderer.device);
-
-    let cull_cb = command_session.record_to_specific(*command_buffers.current(image_index.0));
+    let cull_cb = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
     unsafe {
         scope!("cull pass", "cb recording");
+
+        let commands_buffer = &cull_pass_data.culled_commands_buffer;
+        commands_buffer.acquire_reset(&renderer, *cull_cb);
+        cull_pass_data
+            .culled_commands_count_buffer
+            .acquire_copy_frozen(&renderer, *cull_cb);
 
         if runtime_config.freeze_culling {
             let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
@@ -481,7 +486,6 @@ pub(crate) fn cull_pass(
             );
         } else {
             // Clear the command buffer before using
-            let commands_buffer = &cull_pass_data.culled_commands_buffer;
             renderer.device.cmd_fill_buffer(
                 *cull_cb,
                 commands_buffer.buffer.handle,
@@ -489,23 +493,7 @@ pub(crate) fn cull_pass(
                 cull_set::bindings::indirect_commands::SIZE,
                 0,
             );
-            renderer.device.cmd_pipeline_barrier(
-                *cull_cb,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                Default::default(),
-                &[],
-                &[vk::BufferMemoryBarrier::builder()
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                    .buffer(commands_buffer.buffer.handle)
-                    .size(vk::WHOLE_SIZE)
-                    .build()],
-                &[],
-            );
-
+            commands_buffer.barrier_reset_cull(&renderer, *cull_cb);
             let cull_pass_marker = cull_cb.debug_marker_around("cull pass", [0.0, 1.0, 0.0, 1.0]);
             renderer
                 .device
@@ -534,7 +522,7 @@ pub(crate) fn cull_pass(
                     .get(&index_buffer.handle.as_raw())
                     .expect("Index buffer not consolidated");
 
-                let push_constants = shaders::generate_work::PushConstants {
+                let push_constants = frame_graph::generate_work::PushConstants {
                     gltf_index: draw_index.0,
                     index_count: index_len.to_u32().unwrap(),
                     index_offset: index_offset.to_u32().unwrap(),
@@ -565,23 +553,7 @@ pub(crate) fn cull_pass(
 
             drop(cull_pass_marker);
 
-            renderer.device.cmd_pipeline_barrier(
-                *cull_cb,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                Default::default(),
-                &[],
-                &[vk::BufferMemoryBarrier::builder()
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .buffer(cull_pass_data.culled_commands_buffer.buffer.handle)
-                    .size(vk::WHOLE_SIZE)
-                    .build()],
-                &[],
-            );
-
+            commands_buffer.barrier_cull_compact(&renderer, *cull_cb);
             let _compact_marker = cull_cb.debug_marker_around("compact draw stream", [0.0, 1.0, 1.0, 1.0]);
 
             renderer.device.cmd_bind_pipeline(
@@ -597,9 +569,16 @@ pub(crate) fn cull_pass(
             );
             renderer.device.cmd_dispatch(*cull_cb, 1, 1, 1);
         }
+        commands_buffer.release_compact(&renderer, *cull_cb);
+        cull_pass_data
+            .culled_commands_count_buffer
+            .release_compute(&renderer, *cull_cb);
     }
     let cull_cb = cull_cb.end();
 
-    let queue = renderer.device.compute_queue(0).lock();
-    frame_graph::ComputeCull::Stage::queue_submit(&image_index, &renderer, *queue, &[*cull_cb]).unwrap();
+    submissions.sender.send(("ComputeCull", Some(*cull_cb))).unwrap();
+
+    // let queue = renderer.device.compute_queue_balanced();
+    // frame_graph::ComputeCull::Stage::queue_submit(&image_index, &renderer, *queue,
+    // &[*cull_cb]).unwrap();
 }

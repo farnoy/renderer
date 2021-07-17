@@ -236,8 +236,10 @@ fn ident_to_descriptor_type(id: &Ident) -> vk::DescriptorType {
         vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
     } else if id == "COMBINED_IMAGE_SAMPLER" {
         vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+    } else if id == "ACCELERATION_STRUCTURE_KHR" {
+        vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
     } else {
-        unimplemented!("{}", id)
+        unimplemented!("ident_to_descriptor_type {}", id)
     }
 }
 
@@ -249,6 +251,6 @@ fn ident_to_shader_stage(id: &Ident) -> vk::ShaderStageFlags {
     } else if id == "COMPUTE" {
         vk::ShaderStageFlags::COMPUTE
     } else {
-        unimplemented!("{}", id)
+        unimplemented!("ident_to_shader_stage {}", id)
     }
 }

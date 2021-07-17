@@ -1,6 +1,6 @@
 use std::{ffi::CString, ops::Deref};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 
 use super::{descriptors::DescriptorSetLayout, Device};
 
@@ -56,27 +56,23 @@ impl Drop for PipelineLayout {
 }
 
 impl Pipeline {
-    pub(super) fn new_graphics_pipeline(
-        device: &Device,
-        shaders: &[(vk::ShaderStageFlags, vk::ShaderModule, Option<&vk::SpecializationInfo>)],
-        mut create_info: vk::GraphicsPipelineCreateInfo,
-    ) -> Pipeline {
-        let shader_entry_name = CString::new("main").unwrap();
-        let shader_stage_create_infos = shaders
-            .iter()
-            .map(|&(stage, shader, spec_info)| {
-                let create_info = vk::PipelineShaderStageCreateInfo::builder()
-                    .module(shader)
-                    .name(&shader_entry_name)
-                    .stage(stage);
-                match spec_info {
-                    Some(spec_info) => create_info.specialization_info(spec_info).build(),
-                    None => create_info.build(),
-                }
-            })
-            .collect::<Vec<_>>();
-        create_info.stage_count = shader_stage_create_infos.len() as u32;
-        create_info.p_stages = shader_stage_create_infos.as_ptr();
+    pub(super) fn new_graphics_pipeline(device: &Device, create_info: vk::GraphicsPipelineCreateInfo) -> Pipeline {
+        // let shader_entry_name = CString::new("main").unwrap();
+        // let shader_stage_create_infos = shaders
+        //     .iter()
+        //     .map(|&(stage, shader, spec_info)| {
+        //         let create_info = vk::PipelineShaderStageCreateInfo::builder()
+        //             .module(shader)
+        //             .name(&shader_entry_name)
+        //             .stage(stage);
+        //         match spec_info {
+        //             Some(spec_info) => create_info.specialization_info(spec_info).build(),
+        //             None => create_info.build(),
+        //         }
+        //     })
+        //     .collect::<Vec<_>>();
+        // create_info.stage_count = shader_stage_create_infos.len() as u32;
+        // create_info.p_stages = shader_stage_create_infos.as_ptr();
         let graphics_pipelines = unsafe {
             device
                 .device

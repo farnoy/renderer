@@ -1,7 +1,4 @@
-use ash::{
-    version::{DeviceV1_0, DeviceV1_2},
-    vk,
-};
+use ash::vk;
 use microprofile::scope;
 
 use super::Device;

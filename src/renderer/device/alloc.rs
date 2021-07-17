@@ -13,11 +13,7 @@ use std::{
     ptr,
 };
 
-use ash::{
-    self, prelude,
-    version::{EntryV1_0, InstanceV1_0},
-    vk,
-};
+use ash::{self, prelude, vk};
 pub use renderer_vma::*;
 
 pub fn create(
@@ -155,8 +151,9 @@ pub fn create(
         }
     };
     let create_info = VmaAllocatorCreateInfo {
-        flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0 as u32,
-        vulkanApiVersion: vk::make_version(1, 2, 0),
+        flags: VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT.0 as u32
+            | VmaAllocatorCreateFlagBits::VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT.0 as u32,
+        vulkanApiVersion: vk::API_VERSION_1_2,
         instance: instance.handle(),
         device,
         physicalDevice: pdevice,

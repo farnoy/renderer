@@ -1,18 +1,16 @@
 use std::{mem::size_of, u64};
 
-use ash::{
-    version::DeviceV1_0,
-    vk::{self, Handle},
-};
+use ash::vk::{self, Handle};
 use bevy_ecs::prelude::*;
 use hashbrown::{hash_map::Entry, HashMap};
 use microprofile::scope;
+use num_traits::ToPrimitive;
 
 use crate::renderer::{
     device::{Buffer, Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
     frame_graph,
-    shaders::cull_set,
-    GltfMesh, ImageIndex, RenderFrame, RenderStage, SwapchainIndexToFrameNumber,
+    frame_graph::cull_set,
+    GltfMesh, ImageIndex, RenderFrame, RenderStage, Submissions, SwapchainIndexToFrameNumber,
 };
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
@@ -30,6 +28,8 @@ pub(crate) struct ConsolidatedMeshBuffers {
     pub(crate) position_buffer: cull_set::bindings::vertex_buffer::Buffer,
     /// Stores normal data for each mesh
     pub(crate) normal_buffer: cull_set::bindings::vertex_buffer::Buffer,
+    /// Stores tangent data for each mesh
+    pub(crate) tangent_buffer: Buffer,
     /// Stores uv data for each mesh
     pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
@@ -46,6 +46,7 @@ pub(crate) fn consolidate_mesh_buffers(
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
+    submissions: Res<Submissions>,
     query: Query<&GltfMesh>,
 ) {
     scope!("ecs", "consolidate mesh buffers");
@@ -55,6 +56,7 @@ pub(crate) fn consolidate_mesh_buffers(
         ref mut next_index_offset,
         ref position_buffer,
         ref normal_buffer,
+        ref tangent_buffer,
         ref uv_buffer,
         ref index_buffer,
         ref mut vertex_offsets,
@@ -76,10 +78,8 @@ pub(crate) fn consolidate_mesh_buffers(
 
     command_pool.reset(&renderer.device);
 
-    let mut command_session = command_pool.session(&renderer.device);
-
     let mut needs_transfer = false;
-    let command_buffer = command_session.record_to_specific(*command_buffers.current(image_index.0));
+    let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
     for mesh in &mut query.iter() {
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
             debug_assert!(
@@ -87,8 +87,10 @@ pub(crate) fn consolidate_mesh_buffers(
                     < (size_of::<cull_set::bindings::vertex_buffer::T>() / size_of::<[f32; 3]>()) as u64,
             );
             v.insert(*next_vertex_offset);
+            let size_4 = mesh.vertex_len * size_of::<[f32; 4]>() as vk::DeviceSize;
             let size_3 = mesh.vertex_len * size_of::<[f32; 3]>() as vk::DeviceSize;
             let size_2 = mesh.vertex_len * size_of::<[f32; 2]>() as vk::DeviceSize;
+            let offset_4 = *next_vertex_offset * size_of::<[f32; 4]>() as vk::DeviceSize;
             let offset_3 = *next_vertex_offset * size_of::<[f32; 3]>() as vk::DeviceSize;
             let offset_2 = *next_vertex_offset * size_of::<[f32; 2]>() as vk::DeviceSize;
 
@@ -107,6 +109,12 @@ pub(crate) fn consolidate_mesh_buffers(
                     normal_buffer.buffer.handle,
                     &[vk::BufferCopy::builder().size(size_3).dst_offset(offset_3).build()],
                 );
+                // tangent
+                renderer
+                    .device
+                    .cmd_copy_buffer(*command_buffer, mesh.tangent_buffer.handle, tangent_buffer.handle, &[
+                        vk::BufferCopy::builder().size(size_4).dst_offset(offset_4).build(),
+                    ]);
                 // uv
                 renderer
                     .device
@@ -141,10 +149,14 @@ pub(crate) fn consolidate_mesh_buffers(
     let command_buffer = command_buffer.end();
     let command_buffers = if needs_transfer { vec![*command_buffer] } else { vec![] };
 
-    let queue = renderer.device.graphics_queue().lock();
+    let cb = if needs_transfer { Some(*command_buffer) } else { None };
 
-    frame_graph::ConsolidateMeshBuffers::Stage::queue_submit(&image_index, &renderer, *queue, &command_buffers)
-        .unwrap();
+    submissions.sender.send(("ConsolidateMeshBuffers", cb)).unwrap();
+
+    // let queue = renderer.device.graphics_queue().lock();
+
+    // frame_graph::ConsolidateMeshBuffers::Stage::queue_submit(&image_index, &renderer, *queue,
+    // &command_buffers)     .unwrap();
 
     // TODO: host_signal is too quick in optimized builds, surpassing last frame's async signal
     // operation       need to do an empty submit to wait for last frame first, then signal
@@ -175,10 +187,18 @@ impl ConsolidatedMeshBuffers {
         renderer
             .device
             .set_object_name(normal_buffer.buffer.handle, "Consolidated normals buffer");
+        let tangent_buffer = renderer.device.new_buffer(
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+            size_of::<super::super::TangentBuffer>().to_u64().unwrap(),
+        );
+        renderer
+            .device
+            .set_object_name(tangent_buffer.handle, "Consolidated tangent buffer");
         let uv_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            size_of::<super::super::shaders::UVBuffer>() as vk::DeviceSize,
+            size_of::<super::super::UVBuffer>() as vk::DeviceSize,
         );
         renderer
             .device
@@ -212,6 +232,7 @@ impl ConsolidatedMeshBuffers {
             next_index_offset: 0,
             position_buffer,
             normal_buffer,
+            tangent_buffer,
             uv_buffer,
             index_buffer,
             command_pools,
@@ -222,6 +243,7 @@ impl ConsolidatedMeshBuffers {
     pub(crate) fn destroy(self, device: &Device) {
         self.position_buffer.destroy(device);
         self.normal_buffer.destroy(device);
+        self.tangent_buffer.destroy(device);
         self.uv_buffer.destroy(device);
         self.index_buffer.destroy(device);
         self.command_pools.into_iter().for_each(|p| p.destroy(device));

@@ -1,11 +1,17 @@
 use std::{ffi::CStr, mem::transmute, ops::Deref, sync::Arc};
 
 use ash::{
-    self, extensions,
-    version::{DeviceV1_0, InstanceV1_0},
+    self,
+    extensions::{
+        self,
+        khr::{AccelerationStructure, Synchronization2},
+    },
     vk,
 };
-use parking_lot::Mutex;
+use cache_padded::CachePadded;
+use crossbeam_utils::Backoff;
+use microprofile::scope;
+use parking_lot::{Mutex, MutexGuard};
 
 mod alloc;
 mod buffer;
@@ -49,13 +55,17 @@ pub(crate) struct Device {
     pub(crate) graphics_queue_family: u32,
     pub(crate) compute_queue_family: u32,
     pub(crate) transfer_queue_family: u32,
-    graphics_queue: Mutex<vk::Queue>,
-    compute_queues: Vec<Mutex<vk::Queue>>,
-    transfer_queue: Option<Mutex<vk::Queue>>,
+    graphics_queue: CachePadded<Mutex<vk::Queue>>,
+    // TODO: temporarily exposed
+    pub(crate) compute_queues: Vec<CachePadded<Mutex<vk::Queue>>>,
+    // TODO: temporarily exposed
+    pub(crate) transfer_queue: Option<CachePadded<Mutex<vk::Queue>>>,
     #[cfg(feature = "crash_debugging")]
     pub(crate) buffer_marker_fn: vk::AmdBufferMarkerFn,
     #[allow(dead_code)]
     pub(crate) extended_dynamic_state_fn: vk::ExtExtendedDynamicStateFn,
+    pub(crate) synchronization2: Synchronization2,
+    pub(crate) acceleration_structure: AccelerationStructure,
 }
 
 impl Device {
@@ -155,7 +165,13 @@ impl Device {
                     .as_ptr(),
                 #[cfg(feature = "crash_debugging")]
                 vk::AmdBufferMarkerFn::name().as_ptr(),
+                vk::ExtRobustness2Fn::name().as_ptr(),
                 vk::ExtExtendedDynamicStateFn::name().as_ptr(),
+                vk::KhrSynchronization2Fn::name().as_ptr(),
+                vk::ExtSubgroupSizeControlFn::name().as_ptr(),
+                vk::KhrDeferredHostOperationsFn::name().as_ptr(),
+                vk::KhrAccelerationStructureFn::name().as_ptr(),
+                vk::KhrRayQueryFn::name().as_ptr(),
             ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
@@ -185,8 +201,21 @@ impl Device {
                 .timeline_semaphore(true)
                 .imageless_framebuffer(true)
                 .scalar_block_layout(true)
+                .buffer_device_address(true)
                 .descriptor_indexing(true)
                 .descriptor_binding_sampled_image_update_after_bind(true);
+            let mut features_subgroup_size =
+                vk::PhysicalDeviceSubgroupSizeControlFeaturesEXT::builder().subgroup_size_control(true);
+            let mut features_acceleration_structure = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::builder()
+                .acceleration_structure(true)
+                .descriptor_binding_acceleration_structure_update_after_bind(true);
+            let mut features_ray_query = vk::PhysicalDeviceRayQueryFeaturesKHR::builder().ray_query(true);
+            let mut features_robustness = vk::PhysicalDeviceRobustness2FeaturesEXT::builder()
+                .robust_image_access2(true)
+                .robust_buffer_access2(true)
+                .null_descriptor(true);
+            let mut features_synchronization =
+                vk::PhysicalDeviceSynchronization2FeaturesKHR::builder().synchronization2(true);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()
@@ -205,7 +234,12 @@ impl Device {
                 .enabled_extension_names(&device_extension_names_raw)
                 .push_next(&mut features_dynamic_state)
                 .push_next(&mut features2)
-                .push_next(&mut features12);
+                .push_next(&mut features12)
+                .push_next(&mut features_subgroup_size)
+                .push_next(&mut features_acceleration_structure)
+                .push_next(&mut features_ray_query)
+                .push_next(&mut features_robustness)
+                .push_next(&mut features_synchronization);
 
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
@@ -232,6 +266,8 @@ impl Device {
         let buffer_marker_fn = vk::AmdBufferMarkerFn::load(fn_ptr_loader);
 
         let extended_dynamic_state_fn = vk::ExtExtendedDynamicStateFn::load(fn_ptr_loader);
+        let synchronization2 = Synchronization2::new(instance, &device);
+        let acceleration_structure = AccelerationStructure::new(instance, &device);
 
         let device = Device {
             device,
@@ -242,12 +278,18 @@ impl Device {
             graphics_queue_family,
             compute_queue_family,
             transfer_queue_family: transfer_queue_family.unwrap_or(compute_queue_family),
-            graphics_queue: Mutex::new(graphics_queue),
-            compute_queues: compute_queues.iter().cloned().map(Mutex::new).collect(),
-            transfer_queue: transfer_queue.map(Mutex::new),
+            graphics_queue: CachePadded::new(Mutex::new(graphics_queue)),
+            compute_queues: compute_queues
+                .iter()
+                .cloned()
+                .map(|q| CachePadded::new(Mutex::new(q)))
+                .collect(),
+            transfer_queue: transfer_queue.map(|q| CachePadded::new(Mutex::new(q))),
             #[cfg(feature = "crash_debugging")]
             buffer_marker_fn,
             extended_dynamic_state_fn,
+            synchronization2,
+            acceleration_structure,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
@@ -266,13 +308,38 @@ impl Device {
         &self.graphics_queue
     }
 
-    pub(crate) fn compute_queue(&self, ix: usize) -> &Mutex<vk::Queue> {
-        self.compute_queues.get(ix).unwrap_or(&self.graphics_queue)
+    #[deprecated]
+    fn compute_queue(&self, ix: usize) -> &Mutex<vk::Queue> {
+        self.compute_queues
+            .get(ix)
+            .map(|x| &**x)
+            .unwrap_or(&self.graphics_queue)
+    }
+
+    pub(crate) fn compute_queue_balanced(&self) -> MutexGuard<vk::Queue> {
+        scope!("helpers", "compute_queue_balanced");
+        debug_assert!(
+            self.compute_queues.len() > 0,
+            "No compute queues to acquire in compute_queue_balanced"
+        );
+
+        let backoff = Backoff::new();
+        loop {
+            for queue in self.compute_queues.iter() {
+                if let Some(lock) = queue.try_lock() {
+                    return lock;
+                }
+            }
+            backoff.spin();
+        }
     }
 
     pub(crate) fn transfer_queue(&self) -> &Mutex<vk::Queue> {
         // TODO: better selection?
-        self.transfer_queue.as_ref().unwrap_or_else(|| self.compute_queue(0))
+        self.transfer_queue
+            .as_ref()
+            .map(|pad| &**pad)
+            .unwrap_or_else(|| self.compute_queue(0))
     }
 
     pub(crate) fn allocation_stats(&self) -> alloc::VmaStats {
@@ -323,6 +390,14 @@ impl Device {
         StaticBuffer::new(self, buffer_usage, allocation_usage)
     }
 
+    pub(crate) fn new_static_buffer_exclusive<T: Sized>(
+        &self,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: VmaMemoryUsage,
+    ) -> StaticBuffer<T> {
+        StaticBuffer::new_exclusive(self, buffer_usage, allocation_usage)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_image(
         &self,
@@ -335,6 +410,29 @@ impl Device {
         allocation_usage: VmaMemoryUsage,
     ) -> Image {
         Image::new(
+            self,
+            format,
+            extent,
+            samples,
+            tiling,
+            initial_layout,
+            usage,
+            allocation_usage,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_image_exclusive(
+        &self,
+        format: vk::Format,
+        extent: vk::Extent3D,
+        samples: vk::SampleCountFlags,
+        tiling: vk::ImageTiling,
+        initial_layout: vk::ImageLayout,
+        usage: vk::ImageUsageFlags,
+        allocation_usage: VmaMemoryUsage,
+    ) -> Image {
+        Image::new_exclusive(
             self,
             format,
             extent,
@@ -362,12 +460,8 @@ impl Device {
         PipelineLayout::new(self, descriptor_set_layouts, push_constant_ranges)
     }
 
-    pub(crate) fn new_graphics_pipeline(
-        &self,
-        shaders: &[(vk::ShaderStageFlags, vk::ShaderModule, Option<&vk::SpecializationInfo>)],
-        create_info: vk::GraphicsPipelineCreateInfo,
-    ) -> Pipeline {
-        Pipeline::new_graphics_pipeline(self, shaders, create_info)
+    pub(crate) fn new_graphics_pipeline(&self, create_info: vk::GraphicsPipelineCreateInfo) -> Pipeline {
+        Pipeline::new_graphics_pipeline(self, create_info)
     }
 
     pub(super) fn new_compute_pipelines(

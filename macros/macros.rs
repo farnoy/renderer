@@ -1,32 +1,33 @@
 #![feature(extend_one)]
 
+mod inputs;
+mod keywords;
+mod parsed;
 mod rga;
 
-use std::{env, fmt::Debug, fs::File, io::Read};
+use std::{env, fs::File, io::Read, iter::FromIterator};
 
 use convert_case::{Case, Casing};
-use derive_more::Deref;
 use derive_syn_parse::Parse;
 use hashbrown::HashMap;
+use inputs::*;
 use itertools::Itertools;
 use petgraph::{
     graph::{DiGraph, NodeIndex},
+    stable_graph::StableDiGraph,
     visit::EdgeRef,
     Direction,
 };
-use proc_macro2::{Span, TokenStream, TokenTree};
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
-use syn::{
-    braced, bracketed, custom_keyword,
-    parse::{Parse, ParseStream, Result},
-    parse_macro_input, parse_quote,
-    punctuated::Punctuated,
-    token::Brace,
-    Expr, Field, Ident, ItemStruct, LitBool, LitInt, Path, Token, Visibility,
-};
+use syn::{parse_macro_input, parse_quote, Expr, Ident, Path, Visibility};
 
 #[proc_macro]
 pub fn define_timeline(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    define_timeline2(proc_macro2::TokenStream::from(input)).into()
+}
+
+fn define_timeline2(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     #[derive(Parse)]
     struct TimelineInput {
         visibility: Visibility,
@@ -38,7 +39,10 @@ pub fn define_timeline(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
         visibility,
         name,
         stages,
-    } = parse_macro_input!(input as TimelineInput);
+    } = match syn::parse2(input) {
+        Ok(i) => i,
+        Err(e) => return proc_macro2::TokenStream::from(e.to_compile_error()),
+    };
 
     let max = stages.len().next_power_of_two() as u64;
 
@@ -79,7 +83,7 @@ pub fn define_timeline(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
         })
         .collect::<Vec<_>>();
 
-    let expanded = quote! {
+    quote! {
         #[allow(non_snake_case)]
         #visibility mod #name {
             use super::{RenderFrame, ImageIndex, SwapchainIndexToFrameNumber};
@@ -88,341 +92,6 @@ pub fn define_timeline(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 #variant2
             )*
         }
-    };
-
-    proc_macro::TokenStream::from(expanded)
-}
-
-struct Pair((Ident, TokenTree));
-
-impl Parse for Pair {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let name: Ident = input.parse()?;
-        input.parse::<Token![:]>()?;
-        Ok(Pair((name, input.parse()?)))
-    }
-}
-
-#[derive(Debug, Deref)]
-struct ArrowPair<A, B>((A, B));
-
-impl<A: Parse, B: Parse> Parse for ArrowPair<A, B> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let a = input.parse()?;
-        input.parse::<Token![=>]>()?;
-        let b = input.parse()?;
-        Ok(ArrowPair((a, b)))
-    }
-}
-
-#[derive(Clone, Debug, Deref)]
-struct Sequence<A, B>((A, B));
-
-impl<A: Parse + Debug, B: Parse + Debug> Parse for Sequence<A, B> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let peeking = input.fork();
-        let a = peeking.parse::<A>();
-        let b = peeking.parse::<B>();
-
-        if a.is_ok() && b.is_ok() {
-            Ok(Sequence((input.parse().unwrap(), input.parse().unwrap())))
-        } else {
-            // This is so that Sequence only consumes anything if it can parse both
-            // otherwise it gets confused when Sequence<A, B> is used back to back with Sequence<A, C>
-            Err(syn::Error::new(Span::call_site(), "asd"))
-        }
-    }
-}
-
-#[derive(Debug, Deref)]
-struct Unbrace<T>(T);
-
-impl<T: Parse> Parse for Unbrace<T> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let inner;
-        braced!(inner in input);
-        let t = inner.parse()?;
-        Ok(Unbrace(t))
-    }
-}
-
-#[derive(Debug, Deref)]
-struct Unbracket<T>(T);
-
-impl<T: Parse> Parse for Unbracket<T> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let inner;
-        bracketed!(inner in input);
-        let t = inner.parse()?;
-        Ok(Unbracket(t))
-    }
-}
-
-#[derive(Debug, Deref)]
-struct UnArray<T>(Vec<T>);
-
-impl<T: Parse> Parse for UnArray<T> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        Ok(UnArray(
-            Punctuated::<T, Token![,]>::parse_terminated(input)?
-                .into_iter()
-                .collect(),
-        ))
-    }
-}
-
-#[derive(Clone, Debug, Deref)]
-struct UnOption<T>(Option<T>);
-
-impl<T: Parse> Parse for UnOption<T> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        input.parse::<T>().map(|t| UnOption(Some(t))).or(Ok(UnOption(None)))
-    }
-}
-
-#[derive(Clone, Debug)]
-enum StaticOrDyn<T> {
-    Static(T),
-    Dyn,
-}
-
-impl<T: Parse> Parse for StaticOrDyn<T> {
-    fn parse(input: ParseStream) -> Result<Self> {
-        input
-            .parse::<Token![dyn]>()
-            .map(|_| StaticOrDyn::Dyn)
-            .or_else(|_| input.parse::<T>().map(StaticOrDyn::Static))
-    }
-}
-
-impl<T> StaticOrDyn<T> {
-    fn is_dyn(&self) -> bool {
-        match self {
-            StaticOrDyn::Static(_) => false,
-            StaticOrDyn::Dyn => true,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn unwrap_or(self, default: T) -> T {
-        match self {
-            StaticOrDyn::Static(s) => s,
-            StaticOrDyn::Dyn => default,
-        }
-    }
-
-    fn as_ref(&self) -> StaticOrDyn<&T> {
-        match self {
-            StaticOrDyn::Static(s) => StaticOrDyn::Static(&s),
-            StaticOrDyn::Dyn => StaticOrDyn::Dyn,
-        }
-    }
-}
-
-impl<T: PartialEq + Debug> StaticOrDyn<T> {
-    fn unwrap_or_warn_redundant(self, default: T, error_container: &mut TokenStream) -> T {
-        match self {
-            StaticOrDyn::Static(s) => {
-                if s == default {
-                    let msg = format!(
-                        "redundant static definition, would default to this anyway {:?}",
-                        default,
-                    );
-                    error_container.extend_one(quote!(compile_error!(#msg)));
-                    default
-                } else {
-                    s
-                }
-            }
-            StaticOrDyn::Dyn => default,
-        }
-    }
-}
-
-fn extract_optional_dyn<T, R>(a: &Option<StaticOrDyn<T>>, when_dyn: R) -> Option<R> {
-    match a {
-        Some(StaticOrDyn::Dyn) => Some(when_dyn),
-        _ => None,
-    }
-}
-
-#[derive(Parse)]
-struct Pass {
-    name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[prefix(kw::attachments in brace)]
-    #[inside(brace)]
-    attachments: Unbracket<UnArray<Ident>>,
-    #[prefix(kw::layouts in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    layouts_brace: Brace,
-    #[inside(layouts_brace)]
-    layouts: UnArray<Sequence<Ident, ArrowPair<Sequence<LoadOp, Expr>, Sequence<StoreOp, Expr>>>>,
-    #[inside(brace)]
-    #[allow(dead_code)]
-    subpasses_kw: kw::subpasses,
-    #[inside(brace)]
-    subpasses: Unbrace<UnArray<Subpass>>,
-    #[inside(brace)]
-    #[allow(dead_code)]
-    dependencies_kw: Option<kw::dependencies>,
-    #[parse_if(dependencies_kw.is_some())]
-    #[inside(brace)]
-    dependencies: Option<Unbrace<UnArray<SubpassDependency>>>,
-}
-
-#[derive(Parse)]
-struct Subpass {
-    name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[inside(brace)]
-    #[allow(dead_code)]
-    color_kw: Option<kw::color>,
-    #[inside(brace)]
-    #[parse_if(color_kw.is_some())]
-    color: Option<Unbracket<UnArray<ArrowPair<Ident, Ident>>>>,
-    #[inside(brace)]
-    #[allow(dead_code)]
-    depth_stencil_kw: Option<kw::depth_stencil>,
-    #[inside(brace)]
-    #[parse_if(depth_stencil_kw.is_some())]
-    depth_stencil: Option<Unbrace<ArrowPair<Ident, Ident>>>,
-    #[inside(brace)]
-    #[allow(dead_code)]
-    resolve_kw: Option<kw::resolve>,
-    #[inside(brace)]
-    #[parse_if(resolve_kw.is_some())]
-    resolve: Option<Unbracket<UnArray<ArrowPair<Ident, Ident>>>>,
-}
-
-#[derive(Parse)]
-struct SubpassDependency {
-    from: Ident,
-    #[allow(dead_code)]
-    arrow_1: Token![=>],
-    to: Ident,
-    src_stage: Expr,
-    #[allow(dead_code)]
-    arrow_2: Token![=>],
-    dst_stage: Expr,
-    src_access: Expr,
-    #[allow(dead_code)]
-    arrow_3: Token![=>],
-    dst_access: Expr,
-}
-
-#[derive(Debug, PartialEq)]
-enum LoadOp {
-    Load,
-    Clear,
-    DontCare,
-}
-
-impl Parse for LoadOp {
-    fn parse(input: ParseStream) -> Result<Self> {
-        input
-            .parse::<kw::load>()
-            .and(Ok(Self::Load))
-            .or_else(|_| input.parse::<kw::clear>().and(Ok(Self::Clear)))
-            .or_else(|_| input.parse::<kw::dont_care>().and(Ok(Self::DontCare)))
-    }
-}
-
-#[derive(Debug)]
-enum StoreOp {
-    Store,
-    Discard,
-}
-
-impl Parse for StoreOp {
-    fn parse(input: ParseStream) -> Result<Self> {
-        input
-            .parse::<kw::store>()
-            .and(Ok(Self::Store))
-            .or_else(|_| input.parse::<kw::discard>().and(Ok(Self::Discard)))
-    }
-}
-
-#[derive(Parse)]
-struct FrameInput {
-    visibility: Visibility,
-    #[allow(dead_code)]
-    name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[prefix(kw::attachments in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    attachments_brace: Brace,
-    #[inside(attachments_brace)]
-    attachments: UnArray<Ident>,
-    #[prefix(kw::formats in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    formats_brace: Brace,
-    #[inside(formats_brace)]
-    formats: UnArray<StaticOrDyn<Expr>>,
-    #[prefix(kw::samples in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    samples_brace: Brace,
-    #[inside(samples_brace)]
-    samples: UnArray<LitInt>,
-    #[prefix(kw::passes in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    passes_brace: Brace,
-    #[inside(passes_brace)]
-    passes: UnArray<Pass>,
-    #[prefix(kw::async_passes in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    async_passes_brace: Brace,
-    #[inside(async_passes_brace)]
-    async_passes: UnArray<Ident>,
-    #[prefix(kw::dependencies in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    dependencies_brace: Brace,
-    #[inside(dependencies_brace)]
-    dependencies: UnArray<ArrowPair<Ident, Sequence<Ident, UnOption<DependencyType>>>>,
-    #[prefix(kw::sync in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    sync_brace: Brace,
-    #[inside(sync_brace)]
-    sync: UnArray<ArrowPair<Ident, Expr>>,
-}
-#[derive(Debug, Clone, Copy)]
-enum DependencyType {
-    SameFrame,
-    LastFrame,
-    LastAccess,
-}
-
-impl Parse for DependencyType {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let inner;
-        bracketed!(inner in input);
-        inner
-            .parse::<kw::same_frame>()
-            .and(Ok(DependencyType::SameFrame))
-            .or(inner.parse::<kw::last_frame>().and(Ok(DependencyType::LastFrame)))
-            .or(inner.parse::<kw::last_access>().and(Ok(DependencyType::LastAccess)))
     }
 }
 
@@ -439,8 +108,14 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         async_passes: UnArray(async_passes),
         dependencies,
         sync: UnArray(sync),
+        sets,
+        pipelines,
         ..
     } = &frame_input;
+
+    let renderer_input = parsed::RendererInput::from(&frame_input);
+
+    let mut validation_errors = quote!();
 
     let sync: HashMap<String, Expr> = sync
         .into_iter()
@@ -450,25 +125,214 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let graph_ixes = passes
         .iter()
         .map(|pass| &pass.name)
-        .chain(async_passes.iter())
+        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
         .enumerate()
-        .map(|(ix, a)| (a.to_string(), ix as u32))
-        .collect::<HashMap<String, u32>>();
+        .map(|(ix, a)| (a.clone(), ix as u32))
+        .collect::<HashMap<Ident, u32>>();
 
     let all_passes = passes
         .iter()
         .map(|pass| &pass.name)
-        .chain(async_passes.iter())
+        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
         .collect::<Vec<_>>();
 
-    let dependency_graph = DiGraph::<(), DependencyType, u32>::from_edges(dependencies.iter().map(
-        |ArrowPair((from, Sequence((to, dep))))| {
-            (
-                *graph_ixes.get(&from.to_string()).unwrap(),
-                *graph_ixes.get(&to.to_string()).unwrap(),
-                dep.0.unwrap_or(DependencyType::SameFrame),
-            )
-        },
+    let mut dependency_graph = DiGraph::<Ident, DependencyType, u32>::new();
+    for (ix, ident) in passes
+        .iter()
+        .map(|pass| &pass.name)
+        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
+        .enumerate()
+    {
+        assert_eq!(ix, dependency_graph.add_node(ident.clone()).index());
+    }
+
+    for resource in renderer_input.resources.values() {
+        for (ix, usage) in resource.usages.iter().enumerate() {
+            let prev_usage = match ix {
+                0 => continue,
+                ix => &resource.usages[ix - 1],
+            };
+
+            if prev_usage.pass == usage.pass {
+                continue;
+            }
+
+            let prev_ix = graph_ixes.get(&prev_usage.pass).unwrap();
+            let this_ix = graph_ixes.get(&usage.pass).unwrap();
+
+            dependency_graph.update_edge(
+                NodeIndex::from(*prev_ix),
+                NodeIndex::from(*this_ix),
+                DependencyType::SameFrame,
+            );
+        }
+    }
+
+    for ArrowPair((from, Sequence((to, dep)))) in dependencies.iter() {
+        dependency_graph.update_edge(
+            NodeIndex::from(*graph_ixes.get(&from).unwrap()),
+            NodeIndex::from(*graph_ixes.get(&to).unwrap()),
+            dep.0.unwrap_or(DependencyType::SameFrame),
+        );
+    }
+    for (name, ix) in graph_ixes.iter() {
+        *dependency_graph.node_weight_mut(NodeIndex::from(*ix)).unwrap() = name.to_owned();
+    }
+    let connected_components = petgraph::algo::connected_components(&dependency_graph);
+    if connected_components != 1 {
+        let msg = format!("sync graph must have one connected component");
+        validation_errors.extend(quote!(compile_error!(#msg);));
+    }
+    if petgraph::algo::is_cyclic_directed(&dependency_graph) {
+        let msg = format!("sync graph is cyclic");
+        validation_errors.extend(quote!(compile_error!(#msg);));
+    }
+    let toposort = dbg!(petgraph::algo::toposort(&dependency_graph, None)).unwrap();
+
+    {
+        let mut play = StableDiGraph::from(dependency_graph.clone());
+        play.remove_node(NodeIndex::from(3)).unwrap();
+        play.remove_node(NodeIndex::from(6)).unwrap();
+        play.remove_node(NodeIndex::from(4)).unwrap();
+        play.remove_node(NodeIndex::from(1)).unwrap();
+        dbg!(petgraph::algo::toposort(&play, None)).unwrap();
+
+        let toposort_human = toposort
+            .iter()
+            .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
+            .collect_vec();
+
+        dbg!(toposort_human);
+
+        let mut toposort_grouped: Vec<Vec<NodeIndex>> = vec![];
+        'outer: for ix in toposort.iter() {
+            for items in toposort_grouped.iter_mut() {
+                if items
+                    .iter()
+                    .all(|candidate| !petgraph::algo::has_path_connecting(&dependency_graph, *candidate, *ix, None))
+                {
+                    items.push(*ix);
+                    continue 'outer;
+                }
+            }
+
+            match toposort_grouped.last_mut() {
+                Some(last) => {
+                    if last
+                        .iter()
+                        .any(|candidate| petgraph::algo::has_path_connecting(&dependency_graph, *candidate, *ix, None))
+                    {
+                        toposort_grouped.push(vec![*ix]);
+                    } else {
+                        debug_assert!(false, "should not be here");
+                        last.push(*ix);
+                    }
+                }
+                None => toposort_grouped.push(vec![*ix]),
+            }
+        }
+
+        let toposort_grouped_human = toposort_grouped
+            .iter()
+            .map(|list| {
+                list.iter()
+                    .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
+                    .collect_vec()
+            })
+            .collect_vec();
+
+        dbg!(toposort_grouped_human);
+    }
+
+    let toposort_gfx = toposort
+        .iter()
+        .filter(|ix| {
+            let name = dependency_graph.node_weight(**ix).unwrap();
+            renderer_input.passes.contains_key(name)
+                || renderer_input
+                    .async_passes
+                    .get(name)
+                    .map(|async_pass| async_pass.queue == parsed::QueueFamily::Graphics)
+                    .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    let mut toposort_grouped_gfx: Vec<Vec<NodeIndex>> = vec![];
+    for ix in toposort_gfx.iter() {
+        match toposort_grouped_gfx.last_mut() {
+            Some(last) => {
+                if last
+                    .iter()
+                    .any(|candidate| petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None))
+                {
+                    toposort_grouped_gfx.push(vec![**ix]);
+                } else {
+                    last.push(**ix);
+                }
+            }
+            None => toposort_grouped_gfx.push(vec![**ix]),
+        }
+    }
+
+    let toposort_grouped_gfx_human = toposort_grouped_gfx
+        .iter()
+        .map(|list| {
+            list.iter()
+                .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
+                .collect_vec()
+        })
+        .collect_vec();
+
+    let toposort_compute = toposort
+        .iter()
+        .filter(|ix| {
+            let name = dependency_graph.node_weight(**ix).unwrap();
+            renderer_input
+                .async_passes
+                .get(name)
+                .map(|async_pass| async_pass.queue == parsed::QueueFamily::Compute)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
+    for ix in toposort_compute.iter() {
+        match toposort_grouped_compute.last_mut() {
+            Some(last) => {
+                if last
+                    .iter()
+                    .any(|candidate| petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None))
+                {
+                    toposort_grouped_compute.push(vec![**ix]);
+                } else {
+                    last.push(**ix);
+                }
+            }
+            None => toposort_grouped_compute.push(vec![**ix]),
+        }
+    }
+
+    let toposort_grouped_compute_human = toposort_grouped_compute
+        .iter()
+        .map(|list| {
+            list.iter()
+                .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
+                .collect_vec()
+        })
+        .collect_vec();
+
+    dbg!(
+        toposort_gfx,
+        toposort_grouped_gfx,
+        toposort_grouped_gfx_human,
+        toposort_compute,
+        toposort_grouped_compute,
+        toposort_grouped_compute_human
+    );
+
+    dbg!(petgraph::dot::Dot::with_config(
+        &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
+        &[petgraph::dot::Config::EdgeNoLabel]
     ));
 
     let dynamic_attachments = attachments
@@ -481,7 +345,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let wait_instance = passes
         .iter()
         .map(|pass| &pass.name)
-        .chain(async_passes.iter())
+        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
         .map(|pass| {
             let signal_out = sync.get(&pass.to_string()).expect("no sync for this pass");
             let t = syn::parse2::<syn::Path>(signal_out.to_token_stream())
@@ -492,10 +356,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             );
 
             let wait_inner = dependency_graph
-                .edges_directed(
-                    NodeIndex::from(*graph_ixes.get(&pass.to_string()).unwrap()),
-                    Direction::Incoming,
-                )
+                .edges_directed(NodeIndex::from(*graph_ixes.get(&pass).unwrap()), Direction::Incoming)
                 .map(|edge| {
                     let from = all_passes.get(edge.source().index()).unwrap();
                     let signaled = sync.get(&from.to_string()).unwrap();
@@ -515,22 +376,31 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     };
 
                     quote! {
-                        semaphores.push(render_frame.#timeline_member.handle);
-                        values.push(super::super::#signaled.#as_of);
+                        semaphores.push(
+                            vk::SemaphoreSubmitInfoKHR::builder()
+                                .semaphore(render_frame.#timeline_member.handle)
+                                .value(super::super::#signaled.#as_of)
+                                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .build()
+                        );
                     }
                 })
                 .collect::<Vec<_>>();
 
             quote! {
                 impl RenderStage for Stage {
-                    fn prepare_signal(render_frame: &RenderFrame, semaphores: &mut Vec<vk::Semaphore>,
-                                      values: &mut Vec<u64>) {
-                        semaphores.push(render_frame.#signal_timeline_member.handle);
-                        values.push(super::super::#signal_out.as_of(render_frame.frame_number));
+                    fn prepare_signal(render_frame: &RenderFrame, semaphores: &mut Vec<vk::SemaphoreSubmitInfoKHR>) {
+                        semaphores.push(
+                            vk::SemaphoreSubmitInfoKHR::builder()
+                                .semaphore(render_frame.#signal_timeline_member.handle)
+                                .value(super::super::#signal_out.as_of(render_frame.frame_number))
+                                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .build()
+                        );
                     }
 
                     fn prepare_wait(image_index: &ImageIndex, render_frame: &RenderFrame,
-                                    semaphores: &mut Vec<vk::Semaphore>, values: &mut Vec<u64>) {
+                                    semaphores: &mut Vec<vk::SemaphoreSubmitInfoKHR>) {
                         #(#wait_inner)*
                     }
 
@@ -613,7 +483,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             quote! {
                 #[allow(non_snake_case)]
                 pub(crate) mod #pass_name {
-                    use super::{vk, DeviceV1_0, Device, RenderStage, RenderFrame, ImageIndex,
+                    use super::{vk, Device, RenderStage, RenderFrame, ImageIndex,
                         OriginalFramebuffer, OriginalRenderPass};
 
                     #[derive(Debug, Clone, Copy)]
@@ -641,13 +511,14 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let async_pass_definitions = async_passes
         .iter()
+        .map(|Sequence((ident, _))| ident)
         // .zip(passes.len()..)
         .zip(wait_instance.skip(passes.len()))
         .map(|(pass, wait_instance)| {
             quote! {
                 #[allow(non_snake_case)]
                 pub(crate) mod #pass {
-                    use super::{vk, DeviceV1_0, RenderStage, RenderFrame, ImageIndex};
+                    use super::{vk, RenderStage, RenderFrame, ImageIndex};
 
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
@@ -657,12 +528,27 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
         });
 
+    let shader_definitions = define_renderer(sets, pipelines);
+    let resource_definitions = TokenStream::from_iter(
+        renderer_input
+            .resources
+            .values()
+            .map(|resource| define_resource(&renderer_input, resource)),
+    );
+
+    let queue_manager = prepare_queue_manager(&renderer_input, &graph_ixes, &dependency_graph);
+
     let expanded = quote! {
+        #validation_errors
+
         pub(crate) mod #name {
-            use ash::{vk, version::DeviceV1_0};
+            use ash::vk;
             use super::{Device, RenderStage, RenderFrame, ImageIndex,
                         RenderPass as OriginalRenderPass,
                         Framebuffer as OriginalFramebuffer};
+            use std::mem::size_of;
+
+            #queue_manager
 
             #(
                 #pass_definitions
@@ -671,10 +557,257 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #(
                 #async_pass_definitions
             )*
+
+            #shader_definitions
+
+            pub(crate) mod resources {
+                use ash::vk;
+                use crate::renderer::{RenderFrame, device::{Device, Image, StaticBuffer, VmaMemoryUsage}};
+
+                #resource_definitions
+            }
         }
     };
 
     proc_macro::TokenStream::from(expanded)
+}
+
+fn define_resource(input: &parsed::RendererInput, resource: &parsed::ResourceInput) -> TokenStream {
+    let parsed::ResourceInput { name, kind, .. } = resource;
+
+    let string_name = name.to_string();
+    let string_renderer_name = input.name.to_string();
+    let resource_debug_name = format!("{}::resources::{}", string_renderer_name, string_name);
+
+    let get_queue_family_index_for_pass = |pass: &Ident| {
+        input
+            .passes
+            .get(&pass)
+            .and(Some(parsed::QueueFamily::Graphics))
+            .or_else(|| input.async_passes.get(&pass).map(|async_pass| async_pass.queue))
+            .expect("pass not found")
+    };
+
+    let get_runtime_queue_family = |ty: parsed::QueueFamily| match ty {
+        parsed::QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
+        parsed::QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
+        parsed::QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
+    };
+
+    let per_usage_functions = resource.usages.iter().enumerate().map(|(ix, usage)| {
+        let acquire_ident = format_ident!("acquire_{}", usage.name);
+        let release_ident = format_ident!("release_{}", usage.name);
+        let prev_usage = match ix {
+            0 => resource.usages.last().unwrap(),
+            ix => &resource.usages[(ix - 1) % resource.usages.len()],
+        };
+        let next_usage = &resource.usages[(ix + 1) % resource.usages.len()];
+        let barrier_ident = format_ident!("barrier_{}_{}", prev_usage.name, usage.name);
+
+        let prev_queue = get_queue_family_index_for_pass(&prev_usage.pass);
+        let this_queue = get_queue_family_index_for_pass(&usage.pass);
+        let next_queue = get_queue_family_index_for_pass(&next_usage.pass);
+        let prev_queue_runtime = get_runtime_queue_family(prev_queue);
+        let this_queue_runtime = get_runtime_queue_family(this_queue);
+        let next_queue_runtime = get_runtime_queue_family(next_queue);
+
+        let acquire = {
+            let bypass = if ix == 0 {
+                quote!(if renderer.frame_number == 1 {
+                    return;
+                })
+            } else {
+                quote!()
+            };
+
+            if prev_queue == this_queue {
+                quote!()
+            } else {
+                quote! {
+                    pub(crate) fn #acquire_ident(&self, renderer: &RenderFrame, cb: vk::CommandBuffer) {
+                        #bypass
+
+                        unsafe {
+                            let buffer_barrier = &[
+                                vk::BufferMemoryBarrier2KHR::builder()
+                                    // TODO: granularity
+                                    .src_queue_family_index(#prev_queue_runtime)
+                                    .dst_queue_family_index(#this_queue_runtime)
+                                    .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                    .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                    .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                                     vk::AccessFlags2KHR::MEMORY_WRITE)
+                                    .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                                     vk::AccessFlags2KHR::MEMORY_WRITE)
+                                    .buffer(self.0.buffer.handle)
+                                    .size(vk::WHOLE_SIZE)
+                                    .build()
+                            ];
+                            renderer.device.synchronization2.cmd_pipeline_barrier2(
+                                cb,
+                                &vk::DependencyInfoKHR::builder().buffer_memory_barriers(buffer_barrier),
+                            );
+                        }
+                    }
+                }
+            }
+        };
+
+        // Barriers are only generated within the same pass and when neither one side of the dependency is a
+        // renderpass attachment
+        let barrier = if prev_usage.pass == usage.pass
+            && prev_usage.usage != parsed::ResourceUsageKind::Attachment
+            && usage.usage != parsed::ResourceUsageKind::Attachment
+        {
+            let buffer_barrier = match kind {
+                parsed::ResourceKind::StaticBuffer { .. } => quote!(vk::BufferMemoryBarrier2KHR::builder()
+                    // TODO: granularity
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                    .buffer(self.0.buffer.handle)
+                    .size(vk::WHOLE_SIZE)
+                    .build()),
+                parsed::ResourceKind::Image => quote!(),
+            };
+            let image_barrier = match kind {
+                parsed::ResourceKind::StaticBuffer { .. } => quote!(),
+                parsed::ResourceKind::Image => todo!("not needed yet"),
+                /* quote!(vk::ImageMemoryBarrier2KHR::builder()
+                 *     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                 *     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                 *     .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                 *     .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                 *     .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                 *     .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                 *     .image(self.0.handle)
+                 *     .subresource_range(vk::ImageSubresource::builder().)), */
+            };
+            quote! {
+                pub(crate) fn #barrier_ident(&self, renderer: &RenderFrame, cb: vk::CommandBuffer) {
+                    unsafe {
+                        let buffer_barrier = &[
+                            #buffer_barrier
+                        ];
+                        let image_barrier = &[
+                            #image_barrier
+                        ];
+                        renderer.device.synchronization2.cmd_pipeline_barrier2(
+                            cb,
+                            &vk::DependencyInfoKHR::builder()
+                                .buffer_memory_barriers(buffer_barrier)
+                                .image_memory_barriers(image_barrier),
+                        );
+                    }
+                }
+            }
+        } else {
+            quote!()
+        };
+
+        let release = if this_queue == next_queue {
+            quote!()
+        } else {
+            quote! {
+                pub(crate) fn #release_ident(&self, renderer: &RenderFrame, cb: vk::CommandBuffer) {
+                    unsafe {
+                        let buffer_barrier = &[
+                            vk::BufferMemoryBarrier2KHR::builder()
+                                // TODO: granularity
+                                .src_queue_family_index(#this_queue_runtime)
+                                .dst_queue_family_index(#next_queue_runtime)
+                                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                                .buffer(self.0.buffer.handle)
+                                .size(vk::WHOLE_SIZE)
+                                .build()
+                        ];
+                        renderer.device.synchronization2.cmd_pipeline_barrier2(
+                            cb,
+                            &vk::DependencyInfoKHR::builder().buffer_memory_barriers(buffer_barrier),
+                        );
+                    }
+                }
+            }
+        };
+
+        quote! {
+            #acquire
+            #barrier
+            #release
+        }
+    });
+
+    let mut validation_errors = quote!();
+
+    match kind {
+        parsed::ResourceKind::StaticBuffer { type_name } => quote! {
+            #[allow(non_camel_case_types)]
+            pub(crate) struct #name(pub(crate) StaticBuffer<super::#type_name>);
+
+            impl #name {
+                pub(crate) fn new(device: &Device) -> Self {
+                    let b = device.new_static_buffer_exclusive(
+                        vk::BufferUsageFlags::INDIRECT_BUFFER
+                            | vk::BufferUsageFlags::STORAGE_BUFFER
+                            | vk::BufferUsageFlags::TRANSFER_SRC
+                            | vk::BufferUsageFlags::TRANSFER_DST,
+                        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                    );
+                    device.set_object_name(b.buffer.handle, #resource_debug_name);
+                    Self(b)
+                }
+
+                pub(crate) fn destroy(self, device: &Device) {
+                    self.0.destroy(device);
+                }
+
+                #(#per_usage_functions)*
+            }
+
+            impl std::ops::Deref for #name {
+                type Target = StaticBuffer<super::#type_name>;
+
+                fn deref(&self) -> &Self::Target {
+                    &self.0
+                }
+            }
+
+            #validation_errors
+        },
+        parsed::ResourceKind::Image => quote! {
+            #[allow(non_camel_case_types)]
+            pub(crate) struct #name(pub(crate) Image);
+
+            impl #name {
+                pub(crate) fn import(device: &Device, image: Image) -> Self {
+                    device.set_object_name(image.handle, #resource_debug_name);
+                    Self(image)
+                }
+
+                pub(crate) fn destroy(self, device: &Device) {
+                    self.0.destroy(device);
+                }
+
+                #(#per_usage_functions)*
+            }
+
+            impl std::ops::Deref for #name {
+                type Target = Image;
+
+                fn deref(&self) -> &Self::Target {
+                    &self.0
+                }
+            }
+
+            #validation_errors
+        },
+    }
 }
 
 fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
@@ -1064,84 +1197,45 @@ fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
 // it could also coalesce some submits into one submit with multiple command buffers
 // but only when no sync points are needed in between
 // need to figure out how to "communicate" between proc macros, particularly the dependency tree
-#[proc_macro]
-pub fn submit_coalesced(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let UnArray(stages) = parse_macro_input!(input as UnArray<ArrowPair<Expr, Expr>>);
+// #[proc_macro]
+// pub fn submit_coalesced(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+//     let UnArray(stages) = parse_macro_input!(input as UnArray<ArrowPair<Expr, Expr>>);
 
-    let mut built_up = quote! {
-        unsafe {
-            renderer
-                .device
-                .queue_submit(
-                    *queue,
-                    &submits,
-                    vk::Fence::null(),
-                )
-        }
-    };
+//     let mut built_up = quote! {
+//         unsafe {
+//             renderer
+//                 .device
+//                 .queue_submit(
+//                     *queue,
+//                     &submits,
+//                     vk::Fence::null(),
+//                 )
+//         }
+//     };
 
-    for ArrowPair((stage, command_buffers)) in stages.iter().rev() {
-        built_up = quote! {
-            #stage::Stage::submit_info(
-                &image_index,
-                &renderer,
-                #command_buffers,
-                |submit| {
-                    submits.push(submit);
-                    #built_up
-                }
-            )
-        };
-    }
+//     for ArrowPair((stage, command_buffers)) in stages.iter().rev() {
+//         built_up = quote! {
+//             #stage::Stage::submit_info(
+//                 &image_index,
+//                 &renderer,
+//                 #command_buffers,
+//                 |submit| {
+//                     submits.push(submit);
+//                     #built_up
+//                 }
+//             )
+//         };
+//     }
 
-    let out = quote! {
-        {
-            let mut submits = vec![];
-            #built_up
-        }
-    };
+//     let out = quote! {
+//         {
+//             let mut submits = vec![];
+//             #built_up
+//         }
+//     };
 
-    proc_macro::TokenStream::from(out)
-}
-
-#[proc_macro]
-pub fn to_vk_format(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    custom_keyword!(vec2);
-    custom_keyword!(vec3);
-    custom_keyword!(vec4);
-
-    let parser = |input: ParseStream| {
-        input
-            .parse::<vec2>()
-            .and(Ok(quote!(vk::Format::R32G32_SFLOAT)))
-            .or_else(|_| input.parse::<vec3>().and(Ok(quote!(vk::Format::R32G32B32_SFLOAT))))
-            .or_else(|_| input.parse::<vec4>().and(Ok(quote!(vk::Format::R32G32B32A32_SFLOAT))))
-    };
-
-    let out = parse_macro_input!(input with parser);
-
-    proc_macro::TokenStream::from(out)
-}
-
-#[proc_macro]
-pub fn to_rust_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    custom_keyword!(vec2);
-    custom_keyword!(vec3);
-    custom_keyword!(vec4);
-
-    let parser = |input: ParseStream| {
-        input
-            .parse::<vec2>()
-            .and(Ok(quote!(glm::Vec2)))
-            .or_else(|_| input.parse::<vec3>().and(Ok(quote!(glm::Vec3))))
-            .or_else(|_| input.parse::<vec4>().and(Ok(quote!(glm::Vec4))))
-            .or_else(|_| input.parse::<TokenTree>().map(|t| quote!(#t)))
-    };
-
-    let out = parse_macro_input!(input with parser);
-
-    proc_macro::TokenStream::from(out)
-}
+//     proc_macro::TokenStream::from(out)
+// }
 
 macro_rules! make_split {
     ($name:ident, [$($letter:ident),+] [$($ix:tt),+]) => {
@@ -1165,14 +1259,6 @@ make_split!(split4, [A, B, C, D] [0, 1, 2, 3]);
 make_split!(split5, [A, B, C, D, E] [0, 1, 2, 3, 4]);
 make_split!(split6, [A, B, C, D, E, F] [0, 1, 2, 3, 4, 5]);
 make_split!(split7, [A, B, C, D, E, F, G] [0, 1, 2, 3, 4, 5, 6]);
-
-#[derive(Debug, Deref)]
-struct NamedField(Field);
-impl Parse for NamedField {
-    fn parse(input: ParseStream) -> Result<Self> {
-        Field::parse_named(input).map(NamedField)
-    }
-}
 
 fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Ident), Ident>) -> TokenStream {
     let DescriptorSet {
@@ -1220,8 +1306,9 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
 
                 quote! {
                     pub(crate) mod #name {
-                        use ash::{version::DeviceV1_0, vk};
-                        use super::super::super::{#ty, StaticBuffer};
+                        use ash::vk;
+                        use crate::renderer::device::StaticBuffer;
+                        use super::super::super::#ty;
                         use std::mem::size_of;
 
                         pub(crate) type T = #ty;
@@ -1264,7 +1351,11 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
 
     quote! {
         pub(crate) mod #set_name {
-            use super::{vk, DescriptorSetLayout, DescriptorSet, Device, Buffer, MainDescriptorPool, DescriptorPool};
+            use ash::vk;
+            use crate::renderer::{
+                device::{DescriptorSetLayout, DescriptorSet, Device, Buffer, DescriptorPool},
+                MainDescriptorPool,
+            };
 
             pub(crate) struct Layout {
                 pub(crate) layout: DescriptorSetLayout,
@@ -1327,11 +1418,6 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                 }
             }
 
-            #[deprecated(note = "compatibility with old macro")]
-            pub(crate) fn bindings() -> [vk::DescriptorSetLayoutBinding; #binding_count] {
-                Layout::bindings()
-            }
-
             pub(crate) struct Set {
                 pub(crate) set: DescriptorSet,
             }
@@ -1366,6 +1452,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         specialization_constants,
         descriptors,
         specific,
+        varying_subgroup_stages,
         ..
     } = pipe;
     let specialization = {
@@ -1489,8 +1576,8 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                     .map(|(binding_ix, field)| {
                         (
                             binding_ix as u32,
-                            TokenStream::from(to_vk_format(field.ty.to_token_stream().into())),
-                            TokenStream::from(to_rust_type(field.ty.to_token_stream().into())),
+                            to_vk_format(field.ty.to_token_stream()),
+                            to_rust_type(field.ty.to_token_stream()),
                         )
                     }),
             );
@@ -1591,12 +1678,27 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         .iter()
         .map(|shader_stage| format_ident!("{}_PATH", &shader_stage))
         .collect_vec();
+    let allow_varying_snippet = quote!(vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT);
+    let forbid_varying_snippet = quote!(vk::PipelineShaderStageCreateFlags::empty());
+    let varying_subgroup_stages_flags = shader_stage
+        .iter()
+        .map(|stage| {
+            match varying_subgroup_stages {
+                // varying all stages
+                Some(UnOption(None)) => &allow_varying_snippet,
+                // varying in this stage
+                Some(UnOption(Some(Unbracket(UnArray(stages)))))
+                    if stages.iter().any(|candidate| candidate == stage) =>
+                {
+                    &allow_varying_snippet
+                }
+                _ => &forbid_varying_snippet,
+            }
+        })
+        .collect_vec();
 
     let pipeline_definition_inner = match specific {
         SpecificPipe::Graphics(specific) => {
-            let stage_flag = specific.stages.iter().cloned().collect_vec();
-            let stage_ix = stage_flag.iter().enumerate().map(|(ix, _)| ix).collect_vec();
-
             let polygon_mode = parse_quote!(FILL);
             let polygon_mode = specific
                 .polygon_mode
@@ -1678,13 +1780,10 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             };
 
             quote! {
-                let stage_shaders = [
-                    #( (vk::ShaderStageFlags::#stage_flag, shader_handles[#stage_ix], Some(&spec_info)) ),*
-                ];
                 let pipeline = device.new_graphics_pipeline(
-                    &stage_shaders,
                     vk::GraphicsPipelineCreateInfo::builder()
                         .vertex_input_state(&vertex_input_state())
+                        .stages(stages)
                         .input_assembly_state(
                             &vk::PipelineInputAssemblyStateCreateInfo::builder()
                                 .topology(vk::PrimitiveTopology::#topology_mode)
@@ -1755,14 +1854,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             quote! {
                 let pipeline = device.new_compute_pipelines(&[
                     vk::ComputePipelineCreateInfo::builder()
-                        .stage(
-                            vk::PipelineShaderStageCreateInfo::builder()
-                                .module(shader_handles[0])
-                                .name(&shader_entry_name)
-                                .stage(vk::ShaderStageFlags::COMPUTE)
-                                .specialization_info(&spec_info)
-                                .build(),
-                        )
+                        .stage(stages[0])
                         .layout(*layout.layout)
                         .flags(flags)
                         .base_pipeline_handle(base_pipeline_handle)
@@ -1820,6 +1912,12 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                         shaders[#stage_ix].ok_or_else(|| device.new_shader(#shader_stage))
                     ),*
                 ];
+                // let subgroup_size_controls = &mut [
+                //     #(
+                //         vk::PipelineShaderStageRequiredSubgroupSizeCreateInfoEXT::builder()
+                //             #subgroup_sizes_calls
+                //     ),*
+                // ];
                 let shader_handles = shaders
                     .iter()
                     .map(|s| s.as_ref().map(|s| s.vk()).unwrap_or_else(|s| s.vk()))
@@ -1829,6 +1927,19 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                 if base_pipeline.is_some() {
                     flags |= vk::PipelineCreateFlags::DERIVATIVE;
                 }
+
+                let stages = &[
+                    #(
+                        vk::PipelineShaderStageCreateInfo::builder()
+                            .module(shader_handles[#stage_ix])
+                            .name(&shader_entry_name)
+                            .stage(vk::ShaderStageFlags::#shader_stage)
+                            .specialization_info(&spec_info)
+                            .flags(#varying_subgroup_stages_flags)
+                            // .push_next(&mut subgroup_size_controls[#stage_ix])
+                            .build()
+                    ),*
+                ];
 
                 #pipeline_definition_inner;
 
@@ -1983,10 +2094,9 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     quote! {
         pub(crate) mod #name {
             use crate::renderer::device::{self, Device};
-            use ash::{vk, version::DeviceV1_0};
+            use ash::vk;
             use std::{mem::size_of, slice::from_raw_parts};
             use microprofile::scope;
-            use static_assertions::const_assert_eq;
 
             pub(crate) struct PipelineLayout {
                 pub(crate) layout: device::PipelineLayout,
@@ -2055,204 +2165,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     }
 }
 
-mod kw {
-    use syn::custom_keyword;
-
-    custom_keyword!(compare);
-    custom_keyword!(op);
-    custom_keyword!(bounds);
-    custom_keyword!(cull);
-    custom_keyword!(depth);
-    custom_keyword!(test);
-    custom_keyword!(write);
-    custom_keyword!(front);
-    custom_keyword!(face);
-    custom_keyword!(topology);
-    custom_keyword!(polygon);
-    custom_keyword!(mode);
-    custom_keyword!(subpasses);
-    custom_keyword!(load);
-    custom_keyword!(dont_care);
-    custom_keyword!(store);
-    custom_keyword!(clear);
-    custom_keyword!(discard);
-    custom_keyword!(color);
-    custom_keyword!(depth_stencil);
-    custom_keyword!(resolve);
-    custom_keyword!(preserve);
-    custom_keyword!(input);
-    custom_keyword!(attachments);
-    custom_keyword!(formats);
-    custom_keyword!(samples);
-    custom_keyword!(passes);
-    custom_keyword!(retain);
-    custom_keyword!(layouts);
-    custom_keyword!(async_passes);
-    custom_keyword!(dependencies);
-    custom_keyword!(sync);
-
-    custom_keyword!(same_frame);
-    custom_keyword!(last_frame);
-    custom_keyword!(last_access);
-    custom_keyword!(descriptors);
-    custom_keyword!(compute);
-    custom_keyword!(graphics);
-    custom_keyword!(push_constants);
-    custom_keyword!(specialization_constants);
-    custom_keyword!(vertex_inputs);
-    custom_keyword!(count);
-    custom_keyword!(stages);
-    custom_keyword!(partially);
-    custom_keyword!(bound);
-    custom_keyword!(update);
-    custom_keyword!(after);
-    custom_keyword!(bind);
-    custom_keyword!(pipelines);
-    custom_keyword!(sets);
-    custom_keyword!(data_types);
-}
-
-#[derive(Parse, Debug)]
-struct DataType {
-    s: ItemStruct,
-}
-#[derive(Parse, Debug)]
-struct DescriptorSet {
-    name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[inside(brace)]
-    bindings: UnArray<Binding>,
-}
-#[derive(Parse, Debug)]
-#[allow(dead_code)]
-struct Binding {
-    name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[prefix(Token![type] in brace)]
-    #[inside(brace)]
-    descriptor_type: Ident,
-    #[inside(brace)]
-    partially_bound: UnOption<Sequence<kw::partially, kw::bound>>,
-    #[inside(brace)]
-    update_after_bind: UnOption<Sequence<kw::update, Sequence<kw::after, kw::bind>>>,
-    #[prefix(kw::count in brace)]
-    #[inside(brace)]
-    count: LitInt,
-    #[prefix(kw::stages in brace)]
-    #[inside(brace)]
-    stages: Unbracket<UnArray<Ident>>,
-}
-
-#[derive(Parse, Debug)]
-struct Pipe {
-    name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[prefix(kw::descriptors in brace)]
-    #[inside(brace)]
-    descriptors: Unbracket<UnArray<Path>>,
-    #[inside(brace)]
-    spec_const_tok: Option<kw::specialization_constants>,
-    #[parse_if(spec_const_tok.is_some())]
-    #[inside(brace)]
-    specialization_constants: Option<Unbracket<UnArray<ArrowPair<LitInt, NamedField>>>>,
-    #[inside(brace)]
-    specific: SpecificPipe,
-}
-#[derive(Parse, Debug)]
-struct GraphicsPipe {
-    samples_kw: Option<kw::samples>,
-    #[parse_if(samples_kw.is_some())]
-    samples: Option<StaticOrDyn<LitInt>>,
-    vertex_inputs_kw: Option<kw::vertex_inputs>,
-    #[parse_if(vertex_inputs_kw.is_some())]
-    vertex_inputs: Option<Unbracket<UnArray<NamedField>>>,
-    #[prefix(kw::stages)]
-    stages: Unbracket<UnArray<Ident>>,
-    polygon_mode_kw: UnOption<Sequence<kw::polygon, kw::mode>>,
-    #[parse_if(polygon_mode_kw.0.is_some())]
-    polygon_mode: Option<StaticOrDyn<Ident>>,
-    topology_kw: Option<kw::topology>,
-    #[parse_if(topology_kw.is_some())]
-    topology_mode: Option<StaticOrDyn<Ident>>,
-    front_face_kw: UnOption<Sequence<kw::front, kw::face>>,
-    #[parse_if(front_face_kw.0.is_some())]
-    front_face_mode: Option<StaticOrDyn<Ident>>,
-    cull_mode_kw: UnOption<Sequence<kw::cull, kw::mode>>,
-    #[parse_if(cull_mode_kw.0.is_some())]
-    cull_mode: Option<StaticOrDyn<Ident>>,
-    depth_test_enable_kw: UnOption<Sequence<kw::depth, kw::test>>,
-    #[parse_if(depth_test_enable_kw.0.is_some())]
-    depth_test_enable: Option<StaticOrDyn<LitBool>>,
-    depth_write_enable_kw: UnOption<Sequence<kw::depth, kw::write>>,
-    #[parse_if(depth_write_enable_kw.0.is_some())]
-    depth_write_enable: Option<StaticOrDyn<LitBool>>,
-    depth_compare_op_kw: UnOption<Sequence<kw::depth, Sequence<kw::compare, kw::op>>>,
-    #[parse_if(depth_compare_op_kw.0.is_some())]
-    depth_compare_op: Option<StaticOrDyn<Ident>>,
-    depth_bounds_enable_kw: UnOption<Sequence<kw::depth, kw::bounds>>,
-    #[parse_if(depth_bounds_enable_kw.0.is_some())]
-    depth_bounds_enable: Option<StaticOrDyn<LitBool>>,
-}
-#[derive(Parse, Debug)]
-struct ComputePipe {}
-#[derive(Debug)]
-enum SpecificPipe {
-    Graphics(GraphicsPipe),
-    Compute(ComputePipe),
-}
-impl Parse for SpecificPipe {
-    fn parse(input: ParseStream) -> Result<Self> {
-        input
-            .parse::<kw::compute>()
-            .and_then(|_| input.parse().map(SpecificPipe::Compute))
-            .or_else(|_| {
-                input
-                    .parse::<kw::graphics>()
-                    .and_then(|_| input.parse().map(SpecificPipe::Graphics))
-            })
-    }
-}
-impl SpecificPipe {
-    fn stages(&self) -> Vec<Ident> {
-        match self {
-            SpecificPipe::Compute(_) => vec![parse_quote!(COMPUTE)],
-            SpecificPipe::Graphics(g) => g.stages.iter().cloned().collect(),
-        }
-    }
-}
-
-#[proc_macro]
-pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    #[derive(Parse)]
-    struct Input {
-        // #[prefix(kw::data_types)]
-        // #[brace]
-        // #[allow(dead_code)]
-        // data_types_brace: Brace,
-        // #[inside(data_types_brace)]
-        // data_types: UnArray<DataType>,
-        #[prefix(kw::sets)]
-        #[brace]
-        #[allow(dead_code)]
-        sets_brace: Brace,
-        #[inside(sets_brace)]
-        sets: UnArray<DescriptorSet>,
-        #[prefix(kw::pipelines)]
-        #[brace]
-        #[allow(dead_code)]
-        pipelines_brace: Brace,
-        #[inside(pipelines_brace)]
-        pipelines: UnArray<Pipe>,
-    }
-
-    let Input { sets, pipelines, .. } = parse_macro_input!(input as Input);
-
+fn define_renderer(sets: &UnArray<DescriptorSet>, pipelines: &UnArray<Pipe>) -> proc_macro2::TokenStream {
     let mut output = quote!();
 
     let mut defined_types = HashMap::new();
@@ -2273,32 +2186,21 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
             let shader_file = File::open(&shader_path).unwrap();
             let bytes: Vec<u8> = shader_file.bytes().filter_map(std::result::Result::ok).collect();
             let spv = spirq::SpirvBinary::from(bytes);
-            let entry_points = spv.reflect().expect("failed to reflect on spirv");
+            let entry_points = spv.reflect_vec().expect("failed to reflect on spirv");
             let entry = entry_points
                 .iter()
                 .find(|entry| entry.name == "main")
                 .expect("Failed to load entry point");
 
-            for spec_const in entry.spec.spec_consts().zip_longest(
-                pipe.specialization_constants
+            for spv in entry.spec.spec_consts() {
+                let rusty = pipe
+                    .specialization_constants
                     .as_ref()
-                    .map(|x| x.iter().map(|a| &a.0).collect_vec())
-                    .iter()
-                    .flatten(),
-            ) {
-                match spec_const {
-                    itertools::EitherOrBoth::Both(spv, rusty) => {
-                        let rust_id: u32 = rusty.0.base10_parse().unwrap();
-                        if spv.spec_id != rust_id {
-                            let msg = format!(
-                                "shader {} spec constant mismatch shader id = {}, rusty id = {}",
-                                shader_path.to_string_lossy(),
-                                spv.spec_id,
-                                rust_id,
-                            );
-                            output.extend(quote!(compile_error!(#msg);));
-                            continue;
-                        }
+                    .map(|x| x.iter().find(|p| spv.spec_id == p.0 .0.base10_parse::<u32>().unwrap()))
+                    .flatten();
+
+                match rusty {
+                    Some(rusty) => {
                         if !compare_types(spv.ty, &rusty.1.ty) {
                             let msg = format!(
                                 "shader {} spec constant mismatch for id = {} shader type = {:?}, rusty type = {:?}",
@@ -2311,7 +2213,7 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                             continue;
                         }
                     }
-                    itertools::EitherOrBoth::Left(spv) => {
+                    None => {
                         let id = spv.spec_id;
                         let msg = format!(
                             "shader {} missing rust side of spec const id = {}",
@@ -2322,19 +2224,29 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                             compile_error!(#msg);
                         });
                     }
-                    itertools::EitherOrBoth::Right(rusty) => {
-                        let id = &rusty.0;
-                        let msg = format!(
-                            "shader {} missing shader side of spec const id = {}",
-                            shader_path.to_string_lossy(),
-                            id
-                        );
-                        output.extend(quote! {
-                            compile_error!(#msg);
-                        });
-                    }
                 }
             }
+
+            pipe.specialization_constants.as_ref().map(|x| {
+                for ArrowPair((rusty_id, _field)) in x.iter() {
+                    if entry
+                        .spec
+                        .spec_consts()
+                        .any(|c| c.spec_id == rusty_id.base10_parse::<u32>().unwrap())
+                    {
+                        continue;
+                    }
+                    let msg = format!(
+                        "shader {} missing shader side of spec const id = {}",
+                        shader_path.to_string_lossy(),
+                        rusty_id
+                    );
+                    output.extend(quote! {
+                        compile_error!(#msg);
+                    });
+                }
+            });
+
             for desc in entry.descs() {
                 let rusty = sets
                     .0
@@ -2352,6 +2264,23 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 match desc.desc_ty {
                     spirq::ty::DescriptorType::StorageBuffer(n, spirq::Type::Struct(s))
                     | spirq::ty::DescriptorType::UniformBuffer(n, spirq::Type::Struct(s)) => {
+                        match (desc.desc_ty, rusty_binding.descriptor_type.to_string().as_str()) {
+                            (spirq::ty::DescriptorType::StorageBuffer(..), "STORAGE_BUFFER") => {}
+                            (spirq::ty::DescriptorType::UniformBuffer(..), "UNIFORM_BUFFER") => {}
+                            (spirq::ty::DescriptorType::Image(..), "COMBINED_IMAGE_SAMPLER") => {}
+                            (spir_ty, rusty_ty) => {
+                                let msg = format!(
+                                    "Incorrect shader binding at set {} binding {}, shader declares {:?}, rusty binding is {}",
+                                    rusty.name.to_string(),
+                                    rusty_binding.name.to_string(),
+                                    spir_ty,
+                                    rusty_ty,
+                                );
+                                output.extend_one(quote! {
+                                    compile_error!(#msg);
+                                })
+                            }
+                        }
                         if *n != rusty_binding.count.base10_parse::<u32>().unwrap() {
                             let msg = format!(
                                 "Wrong descriptor count for set {} binding {}, shader needs {}",
@@ -2422,7 +2351,7 @@ pub fn define_renderer(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 
     output.extend(sets.iter().map(|set| define_set(set, &set_binding_type_names)));
 
-    proc_macro::TokenStream::from(output)
+    output
 }
 
 fn shader_stage_to_file_extension(id: &Ident) -> &'static str {
@@ -2494,7 +2423,7 @@ fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStre
                 }
 
                 #(
-                    const_assert_eq!(#rust_offset, #field_offset);
+                    static_assertions::const_assert_eq!(#rust_offset, #field_offset);
                 )*
             }));
 
@@ -2521,6 +2450,221 @@ fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStre
             let (prereq, inner) = spirq_type_to_rust(arr.proto_ty());
             (prereq, quote!([#inner; #nrepeat]))
         }
-        _ => unimplemented!("{:?}", spv),
+        _ => unimplemented!("spirq_type_to_rust {:?}", spv),
+    }
+}
+
+#[test]
+fn test_timeline1() {
+    use std::{io::Write, process::Stdio};
+    let unformatted = format!("{}", define_timeline2(quote! {pub(crate) TestTimeline [One, Two]}));
+    let mut child = std::process::Command::new("rustfmt")
+        .args(&["--config", "newline_style=Unix"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(unformatted.as_bytes());
+    let output = child.wait_with_output().unwrap();
+    let formatted = std::str::from_utf8(&output.stdout).unwrap();
+    pretty_assertions::assert_eq!(formatted, indoc::indoc! {"
+        #[allow(non_snake_case)]
+        pub(crate) mod TestTimeline {
+            use super::{ImageIndex, RenderFrame, SwapchainIndexToFrameNumber};
+            pub(crate) struct One;
+            impl One {
+                pub(crate) const VALUE: u64 = 1u64;
+
+                pub(crate) const fn as_of(&self, frame_number: u64) -> u64 {
+                    frame_number * 2u64 + 1u64
+                }
+
+                pub(crate) const fn as_of_last(&self, frame_number: u64) -> u64 {
+                    self.as_of(frame_number - 1)
+                }
+
+                pub(crate) fn as_of_previous(&self, image_index: &ImageIndex, indices: &SwapchainIndexToFrameNumber) -> u64 {
+                    let frame_number = indices.map[image_index.0 as usize];
+                    self.as_of(frame_number)
+                }
+            }
+            pub(crate) struct Two;
+            impl Two {
+                pub(crate) const VALUE: u64 = 2u64;
+
+                pub(crate) const fn as_of(&self, frame_number: u64) -> u64 {
+                    frame_number * 2u64 + 2u64
+                }
+
+                pub(crate) const fn as_of_last(&self, frame_number: u64) -> u64 {
+                    self.as_of(frame_number - 1)
+                }
+
+                pub(crate) fn as_of_previous(&self, image_index: &ImageIndex, indices: &SwapchainIndexToFrameNumber) -> u64 {
+                    let frame_number = indices.map[image_index.0 as usize];
+                    self.as_of(frame_number)
+                }
+            }
+        }
+    "});
+}
+
+fn prepare_queue_manager(
+    input: &parsed::RendererInput,
+    graph_ixes: &HashMap<Ident, u32>,
+    dependency_graph: &DiGraph<Ident, DependencyType>,
+) -> TokenStream {
+    assert!(
+        input.passes.len() + input.async_passes.len() < usize::from(u8::MAX),
+        "queue_manager can only handle dependency graphs with u8 indices"
+    );
+
+    let mut graph_ixes_inv = HashMap::new();
+
+    for (id, ix) in graph_ixes.iter() {
+        assert!(graph_ixes_inv.insert(*ix, id.clone()).is_none());
+    }
+
+    let node_index_definitions = input
+        .passes
+        .values()
+        .map(|parsed::Pass { ref name, .. }| name)
+        .chain(
+            input
+                .async_passes
+                .values()
+                .map(|parsed::AsyncPass { ref name, .. }| name),
+        )
+        .map(|name| {
+            quote! {
+                let #name = graph.add_node(None);
+            }
+        })
+        .collect_vec();
+
+    let edges_definitions = dependency_graph
+        .edge_references()
+        .map(|edge| {
+            let source = graph_ixes_inv.get(&(edge.source().index() as u32)).unwrap();
+            let target = graph_ixes_inv.get(&(edge.target().index() as u32)).unwrap();
+            quote! {
+                graph.add_edge(#source, #target, ());
+            }
+        })
+        .collect_vec();
+
+    let submit_clauses = input
+        .passes
+        .values()
+        .map(|parsed::Pass { ref name, .. }| (name, parsed::QueueFamily::Graphics))
+        .chain(
+            input
+                .async_passes
+                .values()
+                .map(|parsed::AsyncPass { name, queue, .. }| (name, *queue)),
+        )
+        .map(|(name, queue)| {
+            let queue_def = match queue {
+                parsed::QueueFamily::Graphics => quote!(gfx_queue),
+                // TODO: suboptimal, but round robin is not efficient either need to do a grouped toposort at compile
+                // time to figure out how to nicely multiplex independent work onto N queues
+                parsed::QueueFamily::Compute => quote!(compute_queues[0]),
+                parsed::QueueFamily::Transfer => quote!(transfer_queue),
+            };
+            quote! {
+                ix if ix == #name => {
+                    let queue = *#queue_def;
+                    let buf = &mut [vk::CommandBuffer::null()];
+                    let cmds: &[vk::CommandBuffer] = match cb {
+                        Some(cmd) => {
+                            buf[0] = cmd;
+                            buf
+                        }
+                        None => &[],
+                    };
+                    #name::Stage::queue_submit(&image_index, &renderer, queue, cmds).unwrap();
+                }
+            }
+        })
+        .collect_vec();
+
+    let recv_clauses = input
+        .passes
+        .values()
+        .map(|parsed::Pass { ref name, .. }| name)
+        .chain(input.async_passes.values().map(|parsed::AsyncPass { name, .. }| name))
+        .map(|name| {
+            let name_string = name.to_string();
+
+            quote! {
+                #name_string => {
+                    *graph.node_weight_mut(#name).unwrap() = Some(cb);
+                }
+            }
+        })
+        .collect_vec();
+
+    quote! {
+        use bevy_ecs::prelude::*;
+        use crossbeam_channel::Receiver;
+
+        // TODO: figure out stable indexes so it doesn't use strings here
+        pub(crate) fn queue_manager(
+            renderer: &RenderFrame,
+            image_index: &ImageIndex,
+            receiver: Receiver<(&'static str, Option<vk::CommandBuffer>)>,
+        ) {
+            use petgraph::{Direction, stable_graph::{StableDiGraph, NodeIndex}, visit};
+
+            let mut graph = StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>::default();
+            #(#node_index_definitions)*
+            #(#edges_definitions)*
+
+            graph.remove_node(PresentationAcquire);
+
+            let gfx_queue = renderer.device.graphics_queue().lock();
+
+            let compute_queues = renderer
+                .device
+                .compute_queues
+                .iter()
+                .map(|m| m.lock())
+                .collect::<Vec<_>>();
+
+            let transfer_queue = renderer
+                .device
+                .transfer_queue
+                .as_ref()
+                .expect("queue_manager does not work without transfer queues")
+                .lock();
+
+            let submit = |ix: NodeIndex<u8>, cb: Option<vk::CommandBuffer>| {
+                match ix {
+                    #(#submit_clauses),*
+                    _ => panic!("Invalid pass index in queue_manager submit()"),
+                }
+            };
+
+            while graph.node_count() > 0 {
+                let mut recv = |name: &'static str, cb: Option<vk::CommandBuffer>| {
+                    match name {
+                        #(#recv_clauses),*
+                        _ => panic!("Invalid pass name in queue_manager submit()"),
+                    }
+                };
+
+                while let Ok((name, cb)) = receiver.try_recv() {
+                    recv(name, cb);
+                }
+
+                let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
+                for node in roots {
+                    if let Some(cb) = *graph.node_weight(node).unwrap() {
+                        submit(node, cb);
+                        graph.remove_node(node).unwrap();
+                    }
+                }
+            }
+        }
     }
 }

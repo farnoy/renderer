@@ -1,6 +1,6 @@
 use std::{mem::size_of, path::Path, u64};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 #[cfg(feature = "compress_textures")]
 use num_traits::ToPrimitive;
 
@@ -13,10 +13,12 @@ pub(crate) struct LoadedMesh {
     pub(crate) vertex_buffer: Buffer,
     pub(crate) normal_buffer: Buffer,
     pub(crate) uv_buffer: Buffer,
+    pub(crate) tangent_buffer: Buffer,
     pub(crate) index_buffers: Vec<(Buffer, u64)>,
     pub(crate) vertex_len: u64,
     pub(crate) aabb: ncollide3d::bounding_volume::AABB<f32>,
     pub(crate) base_color: Image,
+    pub(crate) normal_map: Image,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -34,7 +36,6 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         renderer.device.graphics_queue_family,
         "GLTF upload CommandPool",
     );
-    let mut command_session = command_pool.session(&renderer.device);
     let (loaded, buffers, _images) = gltf::import(path).expect("Failed loading mesh");
     let mesh = loaded.meshes().next().expect("failed to get first mesh from gltf");
     let primitive = mesh
@@ -59,6 +60,10 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .read_normals()
         .expect("failed to load normals")
         .collect::<Vec<_>>();
+    let tangents = reader
+        .read_tangents()
+        .expect("failed to load tangents")
+        .collect::<Vec<_>>();
     let indices = reader
         .read_indices()
         .expect("failed to load indices")
@@ -69,6 +74,21 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .pbr_metallic_roughness()
         .base_color_texture()
         .expect("failed to load base color")
+        .texture()
+        .source()
+        .source();
+    let normal_map_source = primitive
+        .material()
+        .normal_texture()
+        .expect("failed to normal map texture")
+        .texture()
+        .source()
+        .source();
+    let metal_roughness_source = primitive
+        .material()
+        .pbr_metallic_roughness()
+        .metallic_roughness_texture()
+        .expect("failed to load metallic roughness texture")
         .texture()
         .source()
         .source();
@@ -84,7 +104,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         #[cfg(feature = "compress_textures")]
         vk::Format::BC7_UNORM_BLOCK,
         #[cfg(not(feature = "compress_textures"))]
-        vk::Format::R8G8B8A8_UNORM,
+        vk::Format::R8G8B8A8_SRGB,
         vk::Extent3D {
             height: base_color_image.height(),
             width: base_color_image.width(),
@@ -132,6 +152,70 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                 width: base_color_image.width(),
                 height: base_color_image.height(),
                 stride: base_color_image.width() * 4,
+            },
+            &mut mapped[..],
+        );
+    }
+    let normal_map_image = match normal_map_source {
+        gltf::image::Source::Uri { uri, .. } => image::open(Path::new(path).parent().unwrap().join(uri))
+            .expect("failed to open normal map texture")
+            .to_rgba8(),
+        gltf::image::Source::View { .. } => {
+            unimplemented!("Reading embedded textures in gltf not supported")
+        }
+    };
+    let normal_map_vkimage = renderer.device.new_image(
+        #[cfg(feature = "compress_textures")]
+        vk::Format::BC7_UNORM_BLOCK,
+        #[cfg(not(feature = "compress_textures"))]
+        vk::Format::R8G8B8A8_SRGB,
+        vk::Extent3D {
+            height: normal_map_image.height(),
+            width: normal_map_image.width(),
+            depth: 1,
+        },
+        vk::SampleCountFlags::TYPE_1,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageLayout::UNDEFINED,
+        vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+    );
+    renderer
+        .device
+        .set_object_name(normal_map_vkimage.handle, "Gltf mesh normal map image");
+    let normal_map_upload_buffer = renderer.device.new_buffer(
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        #[cfg(feature = "compress_textures")]
+        intel_tex::bc7::calc_output_size(normal_map_image.width(), normal_map_image.height())
+            .to_u64()
+            .unwrap(),
+        #[cfg(not(feature = "compress_textures"))]
+        {
+            u64::from(normal_map_image.width()) * u64::from(normal_map_image.height()) * 4
+        },
+    );
+    renderer.device.set_object_name(
+        normal_map_upload_buffer.handle,
+        "Gltf mesh Normal map image Upload Buffer",
+    );
+    {
+        let mut mapped = normal_map_upload_buffer
+            .map::<image::Rgba<u8>>(&renderer.device)
+            .expect("Failed to map normal map upload buffer");
+        #[cfg(not(feature = "compress_textures"))]
+        for (ix, pixel) in normal_map_image.pixels().enumerate() {
+            mapped[ix] = *pixel;
+        }
+
+        #[cfg(feature = "compress_textures")]
+        intel_tex::bc7::compress_blocks_into(
+            &intel_tex::bc7::opaque_fast_settings(),
+            &intel_tex::RgbaSurface {
+                data: normal_map_image.as_raw(),
+                width: normal_map_image.width(),
+                height: normal_map_image.height(),
+                stride: normal_map_image.width() * 4,
             },
             &mut mapped[..],
         );
@@ -185,12 +269,15 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
     let vertex_len = positions.len() as u64;
     let vertex_size = size_of::<f32>() as u64 * 3 * vertex_len;
     let normals_size = size_of::<f32>() as u64 * 3 * vertex_len;
+    let tangents_size = size_of::<f32>() as u64 * 4 * vertex_len;
     let uvs_size = size_of::<f32>() as u64 * 2 * vertex_len;
     let vertex_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::VERTEX_BUFFER
             | vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::TRANSFER_SRC
-            | vk::BufferUsageFlags::STORAGE_BUFFER,
+            | vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
         vertex_size,
     );
@@ -237,6 +324,30 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             mapped[ix] = *data;
         }
     }
+    let tangent_buffer = renderer.device.new_buffer(
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+        tangents_size,
+    );
+    renderer
+        .device
+        .set_object_name(tangent_buffer.handle, "Gltf mesh Tangent buffer");
+    let tangent_upload_buffer = renderer.device.new_buffer(
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
+        tangents_size,
+    );
+    renderer
+        .device
+        .set_object_name(tangent_upload_buffer.handle, "Gltf mesh Tangent upload buffer");
+    {
+        let mut mapped = tangent_upload_buffer
+            .map::<[f32; 4]>(&renderer.device)
+            .expect("Failed to map tangent upload buffer");
+        for (ix, data) in tangents.iter().enumerate() {
+            mapped[ix] = *data;
+        }
+    }
     let uv_buffer = renderer.device.new_buffer(
         vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
         VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
@@ -269,7 +380,9 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                 vk::BufferUsageFlags::INDEX_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::STORAGE_BUFFER,
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                 index_size,
             );
@@ -296,7 +409,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             (index_buffer, index_upload_buffer, index_len)
         })
         .collect::<Vec<_>>();
-    let command_buffer = command_session.record_one_time("upload gltf mesh cb");
+    let command_buffer = command_pool.record_one_time(&renderer.device, "upload gltf mesh cb");
     unsafe {
         let device = &renderer.device;
         device
@@ -315,6 +428,15 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                     src_offset: 0,
                     dst_offset: 0,
                     size: normals_size,
+                },
+            ]);
+        device
+            .device
+            .cmd_copy_buffer(*command_buffer, tangent_upload_buffer.handle, tangent_buffer.handle, &[
+                vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: tangents_size,
                 },
             ]);
         device
@@ -345,22 +467,40 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[vk::ImageMemoryBarrier::builder()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(base_color_vkimage.handle)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .build()],
+            &[
+                vk::ImageMemoryBarrier::builder()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(base_color_vkimage.handle)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .build(),
+                vk::ImageMemoryBarrier::builder()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(normal_map_vkimage.handle)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .build(),
+            ],
         );
         device.device.cmd_copy_buffer_to_image(
             *command_buffer,
@@ -381,6 +521,25 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
                 })
                 .build()],
         );
+        device.device.cmd_copy_buffer_to_image(
+            *command_buffer,
+            normal_map_upload_buffer.handle,
+            normal_map_vkimage.handle,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[vk::BufferImageCopy::builder()
+                .image_extent(vk::Extent3D {
+                    height: normal_map_image.height(),
+                    width: normal_map_image.width(),
+                    depth: 1,
+                })
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build()],
+        );
         device.device.cmd_pipeline_barrier(
             *command_buffer,
             vk::PipelineStageFlags::TRANSFER,
@@ -388,22 +547,40 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[vk::ImageMemoryBarrier::builder()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(base_color_vkimage.handle)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .build()],
+            &[
+                vk::ImageMemoryBarrier::builder()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(base_color_vkimage.handle)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .build(),
+                vk::ImageMemoryBarrier::builder()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(normal_map_vkimage.handle)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .build(),
+            ],
         );
     }
     let mut graphics_queue = renderer.device.graphics_queue().lock();
@@ -425,17 +602,21 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
 
     uv_upload_buffer.destroy(&renderer.device);
     normal_upload_buffer.destroy(&renderer.device);
+    tangent_upload_buffer.destroy(&renderer.device);
     vertex_upload_buffer.destroy(&renderer.device);
     base_color_upload_buffer.destroy(&renderer.device);
+    normal_map_upload_buffer.destroy(&renderer.device);
     command_pool.destroy(&renderer.device);
 
     LoadedMesh {
         vertex_buffer,
         normal_buffer,
+        tangent_buffer,
         uv_buffer,
         index_buffers,
         vertex_len,
         aabb,
         base_color: base_color_vkimage,
+        normal_map: normal_map_vkimage,
     }
 }

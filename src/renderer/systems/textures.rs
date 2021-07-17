@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 use bevy_ecs::prelude::*;
 use microprofile::scope;
 
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        shaders, systems::present::ImageIndex, Device, DrawIndex, GraphicsTimeline, Image, ImageView,
+        frame_graph, systems::present::ImageIndex, Device, DrawIndex, GraphicsTimeline, Image, ImageView,
         MainDescriptorPool, RenderFrame, Sampler, SwapchainIndexToFrameNumber,
     },
 };
 
 pub(crate) struct BaseColorDescriptorSet {
-    pub(crate) layout: shaders::base_color_set::Layout,
-    pub(crate) set: shaders::base_color_set::Set,
+    pub(crate) layout: frame_graph::textures_set::Layout,
+    pub(crate) set: frame_graph::textures_set::Set,
     sampler: Sampler,
 }
 
@@ -22,15 +22,22 @@ pub(crate) struct BaseColorVisitedMarker {
     image_view: ImageView,
 }
 
+pub(crate) struct NormalMapVisitedMarker {
+    image_view: ImageView,
+}
+
 // Holds the base color texture that will be mapped into a single,
 // shared Descriptor Set
 pub(crate) struct GltfMeshBaseColorTexture(pub(crate) Arc<Image>);
 
+// Holds the normal map texture
+pub(crate) struct GltfMeshNormalTexture(pub(crate) Arc<Image>);
+
 impl BaseColorDescriptorSet {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &mut MainDescriptorPool) -> BaseColorDescriptorSet {
-        let layout = shaders::base_color_set::Layout::new(&renderer.device);
+        let layout = frame_graph::textures_set::Layout::new(&renderer.device);
 
-        let set = shaders::base_color_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, 0);
+        let set = frame_graph::textures_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, 0);
 
         let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -55,12 +62,21 @@ impl BaseColorVisitedMarker {
     }
 }
 
+impl NormalMapVisitedMarker {
+    pub(crate) fn destroy(self, device: &Device) {
+        self.image_view.destroy(device);
+    }
+}
+
 pub(crate) fn synchronize_base_color_textures_visit(
     mut commands: Commands,
     renderer: Res<RenderFrame>,
-    query: Query<(Entity, &GltfMeshBaseColorTexture), Without<BaseColorVisitedMarker>>,
+    query: Query<
+        (Entity, &GltfMeshBaseColorTexture, &GltfMeshNormalTexture),
+        (Without<BaseColorVisitedMarker>, Without<NormalMapVisitedMarker>),
+    >,
 ) {
-    for (entity, base_color) in &mut query.iter() {
+    for (entity, base_color, normal_map) in &mut query.iter() {
         let image_view = renderer.device.new_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .components(
@@ -76,7 +92,7 @@ pub(crate) fn synchronize_base_color_textures_visit(
                 .format(if cfg!(feature = "compress_textures") {
                     vk::Format::BC7_UNORM_BLOCK
                 } else {
-                    vk::Format::R8G8B8A8_UNORM
+                    vk::Format::R8G8B8A8_SRGB
                 })
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -86,7 +102,47 @@ pub(crate) fn synchronize_base_color_textures_visit(
                     layer_count: 1,
                 }),
         );
-        commands.entity(entity).insert(BaseColorVisitedMarker { image_view });
+        renderer.device.set_object_name(
+            image_view.handle,
+            &format!("EntityId({:?}).BaseColorVisitedMarker.image_view", entity),
+        );
+
+        let normal_map_image_view = renderer.device.new_image_view(
+            &vk::ImageViewCreateInfo::builder()
+                .components(
+                    vk::ComponentMapping::builder()
+                        .r(vk::ComponentSwizzle::IDENTITY)
+                        .g(vk::ComponentSwizzle::IDENTITY)
+                        .b(vk::ComponentSwizzle::IDENTITY)
+                        .a(vk::ComponentSwizzle::IDENTITY)
+                        .build(),
+                )
+                .image(normal_map.0.handle)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(if cfg!(feature = "compress_textures") {
+                    vk::Format::BC7_UNORM_BLOCK
+                } else {
+                    vk::Format::R8G8B8A8_SRGB
+                })
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                }),
+        );
+        renderer.device.set_object_name(
+            normal_map_image_view.handle,
+            &format!("EntityId({:?}).NormalMapVisitedMarker.image_view", entity),
+        );
+
+        commands
+            .entity(entity)
+            .insert(BaseColorVisitedMarker { image_view })
+            .insert(NormalMapVisitedMarker {
+                image_view: normal_map_image_view,
+            });
     }
 }
 
@@ -95,7 +151,12 @@ pub(crate) fn update_base_color_descriptors(
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
-    query: Query<(&DrawIndex, &BaseColorVisitedMarker)>,
+    query: Query<(
+        &DrawIndex,
+        &BaseColorVisitedMarker,
+        &NormalMapVisitedMarker,
+        Option<&Deleting>,
+    )>,
 ) {
     scope!("ecs", "update_base_color_descriptors");
 
@@ -107,21 +168,35 @@ pub(crate) fn update_base_color_descriptors(
         )
         .unwrap();
 
-    for (draw_id, marker) in &mut query.iter() {
-        let sampler_updates = &[vk::DescriptorImageInfo::builder()
-            .image_view(marker.image_view.handle)
+    for (draw_id, base_color, normal_map, deleting) in &mut query.iter() {
+        let base_color_update = &[vk::DescriptorImageInfo::builder()
+            .image_view(base_color.image_view.handle)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .sampler(base_color_descriptor_set.sampler.handle)
+            .build()];
+        let normal_map_update = &[vk::DescriptorImageInfo::builder()
+            .image_view(normal_map.image_view.handle)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .sampler(base_color_descriptor_set.sampler.handle)
             .build()];
         unsafe {
             renderer.device.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::builder()
-                    .dst_set(base_color_descriptor_set.set.set.handle)
-                    .dst_binding(0)
-                    .dst_array_element(draw_id.0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(sampler_updates)
-                    .build()],
+                &[
+                    vk::WriteDescriptorSet::builder()
+                        .dst_set(base_color_descriptor_set.set.set.handle)
+                        .dst_binding(0)
+                        .dst_array_element(draw_id.0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(base_color_update)
+                        .build(),
+                    vk::WriteDescriptorSet::builder()
+                        .dst_set(base_color_descriptor_set.set.set.handle)
+                        .dst_binding(1)
+                        .dst_array_element(draw_id.0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(normal_map_update)
+                        .build(),
+                ],
                 &[],
             );
         }
@@ -131,13 +206,24 @@ pub(crate) fn update_base_color_descriptors(
 pub(crate) fn cleanup_base_color_markers(world: &mut World) {
     scope!("ecs", "cleanup_base_color_markers");
 
+    let renderer = world.get_resource::<RenderFrame>().unwrap();
     let frame_number = world.get_resource::<RenderFrame>().unwrap().frame_number;
     let swapchain_index = world.get_resource::<ImageIndex>().cloned().unwrap();
+    let indices = world.get_resource::<SwapchainIndexToFrameNumber>().cloned().unwrap();
+
+    // TODO: this is not great
+    renderer
+        .graphics_timeline_semaphore
+        .wait(
+            &renderer.device,
+            GraphicsTimeline::SceneDraw.as_of_previous(&swapchain_index, &indices),
+        )
+        .unwrap();
 
     let mut entities = vec![];
 
     world
-        .query_filtered::<(Entity, &Deleting), With<BaseColorVisitedMarker>>()
+        .query_filtered::<(Entity, &Deleting), (With<BaseColorVisitedMarker>, With<NormalMapVisitedMarker>)>()
         .for_each(world, |(entity, deleting)| {
             if deleting.frame_number < frame_number && deleting.image_index == swapchain_index {
                 entities.push(entity);
@@ -146,13 +232,19 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
 
     let markers = entities
         .into_iter()
-        .map(|entity| world.entity_mut(entity).remove::<BaseColorVisitedMarker>().unwrap())
+        .map(|entity| {
+            (
+                world.entity_mut(entity).remove::<BaseColorVisitedMarker>().unwrap(),
+                world.entity_mut(entity).remove::<NormalMapVisitedMarker>().unwrap(),
+            )
+        })
         .collect::<Vec<_>>();
 
     let renderer = world.get_resource::<RenderFrame>().unwrap();
 
-    for marker in markers.into_iter() {
-        marker.destroy(&renderer.device);
+    for (base_color, normal_map) in markers.into_iter() {
+        base_color.destroy(&renderer.device);
+        normal_map.destroy(&renderer.device);
     }
 
     // the descriptor binding isn't UPDATE_AFTER_BIND (TODO: const assertion would be nice)

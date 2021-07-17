@@ -4,11 +4,7 @@ use std::{sync::Arc, u32};
 use ash::extensions::khr::Win32Surface;
 #[cfg(all(unix, not(target_os = "android")))]
 use ash::extensions::khr::XlibSurface;
-use ash::{
-    self, extensions,
-    version::{EntryV1_0, InstanceV1_0},
-    vk,
-};
+use ash::{self, extensions, vk};
 
 use super::{Device, Instance};
 
@@ -194,8 +190,8 @@ impl Drop for Swapchain {
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
-unsafe fn create_surface<E: EntryV1_0>(
-    entry: &E,
+unsafe fn create_surface(
+    entry: &ash::Entry,
     instance: &ash::Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
@@ -210,8 +206,8 @@ unsafe fn create_surface<E: EntryV1_0>(
 }
 
 #[cfg(windows)]
-unsafe fn create_surface<E: EntryV1_0>(
-    entry: &E,
+unsafe fn create_surface(
+    entry: &ash::Entry,
     instance: &ash::Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {

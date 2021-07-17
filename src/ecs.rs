@@ -13,13 +13,15 @@ pub(crate) mod resources {
 
     pub(crate) struct MeshLibrary {
         pub(crate) projectile: GltfMesh,
-        pub(crate) projectile_texture: Arc<Image>,
+        pub(crate) projectile_base_color: Arc<Image>,
+        pub(crate) projectile_normal_map: Arc<Image>,
     }
 
     impl MeshLibrary {
         pub(crate) fn destroy(self, device: &Device) {
             self.projectile.destroy(device);
-            drop(Arc::try_unwrap(self.projectile_texture).map(|image| image.destroy(device)));
+            drop(Arc::try_unwrap(self.projectile_base_color).map(|image| image.destroy(device)));
+            drop(Arc::try_unwrap(self.projectile_normal_map).map(|image| image.destroy(device)));
         }
     }
 }
@@ -45,8 +47,8 @@ pub(crate) mod systems {
             resources::{Camera, InputActions, MeshLibrary},
         },
         renderer::{
-            forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, ImageIndex,
-            RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE,
+            forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture,
+            GltfMeshNormalTexture, ImageIndex, RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE,
         },
     };
 
@@ -199,7 +201,8 @@ pub(crate) mod systems {
                 Rotation(camera.rotation),
                 Scale(1.0),
                 ModelMatrix::default(),
-                GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_texture)),
+                GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_base_color)),
+                GltfMeshNormalTexture(Arc::clone(&mesh_library.projectile_normal_map)),
                 mesh_library.projectile.clone(),
                 AABB::default(),
                 CoarseCulled(false),

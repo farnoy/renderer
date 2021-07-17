@@ -1,11 +1,14 @@
 use std::{mem::swap, u64};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 use bevy_ecs::prelude::*;
 use microprofile::scope;
 
 use super::super::{device::Semaphore, GraphicsTimeline, RenderFrame, Swapchain};
-use crate::renderer::{Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized, SwapchainIndexToFrameNumber};
+use crate::renderer::{
+    frame_graph, DepthPassData, Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized,
+    SwapchainIndexToFrameNumber,
+};
 
 pub(crate) struct PresentData {
     framebuffer_acquire_semaphore: Semaphore,
@@ -55,6 +58,7 @@ pub(crate) fn acquire_framebuffer(
     mut swapchain: ResMut<Swapchain>,
     mut main_attachments: ResMut<MainAttachments>,
     mut main_framebuffer: ResMut<MainFramebuffer>,
+    mut depth_pass_data: ResMut<DepthPassData>,
     mut present_data: ResMut<PresentData>,
     mut image_index: ResMut<ImageIndex>,
     resized: Res<Resized>,
@@ -69,10 +73,19 @@ pub(crate) fn acquire_framebuffer(
         swapchain.resize_to_fit(&renderer.device);
         let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
         let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &swapchain);
+        let mut new_depth_framebuffer = frame_graph::DepthOnly::Framebuffer::new(
+            &renderer,
+            &depth_pass_data.renderpass,
+            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT],
+            (),
+            (swapchain.width, swapchain.height),
+        );
         swap(&mut *main_attachments, &mut new_attachments);
         swap(&mut *main_framebuffer, &mut new_framebuffer);
+        swap(&mut depth_pass_data.framebuffer, &mut new_depth_framebuffer);
         new_attachments.destroy(&renderer.device);
         new_framebuffer.destroy(&renderer.device);
+        new_depth_framebuffer.destroy(&renderer.device);
     }
 
     let swapchain_needs_recreating =
@@ -86,10 +99,19 @@ pub(crate) fn acquire_framebuffer(
         swapchain.resize_to_fit(&renderer.device);
         let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
         let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &swapchain);
+        let mut new_depth_framebuffer = frame_graph::DepthOnly::Framebuffer::new(
+            &renderer,
+            &depth_pass_data.renderpass,
+            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT],
+            (),
+            (swapchain.width, swapchain.height),
+        );
         swap(&mut *main_attachments, &mut new_attachments);
         swap(&mut *main_framebuffer, &mut new_framebuffer);
+        swap(&mut depth_pass_data.framebuffer, &mut new_depth_framebuffer);
         new_attachments.destroy(&renderer.device);
         new_framebuffer.destroy(&renderer.device);
+        new_depth_framebuffer.destroy(&renderer.device);
         AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
     }
 }
@@ -176,7 +198,7 @@ impl PresentFramebuffer {
         scope!("ecs", "PresentFramebuffer");
 
         let queue = if swapchain.supports_present_from_compute {
-            renderer.device.compute_queue(0).lock()
+            renderer.device.compute_queue_balanced()
         } else {
             renderer.device.graphics_queue().lock()
         };

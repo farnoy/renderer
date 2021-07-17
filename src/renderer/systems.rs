@@ -1,8 +1,10 @@
+pub(crate) mod acceleration_strucures;
 pub(crate) mod consolidate_mesh_buffers;
 #[cfg(feature = "crash_debugging")]
 pub(crate) mod crash_debugging;
 pub(crate) mod cull_pipeline;
 pub(crate) mod debug_aabb_renderer;
+pub(crate) mod depth_pass;
 pub(crate) mod present;
 #[cfg(feature = "shader_reload")]
 pub(crate) mod shader_reload;

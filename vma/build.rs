@@ -8,7 +8,7 @@ fn main() {
         .flag_if_supported("/std:c++14")
         .file("amd_alloc.cc")
         .includes(if cfg!(windows) {
-            Some("C:\\VulkanSDK\\1.2.170.0\\Include")
+            Some("C:\\VulkanSDK\\1.2.182.0\\Include")
         } else {
             None
         })
@@ -24,7 +24,7 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.2.170.0\\Include"
+            "-IC:\\VulkanSDK\\1.2.182.0\\Include"
         } else {
             ""
         })
