@@ -2414,34 +2414,34 @@ fn prepare_queue_manager(
         })
         .collect_vec();
 
-    let toposort = petgraph::algo::toposort(&dependency_graph, None).unwrap();
-    let toposort_compute = toposort
-        .iter()
-        .filter(|ix| {
-            let name = dependency_graph.node_weight(**ix).unwrap();
-            input
-                .async_passes
-                .get(name)
-                .map(|async_pass| async_pass.queue == parsed::QueueFamily::Compute)
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-
-    let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
-    for ix in toposort_compute.iter() {
-        match toposort_grouped_compute.last_mut() {
-            // if no path bridges from the last stage to ix
-            Some(last)
-                if !last.iter().any(|candidate| {
-                    petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None)
-                }) =>
-            {
-                last.push(**ix);
-            }
-            _ => toposort_grouped_compute.push(vec![**ix]),
-        }
-    }
     let toposort_compute_virtual_queue_index = {
+        let toposort = petgraph::algo::toposort(&dependency_graph, None).unwrap();
+        let toposort_compute = toposort
+            .iter()
+            .filter(|ix| {
+                let name = dependency_graph.node_weight(**ix).unwrap();
+                input
+                    .async_passes
+                    .get(name)
+                    .map(|async_pass| async_pass.queue == parsed::QueueFamily::Compute)
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
+        for ix in toposort_compute.iter() {
+            match toposort_grouped_compute.last_mut() {
+                // if no path bridges from the last stage to ix
+                Some(last)
+                    if !last.iter().any(|candidate| {
+                        petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None)
+                    }) =>
+                {
+                    last.push(**ix);
+                }
+                _ => toposort_grouped_compute.push(vec![**ix]),
+            }
+        }
         let mut mapping = HashMap::new();
         for stage in toposort_grouped_compute {
             for (queue_ix, node_ix) in stage.iter().enumerate() {
