@@ -205,23 +205,18 @@ impl PresentFramebuffer {
 
         {
             scope!("present", "first_submit");
-            let wait_values = &[GraphicsTimeline::SceneDraw.as_of(renderer.frame_number)];
-
-            // TODO: only needed to avoid segfault in vk validation layers
-            //       https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2662
-            let signal_values = &[GraphicsTimeline::SceneDraw.as_of(0)];
-            let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
-                .wait_semaphore_values(wait_values)
-                .signal_semaphore_values(signal_values);
-
-            let wait_semaphores = &[renderer.graphics_timeline_semaphore.handle];
-            let signal_semaphores = &[present_data.render_complete_semaphore.handle];
-            let dst_stage_masks = vec![vk::PipelineStageFlags::TOP_OF_PIPE];
-            let submit = vk::SubmitInfo::builder()
-                .push_next(&mut wait_timeline)
-                .wait_semaphores(wait_semaphores)
-                .wait_dst_stage_mask(&dst_stage_masks)
-                .signal_semaphores(signal_semaphores)
+            let wait_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
+                .semaphore(renderer.graphics_timeline_semaphore.handle)
+                .value(GraphicsTimeline::SceneDraw.as_of(renderer.frame_number))
+                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                .build()];
+            let signal_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
+                .semaphore(present_data.render_complete_semaphore.handle)
+                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                .build()];
+            let submit = vk::SubmitInfo2KHR::builder()
+                .wait_semaphore_infos(wait_semaphores)
+                .signal_semaphore_infos(signal_semaphores)
                 .build();
 
             unsafe {
@@ -229,7 +224,8 @@ impl PresentFramebuffer {
 
                 renderer
                     .device
-                    .queue_submit(*queue, &[submit], vk::Fence::null())
+                    .synchronization2
+                    .queue_submit2(*queue, &[submit], vk::Fence::null())
                     .unwrap();
             }
         }
