@@ -55,9 +55,9 @@ pub(crate) use self::{
             ShadowMappingDataInternal, ShadowMappingLightMatrices,
         },
         textures::{
-            cleanup_base_color_markers, synchronize_base_color_textures_visit, update_base_color_descriptors,
-            BaseColorDescriptorSet, BaseColorVisitedMarker, GltfMeshBaseColorTexture, GltfMeshNormalTexture,
-            NormalMapVisitedMarker,
+            cleanup_base_color_markers, recreate_base_color_descriptor_set, synchronize_base_color_textures_visit,
+            update_base_color_descriptors, BaseColorDescriptorSet, BaseColorVisitedMarker, GltfMeshBaseColorTexture,
+            GltfMeshNormalTexture, NormalMapVisitedMarker,
         },
     },
 };
@@ -627,7 +627,7 @@ impl MainDescriptorPool {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: 4096,
+                descriptor_count: 4096 * 40,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
@@ -1333,7 +1333,7 @@ pub(crate) fn render_frame(
                 &model_data.model_set.current(image_index.0),
                 &camera_matrices.set.current(image_index.0),
                 &shadow_mapping_data.user_set.current(image_index.0),
-                &base_color_descriptor_set.set,
+                &base_color_descriptor_set.set.current(image_index.0),
                 &acceleration_structures.set,
             );
             renderer.device.cmd_bind_index_buffer(
@@ -1963,6 +1963,7 @@ pub(crate) enum GraphicsPhases {
     MainPass,
     SubmitMainPass,
     Present,
+    RecreateBaseColorDescriptorSet,
     CullPass,
     CullPassBypass,
     CopyResource(u8),
@@ -1995,10 +1996,16 @@ pub(crate) fn graphics_stage() -> SystemStage {
     };
 
     stage
+        .with_system(
+            recreate_base_color_descriptor_set
+                .system()
+                .label(RecreateBaseColorDescriptorSet),
+        )
         // uses update_after_bind descriptors so it needs to finish before submitting
         .with_system(
             update_base_color_descriptors
                 .system()
+                .after(RecreateBaseColorDescriptorSet)
                 .before(Present)
                 .before(QueueManager("unified")),
         )
@@ -2037,7 +2044,13 @@ pub(crate) fn graphics_stage() -> SystemStage {
                 .label(BuildAccelerationStructures)
                 .before(Present),
         )
-        .with_system(render_frame.system().label(MainPass).before(Present))
+        .with_system(
+            render_frame
+                .system()
+                .label(MainPass)
+                .before(Present)
+                .after(RecreateBaseColorDescriptorSet),
+        )
         // .with_system(
         //     submit_main_pass
         //         .system()

@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    mem::{replace, swap},
+    sync::Arc,
+};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -7,14 +10,14 @@ use microprofile::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        frame_graph, systems::present::ImageIndex, Device, DrawIndex, GraphicsTimeline, Image, ImageView,
-        MainDescriptorPool, RenderFrame, Sampler, SwapchainIndexToFrameNumber,
+        device::DoubleBuffered, frame_graph, systems::present::ImageIndex, CopiedResource, Device, DrawIndex,
+        GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame, Sampler, SwapchainIndexToFrameNumber,
     },
 };
 
 pub(crate) struct BaseColorDescriptorSet {
     pub(crate) layout: frame_graph::textures_set::Layout,
-    pub(crate) set: frame_graph::textures_set::Set,
+    pub(crate) set: DoubleBuffered<frame_graph::textures_set::Set>,
     sampler: Sampler,
 }
 
@@ -37,7 +40,9 @@ impl BaseColorDescriptorSet {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &mut MainDescriptorPool) -> BaseColorDescriptorSet {
         let layout = frame_graph::textures_set::Layout::new(&renderer.device);
 
-        let set = frame_graph::textures_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, 0);
+        let set = renderer.new_buffered(|ix| {
+            frame_graph::textures_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, ix)
+        });
 
         let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -51,7 +56,9 @@ impl BaseColorDescriptorSet {
 
     pub(crate) fn destroy(self, device: &Device, main_descriptor_pool: &MainDescriptorPool) {
         self.sampler.destroy(device);
-        self.set.destroy(&main_descriptor_pool.0, device);
+        self.set
+            .into_iter()
+            .for_each(|s| s.destroy(&main_descriptor_pool.0, device));
         self.layout.destroy(device);
     }
 }
@@ -73,7 +80,11 @@ pub(crate) fn synchronize_base_color_textures_visit(
     renderer: Res<RenderFrame>,
     query: Query<
         (Entity, &GltfMeshBaseColorTexture, &GltfMeshNormalTexture),
-        (Without<BaseColorVisitedMarker>, Without<NormalMapVisitedMarker>),
+        (
+            Without<BaseColorVisitedMarker>,
+            Without<NormalMapVisitedMarker>,
+            Without<Deleting>,
+        ),
     >,
 ) {
     for (entity, base_color, normal_map) in &mut query.iter() {
@@ -146,17 +157,40 @@ pub(crate) fn synchronize_base_color_textures_visit(
     }
 }
 
+pub(crate) fn recreate_base_color_descriptor_set(
+    renderer: Res<RenderFrame>,
+    image_index: Res<ImageIndex>,
+    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
+    mut base_color_descriptor_set: ResMut<BaseColorDescriptorSet>,
+    main_descriptor_pool: Res<MainDescriptorPool>,
+) {
+    scope!("ecs", "recreate_base_color_descriptor_set");
+
+    renderer
+        .graphics_timeline_semaphore
+        .wait(
+            &renderer.device,
+            GraphicsTimeline::SceneDraw.as_of_previous(&image_index, &swapchain_index_map),
+        )
+        .unwrap();
+
+    let new_set = frame_graph::textures_set::Set::new(
+        &renderer.device,
+        &main_descriptor_pool,
+        &base_color_descriptor_set.layout,
+        image_index.0,
+    );
+
+    replace(base_color_descriptor_set.set.current_mut(image_index.0), new_set)
+        .destroy(&main_descriptor_pool.0, &renderer.device);
+}
+
 pub(crate) fn update_base_color_descriptors(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
-    query: Query<(
-        &DrawIndex,
-        &BaseColorVisitedMarker,
-        &NormalMapVisitedMarker,
-        Option<&Deleting>,
-    )>,
+    query: Query<(&DrawIndex, &BaseColorVisitedMarker, &NormalMapVisitedMarker)>,
 ) {
     scope!("ecs", "update_base_color_descriptors");
 
@@ -168,7 +202,7 @@ pub(crate) fn update_base_color_descriptors(
         )
         .unwrap();
 
-    for (draw_id, base_color, normal_map, deleting) in &mut query.iter() {
+    for (draw_id, base_color, normal_map) in &mut query.iter() {
         let base_color_update = &[vk::DescriptorImageInfo::builder()
             .image_view(base_color.image_view.handle)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -183,14 +217,14 @@ pub(crate) fn update_base_color_descriptors(
             renderer.device.device.update_descriptor_sets(
                 &[
                     vk::WriteDescriptorSet::builder()
-                        .dst_set(base_color_descriptor_set.set.set.handle)
+                        .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
                         .dst_binding(0)
                         .dst_array_element(draw_id.0)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(base_color_update)
                         .build(),
                     vk::WriteDescriptorSet::builder()
-                        .dst_set(base_color_descriptor_set.set.set.handle)
+                        .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
                         .dst_binding(1)
                         .dst_array_element(draw_id.0)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -209,14 +243,15 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
     let renderer = world.get_resource::<RenderFrame>().unwrap();
     let frame_number = world.get_resource::<RenderFrame>().unwrap().frame_number;
     let swapchain_index = world.get_resource::<ImageIndex>().cloned().unwrap();
-    let indices = world.get_resource::<SwapchainIndexToFrameNumber>().cloned().unwrap();
+    let previous_indices = world
+        .get_resource::<CopiedResource<SwapchainIndexToFrameNumber>>()
+        .unwrap();
 
-    // TODO: this is not great
     renderer
         .graphics_timeline_semaphore
         .wait(
             &renderer.device,
-            GraphicsTimeline::SceneDraw.as_of_previous(&swapchain_index, &indices),
+            GraphicsTimeline::SceneDraw.as_of_previous(&swapchain_index, &previous_indices),
         )
         .unwrap();
 
