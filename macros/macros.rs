@@ -187,153 +187,14 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let msg = format!("sync graph is cyclic");
         validation_errors.extend(quote!(compile_error!(#msg);));
     }
-    let toposort = dbg!(petgraph::algo::toposort(&dependency_graph, None)).unwrap();
 
-    {
-        let mut play = StableDiGraph::from(dependency_graph.clone());
-        play.remove_node(NodeIndex::from(3)).unwrap();
-        play.remove_node(NodeIndex::from(6)).unwrap();
-        play.remove_node(NodeIndex::from(4)).unwrap();
-        play.remove_node(NodeIndex::from(1)).unwrap();
-        dbg!(petgraph::algo::toposort(&play, None)).unwrap();
-
-        let toposort_human = toposort
-            .iter()
-            .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
-            .collect_vec();
-
-        dbg!(toposort_human);
-
-        let mut toposort_grouped: Vec<Vec<NodeIndex>> = vec![];
-        'outer: for ix in toposort.iter() {
-            for items in toposort_grouped.iter_mut() {
-                if items
-                    .iter()
-                    .all(|candidate| !petgraph::algo::has_path_connecting(&dependency_graph, *candidate, *ix, None))
-                {
-                    items.push(*ix);
-                    continue 'outer;
-                }
-            }
-
-            match toposort_grouped.last_mut() {
-                Some(last) => {
-                    if last
-                        .iter()
-                        .any(|candidate| petgraph::algo::has_path_connecting(&dependency_graph, *candidate, *ix, None))
-                    {
-                        toposort_grouped.push(vec![*ix]);
-                    } else {
-                        debug_assert!(false, "should not be here");
-                        last.push(*ix);
-                    }
-                }
-                None => toposort_grouped.push(vec![*ix]),
-            }
-        }
-
-        let toposort_grouped_human = toposort_grouped
-            .iter()
-            .map(|list| {
-                list.iter()
-                    .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
-                    .collect_vec()
-            })
-            .collect_vec();
-
-        dbg!(toposort_grouped_human);
-    }
-
-    let toposort_gfx = toposort
-        .iter()
-        .filter(|ix| {
-            let name = dependency_graph.node_weight(**ix).unwrap();
-            renderer_input.passes.contains_key(name)
-                || renderer_input
-                    .async_passes
-                    .get(name)
-                    .map(|async_pass| async_pass.queue == parsed::QueueFamily::Graphics)
-                    .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-
-    let mut toposort_grouped_gfx: Vec<Vec<NodeIndex>> = vec![];
-    for ix in toposort_gfx.iter() {
-        match toposort_grouped_gfx.last_mut() {
-            Some(last) => {
-                if last
-                    .iter()
-                    .any(|candidate| petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None))
-                {
-                    toposort_grouped_gfx.push(vec![**ix]);
-                } else {
-                    last.push(**ix);
-                }
-            }
-            None => toposort_grouped_gfx.push(vec![**ix]),
-        }
-    }
-
-    let toposort_grouped_gfx_human = toposort_grouped_gfx
-        .iter()
-        .map(|list| {
-            list.iter()
-                .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
-                .collect_vec()
-        })
-        .collect_vec();
-
-    let toposort_compute = toposort
-        .iter()
-        .filter(|ix| {
-            let name = dependency_graph.node_weight(**ix).unwrap();
-            renderer_input
-                .async_passes
-                .get(name)
-                .map(|async_pass| async_pass.queue == parsed::QueueFamily::Compute)
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-
-    let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
-    for ix in toposort_compute.iter() {
-        match toposort_grouped_compute.last_mut() {
-            Some(last) => {
-                if last
-                    .iter()
-                    .any(|candidate| petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None))
-                {
-                    toposort_grouped_compute.push(vec![**ix]);
-                } else {
-                    last.push(**ix);
-                }
-            }
-            None => toposort_grouped_compute.push(vec![**ix]),
-        }
-    }
-
-    let toposort_grouped_compute_human = toposort_grouped_compute
-        .iter()
-        .map(|list| {
-            list.iter()
-                .map(|item| dependency_graph.node_weight(*item).unwrap().to_string())
-                .collect_vec()
-        })
-        .collect_vec();
-
-    dbg!(
-        toposort_gfx,
-        toposort_grouped_gfx,
-        toposort_grouped_gfx_human,
-        toposort_compute,
-        toposort_grouped_compute,
-        toposort_grouped_compute_human
-    );
-
+    /*
+    // Visualize the dependency graph
     dbg!(petgraph::dot::Dot::with_config(
         &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
         &[petgraph::dot::Config::EdgeNoLabel]
     ));
+    */
 
     let dynamic_attachments = attachments
         .iter()
@@ -2553,6 +2414,43 @@ fn prepare_queue_manager(
         })
         .collect_vec();
 
+    let toposort = petgraph::algo::toposort(&dependency_graph, None).unwrap();
+    let toposort_compute = toposort
+        .iter()
+        .filter(|ix| {
+            let name = dependency_graph.node_weight(**ix).unwrap();
+            input
+                .async_passes
+                .get(name)
+                .map(|async_pass| async_pass.queue == parsed::QueueFamily::Compute)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
+    for ix in toposort_compute.iter() {
+        match toposort_grouped_compute.last_mut() {
+            // if no path bridges from the last stage to ix
+            Some(last)
+                if !last.iter().any(|candidate| {
+                    petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None)
+                }) =>
+            {
+                last.push(**ix);
+            }
+            _ => toposort_grouped_compute.push(vec![**ix]),
+        }
+    }
+    let toposort_compute_virtual_queue_index = {
+        let mut mapping = HashMap::new();
+        for stage in toposort_grouped_compute {
+            for (queue_ix, node_ix) in stage.iter().enumerate() {
+                assert!(mapping.insert(node_ix.index(), queue_ix).is_none());
+            }
+        }
+        mapping
+    };
+
     let submit_clauses = input
         .passes
         .values()
@@ -2566,9 +2464,11 @@ fn prepare_queue_manager(
         .map(|(name, queue)| {
             let queue_def = match queue {
                 parsed::QueueFamily::Graphics => quote!(gfx_queue),
-                // TODO: suboptimal, but round robin is not efficient either need to do a grouped toposort at compile
-                // time to figure out how to nicely multiplex independent work onto N queues
-                parsed::QueueFamily::Compute => quote!(compute_queues[0]),
+                parsed::QueueFamily::Compute => {
+                    let ix = graph_ixes.get(name).unwrap();
+                    let virtual_queue_index = toposort_compute_virtual_queue_index.get(&(*ix as usize)).unwrap();
+                    quote!(compute_queues[#virtual_queue_index % compute_queues.len()])
+                }
                 parsed::QueueFamily::Transfer => quote!(transfer_queue),
             };
             quote! {
