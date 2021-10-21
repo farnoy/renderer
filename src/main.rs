@@ -263,9 +263,9 @@ fn main() {
     // objects
     app.app.world.spawn_batch(vec![
         (
-            Position(na::Point3::new(0.0, 5.0, 0.0)),
+            Position(na::Point3::new(0.0, -25.0, 0.0)),
             Rotation(na::UnitQuaternion::identity()),
-            Scale(1.0),
+            Scale(20.0),
             ModelMatrix::default(),
             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
             GltfMeshNormalTexture(Arc::clone(&normal_map)),
