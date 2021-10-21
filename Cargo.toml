@@ -1,11 +1,8 @@
-cargo-features = ["named-profiles"]
-
 [package]
 name = "renderer"
 version = "0.1.0"
 build = "build.rs"
-edition = "2018"
-resolver = "2"
+edition = "2021"
 
 [[bin]]
 name = "renderer"
@@ -48,7 +45,7 @@ num-traits = "0.2.6"
 petgraph = "0.6.0"
 rand = "0.8.4"
 simba = "0.5.1"
-smallvec = { version = "1.2.0", featurs = ["union"] }
+smallvec = { version = "1.2.0", features = ["union", "const_generics", "const_new"] }
 spirq = { version = "0.4.6", optional = true }
 static_assertions= "1.1.0"
 winit = "0.25.0"
