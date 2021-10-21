@@ -11,13 +11,12 @@ mod systems;
 
 use std::{cmp::max, mem::size_of, sync::Arc};
 
-use ash::vk::{self, Handle};
+use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
-use crossbeam_channel::{bounded, select, Receiver, Sender};
-use hashbrown::HashMap;
 use microprofile::scope;
 use num_traits::ToPrimitive;
-use petgraph::{graph::DiGraph, stable_graph::StableDiGraph};
+use parking_lot::Mutex;
+use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use static_assertions::const_assert_eq;
 
 #[cfg(not(feature = "no_profiling"))]
@@ -1398,7 +1397,7 @@ pub(crate) fn render_frame(
     let command_buffer = *command_buffer.end();
 
     *main_pass_cb.command_buffers.current_mut(image_index.0) = command_buffer;
-    submissions.sender.send(("Main", Some(command_buffer))).unwrap();
+    submissions.submit(&renderer, &image_index, frame_graph::Main::INDEX, Some(command_buffer));
 }
 
 fn submit_main_pass(
@@ -1955,23 +1954,7 @@ pub(crate) fn camera_matrices_upload(
     };
 }
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
-pub(crate) enum GraphicsPhases {
-    BuildAccelerationStructures,
-    ShadowMapping,
-    DepthOnly,
-    MainPass,
-    SubmitMainPass,
-    Present,
-    RecreateBaseColorDescriptorSet,
-    CullPass,
-    CullPassBypass,
-    CopyResource(u8),
-    QueueManager(&'static str),
-}
-
 pub(crate) fn graphics_stage() -> SystemStage {
-    use GraphicsPhases::*;
     let stage = SystemStage::parallel();
 
     #[cfg(not(feature = "no_profiling"))]
@@ -1995,89 +1978,78 @@ pub(crate) fn graphics_stage() -> SystemStage {
             )
     };
 
-    stage
-        .with_system(
-            recreate_base_color_descriptor_set
-                .system()
-                .label(RecreateBaseColorDescriptorSet),
-        )
-        // uses update_after_bind descriptors so it needs to finish before submitting
-        .with_system(
-            update_base_color_descriptors
-                .system()
-                .after(RecreateBaseColorDescriptorSet)
-                .before(Present)
-                .before(QueueManager("unified")),
-        )
-        .with_system(cull_pass_bypass.system().label(CullPassBypass))
-        .with_system(cull_pass.system().label(CullPass).before(Present))
-        .with_system(prepare_shadow_maps.system().label(ShadowMapping).before(Present))
-        .with_system(depth_only_pass.system().label(DepthOnly))
-        .with_system(
-            copy_resource::<RuntimeConfiguration>
-                .system()
-                .label(CopyResource(1))
-                .before(MainPass)
-                .before(CullPass)
-                .before(CullPassBypass)
-                .before(DepthOnly),
-        )
-        .with_system(
-            copy_resource::<Camera>
-                .system()
-                .label(CopyResource(2))
-                .before(MainPass)
-                .before(CullPass),
-        )
-        .with_system(
-            copy_resource::<SwapchainIndexToFrameNumber>
-                .system()
-                .label(CopyResource(2))
-                .before(Present)
-                .before(CullPass)
-                .before(CullPassBypass)
-                .before(BuildAccelerationStructures),
-        )
-        .with_system(
-            build_acceleration_structures
-                .system()
-                .label(BuildAccelerationStructures)
-                .before(Present),
-        )
-        .with_system(
-            render_frame
-                .system()
-                .label(MainPass)
-                .before(Present)
-                .after(RecreateBaseColorDescriptorSet),
-        )
-        // .with_system(
-        //     submit_main_pass
-        //         .system()
-        //         .label(SubmitMainPass)
-        //         .after(ShadowMapping)
-        //         .after(BuildAccelerationStructures)
-        //         .after(MainPass)
-        //         .after(DepthOnly),
-        // )
-        .with_system(
-            queue_manager
-                .system()
-                .label(QueueManager("unified"))
-                // TODO: This should not be needed, bevy does not guarantee forward progress of systems that need to run
-                // together in parallel
-                .after(MainPass)
-                .before(Present),
-        )
-        .with_system(PresentFramebuffer::exec.system().label(Present))
+    let test = SystemGraph::new();
+
+    let copy_runtime_config = test.root(copy_resource::<RuntimeConfiguration>);
+    let copy_camera = test.root(copy_resource::<Camera>);
+    let copy_indices = test.root(copy_resource::<SwapchainIndexToFrameNumber>);
+    let setup_submissions = test.root(setup_submissions);
+    let consolidate_mesh_buffers = setup_submissions.then(consolidate_mesh_buffers);
+
+    let initial = (copy_runtime_config, copy_camera, copy_indices, consolidate_mesh_buffers);
+    let (recreate_base_color, cull, cull_bypass, depth, build_as, shadow_mapping) = initial.join_all((
+        recreate_base_color_descriptor_set.system(),
+        cull_pass.system(),
+        cull_pass_bypass.system(),
+        depth_only_pass.system(),
+        build_acceleration_structures.system(),
+        prepare_shadow_maps.system(),
+    ));
+
+    let update_base_color = recreate_base_color.then(update_base_color_descriptors);
+
+    // TODO: this only needs to wait before submission, could record in parallel
+    let main_pass = update_base_color.then(render_frame);
+
+    (
+        main_pass,
+        update_base_color,
+        cull,
+        cull_bypass,
+        depth,
+        build_as,
+        shadow_mapping,
+    )
+        .join(PresentFramebuffer::exec);
+
+    stage.with_system_set(test)
 }
 
 pub(crate) struct Submissions {
-    pub(crate) sender: Sender<(&'static str, Option<vk::CommandBuffer>)>,
-    pub(crate) receiver: Receiver<(&'static str, Option<vk::CommandBuffer>)>,
+    pub(crate) remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, (), u8>>,
 }
 
-fn queue_manager(renderer: Res<RenderFrame>, image_index: Res<ImageIndex>, submissions: Res<Submissions>) {
-    scope!("rendering", "queue_manager");
-    frame_graph::queue_manager(&renderer, &image_index, submissions.receiver.clone());
+impl Submissions {
+    pub(crate) fn new() -> Submissions {
+        Submissions {
+            remaining: Mutex::default(),
+        }
+    }
+
+    pub(crate) fn submit(
+        &self,
+        renderer: &RenderFrame,
+        image_index: &ImageIndex,
+        node_ix: u8,
+        cb: Option<vk::CommandBuffer>,
+    ) {
+        scope!("rendering", "submit command buffer");
+        let mut g = self.remaining.lock();
+        let weight = g
+            .node_weight_mut(NodeIndex::from(node_ix))
+            .expect(&format!("Node not found while submitting {}", node_ix));
+        debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
+        *weight = Some(cb);
+        frame_graph::update_submissions(renderer, image_index, &mut *g);
+    }
+}
+
+fn setup_submissions(renderer: Res<RenderFrame>, mut submissions: ResMut<Submissions>) {
+    scope!("rendering", "setup_submissions");
+    frame_graph::setup_submissions(&renderer, submissions.remaining.get_mut());
+
+    submissions
+        .remaining
+        .get_mut()
+        .remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
 }

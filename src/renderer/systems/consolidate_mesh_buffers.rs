@@ -147,20 +147,10 @@ pub(crate) fn consolidate_mesh_buffers(
         }
     }
     let command_buffer = command_buffer.end();
-    let command_buffers = if needs_transfer { vec![*command_buffer] } else { vec![] };
 
     let cb = if needs_transfer { Some(*command_buffer) } else { None };
 
-    submissions.sender.send(("ConsolidateMeshBuffers", cb)).unwrap();
-
-    // let queue = renderer.device.graphics_queue().lock();
-
-    // frame_graph::ConsolidateMeshBuffers::Stage::queue_submit(&image_index, &renderer, *queue,
-    // &command_buffers)     .unwrap();
-
-    // TODO: host_signal is too quick in optimized builds, surpassing last frame's async signal
-    // operation       need to do an empty submit to wait for last frame first, then signal
-    // renderpass3::ConsolidateMeshBuffers::host_signal(&renderer).unwrap();
+    submissions.submit(&renderer, &image_index, frame_graph::ConsolidateMeshBuffers::INDEX, cb);
 }
 
 // TODO: dynamic unloading of meshes

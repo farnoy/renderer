@@ -19,12 +19,11 @@ renderer-macros = { path = "macros" }
 renderer-vma = { path = "vma" }
 arrayvec = "0.7.1"
 ash = { git = "https://github.com/MaikKlein/ash", rev = "ed351996e57006f3984f634cc8a10988a3220041" } # version = "0.32.0"
-bevy_app = "0.5.0"
-bevy_ecs = "0.5.0"
-bevy_log = "0.5.0"
-bevy_tasks = "0.5.0"
+bevy_app = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
+bevy_ecs = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
+bevy_log = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
+bevy_tasks = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
 cache-padded = "1.1.1"
-crossbeam-channel = "0.5.1"
 crossbeam-utils = "0.8.5"
 env_logger = "0.8.2"
 parking_lot = "0.11.0"

@@ -278,7 +278,8 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let pass_definitions = passes
         .iter()
         .zip(wait_instance.clone())
-        .map(|(pass, wait_instance)| {
+        .enumerate()
+        .map(|(pass_ix, (pass, wait_instance))| {
             let pass_name = &pass.name;
             let format_param_ty = pass
                 .attachments
@@ -350,6 +351,8 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
 
+                    pub(crate) const INDEX: u8 = #pass_ix as u8;
+
                     #renderpass_definition
 
                     #framebuffer_definition
@@ -375,7 +378,10 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|Sequence((ident, _))| ident)
         // .zip(passes.len()..)
         .zip(wait_instance.skip(passes.len()))
-        .map(|(pass, wait_instance)| {
+        .enumerate()
+        .map(|(pass_ix, (pass, wait_instance))| {
+            let pass_ix = passes.len() + pass_ix;
+
             quote! {
                 #[allow(non_snake_case)]
                 pub(crate) mod #pass {
@@ -383,6 +389,8 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
+
+                    pub(crate) const INDEX: u8 = #pass_ix as u8;
 
                     #wait_instance
                 }
@@ -2380,36 +2388,13 @@ fn prepare_queue_manager(
         "queue_manager can only handle dependency graphs with u8 indices"
     );
 
-    let mut graph_ixes_inv = HashMap::new();
-
-    for (id, ix) in graph_ixes.iter() {
-        assert!(graph_ixes_inv.insert(*ix, id.clone()).is_none());
-    }
-
-    let node_index_definitions = input
-        .passes
-        .values()
-        .map(|parsed::Pass { ref name, .. }| name)
-        .chain(
-            input
-                .async_passes
-                .values()
-                .map(|parsed::AsyncPass { ref name, .. }| name),
-        )
-        .map(|name| {
-            quote! {
-                let #name = graph.add_node(None);
-            }
-        })
-        .collect_vec();
-
     let edges_definitions = dependency_graph
         .edge_references()
         .map(|edge| {
-            let source = graph_ixes_inv.get(&(edge.source().index() as u32)).unwrap();
-            let target = graph_ixes_inv.get(&(edge.target().index() as u32)).unwrap();
+            let source = edge.source().index() as u8;
+            let target = edge.target().index() as u8;
             quote! {
-                graph.add_edge(#source, #target, ());
+                (#source, #target)
             }
         })
         .collect_vec();
@@ -2463,17 +2448,17 @@ fn prepare_queue_manager(
         )
         .map(|(name, queue)| {
             let queue_def = match queue {
-                parsed::QueueFamily::Graphics => quote!(gfx_queue),
+                parsed::QueueFamily::Graphics => quote!(renderer.device.graphics_queue()),
                 parsed::QueueFamily::Compute => {
                     let ix = graph_ixes.get(name).unwrap();
                     let virtual_queue_index = toposort_compute_virtual_queue_index.get(&(*ix as usize)).unwrap();
-                    quote!(compute_queues[#virtual_queue_index % compute_queues.len()])
+                    quote!(renderer.device.compute_queues[#virtual_queue_index % renderer.device.compute_queues.len()])
                 }
-                parsed::QueueFamily::Transfer => quote!(transfer_queue),
+                parsed::QueueFamily::Transfer => quote!(renderer.device.transfer_queue.as_ref().unwrap()),
             };
             quote! {
-                ix if ix == #name => {
-                    let queue = *#queue_def;
+                ix if ix.index() as u8 == #name::INDEX => {
+                    let queue = #queue_def.lock();
                     let buf = &mut [vk::CommandBuffer::null()];
                     let cmds: &[vk::CommandBuffer] = match cb {
                         Some(cmd) => {
@@ -2482,61 +2467,34 @@ fn prepare_queue_manager(
                         }
                         None => &[],
                     };
-                    #name::Stage::queue_submit(&image_index, &renderer, queue, cmds).unwrap();
+                    #name::Stage::queue_submit(&image_index, &renderer, *queue, cmds).unwrap();
                 }
             }
         })
         .collect_vec();
-
-    let recv_clauses = input
-        .passes
-        .values()
-        .map(|parsed::Pass { ref name, .. }| name)
-        .chain(input.async_passes.values().map(|parsed::AsyncPass { name, .. }| name))
-        .map(|name| {
-            let name_string = name.to_string();
-
-            quote! {
-                #name_string => {
-                    *graph.node_weight_mut(#name).unwrap() = Some(cb);
-                }
-            }
-        })
-        .collect_vec();
+    let update_scope_name = format!("{}::update_submissions", input.name.to_string());
 
     quote! {
         use bevy_ecs::prelude::*;
-        use crossbeam_channel::Receiver;
 
-        // TODO: figure out stable indexes so it doesn't use strings here
-        pub(crate) fn queue_manager(
+        pub(crate) fn setup_submissions(
+            renderer: &RenderFrame,
+            graph: &mut petgraph::stable_graph::StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>,
+        ) {
+            assert_eq!(graph.node_count(), 0);
+            assert_eq!(graph.edge_count(), 0);
+
+            graph.extend_with_edges(&[#(#edges_definitions),*]);
+        }
+
+        pub(crate) fn update_submissions(
             renderer: &RenderFrame,
             image_index: &ImageIndex,
-            receiver: Receiver<(&'static str, Option<vk::CommandBuffer>)>,
+            graph: &mut petgraph::stable_graph::StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>,
         ) {
-            use petgraph::{Direction, stable_graph::{StableDiGraph, NodeIndex}, visit};
-
-            let mut graph = StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>::default();
-            #(#node_index_definitions)*
-            #(#edges_definitions)*
-
-            graph.remove_node(PresentationAcquire);
-
-            let gfx_queue = renderer.device.graphics_queue().lock();
-
-            let compute_queues = renderer
-                .device
-                .compute_queues
-                .iter()
-                .map(|m| m.lock())
-                .collect::<Vec<_>>();
-
-            let transfer_queue = renderer
-                .device
-                .transfer_queue
-                .as_ref()
-                .expect("queue_manager does not work without transfer queues")
-                .lock();
+            use microprofile::scope;
+            scope!("macros", #update_scope_name);
+            use petgraph::{Direction, stable_graph::{NodeIndex}};
 
             let submit = |ix: NodeIndex<u8>, cb: Option<vk::CommandBuffer>| {
                 match ix {
@@ -2545,23 +2503,15 @@ fn prepare_queue_manager(
                 }
             };
 
-            while graph.node_count() > 0 {
-                let mut recv = |name: &'static str, cb: Option<vk::CommandBuffer>| {
-                    match name {
-                        #(#recv_clauses),*
-                        _ => panic!("Invalid pass name in queue_manager submit()"),
-                    }
-                };
-
-                while let Ok((name, cb)) = receiver.try_recv() {
-                    recv(name, cb);
-                }
-
+            let mut should_continue = true;
+            while graph.node_count() > 0 && should_continue {
+                should_continue = false;
                 let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
                 for node in roots {
                     if let Some(cb) = *graph.node_weight(node).unwrap() {
                         submit(node, cb);
                         graph.remove_node(node).unwrap();
+                        should_continue = true;
                     }
                 }
             }

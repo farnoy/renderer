@@ -554,14 +554,12 @@ pub(crate) fn build_acceleration_structures(
     drop(all_marker);
     let command_buffer = command_buffer.end();
 
-    submissions
-        .sender
-        .send(("BuildAccelerationStructures", Some(*command_buffer)))
-        .unwrap();
-    // let queue = renderer.device.compute_queue_balanced();
-
-    // frame_graph::BuildAccelerationStructures::Stage::queue_submit(&image_index, &renderer,
-    // *queue, &[*command_buffer])     .unwrap();
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::BuildAccelerationStructures::INDEX,
+        Some(*command_buffer),
+    );
 }
 
 impl AccelerationStructures {

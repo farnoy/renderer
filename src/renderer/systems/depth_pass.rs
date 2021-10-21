@@ -186,9 +186,10 @@ pub(crate) fn depth_only_pass(
 
     let command_buffer = command_buffer.end();
 
-    submissions.sender.send(("DepthOnly", Some(*command_buffer))).unwrap();
-
-    // let queue = renderer.device.graphics_queue().lock();
-    // frame_graph::DepthOnly::Stage::queue_submit(&image_index, &renderer, *queue,
-    // &[*command_buffer]).unwrap();
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::DepthOnly::INDEX,
+        Some(*command_buffer),
+    );
 }

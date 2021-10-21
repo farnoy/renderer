@@ -1,4 +1,3 @@
-#![feature(backtrace)]
 #![allow(clippy::new_without_default)]
 #![warn(clippy::cast_lossless)]
 #![warn(
@@ -24,7 +23,6 @@ use bevy_ecs::{
     component::{ComponentDescriptor, StorageType},
     prelude::*,
 };
-use crossbeam_channel::{bounded, unbounded};
 use ecs::{
     components::{Deleting, Light, ModelMatrix, Position, Rotation, Scale, AABB},
     resources::{Camera, InputActions, MeshLibrary},
@@ -436,9 +434,7 @@ fn main() {
     drop(dmgh_base_color);
     drop(dmgh_normal_map);
 
-    let (sender, receiver) = unbounded();
-
-    app.insert_resource(Submissions { sender, receiver });
+    app.insert_resource(Submissions::new());
     app.insert_resource(swapchain);
     app.insert_resource(mesh_library);
     app.insert_resource(Resized(false));
@@ -564,11 +560,6 @@ fn main() {
             .after(AcquireFramebuffer)
             .after(Gameplay)
             .with_system(assign_draw_index.system().label(AssignDrawIndex))
-            .with_system(
-                consolidate_mesh_buffers
-                    .system()
-                    .label(RenderSetup::ConsolidateMeshBuffers),
-            )
             .with_system(
                 model_matrix_calculation
                     .system()

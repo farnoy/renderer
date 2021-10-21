@@ -319,7 +319,7 @@ impl ShadowMappingLightMatrices {
 pub(crate) fn shadow_mapping_mvp_calculation(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
-    query: Query<(&Position, &Rotation, &mut ShadowMappingLightMatrices)>,
+    mut query: Query<(&Position, &Rotation, &mut ShadowMappingLightMatrices)>,
 ) {
     const_assert_eq!(size_of::<LightMatrices>(), 208);
 
@@ -479,15 +479,12 @@ pub(crate) fn prepare_shadow_maps(
     }
     let command_buffer = command_buffer.end();
 
-    submissions
-        .sender
-        .send(("ShadowMapping", Some(*command_buffer)))
-        .unwrap();
-
-    // let queue = renderer.device.graphics_queue().lock();
-
-    // frame_graph::ShadowMapping::Stage::queue_submit(&image_index, &renderer, *queue,
-    // &[*command_buffer]).unwrap();
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::ShadowMapping::INDEX,
+        Some(*command_buffer),
+    );
 }
 
 pub(crate) fn update_shadow_map_descriptors(

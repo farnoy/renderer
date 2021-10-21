@@ -6,7 +6,7 @@ use microprofile::scope;
 
 use super::super::{device::Semaphore, GraphicsTimeline, RenderFrame, Swapchain};
 use crate::renderer::{
-    frame_graph, DepthPassData, Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized,
+    frame_graph, DepthPassData, Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized, Submissions,
     SwapchainIndexToFrameNumber,
 };
 
@@ -194,8 +194,13 @@ impl PresentFramebuffer {
         swapchain: Res<Swapchain>,
         image_index: Res<ImageIndex>,
         mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
+        #[cfg(debug_assertions)] mut submissions: ResMut<Submissions>,
     ) {
         scope!("ecs", "PresentFramebuffer");
+
+        let graph = submissions.remaining.get_mut();
+        debug_assert_eq!(graph.node_count(), 0);
+        debug_assert_eq!(graph.edge_count(), 0);
 
         let queue = if swapchain.supports_present_from_compute {
             renderer.device.compute_queue_balanced()

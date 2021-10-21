@@ -294,9 +294,7 @@ pub(crate) fn cull_pass_bypass(
     scope!("ecs", "cull pass bypass");
 
     if runtime_config.debug_aabbs {
-        submissions.sender.send(("TransferCull", None)).unwrap();
-        // let queue = renderer.device.compute_queue_balanced();
-        // frame_graph::TransferCull::Stage::queue_submit(&image_index, &renderer, *queue, &[]).unwrap();
+        submissions.submit(&renderer, &image_index, frame_graph::TransferCull::INDEX, None);
         return;
     }
 
@@ -374,10 +372,12 @@ pub(crate) fn cull_pass_bypass(
     }
     let cull_cb = cull_cb.end();
 
-    // let queue = renderer.device.transfer_queue().lock();
-    // frame_graph::TransferCull::Stage::queue_submit(&image_index, &renderer, *queue,
-    // &[*cull_cb]).unwrap();
-    submissions.sender.send(("TransferCull", Some(*cull_cb))).unwrap();
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::TransferCull::INDEX,
+        Some(*cull_cb),
+    );
 }
 
 pub(crate) fn cull_pass(
@@ -398,9 +398,7 @@ pub(crate) fn cull_pass(
     scope!("ecs", "cull pass");
 
     if runtime_config.debug_aabbs {
-        submissions.sender.send(("ComputeCull", None)).unwrap();
-        // let queue = renderer.device.compute_queue_balanced();
-        // frame_graph::ComputeCull::Stage::queue_submit(&image_index, &renderer, *queue, &[]).unwrap();
+        submissions.submit(&renderer, &image_index, frame_graph::ComputeCull::INDEX, None);
 
         return;
     }
@@ -576,9 +574,5 @@ pub(crate) fn cull_pass(
     }
     let cull_cb = cull_cb.end();
 
-    submissions.sender.send(("ComputeCull", Some(*cull_cb))).unwrap();
-
-    // let queue = renderer.device.compute_queue_balanced();
-    // frame_graph::ComputeCull::Stage::queue_submit(&image_index, &renderer, *queue,
-    // &[*cull_cb]).unwrap();
+    submissions.submit(&renderer, &image_index, frame_graph::ComputeCull::INDEX, Some(*cull_cb));
 }

@@ -118,7 +118,7 @@ pub(crate) mod systems {
 
     #[allow(clippy::type_complexity)]
     pub(crate) fn assign_draw_index(
-        query: Query<
+        mut query: Query<
             &mut DrawIndex,
             (
                 With<Position>,
