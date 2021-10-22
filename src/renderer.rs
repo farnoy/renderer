@@ -15,7 +15,7 @@ use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
 use microprofile::scope;
 use num_traits::ToPrimitive;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use static_assertions::const_assert_eq;
 
@@ -2057,16 +2057,48 @@ impl Submissions {
             .expect(&format!("Node not found while submitting {}", node_ix));
         debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
         *weight = Some(cb);
-        frame_graph::update_submissions(renderer, image_index, g);
+        update_submissions(renderer, image_index, g);
     }
 }
 
-fn setup_submissions(renderer: Res<RenderFrame>, mut submissions: ResMut<Submissions>) {
+fn setup_submissions(mut submissions: ResMut<Submissions>) {
     scope!("rendering", "setup_submissions");
-    frame_graph::setup_submissions(&renderer, submissions.remaining.get_mut());
+    let graph = submissions.remaining.get_mut();
+    assert_eq!(graph.node_count(), 0);
+    assert_eq!(graph.edge_count(), 0);
 
-    submissions
-        .remaining
-        .get_mut()
-        .remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
+    graph.extend_with_edges(frame_graph::DEPENDENCY_GRAPH);
+    graph.remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
+}
+
+fn update_submissions(
+    renderer: &RenderFrame,
+    image_index: &ImageIndex,
+    mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, (), u8>>,
+) {
+    scope!("rendering", "update_submissions");
+    use petgraph::Direction;
+
+    let mut should_continue = true;
+    while graph.node_count() > 0 && should_continue {
+        should_continue = false;
+        let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
+        'inner: for node in roots {
+            match graph.node_weight_mut(node) {
+                None => break 'inner, // someone else changed it up while we were unlocked
+                Some(ref mut cb @ Some(_)) => {
+                    let cb = cb.take();
+                    // leave None behind so that others won't try to submit this, but will
+                    // continue to see it as a blocking dependency
+                    MutexGuard::unlocked_fair(&mut graph, || {
+                        frame_graph::submit_stage_by_index(renderer, image_index, node, cb.unwrap());
+                    });
+                    // we can clean it up now to unlock downstream submissions
+                    graph.remove_node(node).expect("remove node failed");
+                    should_continue = true;
+                }
+                _ => {}
+            }
+        }
+    }
 }

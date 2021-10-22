@@ -2339,6 +2339,7 @@ fn prepare_queue_manager(
             }
         })
         .collect_vec();
+    let edges_count = edges_definitions.len();
 
     let toposort_compute_virtual_queue_index = {
         let toposort = petgraph::algo::toposort(&dependency_graph, None).unwrap();
@@ -2413,58 +2414,21 @@ fn prepare_queue_manager(
             }
         })
         .collect_vec();
-    let update_scope_name = format!("{}::update_submissions", input.name.to_string());
 
     quote! {
         use bevy_ecs::prelude::*;
 
-        pub(crate) fn setup_submissions(
-            renderer: &RenderFrame,
-            graph: &mut petgraph::stable_graph::StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>,
-        ) {
-            assert_eq!(graph.node_count(), 0);
-            assert_eq!(graph.edge_count(), 0);
+        pub(crate) const DEPENDENCY_GRAPH: [(u8, u8); #edges_count] = [#(#edges_definitions),*];
 
-            graph.extend_with_edges(&[#(#edges_definitions),*]);
-        }
-
-        pub(crate) fn update_submissions(
+        pub(crate) fn submit_stage_by_index(
             renderer: &RenderFrame,
             image_index: &ImageIndex,
-            mut graph: parking_lot::MutexGuard<petgraph::stable_graph::StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>>,
+            ix: petgraph::stable_graph::NodeIndex<u8>,
+            cb: Option<vk::CommandBuffer>
         ) {
-            use microprofile::scope;
-            scope!("macros", #update_scope_name);
-            use petgraph::{Direction, stable_graph::{NodeIndex}};
-
-            let submit = |ix: NodeIndex<u8>, cb: Option<vk::CommandBuffer>| {
-                match ix {
-                    #(#submit_clauses),*
-                    _ => panic!("Invalid pass index in queue_manager submit()"),
-                }
-            };
-
-            let mut should_continue = true;
-            while graph.node_count() > 0 && should_continue {
-                should_continue = false;
-                let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
-                'inner: for node in roots {
-                    match graph.node_weight_mut(node) {
-                        None => break 'inner, // someone else changed it up while we were unlocked
-                        Some(ref mut cb @ Some(_)) => {
-                            let cb = cb.take();
-                            // leave None behind so that others won't try to submit this, but will
-                            // continue to see it as a blocking dependency
-                            parking_lot::MutexGuard::unlocked_fair(&mut graph, || {
-                                submit(node, cb.unwrap());
-                            });
-                            // we can clean it up now to unlock downstream submissions
-                            graph.remove_node(node).expect("remove node failed");
-                            should_continue = true;
-                        }
-                        _ => {}
-                    }
-                }
+            match ix {
+                #(#submit_clauses),*
+                _ => panic!("Invalid pass index in queue_manager submit()"),
             }
         }
     }
