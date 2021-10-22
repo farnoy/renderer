@@ -270,6 +270,7 @@ pub(crate) fn build_acceleration_structures(
 
                 let scratch_buffer = renderer.device.new_buffer(
                     vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                        | vk::BufferUsageFlags::STORAGE_BUFFER
                         | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                     build_sizes.build_scratch_size,
@@ -487,7 +488,9 @@ pub(crate) fn build_acceleration_structures(
         );
 
         let top_level_scratch_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             build_sizes.build_scratch_size,
         );

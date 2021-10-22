@@ -1,6 +1,8 @@
 use std::{env, path::Path};
 
 fn main() {
+    let sdk_path = env::var("VULKAN_SDK").map(|p| format!("{}\\Include", p));
+
     cc::Build::new()
         .cpp(true)
         .flag_if_supported("--std=c++14")
@@ -8,7 +10,7 @@ fn main() {
         .flag_if_supported("/std:c++14")
         .file("amd_alloc.cc")
         .includes(if cfg!(windows) {
-            Some("C:\\VulkanSDK\\1.2.182.0\\Include")
+            sdk_path.as_ref().map(|s| s.as_str()).ok()
         } else {
             None
         })
@@ -24,9 +26,9 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            "-IC:\\VulkanSDK\\1.2.182.0\\Include"
+            sdk_path.as_ref().map(|s| format!("-I{}", s)).unwrap_or("".to_string())
         } else {
-            ""
+            "".to_string()
         })
         .allowlist_type("VmaAllocatorCreateInfo")
         .allowlist_type("VmaAllocatorCreateFlags")
