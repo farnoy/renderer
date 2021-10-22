@@ -16,6 +16,7 @@ use crate::{
         systems::RuntimeConfiguration,
     },
     renderer::{
+        as_of_previous,
         device::{Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
         frame_graph::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         helpers::pick_lod,
@@ -302,7 +303,7 @@ pub(crate) fn cull_pass_bypass(
         .transfer_timeline_semaphore
         .wait(
             &renderer.device,
-            TransferTimeline::Perform.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<TransferTimeline::Perform>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 
@@ -407,7 +408,7 @@ pub(crate) fn cull_pass(
         .compute_timeline_semaphore
         .wait(
             &renderer.device,
-            ComputeTimeline::Perform.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<ComputeTimeline::Perform>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 

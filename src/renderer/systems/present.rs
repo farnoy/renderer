@@ -6,8 +6,8 @@ use microprofile::scope;
 
 use super::super::{device::Semaphore, GraphicsTimeline, RenderFrame, Swapchain};
 use crate::renderer::{
-    frame_graph, DepthPassData, Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized, Submissions,
-    SwapchainIndexToFrameNumber,
+    as_of, as_of_last, frame_graph, DepthPassData, Device, MainAttachments, MainFramebuffer, MainRenderpass, Resized,
+    Submissions, SwapchainIndexToFrameNumber,
 };
 
 pub(crate) struct PresentData {
@@ -152,12 +152,12 @@ impl AcquireFramebuffer {
             {
                 let counter = renderer.graphics_timeline_semaphore.value(&renderer.device).unwrap();
 
-                counter < GraphicsTimeline::Start.as_of(renderer.frame_number)
+                counter < as_of::<GraphicsTimeline::Start>(renderer.frame_number)
             },
             "AcquireFramebuffer assumption incorrect"
         );
-        let wait_semaphore_values = &[GraphicsTimeline::SceneDraw.as_of_last(renderer.frame_number), 0];
-        let signal_semaphore_values = &[GraphicsTimeline::Start.as_of(renderer.frame_number)];
+        let wait_semaphore_values = &[as_of_last::<GraphicsTimeline::SceneDraw>(renderer.frame_number), 0];
+        let signal_semaphore_values = &[as_of::<GraphicsTimeline::Start>(renderer.frame_number)];
         let mut wait_timeline = vk::TimelineSemaphoreSubmitInfo::builder()
             .wait_semaphore_values(wait_semaphore_values)
             .signal_semaphore_values(signal_semaphore_values);
@@ -212,7 +212,7 @@ impl PresentFramebuffer {
             scope!("present", "first_submit");
             let wait_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
                 .semaphore(renderer.graphics_timeline_semaphore.handle)
-                .value(GraphicsTimeline::SceneDraw.as_of(renderer.frame_number))
+                .value(as_of::<GraphicsTimeline::SceneDraw>(renderer.frame_number))
                 .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
                 .build()];
             let signal_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()

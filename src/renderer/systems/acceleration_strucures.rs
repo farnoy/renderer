@@ -16,6 +16,7 @@ use renderer_vma::VmaMemoryUsage;
 use crate::{
     ecs::components::{Deleting, ModelMatrix},
     renderer::{
+        as_of_previous,
         device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool},
         frame_graph,
         systems::present::ImageIndex,
@@ -187,7 +188,7 @@ pub(crate) fn build_acceleration_structures(
         .graphics_timeline_semaphore
         .wait(
             &renderer.device,
-            GraphicsTimeline::SceneDraw.as_of_previous(&image_index, &swapchain_indices),
+            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_indices),
         )
         .unwrap();
 

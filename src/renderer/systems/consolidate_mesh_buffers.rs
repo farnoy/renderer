@@ -7,6 +7,7 @@ use microprofile::scope;
 use num_traits::ToPrimitive;
 
 use crate::renderer::{
+    as_of_previous,
     device::{Buffer, Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
     frame_graph,
     frame_graph::cull_set,
@@ -70,7 +71,7 @@ pub(crate) fn consolidate_mesh_buffers(
         .consolidate_timeline_semaphore
         .wait(
             &renderer.device,
-            ConsolidateTimeline::Perform.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<ConsolidateTimeline::Perform>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 

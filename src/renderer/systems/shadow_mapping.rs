@@ -8,8 +8,8 @@ use static_assertions::const_assert_eq;
 use crate::{
     ecs::components::{Light, Position, Rotation},
     renderer::{
-        device::VmaMemoryUsage, frame_graph, frame_graph::LightMatrices, pick_lod, CameraMatrices, DepthPassData,
-        Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
+        as_of_previous, device::VmaMemoryUsage, frame_graph, frame_graph::LightMatrices, pick_lod, CameraMatrices,
+        DepthPassData, Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
         MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler, ShadowMappingTimeline, StrictCommandPool,
         Submissions, SwapchainIndexToFrameNumber,
     },
@@ -364,7 +364,7 @@ pub(crate) fn prepare_shadow_maps(
         .shadow_mapping_timeline_semaphore
         .wait(
             &renderer.device,
-            ShadowMappingTimeline::Prepare.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<ShadowMappingTimeline::Prepare>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 
@@ -500,7 +500,7 @@ pub(crate) fn update_shadow_map_descriptors(
         .graphics_timeline_semaphore
         .wait(
             &renderer.device,
-            GraphicsTimeline::SceneDraw.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 

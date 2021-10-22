@@ -58,26 +58,9 @@ fn define_timeline2(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream
 
             quote! {
                 #visibility struct #stage;
-                impl #stage {
-                    #visibility const VALUE: u64 = #ix;
-
-                    #visibility const fn as_of(&self, frame_number: u64) -> u64 {
-                        frame_number * #max + #ix
-                    }
-
-                    #visibility const fn as_of_last(&self, frame_number: u64) -> u64 {
-                        self.as_of(frame_number - 1)
-                    }
-
-                    #visibility fn as_of_previous(
-                        &self,
-                        image_index: &ImageIndex,
-                        indices: &SwapchainIndexToFrameNumber
-                    ) -> u64 {
-                        // can't be const fn because of smallvec indexing
-                        let frame_number = indices.map[image_index.0 as usize];
-                        self.as_of(frame_number)
-                    }
+                impl crate::renderer::TimelineStage for #stage {
+                    const OFFSET: u64 = #ix;
+                    const CYCLE: u64 = #max;
                 }
             }
         })
@@ -86,8 +69,6 @@ fn define_timeline2(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream
     quote! {
         #[allow(non_snake_case)]
         #visibility mod #name {
-            use super::{RenderFrame, ImageIndex, SwapchainIndexToFrameNumber};
-
             #(
                 #variant2
             )*
@@ -229,48 +210,31 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     );
 
                     let as_of = match edge.weight() {
-                        &DependencyType::SameFrame => quote!(as_of(render_frame.frame_number)),
-                        &DependencyType::LastFrame => quote!(as_of_last(render_frame.frame_number)),
+                        &DependencyType::SameFrame => quote!(as_of::<super::super::#signaled>(frame_number)),
+                        &DependencyType::LastFrame => quote!(as_of_last::<super::super::#signaled>(frame_number)),
                         &DependencyType::LastAccess => {
+                            // TODO: broken but no need to fix for now
                             quote!(as_of_previous(&image_index, &render_frame))
                         }
                     };
 
                     quote! {
-                        semaphores.push(
-                            vk::SemaphoreSubmitInfoKHR::builder()
-                                .semaphore(render_frame.#timeline_member.handle)
-                                .value(super::super::#signaled.#as_of)
-                                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .build()
-                        );
+                        (
+                            |frame_number, image_index| #as_of,
+                            |render_frame| &render_frame.#timeline_member
+                        )
                     }
                 })
                 .collect::<Vec<_>>();
+            let wait_count = wait_inner.len();
 
             quote! {
-                impl RenderStage for Stage {
-                    fn prepare_signal(render_frame: &RenderFrame, semaphores: &mut Vec<vk::SemaphoreSubmitInfoKHR>) {
-                        semaphores.push(
-                            vk::SemaphoreSubmitInfoKHR::builder()
-                                .semaphore(render_frame.#signal_timeline_member.handle)
-                                .value(super::super::#signal_out.as_of(render_frame.frame_number))
-                                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .build()
-                        );
-                    }
-
-                    fn prepare_wait(image_index: &ImageIndex, render_frame: &RenderFrame,
-                                    semaphores: &mut Vec<vk::SemaphoreSubmitInfoKHR>) {
-                        #(#wait_inner)*
-                    }
-
-                    fn host_signal(render_frame: &RenderFrame) -> ash::prelude::VkResult<()> {
-                        render_frame.#signal_timeline_member.signal(
-                            &render_frame.device,
-                            super::super::#signal_out.as_of(render_frame.frame_number)
-                        )
-                    }
+                impl RenderStage<1, #wait_count> for Stage {
+                    const SIGNAL_SEMAPHORE_TIMELINE: [(SignalValueAccessor, SemaphoreAccessor); 1] =
+                        [(|frame_number| as_of::<super::super::#signal_out>(frame_number), |render_frame| &render_frame.#signal_timeline_member)];
+                    
+                    const WAIT_SEMAPHORE_TIMELINE: [(WaitValueAccessor, SemaphoreAccessor); #wait_count] =
+                        [#(#wait_inner),*];
                 }
             }
         });
@@ -345,7 +309,8 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             quote! {
                 #[allow(non_snake_case)]
                 pub(crate) mod #pass_name {
-                    use super::{vk, Device, RenderStage, RenderFrame, ImageIndex,
+                    use super::{vk, Device, RenderStage, WaitValueAccessor, SignalValueAccessor,
+                        SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last,
                         OriginalFramebuffer, OriginalRenderPass};
 
                     #[derive(Debug, Clone, Copy)]
@@ -385,7 +350,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             quote! {
                 #[allow(non_snake_case)]
                 pub(crate) mod #pass {
-                    use super::{vk, RenderStage, RenderFrame, ImageIndex};
+                    use super::{vk, RenderStage, WaitValueAccessor, SignalValueAccessor, SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last};
 
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
@@ -412,7 +377,8 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         pub(crate) mod #name {
             use ash::vk;
-            use super::{Device, RenderStage, RenderFrame, ImageIndex,
+            use super::{Device, RenderStage, WaitValueAccessor, SignalValueAccessor, SemaphoreAccessor,
+                        RenderFrame, ImageIndex, as_of, as_of_last,
                         RenderPass as OriginalRenderPass,
                         Framebuffer as OriginalFramebuffer};
             use std::mem::size_of;
@@ -2339,40 +2305,15 @@ fn test_timeline1() {
     pretty_assertions::assert_eq!(formatted, indoc::indoc! {"
         #[allow(non_snake_case)]
         pub(crate) mod TestTimeline {
-            use super::{ImageIndex, RenderFrame, SwapchainIndexToFrameNumber};
             pub(crate) struct One;
-            impl One {
-                pub(crate) const VALUE: u64 = 1u64;
-
-                pub(crate) const fn as_of(&self, frame_number: u64) -> u64 {
-                    frame_number * 2u64 + 1u64
-                }
-
-                pub(crate) const fn as_of_last(&self, frame_number: u64) -> u64 {
-                    self.as_of(frame_number - 1)
-                }
-
-                pub(crate) fn as_of_previous(&self, image_index: &ImageIndex, indices: &SwapchainIndexToFrameNumber) -> u64 {
-                    let frame_number = indices.map[image_index.0 as usize];
-                    self.as_of(frame_number)
-                }
+            impl crate::renderer::TimelineStage for One {
+                const CYCLE: u64 = 2u64;
+                const OFFSET: u64 = 1u64;
             }
             pub(crate) struct Two;
-            impl Two {
-                pub(crate) const VALUE: u64 = 2u64;
-
-                pub(crate) const fn as_of(&self, frame_number: u64) -> u64 {
-                    frame_number * 2u64 + 2u64
-                }
-
-                pub(crate) const fn as_of_last(&self, frame_number: u64) -> u64 {
-                    self.as_of(frame_number - 1)
-                }
-
-                pub(crate) fn as_of_previous(&self, image_index: &ImageIndex, indices: &SwapchainIndexToFrameNumber) -> u64 {
-                    let frame_number = indices.map[image_index.0 as usize];
-                    self.as_of(frame_number)
-                }
+            impl crate::renderer::TimelineStage for Two {
+                const CYCLE: u64 = 2u64;
+                const OFFSET: u64 = 2u64;
             }
         }
     "});
@@ -2513,7 +2454,7 @@ fn prepare_queue_manager(
                         Some(ref mut cb @ Some(_)) => {
                             let cb = cb.take();
                             // leave None behind so that others won't try to submit this, but will
-                            // continue to see it as a blocking dependency 
+                            // continue to see it as a blocking dependency
                             parking_lot::MutexGuard::unlocked_fair(&mut graph, || {
                                 submit(node, cb.unwrap());
                             });

@@ -1,3 +1,4 @@
+#![feature(const_fn_trait_bound)]
 #![allow(clippy::new_without_default)]
 #![warn(clippy::cast_lossless)]
 #![warn(

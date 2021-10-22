@@ -461,16 +461,34 @@ renderer_macros::define_frame! {
     }
 }
 
-pub(crate) trait RenderStage {
-    fn prepare_signal(render_frame: &RenderFrame, semaphores: &mut Vec<vk::SemaphoreSubmitInfoKHR>);
+pub(crate) type WaitValueAccessor = fn(u64, &ImageIndex) -> u64;
+pub(crate) type SignalValueAccessor = fn(u64) -> u64;
+pub(crate) type SemaphoreAccessor = fn(&RenderFrame) -> &TimelineSemaphore;
 
-    fn prepare_wait(
-        image_index: &ImageIndex,
-        render_frame: &RenderFrame,
-        semaphores: &mut Vec<vk::SemaphoreSubmitInfoKHR>,
-    );
+pub(crate) trait TimelineStage {
+    const OFFSET: u64;
+    const CYCLE: u64;
+}
 
-    fn host_signal(render_frame: &RenderFrame) -> ash::prelude::VkResult<()>;
+const fn as_of<T: TimelineStage>(frame_number: u64) -> u64 {
+    frame_number * T::CYCLE + T::OFFSET
+}
+
+const fn as_of_last<T: TimelineStage>(frame_number: u64) -> u64 {
+    as_of::<T>(frame_number - 1)
+}
+
+fn as_of_previous<T: TimelineStage>(image_index: &ImageIndex, indices: &SwapchainIndexToFrameNumber) -> u64 {
+    let frame_number = indices.map[image_index.0 as usize];
+    as_of::<T>(frame_number)
+}
+
+pub(crate) trait RenderStage<const SIGNAL_SEMAPHORES: usize, const WAIT_SEMAPHORES: usize>
+where
+    [(); WAIT_SEMAPHORES]: Sized,
+{
+    const WAIT_SEMAPHORE_TIMELINE: [(WaitValueAccessor, SemaphoreAccessor); WAIT_SEMAPHORES];
+    const SIGNAL_SEMAPHORE_TIMELINE: [(SignalValueAccessor, SemaphoreAccessor); SIGNAL_SEMAPHORES];
 
     fn queue_submit(
         image_index: &ImageIndex,
@@ -480,24 +498,18 @@ pub(crate) trait RenderStage {
     ) -> ash::prelude::VkResult<()> {
         scope!("vk", "vkQueueSubmit");
 
-        Self::submit_info(image_index, render_frame, command_buffers, |submit_info| unsafe {
-            render_frame
-                .device
-                .synchronization2
-                .queue_submit2(queue, &[submit_info], vk::Fence::null())
-        })
-    }
-
-    fn submit_info<T, F: FnOnce(vk::SubmitInfo2KHR) -> T>(
-        image_index: &ImageIndex,
-        render_frame: &RenderFrame,
-        command_buffers: &[vk::CommandBuffer],
-        f: F,
-    ) -> T {
-        let mut signal_semaphores = vec![];
-        let mut wait_semaphores = vec![];
-        Self::prepare_signal(&render_frame, &mut signal_semaphores);
-        Self::prepare_wait(&image_index, &render_frame, &mut wait_semaphores);
+        let mut signal_semaphores = [vk::SemaphoreSubmitInfoKHR::default(); SIGNAL_SEMAPHORES];
+        for ix in 0..SIGNAL_SEMAPHORES {
+            signal_semaphores[ix].semaphore = Self::SIGNAL_SEMAPHORE_TIMELINE[ix].1(render_frame).handle;
+            signal_semaphores[ix].value = Self::SIGNAL_SEMAPHORE_TIMELINE[ix].0(render_frame.frame_number);
+            signal_semaphores[ix].stage_mask = vk::PipelineStageFlags2KHR::ALL_COMMANDS;
+        }
+        let mut wait_semaphores = [vk::SemaphoreSubmitInfoKHR::default(); WAIT_SEMAPHORES];
+        for ix in 0..WAIT_SEMAPHORES {
+            wait_semaphores[ix].semaphore = Self::WAIT_SEMAPHORE_TIMELINE[ix].1(render_frame).handle;
+            wait_semaphores[ix].value = Self::WAIT_SEMAPHORE_TIMELINE[ix].0(render_frame.frame_number, image_index);
+            wait_semaphores[ix].stage_mask = vk::PipelineStageFlags2KHR::ALL_COMMANDS;
+        }
         let command_buffer_infos = command_buffers
             .iter()
             .map(|cb| vk::CommandBufferSubmitInfoKHR::builder().command_buffer(*cb).build())
@@ -509,7 +521,12 @@ pub(crate) trait RenderStage {
             .command_buffer_infos(&command_buffer_infos)
             .build();
 
-        f(submit)
+        unsafe {
+            render_frame
+                .device
+                .synchronization2
+                .queue_submit2(queue, &[submit], vk::Fence::null())
+        }
     }
 }
 
@@ -548,33 +565,33 @@ impl RenderFrame {
         // wait_semaphore_values at > 0
         let frame_number = 1;
         let graphics_timeline_semaphore =
-            device.new_semaphore_timeline(GraphicsTimeline::SceneDraw.as_of_last(frame_number));
+            device.new_semaphore_timeline(as_of_last::<GraphicsTimeline::SceneDraw>(frame_number));
         device.set_object_name(graphics_timeline_semaphore.handle, "Graphics timeline semaphore");
         let compute_timeline_semaphore =
-            device.new_semaphore_timeline(ComputeTimeline::Perform.as_of_last(frame_number));
+            device.new_semaphore_timeline(as_of_last::<ComputeTimeline::Perform>(frame_number));
         device.set_object_name(compute_timeline_semaphore.handle, "Compute timeline semaphore");
         let shadow_mapping_timeline_semaphore =
-            device.new_semaphore_timeline(ShadowMappingTimeline::Prepare.as_of_last(frame_number));
+            device.new_semaphore_timeline(as_of_last::<ShadowMappingTimeline::Prepare>(frame_number));
         device.set_object_name(
             shadow_mapping_timeline_semaphore.handle,
             "Shadow mapping timeline semaphore",
         );
         let acceleration_structures_timeline_semaphore =
-            device.new_semaphore_timeline(AccelerationStructuresTimeline::Build.as_of_last(frame_number));
+            device.new_semaphore_timeline(as_of_last::<AccelerationStructuresTimeline::Build>(frame_number));
         device.set_object_name(
             acceleration_structures_timeline_semaphore.handle,
             "Acceleration Structures timeline semaphore",
         );
 
         let consolidate_timeline_semaphore =
-            device.new_semaphore_timeline(ConsolidateTimeline::Perform.as_of_last(frame_number));
+            device.new_semaphore_timeline(as_of_last::<ConsolidateTimeline::Perform>(frame_number));
         device.set_object_name(
             consolidate_timeline_semaphore.handle,
             "Consolidate mesh buffers timeline semaphore",
         );
 
         let transfer_timeline_semaphore =
-            device.new_semaphore_timeline(TransferTimeline::Perform.as_of_last(frame_number));
+            device.new_semaphore_timeline(as_of_last::<TransferTimeline::Perform>(frame_number));
         device.set_object_name(transfer_timeline_semaphore.handle, "Transfer timeline semaphore");
 
         let buffer_count = swapchain.desired_image_count.to_usize().unwrap();

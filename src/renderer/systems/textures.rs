@@ -10,8 +10,9 @@ use microprofile::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        device::DoubleBuffered, frame_graph, systems::present::ImageIndex, CopiedResource, Device, DrawIndex,
-        GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame, Sampler, SwapchainIndexToFrameNumber,
+        as_of_previous, device::DoubleBuffered, frame_graph, systems::present::ImageIndex, CopiedResource, Device,
+        DrawIndex, GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame, Sampler,
+        SwapchainIndexToFrameNumber,
     },
 };
 
@@ -170,7 +171,7 @@ pub(crate) fn recreate_base_color_descriptor_set(
         .graphics_timeline_semaphore
         .wait(
             &renderer.device,
-            GraphicsTimeline::SceneDraw.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 
@@ -198,7 +199,7 @@ pub(crate) fn update_base_color_descriptors(
         .graphics_timeline_semaphore
         .wait(
             &renderer.device,
-            GraphicsTimeline::SceneDraw.as_of_previous(&image_index, &swapchain_index_map),
+            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_index_map),
         )
         .unwrap();
 
@@ -251,7 +252,7 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
         .graphics_timeline_semaphore
         .wait(
             &renderer.device,
-            GraphicsTimeline::SceneDraw.as_of_previous(&swapchain_index, &previous_indices),
+            as_of_previous::<GraphicsTimeline::SceneDraw>(&swapchain_index, &previous_indices),
         )
         .unwrap();
 
