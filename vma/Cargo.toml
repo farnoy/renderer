@@ -9,5 +9,5 @@ resolver = "2"
 ash = { git = "https://github.com/MaikKlein/ash", rev = "ed351996e57006f3984f634cc8a10988a3220041" } # version = "0.32.0"
 
 [build-dependencies]
-bindgen = "0.58.1"
+bindgen = "0.59.1"
 cc = "1.0"
