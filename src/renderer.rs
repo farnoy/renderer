@@ -2040,7 +2040,7 @@ impl Submissions {
             .expect(&format!("Node not found while submitting {}", node_ix));
         debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
         *weight = Some(cb);
-        frame_graph::update_submissions(renderer, image_index, &mut *g);
+        frame_graph::update_submissions(renderer, image_index, g);
     }
 }
 

@@ -2490,7 +2490,7 @@ fn prepare_queue_manager(
         pub(crate) fn update_submissions(
             renderer: &RenderFrame,
             image_index: &ImageIndex,
-            graph: &mut petgraph::stable_graph::StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>,
+            mut graph: parking_lot::MutexGuard<petgraph::stable_graph::StableDiGraph::<Option<Option<vk::CommandBuffer>>, (), u8>>,
         ) {
             use microprofile::scope;
             scope!("macros", #update_scope_name);
@@ -2507,11 +2507,21 @@ fn prepare_queue_manager(
             while graph.node_count() > 0 && should_continue {
                 should_continue = false;
                 let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
-                for node in roots {
-                    if let Some(cb) = *graph.node_weight(node).unwrap() {
-                        submit(node, cb);
-                        graph.remove_node(node).unwrap();
-                        should_continue = true;
+                'inner: for node in roots {
+                    match graph.node_weight_mut(node) {
+                        None => break 'inner, // someone else changed it up while we were unlocked
+                        Some(ref mut cb @ Some(_)) => {
+                            let cb = cb.take();
+                            // leave None behind so that others won't try to submit this, but will
+                            // continue to see it as a blocking dependency 
+                            parking_lot::MutexGuard::unlocked_fair(&mut graph, || {
+                                submit(node, cb.unwrap());
+                            });
+                            // we can clean it up now to unlock downstream submissions
+                            graph.remove_node(node).expect("remove node failed");
+                            should_continue = true;
+                        }
+                        _ => {}
                     }
                 }
             }
