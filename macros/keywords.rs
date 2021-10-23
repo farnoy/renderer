@@ -40,6 +40,8 @@ custom_keyword!(resources);
 custom_keyword!(attachment);
 custom_keyword!(StaticBuffer);
 custom_keyword!(Image);
+custom_keyword!(of);
+custom_keyword!(from);
 custom_keyword!(preferred);
 custom_keyword!(subgroup);
 custom_keyword!(size);

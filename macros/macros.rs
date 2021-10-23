@@ -1,4 +1,5 @@
 #![feature(extend_one)]
+#![allow(warnings)]
 
 mod inputs;
 mod keywords;
@@ -1116,7 +1117,7 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
             (
                 ix,
                 quote! { vk::DescriptorType::#descriptor_type },
-                count,
+                count.as_ref().map(|c| c.0.0.clone()).unwrap_or(parse_quote!(1)),
                 stages
                     .iter()
                     .map(|s| quote!(vk::ShaderStageFlags::#s))
@@ -1911,7 +1912,7 @@ fn define_renderer(sets: &UnArray<DescriptorSet>, pipelines: &UnArray<Pipe>) -> 
                                 })
                             }
                         }
-                        if *n != rusty_binding.count.base10_parse::<u32>().unwrap() {
+                        if *n != rusty_binding.count.as_ref().map(|c| c.0.0.clone()).unwrap_or(parse_quote!(1)).base10_parse::<u32>().unwrap() {
                             let msg = format!(
                                 "Wrong descriptor count for set {} binding {}, shader needs {}",
                                 rusty.name.to_string(),

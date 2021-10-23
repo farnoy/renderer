@@ -315,96 +315,34 @@ renderer_macros::define_frame! {
         }
         sets {
             model_set {
-                model {
-                    type STORAGE_BUFFER
-                    count 1
-                    stages [VERTEX, COMPUTE]
-                }
+                model STORAGE_BUFFER from [VERTEX, COMPUTE]
             },
             camera_set {
-                matrices {
-                    type UNIFORM_BUFFER
-                    count 1
-                    stages [VERTEX, FRAGMENT, COMPUTE]
-                }
+                matrices UNIFORM_BUFFER from [VERTEX, FRAGMENT, COMPUTE]
             },
             textures_set {
-                base_color {
-                    type COMBINED_IMAGE_SAMPLER
-                    partially bound
-                    update after bind
-                    count 3072
-                    stages [FRAGMENT]
-                },
-                normal_map {
-                    type COMBINED_IMAGE_SAMPLER
-                    partially bound
-                    update after bind
-                    count 3072
-                    stages [FRAGMENT]
-                }
+                base_color 3072 of COMBINED_IMAGE_SAMPLER partially bound update after bind from [FRAGMENT],
+                normal_map 3072 of COMBINED_IMAGE_SAMPLER partially bound update after bind from [FRAGMENT]
             },
             acceleration_set {
-                top_level_as {
-                    type ACCELERATION_STRUCTURE_KHR
-                    update after bind
-                    count 1
-                    stages [FRAGMENT]
-                },
-                random_seed {
-                    type UNIFORM_BUFFER
-                    count 1
-                    stages [FRAGMENT]
-                }
+                top_level_as ACCELERATION_STRUCTURE_KHR update after bind from [FRAGMENT],
+                random_seed UNIFORM_BUFFER from [FRAGMENT]
             },
             cull_set {
-                indirect_commands {
-                    type STORAGE_BUFFER
-                    count 1
-                    stages [COMPUTE]
-                },
-                out_index_buffer {
-                    type STORAGE_BUFFER
-                    count 1
-                    stages [COMPUTE]
-                },
-                vertex_buffer {
-                    type STORAGE_BUFFER
-                    count 1
-                    stages [COMPUTE]
-                },
-                index_buffer {
-                    type STORAGE_BUFFER
-                    count 1
-                    stages [COMPUTE]
-                }
+                indirect_commands STORAGE_BUFFER from [COMPUTE],
+                out_index_buffer STORAGE_BUFFER from [COMPUTE],
+                vertex_buffer STORAGE_BUFFER from [COMPUTE],
+                index_buffer STORAGE_BUFFER from [COMPUTE]
             },
             cull_commands_count_set {
-                indirect_commands_count {
-                    type STORAGE_BUFFER
-                    count 1
-                    stages [COMPUTE]
-                },
+                indirect_commands_count STORAGE_BUFFER from [COMPUTE]
             },
             imgui_set {
-                texture {
-                    type COMBINED_IMAGE_SAMPLER
-                    count 1
-                    stages [FRAGMENT]
-                }
+                texture COMBINED_IMAGE_SAMPLER from [FRAGMENT]
             },
             shadow_map_set {
-                light_data {
-                    type STORAGE_BUFFER
-                    partially bound
-                    count 16
-                    stages [VERTEX, FRAGMENT]
-                },
-                shadow_maps {
-                    type COMBINED_IMAGE_SAMPLER
-                    count 1
-                    stages [FRAGMENT]
-                }
+                light_data 16 of STORAGE_BUFFER partially bound from [VERTEX, FRAGMENT],
+                shadow_maps COMBINED_IMAGE_SAMPLER from [FRAGMENT]
             }
         }
         pipelines {

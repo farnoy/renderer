@@ -3,7 +3,7 @@ use std::{env, fs::File, path::Path};
 use ash::vk;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_json::to_writer_pretty;
-use syn::Ident;
+use syn::{Ident, LitInt, parse_quote};
 
 use crate::{DescriptorSet, Pipe, SpecificPipe};
 
@@ -140,7 +140,7 @@ pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Optio
                 .enumerate()
                 .map(|(ix, binding)| RgaDescriptorBinding {
                     binding: ix as u32,
-                    descriptor_count: binding.count.base10_parse().unwrap(),
+                    descriptor_count: binding.count.as_ref().map(|c| c.0.0.clone()).unwrap_or(parse_quote!(1)).base10_parse().unwrap(),
                     descriptor_type: ident_to_descriptor_type(&binding.descriptor_type),
                     stage_flags: binding
                         .stages

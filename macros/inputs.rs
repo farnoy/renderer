@@ -469,21 +469,11 @@ pub struct DescriptorSet {
 #[allow(dead_code)]
 pub struct Binding {
     pub name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: Brace,
-    #[prefix(Token![type] in brace)]
-    #[inside(brace)]
+    pub count: UnOption<Sequence<LitInt, kw::of>>,
     pub descriptor_type: Ident,
-    #[inside(brace)]
     pub partially_bound: UnOption<Sequence<kw::partially, kw::bound>>,
-    #[inside(brace)]
     pub update_after_bind: UnOption<Sequence<kw::update, Sequence<kw::after, kw::bind>>>,
-    #[prefix(kw::count in brace)]
-    #[inside(brace)]
-    pub count: LitInt,
-    #[prefix(kw::stages in brace)]
-    #[inside(brace)]
+    #[prefix(kw::from)]
     pub stages: Unbracket<UnArray<Ident>>,
 }
 
