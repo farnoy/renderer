@@ -20,8 +20,9 @@ use crate::{
         device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool},
         frame_graph,
         systems::present::ImageIndex,
-        AccelerationStructuresTimeline, CopiedResource, Device, DrawIndex, GltfMesh, GraphicsTimeline, Image,
-        ImageView, MainDescriptorPool, RenderFrame, RenderStage, Sampler, Submissions, SwapchainIndexToFrameNumber,
+        update_whole_buffer, AccelerationStructuresTimeline, BufferType, CopiedResource, DescriptorSetLayout, Device,
+        DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame, RenderStage, Sampler,
+        Submissions, SwapchainIndexToFrameNumber,
     },
 };
 
@@ -43,7 +44,7 @@ pub(crate) struct AccelerationStructuresInternal {
     top_level_scratch_buffers: DoubleBuffered<Option<Buffer>>,
     top_level_handles: DoubleBuffered<Option<vk::AccelerationStructureKHR>>,
     instances_buffer: DoubleBuffered<StaticBuffer<[vk::AccelerationStructureInstanceKHR; 4096]>>,
-    random_seed: frame_graph::acceleration_set::bindings::random_seed::Buffer,
+    random_seed: BufferType<frame_graph::acceleration_set::bindings::random_seed>,
 }
 
 pub(crate) struct AccelerationStructures {
@@ -116,7 +117,7 @@ impl FromWorld for AccelerationStructuresInternal {
                 VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
 
-            frame_graph::acceleration_set::bindings::random_seed::update_whole_buffer(
+            update_whole_buffer::<frame_graph::acceleration_set::bindings::random_seed>(
                 &renderer.device,
                 &mut acceleration_structures.set,
                 &random_seed,

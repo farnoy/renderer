@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::{
-    renderer::{device::Device, frame_graph},
+    renderer::{device::Device, frame_graph, Pipeline, PipelineLayout},
     CameraMatrices, MainRenderpass, RenderFrame,
 };
 
@@ -17,14 +17,12 @@ impl FromWorld for DebugAABBPassData {
         let camera_matrices = world.get_resource::<CameraMatrices>().unwrap();
         let device = &renderer.device;
 
-        let pipeline_layout = frame_graph::debug_aabb::PipelineLayout::new(&device, &camera_matrices.set_layout);
+        let pipeline_layout = frame_graph::debug_aabb::PipelineLayout::new(&device, (&camera_matrices.set_layout,));
         let pipeline = frame_graph::debug_aabb::Pipeline::new(
             &renderer.device,
             &pipeline_layout,
             frame_graph::debug_aabb::Specialization {},
-            [None, None],
-            &main_renderpass.renderpass.renderpass,
-            0,
+            (main_renderpass.renderpass.renderpass.handle, 0),
         );
 
         DebugAABBPassData {

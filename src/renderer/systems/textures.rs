@@ -10,9 +10,9 @@ use microprofile::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        as_of_previous, device::DoubleBuffered, frame_graph, systems::present::ImageIndex, CopiedResource, Device,
-        DrawIndex, GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame, Sampler,
-        SwapchainIndexToFrameNumber,
+        as_of_previous, device::DoubleBuffered, frame_graph, systems::present::ImageIndex, CopiedResource,
+        DescriptorSetLayout, Device, DrawIndex, GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame,
+        Sampler, SwapchainIndexToFrameNumber,
     },
 };
 

@@ -7,9 +7,9 @@ use microprofile::scope;
 use crate::{
     ecs::systems::RuntimeConfiguration,
     renderer::{
-        device::Device, frame_graph, helpers::command_util::CommandUtil, CameraMatrices, ConsolidatedMeshBuffers,
-        CopiedResource, CullPassData, ImageIndex, MainAttachments, MainRenderpass, ModelData, RenderFrame, RenderStage,
-        Submissions, Swapchain,
+        binding_size, device::Device, frame_graph, helpers::command_util::CommandUtil, CameraMatrices,
+        ConsolidatedMeshBuffers, CopiedResource, CullPassData, ImageIndex, MainAttachments, MainRenderpass, ModelData,
+        Pipeline, PipelineLayout, RenderFrame, RenderStage, Submissions, Swapchain,
     },
 };
 pub(crate) struct DepthPassData {
@@ -33,17 +33,13 @@ impl FromWorld for DepthPassData {
 
         let depth_pipeline_layout = frame_graph::depth_pipe::PipelineLayout::new(
             &device,
-            &model_data.model_set_layout,
-            &camera_matrices.set_layout,
+            (&model_data.model_set_layout, &camera_matrices.set_layout),
         );
         let depth_pipeline = frame_graph::depth_pipe::Pipeline::new(
             &device,
             &depth_pipeline_layout,
             frame_graph::depth_pipe::Specialization {},
-            [None],
-            &renderpass.renderpass,
-            0,
-            vk::SampleCountFlags::TYPE_4,
+            (renderpass.renderpass.handle, 0, vk::SampleCountFlags::TYPE_4),
         );
 
         let framebuffer = frame_graph::DepthOnly::Framebuffer::new(
@@ -153,8 +149,10 @@ pub(crate) fn depth_only_pass(
             depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
-                &model_data.model_set.current(image_index.0),
-                &camera_matrices.set.current(image_index.0),
+                (
+                    &model_data.model_set.current(image_index.0),
+                    &camera_matrices.set.current(image_index.0),
+                ),
             );
             renderer.device.cmd_bind_index_buffer(
                 *command_buffer,
@@ -174,7 +172,7 @@ pub(crate) fn depth_only_pass(
                 0,
                 cull_pass_data.culled_commands_count_buffer.buffer.handle,
                 0,
-                frame_graph::cull_set::bindings::indirect_commands::SIZE as u32
+                binding_size::<frame_graph::cull_set::bindings::indirect_commands>() as u32
                     / size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32,
                 size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32,
             );

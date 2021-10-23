@@ -11,7 +11,7 @@ use crate::renderer::{
     device::{Buffer, Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
     frame_graph,
     frame_graph::cull_set,
-    GltfMesh, ImageIndex, RenderFrame, RenderStage, Submissions, SwapchainIndexToFrameNumber,
+    BindingT, BufferType, GltfMesh, ImageIndex, RenderFrame, RenderStage, Submissions, SwapchainIndexToFrameNumber,
 };
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
@@ -26,15 +26,15 @@ pub(crate) struct ConsolidatedMeshBuffers {
     /// Next free index offset in the buffer that can be used for a new mesh
     next_index_offset: vk::DeviceSize,
     /// Stores position data for each mesh
-    pub(crate) position_buffer: cull_set::bindings::vertex_buffer::Buffer,
+    pub(crate) position_buffer: BufferType<cull_set::bindings::vertex_buffer>,
     /// Stores normal data for each mesh
-    pub(crate) normal_buffer: cull_set::bindings::vertex_buffer::Buffer,
+    pub(crate) normal_buffer: BufferType<cull_set::bindings::vertex_buffer>,
     /// Stores tangent data for each mesh
     pub(crate) tangent_buffer: Buffer,
     /// Stores uv data for each mesh
     pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
-    pub(crate) index_buffer: cull_set::bindings::index_buffer::Buffer,
+    pub(crate) index_buffer: BufferType<cull_set::bindings::index_buffer>,
     command_pools: DoubleBuffered<StrictCommandPool>,
     command_buffers: DoubleBuffered<vk::CommandBuffer>,
 }
@@ -85,7 +85,7 @@ pub(crate) fn consolidate_mesh_buffers(
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
             debug_assert!(
                 *next_vertex_offset + mesh.vertex_len
-                    < (size_of::<cull_set::bindings::vertex_buffer::T>() / size_of::<[f32; 3]>()) as u64,
+                    < (size_of::<BindingT::<cull_set::bindings::vertex_buffer>>() / size_of::<[f32; 3]>()) as u64,
             );
             v.insert(*next_vertex_offset);
             let size_4 = mesh.vertex_len * size_of::<[f32; 4]>() as vk::DeviceSize;

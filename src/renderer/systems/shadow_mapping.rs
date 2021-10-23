@@ -8,10 +8,11 @@ use static_assertions::const_assert_eq;
 use crate::{
     ecs::components::{Light, Position, Rotation},
     renderer::{
-        as_of_previous, device::VmaMemoryUsage, frame_graph, frame_graph::LightMatrices, pick_lod, CameraMatrices,
-        DepthPassData, Device, DoubleBuffered, DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageIndex, ImageView,
-        MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler, ShadowMappingTimeline, StrictCommandPool,
-        Submissions, SwapchainIndexToFrameNumber,
+        as_of_previous, device::VmaMemoryUsage, frame_graph, frame_graph::LightMatrices, pick_lod, update_whole_buffer,
+        BufferType, CameraMatrices, DepthPassData, DescriptorSetLayout, Device, DoubleBuffered, DrawIndex, GltfMesh,
+        GraphicsTimeline, Image, ImageIndex, ImageView, MainDescriptorPool, ModelData, Pipeline, PipelineLayout,
+        RenderFrame, RenderStage, Sampler, ShadowMappingTimeline, StrictCommandPool, Submissions,
+        SwapchainIndexToFrameNumber,
     },
 };
 
@@ -47,17 +48,13 @@ impl ShadowMappingData {
 
         let depth_pipeline_layout = frame_graph::depth_pipe::PipelineLayout::new(
             &renderer.device,
-            &model_data.model_set_layout,
-            &camera_matrices.set_layout,
+            (&model_data.model_set_layout, &camera_matrices.set_layout),
         );
         let depth_pipeline = frame_graph::depth_pipe::Pipeline::new(
             &renderer.device,
             &depth_pipeline_layout,
             frame_graph::depth_pipe::Specialization {},
-            [None],
-            &renderpass.renderpass,
-            0,
-            vk::SampleCountFlags::TYPE_1,
+            (renderpass.renderpass.handle, 0, vk::SampleCountFlags::TYPE_1),
         );
 
         let depth_image = frame_graph::resources::shadow_map_atlas::import(
@@ -259,7 +256,7 @@ impl ShadowMappingDataInternal {
 /// Holds Projection and view matrices for each light.
 pub(crate) struct ShadowMappingLightMatrices {
     matrices_set: DoubleBuffered<frame_graph::camera_set::Set>,
-    matrices_buffer: DoubleBuffered<frame_graph::camera_set::bindings::matrices::Buffer>,
+    matrices_buffer: DoubleBuffered<BufferType<frame_graph::camera_set::bindings::matrices>>,
 }
 
 impl ShadowMappingLightMatrices {
@@ -294,7 +291,7 @@ impl ShadowMappingLightMatrices {
                 s.set.handle,
                 &format!("camera_set Set [{}] - entity={:?}", ix, entity_ix),
             );
-            frame_graph::camera_set::bindings::matrices::update_whole_buffer(
+            update_whole_buffer::<frame_graph::camera_set::bindings::matrices>(
                 &renderer.device,
                 &mut s,
                 &matrices_buffer.current(ix),
@@ -406,8 +403,10 @@ pub(crate) fn prepare_shadow_maps(
             shadow_mapping.depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
-                &model_data.model_set.current(image_index.0),
-                &shadow_mvp.matrices_set.current(image_index.0),
+                (
+                    &model_data.model_set.current(image_index.0),
+                    &shadow_mvp.matrices_set.current(image_index.0),
+                ),
             );
 
             let row = ix as u32 / DIM;

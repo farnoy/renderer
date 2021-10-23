@@ -16,14 +16,14 @@ use crate::{
         systems::RuntimeConfiguration,
     },
     renderer::{
-        as_of_previous,
+        as_of_previous, binding_size,
         device::{Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
         frame_graph::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
         helpers::pick_lod,
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
-        CameraMatrices, ComputeTimeline, CopiedResource, DrawIndex, GltfMesh, LocalTransferCommandPool,
-        MainDescriptorPool, ModelData, RenderFrame, RenderStage, Shader, Submissions, SwapchainIndexToFrameNumber,
-        TransferTimeline,
+        update_whole_buffer, BufferType, CameraMatrices, ComputeTimeline, CopiedResource, DescriptorSetLayout,
+        DrawIndex, GltfMesh, LocalTransferCommandPool, MainDescriptorPool, ModelData, Pipeline, PipelineLayout,
+        RenderFrame, RenderStage, Shader, SmartPipeline, Submissions, SwapchainIndexToFrameNumber, TransferTimeline,
     },
 };
 
@@ -34,7 +34,7 @@ pub(crate) struct CoarseCulled(pub(crate) bool);
 pub(crate) struct CullPassData {
     pub(crate) culled_commands_buffer: frame_graph::resources::indirect_commands_buffer,
     pub(crate) culled_commands_count_buffer: frame_graph::resources::indirect_commands_count,
-    pub(crate) culled_index_buffer: cull_set::bindings::out_index_buffer::Buffer,
+    pub(crate) culled_index_buffer: BufferType<cull_set::bindings::out_index_buffer>,
     compact_draw_stream_layout: compact_draw_stream::PipelineLayout,
     compact_draw_stream_pipeline: compact_draw_stream::Pipeline,
     cull_set_layout: cull_set::Layout,
@@ -47,10 +47,10 @@ pub(crate) struct CullPassData {
 
 pub(crate) struct CullPassDataPrivate {
     cull_pipeline_layout: generate_work::PipelineLayout,
-    cull_pipeline: generate_work::Pipeline,
+    cull_pipeline: SmartPipeline<generate_work::Pipeline>,
     command_pools: DoubleBuffered<StrictCommandPool>,
     command_buffers: DoubleBuffered<vk::CommandBuffer>,
-    previous_cull_pipeline: DoubleBuffered<Option<generate_work::Pipeline>>,
+    previous_cull_pipeline: DoubleBuffered<Option<SmartPipeline<generate_work::Pipeline>>>,
     cull_shader: Shader,
 }
 
@@ -92,14 +92,13 @@ impl CullPassDataPrivate {
         let cull_shader = renderer.device.new_shader(generate_work::COMPUTE);
         let cull_pipeline_layout = generate_work::PipelineLayout::new(
             &renderer.device,
-            &model_data.model_set_layout,
-            &camera_matrices.set_layout,
-            &cull_pass_data.cull_set_layout,
+            (
+                &model_data.model_set_layout,
+                &camera_matrices.set_layout,
+                &cull_pass_data.cull_set_layout,
+            ),
         );
-        let cull_pipeline =
-            generate_work::Pipeline::new(&renderer.device, &cull_pipeline_layout, cull_specialization, [Some(
-                &cull_shader,
-            )]);
+        let cull_pipeline = SmartPipeline::new(&renderer.device, &cull_pipeline_layout, cull_specialization, ());
         let mut command_pools = renderer.new_buffered(|ix| {
             StrictCommandPool::new(
                 &renderer.device,
@@ -147,7 +146,7 @@ impl CullPassData {
         let cull_count_set_layout = cull_commands_count_set::Layout::new(&renderer.device);
 
         let compact_draw_stream_layout =
-            compact_draw_stream::PipelineLayout::new(&device, &cull_set_layout, &cull_count_set_layout);
+            compact_draw_stream::PipelineLayout::new(&device, (&cull_set_layout, &cull_count_set_layout));
 
         let compact_draw_stream_pipeline = compact_draw_stream::Pipeline::new(
             &renderer.device,
@@ -156,7 +155,7 @@ impl CullPassData {
                 local_workgroup_size: 1024,
                 draw_calls_to_compact: 2400, // FIXME
             },
-            [None],
+            (),
         );
 
         let culled_index_buffer = {
@@ -186,18 +185,18 @@ impl CullPassData {
 
         let cull_set = {
             let mut s = cull_set::Set::new(&renderer.device, &main_descriptor_pool, &cull_set_layout, 0);
-            cull_set::bindings::indirect_commands::update_whole_buffer(
+            update_whole_buffer::<cull_set::bindings::indirect_commands>(
                 &renderer.device,
                 &mut s,
                 &culled_commands_buffer.0,
             );
-            cull_set::bindings::out_index_buffer::update_whole_buffer(&renderer.device, &mut s, &culled_index_buffer);
-            cull_set::bindings::vertex_buffer::update_whole_buffer(
+            update_whole_buffer::<cull_set::bindings::out_index_buffer>(&renderer.device, &mut s, &culled_index_buffer);
+            update_whole_buffer::<cull_set::bindings::vertex_buffer>(
                 &renderer.device,
                 &mut s,
                 &consolidated_mesh_buffers.position_buffer,
             );
-            cull_set::bindings::index_buffer::update_whole_buffer(
+            update_whole_buffer::<cull_set::bindings::index_buffer>(
                 &renderer.device,
                 &mut s,
                 &consolidated_mesh_buffers.index_buffer,
@@ -211,7 +210,7 @@ impl CullPassData {
         let cull_count_set = {
             let mut s =
                 cull_commands_count_set::Set::new(&renderer.device, &main_descriptor_pool, &cull_count_set_layout, 0);
-            cull_commands_count_set::bindings::indirect_commands_count::update_whole_buffer(
+            update_whole_buffer::<cull_commands_count_set::bindings::indirect_commands_count>(
                 &renderer.device,
                 &mut s,
                 &culled_commands_count_buffer.0,
@@ -264,7 +263,7 @@ impl CullPassData {
                 &renderer.device,
                 &cull_pass_data_private.cull_pipeline_layout,
                 &spec,
-                [Some(&cull_pass_data_private.cull_shader)],
+                (),
                 #[cfg(feature = "shader_reload")]
                 reloaded_shaders,
             );
@@ -328,7 +327,7 @@ pub(crate) fn cull_pass_bypass(
             &[vk::BufferCopy {
                 src_offset: 0,
                 dst_offset: 0,
-                size: cull_set::bindings::indirect_commands::SIZE,
+                size: binding_size::<cull_set::bindings::indirect_commands>(),
             }],
         );
         // renderer.device.cmd_copy_buffer(
@@ -346,7 +345,7 @@ pub(crate) fn cull_pass_bypass(
         //     &[vk::BufferCopy {
         //         src_offset: 0,
         //         dst_offset: 0,
-        //         size: cull_commands_count_set::bindings::indirect_commands_count::SIZE,
+        //         size: binding_size::<cull_commands_count_set::bindings::indirect_commands_count>(),
         //     }],
         // );
         // renderer.device.cmd_copy_buffer(
@@ -364,7 +363,7 @@ pub(crate) fn cull_pass_bypass(
         //     &[vk::BufferCopy {
         //         src_offset: 0,
         //         dst_offset: 0,
-        //         size: cull_set::bindings::out_index_buffer::SIZE,
+        //         size: binding_size::<cull_set::bindings::out_index_buffer>(),
         //     }],
         // );
         cull_pass_data
@@ -460,7 +459,7 @@ pub(crate) fn cull_pass(
             //     &[vk::BufferCopy {
             //         src_offset: 0,
             //         dst_offset: 0,
-            //         size: cull_set::bindings::indirect_commands::SIZE,
+            //         size: binding_size::<cull_set::bindings::indirect_commands>(),
             //     }],
             // );
             renderer.device.cmd_copy_buffer(
@@ -470,7 +469,7 @@ pub(crate) fn cull_pass(
                 &[vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
-                    size: cull_commands_count_set::bindings::indirect_commands_count::SIZE,
+                    size: binding_size::<cull_commands_count_set::bindings::indirect_commands_count>(),
                 }],
             );
             renderer.device.cmd_copy_buffer(
@@ -480,7 +479,7 @@ pub(crate) fn cull_pass(
                 &[vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
-                    size: cull_set::bindings::out_index_buffer::SIZE,
+                    size: binding_size::<cull_set::bindings::out_index_buffer>(),
                 }],
             );
         } else {
@@ -489,20 +488,22 @@ pub(crate) fn cull_pass(
                 *cull_cb,
                 commands_buffer.buffer.handle,
                 0,
-                cull_set::bindings::indirect_commands::SIZE,
+                binding_size::<cull_set::bindings::indirect_commands>(),
                 0,
             );
             commands_buffer.barrier_reset_cull(&renderer, *cull_cb);
             let cull_pass_marker = cull_cb.debug_marker_around("cull pass", [0.0, 1.0, 0.0, 1.0]);
             renderer
                 .device
-                .cmd_bind_pipeline(*cull_cb, vk::PipelineBindPoint::COMPUTE, *cull_pipeline.pipeline);
+                .cmd_bind_pipeline(*cull_cb, vk::PipelineBindPoint::COMPUTE, cull_pipeline.vk());
             cull_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *cull_cb,
-                &model_data.model_set.current(image_index.0),
-                &camera_matrices.set.current(image_index.0),
-                &cull_pass_data.cull_set,
+                (
+                    &model_data.model_set.current(image_index.0),
+                    &camera_matrices.set.current(image_index.0),
+                    &cull_pass_data.cull_set,
+                ),
             );
 
             let mut index_offset_in_output = 0;
@@ -533,7 +534,7 @@ pub(crate) fn cull_pass(
 
                 cull_pipeline_layout.push_constants(&renderer.device, *cull_cb, &push_constants);
                 let index_len = *index_len as u32;
-                let workgroup_size = cull_pipeline.spec().local_workgroup_size;
+                let workgroup_size = cull_pipeline.specialization.local_workgroup_size;
                 let workgroup_count = index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
                 debug_assert!(
                     renderer.device.limits.max_compute_work_group_count[0] >= workgroup_count,
@@ -563,8 +564,7 @@ pub(crate) fn cull_pass(
             cull_pass_data.compact_draw_stream_layout.bind_descriptor_sets(
                 &renderer.device,
                 *cull_cb,
-                &cull_pass_data.cull_set,
-                &cull_pass_data.cull_count_set,
+                (&cull_pass_data.cull_set, &cull_pass_data.cull_count_set),
             );
             renderer.device.cmd_dispatch(*cull_cb, 1, 1, 1);
         }

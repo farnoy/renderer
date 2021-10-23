@@ -1103,8 +1103,8 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
     } = set;
 
     let binding_count = bindings.len();
-    let (binding_ix, partially_bound, update_after_bind, desc_type, desc_count, stage) =
-        split6(bindings.iter().enumerate().map(|(ix, binding)| {
+    let (binding_ix, desc_type, desc_count, stage, const_binding) =
+        split5(bindings.iter().enumerate().map(|(ix, binding)| {
             let Binding {
                 descriptor_type,
                 partially_bound,
@@ -1115,14 +1115,23 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
             } = binding;
             (
                 ix,
-                partially_bound.is_some(),
-                update_after_bind.is_some(),
                 quote! { vk::DescriptorType::#descriptor_type },
                 count,
                 stages
                     .iter()
                     .map(|s| quote!(vk::ShaderStageFlags::#s))
                     .collect::<Vec<_>>(),
+                {
+                    let partially_bound = partially_bound
+                        .as_ref()
+                        .map(|_| quote!(| vk::DescriptorBindingFlags::PARTIALLY_BOUND.as_raw()));
+                    let update_after_bind = update_after_bind
+                        .as_ref()
+                        .map(|_| quote!(| vk::DescriptorBindingFlags::UPDATE_AFTER_BIND.as_raw()));
+                    quote! {
+                        vk::DescriptorBindingFlags::from_raw(vk::DescriptorBindingFlags::empty().as_raw() #partially_bound #update_after_bind)
+                    }
+                },
             )
         }));
 
@@ -1138,41 +1147,16 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                 let ty = set_binding_type_names
                     .get(&(set_name.clone(), name.clone()))
                     .expect("failed to find set binding type name");
+                let binding_ix = binding_ix as u32;
 
                 quote! {
-                    pub(crate) mod #name {
-                        use ash::vk;
-                        use crate::renderer::device::StaticBuffer;
-                        use super::super::super::#ty;
-                        use std::mem::size_of;
+                    pub(crate) struct #name;
 
-                        pub(crate) type T = #ty;
-                        pub(crate) const SIZE: vk::DeviceSize = size_of::<T>() as vk::DeviceSize;
-
-                        pub(crate) type Buffer = StaticBuffer<#ty>;
-
-                        // TODO: add batching and return vk::WriteDescriptorSet when lifetimes are improved in ash
-
-                        pub(crate) fn update_whole_buffer(device: &super::super::Device,
-                                                          set: &mut super::super::Set,
-                                                          buf: &Buffer) {
-                            let buffer_updates = &[vk::DescriptorBufferInfo {
-                                buffer: buf.buffer.handle,
-                                offset: 0,
-                                range: SIZE,
-                            }];
-                            unsafe {
-                                device.update_descriptor_sets(
-                                    &[vk::WriteDescriptorSet::builder()
-                                        .dst_set(set.set.handle)
-                                        .dst_binding(#binding_ix as u32)
-                                        .descriptor_type(vk::DescriptorType::#descriptor_type)
-                                        .buffer_info(buffer_updates)
-                                        .build()],
-                                    &[],
-                                );
-                            }
-                        }
+                    impl crate::renderer::DescriptorBufferBinding for #name {
+                        type T = super::super::#ty;
+                        type Set = super::Set;
+                        const INDEX: u32 = #binding_ix;
+                        const DESCRIPTOR_TYPE: ash::vk::DescriptorType = ash::vk::DescriptorType::#descriptor_type;
                     }
                 }
             } else {
@@ -1196,49 +1180,12 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                 pub(crate) layout: DescriptorSetLayout,
             }
 
-            impl Layout {
-                pub(crate) fn new(device: &Device) -> Layout {
-                    let binding_flags = &[
-                        #(
-                            {
-                                let _x = #binding_ix;
-                                let mut flags = vk::DescriptorBindingFlags::empty();
-                                if #partially_bound {
-                                    flags |= vk::DescriptorBindingFlags::PARTIALLY_BOUND;
-                                }
-                                if #update_after_bind {
-                                    flags |= vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
-                                }
-                                flags
-                            }
-                        ),*
-                    ];
-                    let flags = if #( #update_after_bind )||* {
-                        vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
-                    } else {
-                        vk::DescriptorSetLayoutCreateFlags::empty()
-                    };
-                    let mut binding_flags =
-                        vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
-                            .binding_flags(binding_flags);
-                    let bindings = Layout::bindings();
-                    let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
-                        .bindings(&bindings)
-                        .flags(flags)
-                        .push_next(&mut binding_flags);
-                    let inner = device.new_descriptor_set_layout(&create_info);
-                    device.set_object_name(inner.handle, #layout_debug_name);
+            impl crate::renderer::DescriptorSetLayout<#binding_count> for Layout {
+                const BINDING_FLAGS: [vk::DescriptorBindingFlags; #binding_count] = [
+                    #(#const_binding),*
+                ];
 
-                    Layout {
-                        layout: inner
-                    }
-                }
-
-                pub(crate) fn destroy(self, device: &Device) {
-                    self.layout.destroy(device);
-                }
-
-                pub(crate) fn bindings() -> [vk::DescriptorSetLayoutBinding; #binding_count] {
+                fn binding_layout() -> [vk::DescriptorSetLayoutBinding; #binding_count] {
                     [
                         #(
                             vk::DescriptorSetLayoutBinding {
@@ -1251,10 +1198,30 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                         ),*
                     ]
                 }
+
+                fn new(device: &Device) -> Layout {
+                    use crate::renderer::DescriptorSetLayout;
+
+                    Layout {
+                        layout: Layout::new_raw(device, #layout_debug_name)
+                    }
+                }
+            }
+
+            impl Layout {
+                pub(crate) fn destroy(self, device: &Device) {
+                    self.layout.destroy(device);
+                }
             }
 
             pub(crate) struct Set {
                 pub(crate) set: DescriptorSet,
+            }
+
+            impl crate::renderer::DescriptorSet for Set {
+                fn vk_handle(&self) -> vk::DescriptorSet {
+                    self.set.handle
+                }
             }
 
             impl Set {
@@ -1330,8 +1297,8 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                 ),*
             ];
 
-            impl Specialization {
-                pub(crate) fn get_spec_info(&self) -> vk::SpecializationInfo {
+            impl crate::renderer::PipelineSpecialization for Specialization {
+                fn get_spec_info(&self) -> vk::SpecializationInfo {
                     if size_of::<Specialization>() > 0 {
                         let (left, spec_data, right) = unsafe {
                             from_raw_parts(self as *const Specialization, 1)
@@ -1479,20 +1446,15 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
     let mut errors = quote!();
 
-    let stage_count = specific.stages().len();
-
-    let pipe_arguments = match specific {
+    let pipe_arguments_new_types = match specific {
         SpecificPipe::Graphics(specific) => {
             let dynamic_samples =
-                extract_optional_dyn(&specific.samples, quote!(dynamic_samples: vk::SampleCountFlags,))
-                    .unwrap_or(quote!());
+                extract_optional_dyn(&specific.samples, quote!(vk::SampleCountFlags)).unwrap_or(quote!());
             quote! {
-                renderpass: &device::RenderPass,
-                subpass: u32,
-                #dynamic_samples
+                (vk::RenderPass, u32, #dynamic_samples)
             }
         }
-        SpecificPipe::Compute(_) => quote!(),
+        SpecificPipe::Compute(_) => quote!(()),
     };
     let pipe_argument_short = match specific {
         SpecificPipe::Graphics(specific) => {
@@ -1508,14 +1470,13 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
         SpecificPipe::Compute(_) => vec![],
     };
     let shader_stage = specific.stages();
-    let stage_ix = shader_stage.iter().enumerate().map(|(ix, _)| ix).collect_vec();
     let shader_stage_path = shader_stage
         .iter()
         .map(|shader_stage| format_ident!("{}_PATH", &shader_stage))
         .collect_vec();
-    let allow_varying_snippet = quote!(vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT);
-    let forbid_varying_snippet = quote!(vk::PipelineShaderStageCreateFlags::empty());
-    let varying_subgroup_stages_flags = shader_stage
+    let allow_varying_snippet = quote!(true);
+    let forbid_varying_snippet = quote!(false);
+    let varying_subgroup_stages = shader_stage
         .iter()
         .map(|stage| {
             match varying_subgroup_stages {
@@ -1679,8 +1640,10 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                                 .build(),
                         )
                         .layout(*layout.layout)
-                        .render_pass(renderpass.handle)
+                        .render_pass(renderpass)
                         .subpass(subpass)
+                        .base_pipeline_handle(base_pipeline_handle)
+                        .base_pipeline_index(-1)
                         .build(),
                 );
             }
@@ -1700,8 +1663,6 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     };
 
     let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
-    let specialize_msg = format!("{}::Pipeline::specialize", pipe.name.to_string());
-    let new_internal_msg = format!("{}::Pipeline::new_internal", pipe.name.to_string());
     let pipeline_definition2 = quote! {
         use std::time::Instant;
         #[cfg(feature = "shader_reload")]
@@ -1709,219 +1670,53 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
         pub(crate) struct Pipeline {
             pub(crate) pipeline: device::Pipeline,
-            specialization: Specialization,
-            #[cfg(feature = "shader_reload")]
-            last_reloaded_shaders: [Option<Shader>; #stage_count],
-            #[cfg(feature = "shader_reload")]
-            last_updates: [Instant; #stage_count],
         }
 
-        impl Pipeline {
-            pub(crate) fn new(
-                device: &Device,
-                layout: &PipelineLayout,
-                spec: Specialization,
-                shader: [Option<&device::Shader>; #stage_count],
-                #pipe_arguments
-            ) -> Self {
-                Self::new_internal(device, layout, spec, None, shader, #(#pipe_argument_short),*)
+        impl crate::renderer::Pipeline for Pipeline {
+            type DynamicArguments = #pipe_arguments_new_types;
+            type Layout = PipelineLayout;
+            type Specialization = Specialization;
+
+            fn default_shader_stages() -> smallvec::SmallVec<[&'static [u8]; 4]> {
+                smallvec::smallvec![#(#shader_stage),*]
             }
 
-            fn new_internal(
+            fn shader_stages() -> smallvec::SmallVec<[vk::ShaderStageFlags; 4]> {
+                smallvec::smallvec![#(vk::ShaderStageFlags::#shader_stage),*]
+            }
+
+            #[cfg(feature = "shader_reload")]
+            fn shader_stage_paths() -> smallvec::SmallVec<[&'static str; 4]> {
+                smallvec::smallvec![#(#shader_stage_path),*]
+            }
+
+            fn varying_subgroup_stages() -> smallvec::SmallVec<[bool; 4]> {
+                smallvec::smallvec![#(#varying_subgroup_stages),*]
+            }
+
+            fn vk(&self) -> vk::Pipeline {
+                *self.pipeline
+            }
+
+            fn new_raw(
                 device: &Device,
-                layout: &PipelineLayout,
-                specialization: Specialization,
-                base_pipeline: Option<&Self>,
-                shaders: [Option<&device::Shader>; #stage_count],
-                #pipe_arguments
+                layout: &Self::Layout,
+                stages: &[vk::PipelineShaderStageCreateInfo],
+                flags: vk::PipelineCreateFlags,
+                base_pipeline_handle: vk::Pipeline,
+                (#(#pipe_argument_short,)*): Self::DynamicArguments,
             ) -> Self {
-                scope!("macros", #new_internal_msg);
-
-                use std::ffi::CStr;
-                let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
-                let base_pipeline_handle = base_pipeline
-                    .map(|pipe| *pipe.pipeline)
-                    .unwrap_or_else(vk::Pipeline::null);
-                let shaders: [Result<&device::Shader, device::Shader>; #stage_count] = [
-                    #(
-                        shaders[#stage_ix].ok_or_else(|| device.new_shader(#shader_stage))
-                    ),*
-                ];
-                // let subgroup_size_controls = &mut [
-                //     #(
-                //         vk::PipelineShaderStageRequiredSubgroupSizeCreateInfoEXT::builder()
-                //             #subgroup_sizes_calls
-                //     ),*
-                // ];
-                let shader_handles = shaders
-                    .iter()
-                    .map(|s| s.as_ref().map(|s| s.vk()).unwrap_or_else(|s| s.vk()))
-                    .collect::<Vec<_>>();
-                let spec_info = specialization.get_spec_info();
-                let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
-                if base_pipeline.is_some() {
-                    flags |= vk::PipelineCreateFlags::DERIVATIVE;
-                }
-
-                let stages = &[
-                    #(
-                        vk::PipelineShaderStageCreateInfo::builder()
-                            .module(shader_handles[#stage_ix])
-                            .name(&shader_entry_name)
-                            .stage(vk::ShaderStageFlags::#shader_stage)
-                            .specialization_info(&spec_info)
-                            .flags(#varying_subgroup_stages_flags)
-                            // .push_next(&mut subgroup_size_controls[#stage_ix])
-                            .build()
-                    ),*
-                ];
-
-                #pipeline_definition_inner;
+                #pipeline_definition_inner
 
                 device.set_object_name(*pipeline, #pipe_debug_name);
 
-                std::array::IntoIter::new(shaders)
-                    .for_each(|s| s.err().into_iter().for_each(|s| s.destroy(device)));
-
                 Pipeline {
                     pipeline,
-                    specialization,
-                    #[cfg(feature = "shader_reload")]
-                    last_reloaded_shaders: [
-                        #(
-                            {
-                                let _utilize = #stage_ix;
-                                None
-                            }
-                        ),*
-                    ],
-                    #[cfg(feature = "shader_reload")]
-                    last_updates: [Instant::now(); #stage_count],
                 }
             }
 
-            /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
-            pub(crate) fn specialize(
-                &mut self,
-                device: &Device,
-                layout: &PipelineLayout,
-                new_spec: &Specialization,
-                shaders: [Option<&device::Shader>; #stage_count],
-                #pipe_arguments
-                #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
-            ) -> Option<Self> {
-                scope!("macros", #specialize_msg);
-                use std::mem::swap;
-
-                #[cfg(feature = "shader_reload")]
-                let mut new_shaders: [(Instant, Option<device::Shader>); #stage_count] = [
-                    #(
-                        match reloaded_shaders.0.get(#shader_stage_path) {
-                            Some((ts, code)) if *ts > self.last_updates[#stage_ix] => {
-                                let static_spv = spirq::SpirvBinary::from(#shader_stage);
-                                let static_entry = static_spv.reflect_vec().unwrap()
-                                    .into_iter().find(|entry| entry.name == "main").unwrap();
-                                let mut static_descs = static_entry.descs().collect::<Vec<_>>();
-                                static_descs.sort_by_key(|d| d.desc_bind);
-                                let mut static_inputs = static_entry.inputs().collect::<Vec<_>>();
-                                static_inputs.sort_by_key(|d| d.location);
-                                let mut static_outputs = static_entry.outputs().collect::<Vec<_>>();
-                                static_outputs.sort_by_key(|d| d.location);
-                                let mut static_spec_consts = static_entry.spec.spec_consts().collect::<Vec<_>>();
-                                static_spec_consts.sort_by_key(|d| d.spec_id);
-
-                                let new_spv = spirq::SpirvBinary::from(code.as_slice());
-                                if let Ok(entry_points) = new_spv.reflect_vec() {
-                                    if let Some(entry) = entry_points.into_iter().find(|entry| entry.name == "main") {
-                                        let mut entry_descs = entry.descs().collect::<Vec<_>>();
-                                        entry_descs.sort_by_key(|d| d.desc_bind);
-                                        let mut entry_inputs = entry.inputs().collect::<Vec<_>>();
-                                        entry_inputs.sort_by_key(|d| d.location);
-                                        let mut entry_outputs = entry.outputs().collect::<Vec<_>>();
-                                        entry_outputs.sort_by_key(|d| d.location);
-                                        let mut entry_spec_consts = entry.spec.spec_consts().collect::<Vec<_>>();
-                                        entry_spec_consts.sort_by_key(|d| d.spec_id);
-                                        if static_entry.exec_model == entry.exec_model
-                                           && static_descs == entry_descs
-                                           && static_inputs == entry_inputs
-                                           && static_outputs == entry_outputs
-                                           && static_spec_consts == entry_spec_consts {
-                                            (ts.clone(), Some(device.new_shader(&code)))
-                                        } else {
-                                            eprintln!("Failed to validate live reloaded shader interface \
-                                                       against the static. Restart the application");
-                                            (Instant::now(), None)
-                                        }
-                                    }
-                                    else {
-                                        eprintln!("Failed to find the main entry point in live reloaded spirv");
-                                        (Instant::now(), None)
-                                    }
-                                } else {
-                                    eprintln!("Failed to reflect on live reloaded spirv");
-                                    (Instant::now(), None)
-                                }
-                            }
-                            _ => (Instant::now(), None)
-                        }
-                    ),*
-                ];
-
-                #[cfg(feature = "shader_reload")]
-                let any_new_shaders: bool = new_shaders.iter().any(|(_ts, s)| s.is_some());
-
-                #[cfg(not(feature = "shader_reload"))]
-                let any_new_shaders: bool = false;
-
-                if self.specialization != *new_spec || any_new_shaders {
-                    let mut replacement = Self::new_internal(
-                        device,
-                        layout,
-                        new_spec.clone(),
-                        Some(&self),
-                        #[cfg(feature = "shader_reload")]
-                        [
-                            #(
-                                new_shaders[#stage_ix].1.as_ref()
-                                    .or(shaders[#stage_ix])
-                                    .or(self.last_reloaded_shaders[#stage_ix].as_ref())
-                            ),*
-                        ],
-                        #[cfg(not(feature = "shader_reload"))]
-                        shaders,
-                        #(#pipe_argument_short),*
-                    );
-                    #[cfg(feature = "shader_reload")]
-                    {
-                        replacement.last_updates = [
-                            #(
-                                new_shaders[#stage_ix].1.as_ref()
-                                    .map(|s| new_shaders[#stage_ix].0.clone())
-                                    .unwrap_or(self.last_updates[#stage_ix])
-                            ),*
-                        ];
-
-                        replacement.last_reloaded_shaders = [
-                            #(
-                                new_shaders[#stage_ix].1.take()
-                                    .or_else(|| self.last_reloaded_shaders[#stage_ix].take())
-                            ),*
-                        ];
-                    }
-                    swap(&mut *self, &mut replacement);
-                    Some(replacement)
-                } else {
-                    None
-                }
-            }
-
-            pub(crate) fn spec(&self) -> &Specialization { &self.specialization }
-
-            pub(crate) fn destroy(self, device: &Device) {
+            fn destroy(self, device: &Device) {
                 self.pipeline.destroy(device);
-                #[cfg(feature = "shader_reload")]
-                std::array::IntoIter::new(self.last_reloaded_shaders)
-                    .for_each(|s| s.into_iter().for_each(|s| s.destroy(device)));
             }
         }
     };
@@ -1937,18 +1732,19 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                 pub(crate) layout: device::PipelineLayout,
             }
 
-            impl PipelineLayout {
-                pub(crate) fn new(
-                    device: &Device,
-                    #(#descriptor_ref: &super::#descriptor_ref::Layout,)*
-                ) -> PipelineLayout {
+
+            impl crate::renderer::PipelineLayout for PipelineLayout {
+                type DescriptorSetLayouts = (
+                    #(super::#descriptor_ref::Layout,)*
+                );
+                type DescriptorSets = (
+                    #(super::#descriptor_ref::Set,)*
+                );
+
+                fn new(device: &Device, (#(#descriptor_ref,)*): <Self::DescriptorSetLayouts as crate::renderer::RefTuple>::Ref<'_>) -> Self {
                     #[allow(unused_qualifications)]
                     let layout = device.new_pipeline_layout(
-                        &[
-                            #(
-                                &#descriptor_ref.layout
-                            ),*
-                        ],
+                        &[#(&#descriptor_ref.layout),*],
                         &[#push_constant_range],
                     );
 
@@ -1957,28 +1753,27 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                     PipelineLayout { layout }
                 }
 
-                #fn_push_constants
-
-                pub(crate) fn bind_descriptor_sets(
+                fn bind_descriptor_sets(
                     &self,
                     device: &Device,
-                    command_buffer: vk::CommandBuffer
-                    #(, #descriptor_ref: &super::#descriptor_ref::Set)*) {
+                    command_buffer: vk::CommandBuffer,
+                    (#(#descriptor_ref,)*): <Self::DescriptorSets as crate::renderer::RefTuple>::Ref<'_>,
+                ) {
                     unsafe {
                         device.cmd_bind_descriptor_sets(
                             command_buffer,
                             #pipeline_bind_point,
                             *self.layout,
                             0,
-                            &[
-                                #(
-                                    #descriptor_ref.set.handle
-                                ),*
-                            ],
+                            &[#(#descriptor_ref.set.handle),*],
                             &[],
                         );
                     }
                 }
+            }
+
+            impl PipelineLayout {
+                #fn_push_constants
 
                 pub(crate) fn destroy(self, device: &Device) {
                     self.layout.destroy(device);

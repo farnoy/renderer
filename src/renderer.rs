@@ -8,8 +8,12 @@ mod helpers;
 mod instance;
 mod swapchain;
 mod systems;
-
-use std::{cmp::max, mem::size_of, sync::Arc};
+use std::{
+    cmp::max,
+    mem::{replace, size_of, take},
+    sync::Arc,
+    time::Instant,
+};
 
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
@@ -17,6 +21,7 @@ use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
+use smallvec::{smallvec, SmallVec};
 use static_assertions::const_assert_eq;
 
 #[cfg(not(feature = "no_profiling"))]
@@ -530,6 +535,416 @@ where
     }
 }
 
+pub(crate) trait DescriptorSetLayout<const BINDING_COUNT: usize> {
+    const BINDING_FLAGS: [vk::DescriptorBindingFlags; BINDING_COUNT];
+
+    fn binding_layout() -> [vk::DescriptorSetLayoutBinding; BINDING_COUNT];
+
+    fn new(device: &Device) -> Self;
+
+    fn new_raw(device: &Device, name: &str) -> device::DescriptorSetLayout {
+        let flags = if Self::BINDING_FLAGS
+            .iter()
+            .any(|x| x.contains(vk::DescriptorBindingFlags::UPDATE_AFTER_BIND))
+        {
+            vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
+        } else {
+            vk::DescriptorSetLayoutCreateFlags::empty()
+        };
+        let mut binding_flags =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder().binding_flags(&Self::BINDING_FLAGS);
+        let bindings = Self::binding_layout();
+        let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&bindings)
+            .flags(flags)
+            .push_next(&mut binding_flags);
+        let inner = device.new_descriptor_set_layout(&create_info);
+        device.set_object_name(inner.handle, name);
+
+        inner
+    }
+}
+
+pub(crate) trait PipelineLayout {
+    type DescriptorSetLayouts: RefTuple;
+    type DescriptorSets: RefTuple;
+
+    fn new(device: &Device, sets: <Self::DescriptorSetLayouts as RefTuple>::Ref<'_>) -> Self;
+
+    fn bind_descriptor_sets(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        sets: <Self::DescriptorSets as RefTuple>::Ref<'_>,
+    );
+}
+
+pub(crate) trait Pipeline: Sized {
+    type Layout: PipelineLayout;
+    type DynamicArguments;
+    type Specialization: PipelineSpecialization;
+
+    fn default_shader_stages() -> SmallVec<[&'static [u8]; 4]>;
+    fn shader_stages() -> SmallVec<[vk::ShaderStageFlags; 4]>;
+    #[cfg(feature = "shader_reload")]
+    fn shader_stage_paths() -> SmallVec<[&'static str; 4]>;
+    fn varying_subgroup_stages() -> SmallVec<[bool; 4]>;
+
+    fn new(
+        device: &Device,
+        layout: &Self::Layout,
+        specialization: Self::Specialization,
+        dynamic_arguments: Self::DynamicArguments,
+    ) -> Self {
+        let (shaders, pipe) = new_pipe_generic(device, layout, &specialization, None, None, dynamic_arguments);
+        shaders.into_iter().for_each(|s| s.destroy(device));
+        pipe
+    }
+
+    fn vk(&self) -> vk::Pipeline;
+
+    fn new_raw(
+        device: &Device,
+        layout: &Self::Layout,
+        stages: &[vk::PipelineShaderStageCreateInfo],
+        flags: vk::PipelineCreateFlags,
+        base_handle: vk::Pipeline,
+        dynamic_arguments: Self::DynamicArguments,
+    ) -> Self;
+
+    fn destroy(self, device: &Device);
+}
+
+fn new_pipe_generic<P: Pipeline>(
+    device: &Device,
+    layout: &P::Layout,
+    specialization: &P::Specialization,
+    base_pipeline_handle: Option<vk::Pipeline>,
+    shaders: Option<SmallVec<[Shader; 4]>>,
+    dynamic_arguments: P::DynamicArguments,
+) -> (SmallVec<[Shader; 4]>, P) {
+    use std::ffi::CStr;
+    let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
+    let shaders: SmallVec<[Shader; 4]> = shaders.unwrap_or_else(|| {
+        P::default_shader_stages()
+            .iter()
+            .map(|x| device.new_shader(x))
+            .collect()
+    });
+    let stages = P::shader_stages();
+    let spec_info = specialization.get_spec_info();
+    let mut flags = vk::PipelineCreateFlags::ALLOW_DERIVATIVES;
+    if base_pipeline_handle.is_some() {
+        flags |= vk::PipelineCreateFlags::DERIVATIVE;
+    }
+
+    let stages = shaders
+        .iter()
+        .zip(stages.iter())
+        .zip(P::varying_subgroup_stages().iter())
+        .map(|((shader, stage), &varying_subgroup)| {
+            vk::PipelineShaderStageCreateInfo::builder()
+                .module(shader.vk())
+                .name(&shader_entry_name)
+                .stage(*stage)
+                .specialization_info(&spec_info)
+                .flags(if varying_subgroup {
+                    vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT
+                } else {
+                    vk::PipelineShaderStageCreateFlags::empty()
+                })
+                .build()
+        })
+        .collect::<SmallVec<[_; 4]>>();
+
+    let base_pipeline_handle = base_pipeline_handle.clone().unwrap_or_else(vk::Pipeline::null);
+
+    (
+        shaders,
+        P::new_raw(device, layout, &stages, flags, base_pipeline_handle, dynamic_arguments),
+    )
+}
+
+/// Pipeline wrapper that caches the shader modules to allow for fast re-specialization or shader
+/// reloading in development
+pub(crate) struct SmartPipeline<P: Pipeline> {
+    inner: P,
+    specialization: P::Specialization,
+    shaders: SmallVec<[Shader; 4]>,
+    #[cfg(feature = "shader_reload")]
+    last_updates: SmallVec<[Instant; 4]>,
+}
+
+pub(crate) trait PipelineSpecialization: PartialEq + Clone {
+    fn get_spec_info(&self) -> vk::SpecializationInfo;
+}
+
+impl<P: Pipeline> SmartPipeline<P> {
+    pub(crate) fn new(
+        device: &Device,
+        layout: &P::Layout,
+        specialization: P::Specialization,
+        dynamic_arguments: P::DynamicArguments,
+    ) -> Self {
+        scope!("pipelines", "new");
+        Self::new_internal(device, layout, specialization, None, dynamic_arguments)
+    }
+
+    fn new_internal(
+        device: &Device,
+        layout: &P::Layout,
+        specialization: P::Specialization,
+        mut base_pipeline: Option<&mut Self>,
+        dynamic_arguments: P::DynamicArguments,
+    ) -> Self {
+        let base_pipeline_handle = base_pipeline.as_ref().map(|pipe| pipe.inner.vk());
+        let shaders = base_pipeline.as_deref_mut().map(|p| take(&mut p.shaders));
+
+        let (shaders, pipe) = new_pipe_generic(
+            device,
+            layout,
+            &specialization,
+            base_pipeline_handle,
+            shaders,
+            dynamic_arguments,
+        );
+
+        #[cfg(feature = "shader_reload")]
+        let last_updates;
+
+        #[cfg(feature = "shader_reload")]
+        if let Some(base_pipe) = base_pipeline {
+            last_updates = take(&mut base_pipe.last_updates);
+        } else {
+            let stage_count = P::default_shader_stages().len();
+            last_updates = smallvec![Instant::now(); stage_count];
+        }
+
+        SmartPipeline {
+            inner: pipe,
+            specialization,
+            shaders,
+            #[cfg(feature = "shader_reload")]
+            last_updates,
+        }
+    }
+
+    /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
+    pub(crate) fn specialize(
+        &mut self,
+        device: &Device,
+        layout: &P::Layout,
+        new_spec: &P::Specialization,
+        dynamic_arguments: P::DynamicArguments,
+        #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
+    ) -> Option<Self> {
+        scope!("pipelines", "specialize");
+        use std::mem::swap;
+
+        #[cfg(feature = "shader_reload")]
+        let mut new_shaders: SmallVec<[(Instant, Option<Shader>); 4]> = self
+            .shaders
+            .iter()
+            .zip(P::shader_stage_paths().iter().zip(P::default_shader_stages().iter()))
+            .enumerate()
+            .map(
+                |(stage_ix, (shader, (&path, &default_code)))| match reloaded_shaders.0.get(path) {
+                    Some((ts, code)) if *ts > self.last_updates[stage_ix] => {
+                        let static_spv = spirq::SpirvBinary::from(default_code);
+                        let static_entry = static_spv
+                            .reflect_vec()
+                            .unwrap()
+                            .into_iter()
+                            .find(|entry| entry.name == "main")
+                            .unwrap();
+                        let mut static_descs = static_entry.descs().collect::<Vec<_>>();
+                        static_descs.sort_by_key(|d| d.desc_bind);
+                        let mut static_inputs = static_entry.inputs().collect::<Vec<_>>();
+                        static_inputs.sort_by_key(|d| d.location);
+                        let mut static_outputs = static_entry.outputs().collect::<Vec<_>>();
+                        static_outputs.sort_by_key(|d| d.location);
+                        let mut static_spec_consts = static_entry.spec.spec_consts().collect::<Vec<_>>();
+                        static_spec_consts.sort_by_key(|d| d.spec_id);
+
+                        let new_spv = spirq::SpirvBinary::from(code.as_slice());
+                        if let Ok(entry_points) = new_spv.reflect_vec() {
+                            if let Some(entry) = entry_points.into_iter().find(|entry| entry.name == "main") {
+                                let mut entry_descs = entry.descs().collect::<Vec<_>>();
+                                entry_descs.sort_by_key(|d| d.desc_bind);
+                                let mut entry_inputs = entry.inputs().collect::<Vec<_>>();
+                                entry_inputs.sort_by_key(|d| d.location);
+                                let mut entry_outputs = entry.outputs().collect::<Vec<_>>();
+                                entry_outputs.sort_by_key(|d| d.location);
+                                let mut entry_spec_consts = entry.spec.spec_consts().collect::<Vec<_>>();
+                                entry_spec_consts.sort_by_key(|d| d.spec_id);
+                                if static_entry.exec_model == entry.exec_model
+                                    && static_descs == entry_descs
+                                    && static_inputs == entry_inputs
+                                    && static_outputs == entry_outputs
+                                    && static_spec_consts == entry_spec_consts
+                                {
+                                    (ts.clone(), Some(device.new_shader(&code)))
+                                } else {
+                                    eprintln!(
+                                        "Failed to validate live reloaded shader interface \
+                                                       against the static. Restart the application"
+                                    );
+                                    (Instant::now(), None)
+                                }
+                            } else {
+                                eprintln!("Failed to find the main entry point in live reloaded spirv");
+                                (Instant::now(), None)
+                            }
+                        } else {
+                            eprintln!("Failed to reflect on live reloaded spirv");
+                            (Instant::now(), None)
+                        }
+                    }
+                    _ => (Instant::now(), None),
+                },
+            )
+            .collect();
+
+        #[cfg(feature = "shader_reload")]
+        let any_new_shaders: bool = new_shaders.iter().any(|(_ts, s)| s.is_some());
+
+        #[cfg(not(feature = "shader_reload"))]
+        let any_new_shaders: bool = false;
+
+        if self.specialization != *new_spec || any_new_shaders {
+            #[cfg(feature = "shader_reload")]
+            for ((shader, last_update), (t, new)) in self
+                .shaders
+                .iter_mut()
+                .zip(self.last_updates.iter_mut())
+                .zip(new_shaders.into_iter())
+            {
+                if let Some(new) = new {
+                    replace(shader, new).destroy(device);
+                    *last_update = t;
+                }
+            }
+            let mut replacement = Self::new_internal(device, layout, new_spec.clone(), Some(self), dynamic_arguments);
+            swap(&mut *self, &mut replacement);
+            Some(replacement)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.inner.destroy(device);
+        self.shaders.into_iter().for_each(|x| x.destroy(device));
+    }
+
+    pub(crate) fn vk(&self) -> vk::Pipeline {
+        self.inner.vk()
+    }
+}
+
+pub(crate) trait RefTuple {
+    type Ref<'a>
+    where
+        Self: 'a;
+}
+
+impl<A> RefTuple for (A,) {
+    type Ref<'a>
+    where
+        Self: 'a,
+    = (&'a A,);
+}
+
+impl<A, B> RefTuple for (A, B) {
+    type Ref<'a>
+    where
+        Self: 'a,
+    = (&'a A, &'a B);
+}
+impl<A, B, C> RefTuple for (A, B, C) {
+    type Ref<'a>
+    where
+        Self: 'a,
+    = (&'a A, &'a B, &'a C);
+}
+
+impl<A, B, C, D> RefTuple for (A, B, C, D) {
+    type Ref<'a>
+    where
+        Self: 'a,
+    = (&'a A, &'a B, &'a C, &'a D);
+}
+
+impl<A, B, C, D, E> RefTuple for (A, B, C, D, E) {
+    type Ref<'a>
+    where
+        Self: 'a,
+    = (&'a A, &'a B, &'a C, &'a D, &'a E);
+}
+
+pub(crate) trait DescriptorSet {
+    // const BINDING_COUNT: usize;
+    // type ILayout where Self::ILayout: DescriptorSetLayout<{Self::BINDING_COUNT}>; // :
+    // DescriptorSetLayout<BINDING_COUNT> where const BINDING_COUNT: usize;
+
+    fn vk_handle(&self) -> vk::DescriptorSet;
+}
+
+// impl crate::renderer::DescriptorSet for frame_graph::camera_set::Set {
+//     const BINDING_COUNT: usize = 1;
+//     type ILayout = frame_graph::camera_set::Layout;
+//     fn vk_handle(&self) -> vk::DescriptorSet {
+//         self.set.handle
+//     }
+// }
+
+pub(crate) trait DescriptorBufferBinding {
+    type T;
+    type Set: DescriptorSet;
+    const SIZE: vk::DeviceSize = size_of::<Self::T>() as vk::DeviceSize;
+    const INDEX: u32;
+    const DESCRIPTOR_TYPE: vk::DescriptorType;
+}
+
+fn update_whole_buffer<T: DescriptorBufferBinding>(device: &Device, set: &mut T::Set, buf: &BufferType<T>) {
+    let buffer_updates = &[vk::DescriptorBufferInfo {
+        buffer: buf.buffer.handle,
+        offset: 0,
+        range: T::SIZE,
+    }];
+    unsafe {
+        device.update_descriptor_sets(
+            &[vk::WriteDescriptorSet::builder()
+                .dst_set(set.vk_handle())
+                .dst_binding(T::INDEX as u32)
+                .descriptor_type(T::DESCRIPTOR_TYPE)
+                .buffer_info(buffer_updates)
+                .build()],
+            &[],
+        );
+    }
+}
+
+pub(crate) type BufferType<B: DescriptorBufferBinding> = StaticBuffer<B::T>;
+pub(crate) type BindingT<B: DescriptorBufferBinding> = B::T;
+pub(crate) const fn binding_size<B: DescriptorBufferBinding>() -> vk::DeviceSize {
+    B::SIZE
+}
+
+// impl DescriptorSet for frame_graph::cull_set::Set {
+//     fn vk_handle(&self) -> vk::DescriptorSet {
+//         self.set.handle
+//     }
+// }
+
+// impl DescriptorBufferBinding for OutIndexKek {
+//     type T = frame_graph::cull_set::bindings::out_index_buffer::T;
+//     type Set = frame_graph::cull_set::Set;
+
+//     const INDEX: u32 = 1;
+//     const DESCRIPTOR_TYPE: vk::DescriptorType = vk::DescriptorType::STORAGE_BUFFER;
+// }
+
 pub(crate) struct MainRenderpass {
     pub(crate) renderpass: frame_graph::Main::RenderPass,
 }
@@ -882,7 +1297,7 @@ impl<const NAME: usize> LocalTransferCommandPool<NAME> {
 
 pub(crate) struct CameraMatrices {
     pub(crate) set_layout: frame_graph::camera_set::Layout,
-    buffer: DoubleBuffered<frame_graph::camera_set::bindings::matrices::Buffer>,
+    buffer: DoubleBuffered<BufferType<frame_graph::camera_set::bindings::matrices>>,
     set: DoubleBuffered<frame_graph::camera_set::Set>,
 }
 
@@ -902,7 +1317,7 @@ impl CameraMatrices {
         let set = renderer.new_buffered(|ix| {
             let mut s = frame_graph::camera_set::Set::new(&renderer.device, &main_descriptor_pool, &set_layout, ix);
 
-            frame_graph::camera_set::bindings::matrices::update_whole_buffer(
+            update_whole_buffer::<frame_graph::camera_set::bindings::matrices>(
                 &renderer.device,
                 &mut s,
                 &buffer.current(ix),
@@ -930,7 +1345,7 @@ impl CameraMatrices {
 pub(crate) struct ModelData {
     pub(crate) model_set_layout: frame_graph::model_set::Layout,
     pub(crate) model_set: DoubleBuffered<frame_graph::model_set::Set>,
-    pub(crate) model_buffer: DoubleBuffered<frame_graph::model_set::bindings::model::Buffer>,
+    pub(crate) model_buffer: DoubleBuffered<BufferType<frame_graph::model_set::bindings::model>>,
 }
 
 impl ModelData {
@@ -950,7 +1365,7 @@ impl ModelData {
         let model_set = renderer.new_buffered(|ix| {
             let mut s =
                 frame_graph::model_set::Set::new(&renderer.device, &main_descriptor_pool, &model_set_layout, ix);
-            frame_graph::model_set::bindings::model::update_whole_buffer(
+            update_whole_buffer::<frame_graph::model_set::bindings::model>(
                 &renderer.device,
                 &mut s,
                 &model_buffer.current(ix),
@@ -977,9 +1392,9 @@ impl ModelData {
 pub(crate) struct Resized(pub(crate) bool);
 
 pub(crate) struct GltfPassData {
-    pub(crate) gltf_pipeline: frame_graph::gltf_mesh::Pipeline,
+    pub(crate) gltf_pipeline: SmartPipeline<frame_graph::gltf_mesh::Pipeline>,
     #[cfg(feature = "shader_reload")]
-    pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<frame_graph::gltf_mesh::Pipeline>>,
+    pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<SmartPipeline<frame_graph::gltf_mesh::Pipeline>>>,
     pub(crate) gltf_pipeline_layout: frame_graph::gltf_mesh::PipelineLayout,
 }
 
@@ -1125,24 +1540,24 @@ impl GltfPassData {
 
         let gltf_pipeline_layout = frame_graph::gltf_mesh::PipelineLayout::new(
             &renderer.device,
-            &model_data.model_set_layout,
-            &camera_matrices.set_layout,
-            &shadow_mapping.user_set_layout,
-            &base_color.layout,
-            &acceleration_structures.set_layout,
+            (
+                &model_data.model_set_layout,
+                &camera_matrices.set_layout,
+                &shadow_mapping.user_set_layout,
+                &base_color.layout,
+                &acceleration_structures.set_layout,
+            ),
         );
         use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
         let spec = frame_graph::gltf_mesh::Specialization {
             shadow_map_dim: SHADOW_MAP_DIM,
             shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
         };
-        let gltf_pipeline = frame_graph::gltf_mesh::Pipeline::new(
+        let gltf_pipeline = SmartPipeline::new(
             &renderer.device,
             &gltf_pipeline_layout,
             spec,
-            [None, None],
-            &main_renderpass.renderpass.renderpass,
-            0, // FIXME
+            (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
         );
 
         GltfPassData {
@@ -1231,7 +1646,7 @@ pub(crate) fn render_frame(
     } = &mut *gltf_pass;
 
     // TODO: count this? pack and defragment draw calls?
-    let total = frame_graph::cull_set::bindings::indirect_commands::SIZE as u32
+    let total = binding_size::<frame_graph::cull_set::bindings::indirect_commands>() as u32
         / size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32;
 
     #[cfg(feature = "shader_reload")]
@@ -1249,9 +1664,7 @@ pub(crate) fn render_frame(
                 shadow_map_dim: SHADOW_MAP_DIM,
                 shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
             },
-            [None, None],
-            &main_renderpass.renderpass.renderpass,
-            1, // FIXME
+            (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
             #[cfg(feature = "shader_reload")]
             &reloaded_shaders,
         );
@@ -1321,7 +1734,7 @@ pub(crate) fn render_frame(
             debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
-                &camera_matrices.set.current(image_index.0),
+                (&camera_matrices.set.current(image_index.0),),
             );
 
             for aabb in &mut query.iter() {
@@ -1338,19 +1751,19 @@ pub(crate) fn render_frame(
         } else {
             let _gltf_meshes_marker = command_buffer.debug_marker_around("gltf meshes", [1.0, 0.0, 0.0, 1.0]);
             // gltf mesh
-            renderer.device.cmd_bind_pipeline(
-                *command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                *gltf_pipeline.pipeline,
-            );
+            renderer
+                .device
+                .cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, gltf_pipeline.vk());
             gltf_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
-                &model_data.model_set.current(image_index.0),
-                &camera_matrices.set.current(image_index.0),
-                &shadow_mapping_data.user_set.current(image_index.0),
-                &base_color_descriptor_set.set.current(image_index.0),
-                &acceleration_structures.set,
+                (
+                    &model_data.model_set.current(image_index.0),
+                    &camera_matrices.set.current(image_index.0),
+                    &shadow_mapping_data.user_set.current(image_index.0),
+                    &base_color_descriptor_set.set.current(image_index.0),
+                    &acceleration_structures.set,
+                ),
             );
             renderer.device.cmd_bind_index_buffer(
                 *command_buffer,
@@ -1555,15 +1968,13 @@ impl GuiRenderData {
             0, // FIXME
         );
 
-        let pipeline_layout = frame_graph::imgui_pipe::PipelineLayout::new(&renderer.device, &descriptor_set_layout);
+        let pipeline_layout = frame_graph::imgui_pipe::PipelineLayout::new(&renderer.device, (&descriptor_set_layout,));
 
         let pipeline = frame_graph::imgui_pipe::Pipeline::new(
             &renderer.device,
             &pipeline_layout,
             frame_graph::imgui_pipe::Specialization {},
-            [None, None],
-            &main_renderpass.renderpass.renderpass,
-            1,
+            (main_renderpass.renderpass.renderpass.handle, 1),
         );
 
         let texture_view = renderer.device.new_image_view(
@@ -1838,7 +2249,7 @@ fn render_gui(
 
     let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
     unsafe {
-        pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, &descriptor_set);
+        pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, (&descriptor_set,));
         renderer
             .device
             .cmd_bind_pipeline(**command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline.pipeline);
@@ -1963,7 +2374,7 @@ pub(crate) fn camera_matrices_upload(
         .current_mut(image_index.0)
         .map(&renderer.device)
         .expect("failed to map camera matrix buffer");
-    *model_mapped = frame_graph::camera_set::bindings::matrices::T {
+    *model_mapped = BindingT::<frame_graph::camera_set::bindings::matrices> {
         projection: camera.projection,
         view: camera.view,
         position: camera.position.coords.push(1.0),
