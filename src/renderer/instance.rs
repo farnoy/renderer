@@ -136,7 +136,7 @@ impl Instance {
                     );
                 }
                 if severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
-                    panic!();
+                    // panic!();
                 }
                 0
             }

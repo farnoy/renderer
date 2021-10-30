@@ -3,16 +3,18 @@
 // TODO: pub(crate) should disappear?
 pub(crate) mod device;
 mod entry;
-mod gltf_mesh;
+mod gltf_mesh_io;
 mod helpers;
 mod instance;
 mod swapchain;
 mod systems;
+#[cfg(feature = "shader_reload")]
+use std::time::Instant;
 use std::{
     cmp::max,
-    mem::{replace, size_of, take},
+    marker::PhantomData,
+    mem::{size_of, take},
     sync::Arc,
-    time::Instant,
 };
 
 use ash::vk;
@@ -33,12 +35,12 @@ pub(crate) use self::systems::shader_reload::{reload_shaders, ReloadedShaders, S
 use self::{
     device::{
         Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, RenderPass, Sampler, Shader,
-        StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, TimelineSemaphore, VmaMemoryUsage,
+        StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, VmaMemoryUsage,
     },
-    systems::depth_pass::depth_only_pass,
+    systems::{cull_pipeline::cull_set, depth_pass::depth_only_pass, shadow_mapping::shadow_map_set},
 };
 pub(crate) use self::{
-    gltf_mesh::{load as load_gltf, LoadedMesh},
+    gltf_mesh_io::{load as load_gltf, LoadedMesh},
     helpers::pick_lod,
     instance::Instance,
     swapchain::{Surface, Swapchain},
@@ -46,10 +48,10 @@ pub(crate) use self::{
         acceleration_strucures::{
             build_acceleration_structures, AccelerationStructures, AccelerationStructuresInternal,
         },
-        consolidate_mesh_buffers::{consolidate_mesh_buffers, ConsolidateTimeline, ConsolidatedMeshBuffers},
+        consolidate_mesh_buffers::{consolidate_mesh_buffers, ConsolidatedMeshBuffers},
         cull_pipeline::{
             coarse_culling, cull_pass, cull_pass_bypass, CoarseCulled, CullPassData, CullPassDataPrivate,
-            INITIAL_WORKGROUP_SIZE,
+            TransferCullPrivate, INITIAL_WORKGROUP_SIZE,
         },
         debug_aabb_renderer::DebugAABBPassData,
         depth_pass::DepthPassData,
@@ -119,12 +121,7 @@ pub(crate) struct DrawIndex(pub(crate) u32);
 pub(crate) struct RenderFrame {
     pub(crate) instance: Arc<Instance>,
     pub(crate) device: Device,
-    pub(crate) graphics_timeline_semaphore: TimelineSemaphore,
-    pub(crate) compute_timeline_semaphore: TimelineSemaphore,
-    pub(crate) shadow_mapping_timeline_semaphore: TimelineSemaphore,
-    pub(crate) consolidate_timeline_semaphore: TimelineSemaphore,
-    pub(crate) transfer_timeline_semaphore: TimelineSemaphore,
-    pub(crate) acceleration_structures_timeline_semaphore: TimelineSemaphore,
+    pub(crate) auto_semaphores: AutoSemaphores,
     pub(crate) frame_number: u64,
     pub(crate) buffer_count: usize,
 }
@@ -142,11 +139,6 @@ impl FromWorld for SwapchainIndexToFrameNumber {
         }
     }
 }
-
-renderer_macros::define_timeline!(pub(crate) GraphicsTimeline [Start, DepthOnly, SceneDraw]);
-renderer_macros::define_timeline!(pub(crate) AccelerationStructuresTimeline [Build]);
-renderer_macros::define_timeline!(pub(crate) TransferTimeline [Perform]);
-renderer_macros::define_timeline!(pub(crate) ShadowMappingTimeline [Prepare]);
 
 pub(crate) type UVBuffer = [[f32; 2]; size_of::<frame_graph::VertexBuffer>() / size_of::<[f32; 3]>()];
 pub(crate) type TangentBuffer = [[f32; 4]; size_of::<frame_graph::VertexBuffer>() / size_of::<[f32; 3]>()];
@@ -171,7 +163,7 @@ struct AlignedAs<Align, Bytes: ?Sized> {
 macro_rules! include_bytes_align_as {
     ($align_ty:ty, $path:literal) => {{
         // const block expression to encapsulate the static
-        use super::super::AlignedAs;
+        use crate::renderer::AlignedAs;
 
         // this assignment is made possible by CoerceUnsized
         static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
@@ -183,8 +175,12 @@ macro_rules! include_bytes_align_as {
     }};
 }
 
+pub(crate) use include_bytes_align_as;
+
+renderer_macros::define_timelines! {}
+
 renderer_macros::define_frame! {
-    pub(crate) frame_graph {
+    frame_graph {
         attachments {
             Color,
             PresentSurface,
@@ -259,154 +255,76 @@ renderer_macros::define_frame! {
             TransferCull on transfer,
             ConsolidateMeshBuffers on graphics,
         }
-        dependencies {
-            // These passes have resources that are not double buffered, so they can't start processing until the
-            // previous frame frame finished using them. This should perhaps become implicit, there's no use case
-            // so far for overlapping computation across frame boundaries
-            PresentationAcquire => ShadowMapping,
-            PresentationAcquire => BuildAccelerationStructures,
-            PresentationAcquire => TransferCull,
-            // PresentationAcquire => ComputeCull,
-            PresentationAcquire => ConsolidateMeshBuffers,
-            // PresentationAcquire => DepthOnly,
+    }
+}
 
-            // TransferCull => ComputeCull,
-            // ComputeCull => DepthOnly,
-            BuildAccelerationStructures => Main,
-            ShadowMapping => DepthOnly,
-            // DepthOnly => Main,
-            ConsolidateMeshBuffers => Main,
-            // ShadowMapping => Main,
-        }
-        // TODO: validate so that if two passes signal the same timeline,
-        //       there must be a proper dependency between them
-        sync {
-            PresentationAcquire => GraphicsTimeline::Start,
-            BuildAccelerationStructures => AccelerationStructuresTimeline::Build,
-            DepthOnly => GraphicsTimeline::DepthOnly,
-            Main => GraphicsTimeline::SceneDraw,
-            TransferCull => TransferTimeline::Perform,
-            ComputeCull => ComputeTimeline::Perform,
-            ShadowMapping => ShadowMappingTimeline::Prepare,
-            ConsolidateMeshBuffers => ConsolidateTimeline::Perform,
-        }
-        resources {
-            indirect_commands_buffer StaticBuffer<IndirectCommands> [
-                copy_frozen in TransferCull transfer copy,
-                reset in ComputeCull transfer clear,
-                cull in ComputeCull descriptor cull_set.indirect_commands,
-                compact in ComputeCull descriptor cull_set.indirect_commands,
-                draw_depth in DepthOnly indirect buffer,
-                draw_from in Main indirect buffer,
-            ],
-            indirect_commands_count StaticBuffer<IndirectCommandsCount> [
-                copy_frozen in ComputeCull transfer copy,
-                compute in ComputeCull descriptor cull_commands_count_set.indirect_commands_count,
-                draw_depth in DepthOnly indirect buffer,
-                draw_from in Main indirect buffer,
-            ],
-            shadow_map_atlas Image [
-                prepare in ShadowMapping attachment,
-                apply in Main descriptor shadow_map_set.shadow_maps,
-            ],
-            color Image [
-                render in Main attachment,
-            ],
-        }
-        sets {
-            model_set {
-                model STORAGE_BUFFER from [VERTEX, COMPUTE]
-            },
-            camera_set {
-                matrices UNIFORM_BUFFER from [VERTEX, FRAGMENT, COMPUTE]
-            },
-            textures_set {
-                base_color 3072 of COMBINED_IMAGE_SAMPLER partially bound update after bind from [FRAGMENT],
-                normal_map 3072 of COMBINED_IMAGE_SAMPLER partially bound update after bind from [FRAGMENT]
-            },
-            acceleration_set {
-                top_level_as ACCELERATION_STRUCTURE_KHR update after bind from [FRAGMENT],
-                random_seed UNIFORM_BUFFER from [FRAGMENT]
-            },
-            cull_set {
-                indirect_commands STORAGE_BUFFER from [COMPUTE],
-                out_index_buffer STORAGE_BUFFER from [COMPUTE],
-                vertex_buffer STORAGE_BUFFER from [COMPUTE],
-                index_buffer STORAGE_BUFFER from [COMPUTE]
-            },
-            cull_commands_count_set {
-                indirect_commands_count STORAGE_BUFFER from [COMPUTE]
-            },
-            imgui_set {
-                texture COMBINED_IMAGE_SAMPLER from [FRAGMENT]
-            },
-            shadow_map_set {
-                light_data 16 of STORAGE_BUFFER partially bound from [VERTEX, FRAGMENT],
-                shadow_maps COMBINED_IMAGE_SAMPLER from [FRAGMENT]
-            }
-        }
-        pipelines {
-            generate_work {
-                descriptors [model_set, camera_set, cull_set]
-                specialization_constants [1 => local_workgroup_size: u32]
-                varying subgroup size
-                compute
-            },
-            compact_draw_stream {
-                descriptors [cull_set, cull_commands_count_set]
-                specialization_constants [
-                    1 => local_workgroup_size: u32,
-                    2 => draw_calls_to_compact: u32
-                ]
-                varying subgroup size
-                compute
-            },
-            depth_pipe {
-                descriptors [model_set, camera_set]
-                graphics
-                samples dyn
-                vertex_inputs [position: vec3]
-                stages [VERTEX]
-                cull mode BACK
-                depth test true
-                depth write true
-                depth compare op LESS_OR_EQUAL
-            },
-            gltf_mesh {
-                descriptors [model_set, camera_set, shadow_map_set, textures_set, acceleration_set]
-                specialization_constants [
-                    10 => shadow_map_dim: u32,
-                    11 => shadow_map_dim_squared: u32,
-                ]
-                graphics
-                samples 4
-                vertex_inputs [position: vec3, normal: vec3, uv: vec2, tangent: vec4]
-                stages [VERTEX, FRAGMENT]
-                cull mode BACK
-                depth test true
-                depth compare op EQUAL
-            },
-            debug_aabb {
-                descriptors [camera_set]
-                graphics
-                samples 4
-                stages [VERTEX, FRAGMENT]
-                polygon mode LINE
-            },
-            imgui_pipe {
-                descriptors [imgui_set]
-                graphics
-                samples 4
-                vertex_inputs [pos: vec2, uv: vec2, col: vec4]
-                stages [VERTEX, FRAGMENT]
-            }
-        }
+renderer_macros::define_set!(
+    model_set {
+        model STORAGE_BUFFER from [VERTEX, COMPUTE]
+    }
+);
+
+renderer_macros::define_set! {
+    camera_set {
+        matrices UNIFORM_BUFFER from [VERTEX, FRAGMENT, COMPUTE]
+    }
+}
+renderer_macros::define_set! {
+    textures_set {
+        base_color 3072 of COMBINED_IMAGE_SAMPLER partially bound update after bind from [FRAGMENT],
+        normal_map 3072 of COMBINED_IMAGE_SAMPLER partially bound update after bind from [FRAGMENT]
+    }
+}
+renderer_macros::define_set! {
+    acceleration_set {
+        top_level_as ACCELERATION_STRUCTURE_KHR update after bind from [FRAGMENT],
+        random_seed UNIFORM_BUFFER from [FRAGMENT]
+    }
+}
+renderer_macros::define_set! {
+    imgui_set {
+        texture COMBINED_IMAGE_SAMPLER from [FRAGMENT]
+    }
+}
+
+renderer_macros::define_pipe!(
+    gltf_mesh {
+        descriptors [model_set, camera_set, shadow_map_set, textures_set, acceleration_set]
+        specialization_constants [
+            10 => shadow_map_dim: u32,
+            11 => shadow_map_dim_squared: u32,
+        ]
+        graphics
+        samples 4
+        vertex_inputs [position: vec3, normal: vec3, uv: vec2, tangent: vec4]
+        stages [VERTEX, FRAGMENT]
+        cull mode BACK
+        depth test true
+        depth compare op EQUAL
+    }
+);
+renderer_macros::define_pipe! {
+    debug_aabb {
+        descriptors [camera_set]
+        graphics
+        samples 4
+        stages [VERTEX, FRAGMENT]
+        polygon mode LINE
+    }
+}
+
+renderer_macros::define_pipe! {
+    imgui_pipe {
+        descriptors [imgui_set]
+        graphics
+        samples 4
+        vertex_inputs [pos: vec2, uv: vec2, col: vec4]
+        stages [VERTEX, FRAGMENT]
     }
 }
 
 pub(crate) type WaitValueAccessor = fn(u64, &ImageIndex) -> u64;
-pub(crate) type SignalValueAccessor = fn(u64) -> u64;
-pub(crate) type SemaphoreAccessor = fn(&RenderFrame) -> &TimelineSemaphore;
+pub(crate) type SemaphoreAccessor = usize;
 
 pub(crate) trait TimelineStage {
     const OFFSET: u64;
@@ -426,12 +344,11 @@ fn as_of_previous<T: TimelineStage>(image_index: &ImageIndex, indices: &Swapchai
     as_of::<T>(frame_number)
 }
 
-pub(crate) trait RenderStage<const SIGNAL_SEMAPHORES: usize, const WAIT_SEMAPHORES: usize>
-where
-    [(); WAIT_SEMAPHORES]: Sized,
-{
-    const WAIT_SEMAPHORE_TIMELINE: [(WaitValueAccessor, SemaphoreAccessor); WAIT_SEMAPHORES];
-    const SIGNAL_SEMAPHORE_TIMELINE: [(SignalValueAccessor, SemaphoreAccessor); SIGNAL_SEMAPHORES];
+pub(crate) trait RenderStage {
+    type SignalTimelineStage: TimelineStage;
+    const SIGNAL_AUTO_SEMAPHORE_IX: usize;
+
+    fn wait_semaphore_timeline() -> SmallVec<[(WaitValueAccessor, SemaphoreAccessor); 4]>;
 
     fn queue_submit(
         image_index: &ImageIndex,
@@ -441,17 +358,20 @@ where
     ) -> ash::prelude::VkResult<()> {
         scope!("vk", "vkQueueSubmit");
 
-        let mut signal_semaphores = [vk::SemaphoreSubmitInfoKHR::default(); SIGNAL_SEMAPHORES];
-        for ix in 0..SIGNAL_SEMAPHORES {
-            signal_semaphores[ix].semaphore = Self::SIGNAL_SEMAPHORE_TIMELINE[ix].1(render_frame).handle;
-            signal_semaphores[ix].value = Self::SIGNAL_SEMAPHORE_TIMELINE[ix].0(render_frame.frame_number);
-            signal_semaphores[ix].stage_mask = vk::PipelineStageFlags2KHR::ALL_COMMANDS;
-        }
-        let mut wait_semaphores = [vk::SemaphoreSubmitInfoKHR::default(); WAIT_SEMAPHORES];
-        for ix in 0..WAIT_SEMAPHORES {
-            wait_semaphores[ix].semaphore = Self::WAIT_SEMAPHORE_TIMELINE[ix].1(render_frame).handle;
-            wait_semaphores[ix].value = Self::WAIT_SEMAPHORE_TIMELINE[ix].0(render_frame.frame_number, image_index);
-            wait_semaphores[ix].stage_mask = vk::PipelineStageFlags2KHR::ALL_COMMANDS;
+        let signal_semaphore = vk::SemaphoreSubmitInfoKHR::builder()
+            .semaphore(render_frame.auto_semaphores.0[Self::SIGNAL_AUTO_SEMAPHORE_IX].handle)
+            .value(as_of::<Self::SignalTimelineStage>(render_frame.frame_number))
+            .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .build();
+        let mut wait_semaphores: SmallVec<[vk::SemaphoreSubmitInfoKHR; 4]> = smallvec![];
+        for (value_accessor, semaphore_ix) in Self::wait_semaphore_timeline() {
+            wait_semaphores.push(
+                vk::SemaphoreSubmitInfoKHR::builder()
+                    .semaphore(render_frame.auto_semaphores.0[semaphore_ix].handle)
+                    .value(value_accessor(render_frame.frame_number, image_index))
+                    .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    .build(),
+            );
         }
         let command_buffer_infos = command_buffers
             .iter()
@@ -460,7 +380,7 @@ where
 
         let submit = vk::SubmitInfo2KHR::builder()
             .wait_semaphore_infos(&wait_semaphores)
-            .signal_semaphore_infos(&signal_semaphores)
+            .signal_semaphore_infos(std::slice::from_ref(&signal_semaphore))
             .command_buffer_infos(&command_buffer_infos)
             .build();
 
@@ -471,49 +391,42 @@ where
                 .queue_submit2(queue, &[submit], vk::Fence::null())
         }
     }
-}
 
-pub(crate) trait DescriptorSetLayout<const BINDING_COUNT: usize> {
-    const BINDING_FLAGS: [vk::DescriptorBindingFlags; BINDING_COUNT];
-
-    fn binding_layout() -> [vk::DescriptorSetLayoutBinding; BINDING_COUNT];
-
-    fn new(device: &Device) -> Self;
-
-    fn new_raw(device: &Device, name: &str) -> device::DescriptorSetLayout {
-        let flags = if Self::BINDING_FLAGS
-            .iter()
-            .any(|x| x.contains(vk::DescriptorBindingFlags::UPDATE_AFTER_BIND))
-        {
-            vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
-        } else {
-            vk::DescriptorSetLayoutCreateFlags::empty()
-        };
-        let mut binding_flags =
-            vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder().binding_flags(&Self::BINDING_FLAGS);
-        let bindings = Self::binding_layout();
-        let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&bindings)
-            .flags(flags)
-            .push_next(&mut binding_flags);
-        let inner = device.new_descriptor_set_layout(&create_info);
-        device.set_object_name(inner.handle, name);
-
-        inner
+    fn wait_previous(
+        renderer: &RenderFrame,
+        image_index: &ImageIndex,
+        swapchain_index_map: &SwapchainIndexToFrameNumber,
+    ) {
+        renderer.auto_semaphores.0[Self::SIGNAL_AUTO_SEMAPHORE_IX]
+            .wait(
+                &renderer.device,
+                as_of_previous::<Self::SignalTimelineStage>(&image_index, &swapchain_index_map),
+            )
+            .unwrap();
     }
 }
 
-pub(crate) trait PipelineLayout {
-    type DescriptorSetLayouts: RefTuple;
-    type DescriptorSets: RefTuple;
+pub(crate) trait DescriptorSetLayout {
+    const DEBUG_NAME: &'static str;
+    fn binding_flags() -> SmallVec<[vk::DescriptorBindingFlags; 8]>;
+    fn binding_layout() -> SmallVec<[vk::DescriptorSetLayoutBinding; 8]>;
+}
 
-    fn new(device: &Device, sets: <Self::DescriptorSetLayouts as RefTuple>::Ref<'_>) -> Self;
+pub(crate) trait PipelineLayout {
+    type SmartDescriptorSetLayouts: RefTuple;
+    type SmartDescriptorSets: RefTuple;
+    type PushConstants;
+
+    const IS_GRAPHICS: bool;
+    const DEBUG_NAME: &'static str;
+
+    fn new(device: &Device, sets: <Self::SmartDescriptorSetLayouts as RefTuple>::Ref<'_>) -> device::PipelineLayout;
 
     fn bind_descriptor_sets(
-        &self,
+        layout: vk::PipelineLayout,
         device: &Device,
         command_buffer: vk::CommandBuffer,
-        sets: <Self::DescriptorSets as RefTuple>::Ref<'_>,
+        sets: <Self::SmartDescriptorSets as RefTuple>::Ref<'_>,
     );
 }
 
@@ -528,22 +441,11 @@ pub(crate) trait Pipeline: Sized {
     fn shader_stage_paths() -> SmallVec<[&'static str; 4]>;
     fn varying_subgroup_stages() -> SmallVec<[bool; 4]>;
 
-    fn new(
-        device: &Device,
-        layout: &Self::Layout,
-        specialization: Self::Specialization,
-        dynamic_arguments: Self::DynamicArguments,
-    ) -> Self {
-        let (shaders, pipe) = new_pipe_generic(device, layout, &specialization, None, None, dynamic_arguments);
-        shaders.into_iter().for_each(|s| s.destroy(device));
-        pipe
-    }
-
     fn vk(&self) -> vk::Pipeline;
 
     fn new_raw(
         device: &Device,
-        layout: &Self::Layout,
+        layout: vk::PipelineLayout,
         stages: &[vk::PipelineShaderStageCreateInfo],
         flags: vk::PipelineCreateFlags,
         base_handle: vk::Pipeline,
@@ -555,7 +457,7 @@ pub(crate) trait Pipeline: Sized {
 
 fn new_pipe_generic<P: Pipeline>(
     device: &Device,
-    layout: &P::Layout,
+    layout: &SmartPipelineLayout<P::Layout>,
     specialization: &P::Specialization,
     base_pipeline_handle: Option<vk::Pipeline>,
     shaders: Option<SmallVec<[Shader; 4]>>,
@@ -599,8 +501,72 @@ fn new_pipe_generic<P: Pipeline>(
 
     (
         shaders,
-        P::new_raw(device, layout, &stages, flags, base_pipeline_handle, dynamic_arguments),
+        P::new_raw(
+            device,
+            layout.vk(),
+            &stages,
+            flags,
+            base_pipeline_handle,
+            dynamic_arguments,
+        ),
     )
+}
+
+pub(crate) struct SmartPipelineLayout<L: PipelineLayout> {
+    pub(crate) layout: device::PipelineLayout,
+    l: PhantomData<L>,
+}
+
+impl<L: PipelineLayout> SmartPipelineLayout<L> {
+    pub(crate) fn new(
+        device: &Device,
+        sets: <<L as PipelineLayout>::SmartDescriptorSetLayouts as RefTuple>::Ref<'_>,
+    ) -> Self {
+        let layout = L::new(device, sets);
+        SmartPipelineLayout { layout, l: PhantomData }
+    }
+
+    pub(crate) fn bind_descriptor_sets(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        sets: <L::SmartDescriptorSets as RefTuple>::Ref<'_>,
+    ) {
+        L::bind_descriptor_sets(*self.layout, device, command_buffer, sets);
+    }
+
+    pub(crate) fn push_constants(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        push_constants: &L::PushConstants,
+    ) {
+        unsafe {
+            let casted: &[u8] =
+                std::slice::from_raw_parts(push_constants as *const _ as *const u8, size_of::<L::PushConstants>());
+            device.cmd_push_constants(
+                command_buffer,
+                *self.layout,
+                // TODO: imprecise and wasting scalar registers, probably
+                if L::IS_GRAPHICS {
+                    vk::ShaderStageFlags::ALL_GRAPHICS
+                } else {
+                    vk::ShaderStageFlags::COMPUTE
+                },
+                0,
+                casted,
+            );
+            return;
+        }
+    }
+
+    pub(crate) fn vk(&self) -> vk::PipelineLayout {
+        *self.layout
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.layout.destroy(device);
+    }
 }
 
 /// Pipeline wrapper that caches the shader modules to allow for fast re-specialization or shader
@@ -620,7 +586,7 @@ pub(crate) trait PipelineSpecialization: PartialEq + Clone {
 impl<P: Pipeline> SmartPipeline<P> {
     pub(crate) fn new(
         device: &Device,
-        layout: &P::Layout,
+        layout: &SmartPipelineLayout<P::Layout>,
         specialization: P::Specialization,
         dynamic_arguments: P::DynamicArguments,
     ) -> Self {
@@ -630,7 +596,7 @@ impl<P: Pipeline> SmartPipeline<P> {
 
     fn new_internal(
         device: &Device,
-        layout: &P::Layout,
+        layout: &SmartPipelineLayout<P::Layout>,
         specialization: P::Specialization,
         mut base_pipeline: Option<&mut Self>,
         dynamic_arguments: P::DynamicArguments,
@@ -640,7 +606,7 @@ impl<P: Pipeline> SmartPipeline<P> {
 
         let (shaders, pipe) = new_pipe_generic(
             device,
-            layout,
+            &layout,
             &specialization,
             base_pipeline_handle,
             shaders,
@@ -671,7 +637,7 @@ impl<P: Pipeline> SmartPipeline<P> {
     pub(crate) fn specialize(
         &mut self,
         device: &Device,
-        layout: &P::Layout,
+        layout: &SmartPipelineLayout<P::Layout>,
         new_spec: &P::Specialization,
         dynamic_arguments: P::DynamicArguments,
         #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
@@ -680,13 +646,13 @@ impl<P: Pipeline> SmartPipeline<P> {
         use std::mem::swap;
 
         #[cfg(feature = "shader_reload")]
-        let mut new_shaders: SmallVec<[(Instant, Option<Shader>); 4]> = self
+        let new_shaders: SmallVec<[(Instant, Option<Shader>); 4]> = self
             .shaders
             .iter()
             .zip(P::shader_stage_paths().iter().zip(P::default_shader_stages().iter()))
             .enumerate()
             .map(
-                |(stage_ix, (shader, (&path, &default_code)))| match reloaded_shaders.0.get(path) {
+                |(stage_ix, (_shader, (&path, &default_code)))| match reloaded_shaders.0.get(path) {
                     Some((ts, code)) if *ts > self.last_updates[stage_ix] => {
                         let static_spv = spirq::SpirvBinary::from(default_code);
                         let static_entry = static_spv
@@ -758,7 +724,7 @@ impl<P: Pipeline> SmartPipeline<P> {
                 .zip(new_shaders.into_iter())
             {
                 if let Some(new) = new {
-                    replace(shader, new).destroy(device);
+                    std::mem::replace(shader, new).destroy(device);
                     *last_update = t;
                 }
             }
@@ -781,6 +747,7 @@ impl<P: Pipeline> SmartPipeline<P> {
 }
 
 pub(crate) trait RefTuple {
+    #[allow(single_use_lifetimes)]
     type Ref<'a>
     where
         Self: 'a;
@@ -820,21 +787,72 @@ impl<A, B, C, D, E> RefTuple for (A, B, C, D, E) {
     = (&'a A, &'a B, &'a C, &'a D, &'a E);
 }
 
+pub(crate) struct SmartSetLayout<T: DescriptorSetLayout> {
+    pub(crate) layout: device::DescriptorSetLayout,
+    t: PhantomData<T>,
+}
+
+impl<T: DescriptorSetLayout> SmartSetLayout<T> {
+    pub(crate) fn new(device: &Device) -> Self {
+        let binding_flags = T::binding_flags();
+        let flags = if binding_flags
+            .iter()
+            .any(|x| x.contains(vk::DescriptorBindingFlags::UPDATE_AFTER_BIND))
+        {
+            vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL
+        } else {
+            vk::DescriptorSetLayoutCreateFlags::empty()
+        };
+        let mut binding_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder().binding_flags(&binding_flags);
+        let bindings = T::binding_layout();
+        let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&bindings)
+            .flags(flags)
+            .push_next(&mut binding_flags);
+        let layout = device.new_descriptor_set_layout(&create_info);
+        device.set_object_name(layout.handle, &format!("{}", T::DEBUG_NAME));
+
+        SmartSetLayout { layout, t: PhantomData }
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.layout.destroy(device);
+    }
+}
+
+pub(crate) struct SmartSet<T: DescriptorSet> {
+    pub(crate) set: device::DescriptorSet,
+    _t: PhantomData<T>,
+}
+
+impl<T: DescriptorSet> SmartSet<T> {
+    pub(crate) fn new(
+        device: &Device,
+        main_descriptor_pool: &MainDescriptorPool,
+        layout: &SmartSetLayout<T::Layout>,
+        ix: u32,
+    ) -> Self {
+        let set = main_descriptor_pool.0.allocate_set(device, &layout.layout);
+        device.set_object_name(set.handle, &format!("{}[{}", T::DEBUG_NAME, ix));
+        SmartSet { set, _t: PhantomData }
+    }
+
+    pub(crate) fn vk_handle(&self) -> vk::DescriptorSet {
+        self.set.handle
+    }
+
+    pub(crate) fn destroy(self, pool: &DescriptorPool, device: &Device) {
+        self.set.destroy(pool, device);
+    }
+}
+
 pub(crate) trait DescriptorSet {
-    // const BINDING_COUNT: usize;
-    // type ILayout where Self::ILayout: DescriptorSetLayout<{Self::BINDING_COUNT}>; // :
-    // DescriptorSetLayout<BINDING_COUNT> where const BINDING_COUNT: usize;
+    type Layout: DescriptorSetLayout;
+
+    const DEBUG_NAME: &'static str;
 
     fn vk_handle(&self) -> vk::DescriptorSet;
 }
-
-// impl crate::renderer::DescriptorSet for frame_graph::camera_set::Set {
-//     const BINDING_COUNT: usize = 1;
-//     type ILayout = frame_graph::camera_set::Layout;
-//     fn vk_handle(&self) -> vk::DescriptorSet {
-//         self.set.handle
-//     }
-// }
 
 pub(crate) trait DescriptorBufferBinding {
     type T;
@@ -844,7 +862,7 @@ pub(crate) trait DescriptorBufferBinding {
     const DESCRIPTOR_TYPE: vk::DescriptorType;
 }
 
-fn update_whole_buffer<T: DescriptorBufferBinding>(device: &Device, set: &mut T::Set, buf: &BufferType<T>) {
+fn update_whole_buffer<T: DescriptorBufferBinding>(device: &Device, set: &mut SmartSet<T::Set>, buf: &BufferType<T>) {
     let buffer_updates = &[vk::DescriptorBufferInfo {
         buffer: buf.buffer.handle,
         offset: 0,
@@ -863,25 +881,11 @@ fn update_whole_buffer<T: DescriptorBufferBinding>(device: &Device, set: &mut T:
     }
 }
 
-pub(crate) type BufferType<B: DescriptorBufferBinding> = StaticBuffer<B::T>;
-pub(crate) type BindingT<B: DescriptorBufferBinding> = B::T;
+pub(crate) type BufferType<B> = StaticBuffer<BindingT<B>>;
+pub(crate) type BindingT<B> = <B as DescriptorBufferBinding>::T;
 pub(crate) const fn binding_size<B: DescriptorBufferBinding>() -> vk::DeviceSize {
     B::SIZE
 }
-
-// impl DescriptorSet for frame_graph::cull_set::Set {
-//     fn vk_handle(&self) -> vk::DescriptorSet {
-//         self.set.handle
-//     }
-// }
-
-// impl DescriptorBufferBinding for OutIndexKek {
-//     type T = frame_graph::cull_set::bindings::out_index_buffer::T;
-//     type Set = frame_graph::cull_set::Set;
-
-//     const INDEX: u32 = 1;
-//     const DESCRIPTOR_TYPE: vk::DescriptorType = vk::DescriptorType::STORAGE_BUFFER;
-// }
 
 pub(crate) struct MainRenderpass {
     pub(crate) renderpass: frame_graph::Main::RenderPass,
@@ -902,9 +906,6 @@ impl MainRenderpass {
     }
 }
 
-// define_timeline!(compute Perform);
-renderer_macros::define_timeline!(pub(crate) ComputeTimeline [Perform]);
-
 impl RenderFrame {
     pub(crate) fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
         let (instance, events_loop) = Instance::new().expect("Failed to create instance");
@@ -914,51 +915,17 @@ impl RenderFrame {
         device.set_object_name(device.handle(), "Device");
         let swapchain = Swapchain::new(&instance, &device, surface);
 
-        // Stat frame number at 1 and semaphores at 16, because validation layers assert
-        // wait_semaphore_values at > 0
+        // Start frame number at 1 because something could await for semaphores from frame - 1, so we would
+        // underflow
         let frame_number = 1;
-        let graphics_timeline_semaphore =
-            device.new_semaphore_timeline(as_of_last::<GraphicsTimeline::SceneDraw>(frame_number));
-        device.set_object_name(graphics_timeline_semaphore.handle, "Graphics timeline semaphore");
-        let compute_timeline_semaphore =
-            device.new_semaphore_timeline(as_of_last::<ComputeTimeline::Perform>(frame_number));
-        device.set_object_name(compute_timeline_semaphore.handle, "Compute timeline semaphore");
-        let shadow_mapping_timeline_semaphore =
-            device.new_semaphore_timeline(as_of_last::<ShadowMappingTimeline::Prepare>(frame_number));
-        device.set_object_name(
-            shadow_mapping_timeline_semaphore.handle,
-            "Shadow mapping timeline semaphore",
-        );
-        let acceleration_structures_timeline_semaphore =
-            device.new_semaphore_timeline(as_of_last::<AccelerationStructuresTimeline::Build>(frame_number));
-        device.set_object_name(
-            acceleration_structures_timeline_semaphore.handle,
-            "Acceleration Structures timeline semaphore",
-        );
-
-        let consolidate_timeline_semaphore =
-            device.new_semaphore_timeline(as_of_last::<ConsolidateTimeline::Perform>(frame_number));
-        device.set_object_name(
-            consolidate_timeline_semaphore.handle,
-            "Consolidate mesh buffers timeline semaphore",
-        );
-
-        let transfer_timeline_semaphore =
-            device.new_semaphore_timeline(as_of_last::<TransferTimeline::Perform>(frame_number));
-        device.set_object_name(transfer_timeline_semaphore.handle, "Transfer timeline semaphore");
-
         let buffer_count = swapchain.desired_image_count.to_usize().unwrap();
+        let auto_semaphores = AutoSemaphores::new(&device);
 
         (
             RenderFrame {
                 instance: Arc::clone(&instance),
                 device,
-                graphics_timeline_semaphore,
-                compute_timeline_semaphore,
-                shadow_mapping_timeline_semaphore,
-                consolidate_timeline_semaphore,
-                transfer_timeline_semaphore,
-                acceleration_structures_timeline_semaphore,
+                auto_semaphores,
                 frame_number,
                 buffer_count,
             },
@@ -972,12 +939,7 @@ impl RenderFrame {
     }
 
     pub(crate) fn destroy(self) {
-        self.graphics_timeline_semaphore.destroy(&self.device);
-        self.compute_timeline_semaphore.destroy(&self.device);
-        self.shadow_mapping_timeline_semaphore.destroy(&self.device);
-        self.consolidate_timeline_semaphore.destroy(&self.device);
-        self.transfer_timeline_semaphore.destroy(&self.device);
-        self.acceleration_structures_timeline_semaphore.destroy(&self.device);
+        self.auto_semaphores.destroy(&self.device);
     }
 }
 
@@ -1015,6 +977,7 @@ impl MainDescriptorPool {
     }
 }
 
+renderer_macros::define_resource!(Color = Image);
 pub(crate) struct MainAttachments {
     #[allow(unused)]
     swapchain_image_views: Vec<ImageView>,
@@ -1023,7 +986,7 @@ pub(crate) struct MainAttachments {
     depth_image: Image,
     depth_image_view: ImageView,
     #[allow(unused)]
-    color_image: frame_graph::resources::color,
+    color_image: Color,
     color_image_view: ImageView,
 }
 
@@ -1063,7 +1026,7 @@ impl MainAttachments {
                 vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
-            frame_graph::resources::color::import(&renderer.device, im)
+            Color::import(&renderer.device, im)
         };
         let image_views = images
             .iter()
@@ -1194,49 +1157,10 @@ impl MainFramebuffer {
     }
 }
 
-pub(crate) struct LocalTransferCommandPool<const NAME: usize> {
-    pub(crate) pools: DoubleBuffered<StrictCommandPool>,
-}
-
-impl<const NAME: usize> LocalTransferCommandPool<NAME> {
-    pub(crate) fn new(renderer: &RenderFrame) -> Self {
-        LocalTransferCommandPool {
-            pools: renderer.new_buffered(|ix| {
-                StrictCommandPool::new(
-                    &renderer.device,
-                    renderer.device.transfer_queue_family,
-                    &format!("Local[{}] Transfer Command Pool[{}]", NAME, ix),
-                )
-            }),
-        }
-    }
-}
-
-impl<const NAME: usize> FromWorld for LocalTransferCommandPool<NAME> {
-    fn from_world(world: &mut World) -> Self {
-        let renderer = world.get_resource::<RenderFrame>().unwrap();
-        LocalTransferCommandPool {
-            pools: renderer.new_buffered(|ix| {
-                StrictCommandPool::new(
-                    &renderer.device,
-                    renderer.device.transfer_queue_family,
-                    &format!("Local[{}] Transfer Command Pool[{}]", NAME, ix),
-                )
-            }),
-        }
-    }
-}
-
-impl<const NAME: usize> LocalTransferCommandPool<NAME> {
-    pub(crate) fn destroy(self, device: &Device) {
-        self.pools.into_iter().for_each(|p| p.destroy(device));
-    }
-}
-
 pub(crate) struct CameraMatrices {
-    pub(crate) set_layout: frame_graph::camera_set::Layout,
-    buffer: DoubleBuffered<BufferType<frame_graph::camera_set::bindings::matrices>>,
-    set: DoubleBuffered<frame_graph::camera_set::Set>,
+    pub(crate) set_layout: SmartSetLayout<camera_set::Layout>,
+    buffer: DoubleBuffered<BufferType<camera_set::bindings::matrices>>,
+    set: DoubleBuffered<SmartSet<camera_set::Set>>,
 }
 
 impl CameraMatrices {
@@ -1251,15 +1175,11 @@ impl CameraMatrices {
                 .set_object_name(b.buffer.handle, &format!("Camera matrices Buffer - ix={}", ix));
             b
         });
-        let set_layout = frame_graph::camera_set::Layout::new(&renderer.device);
+        let set_layout = SmartSetLayout::new(&renderer.device);
         let set = renderer.new_buffered(|ix| {
-            let mut s = frame_graph::camera_set::Set::new(&renderer.device, &main_descriptor_pool, &set_layout, ix);
+            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, ix);
 
-            update_whole_buffer::<frame_graph::camera_set::bindings::matrices>(
-                &renderer.device,
-                &mut s,
-                &buffer.current(ix),
-            );
+            update_whole_buffer::<camera_set::bindings::matrices>(&renderer.device, &mut s, &buffer.current(ix));
 
             s
         });
@@ -1281,16 +1201,16 @@ impl CameraMatrices {
 }
 
 pub(crate) struct ModelData {
-    pub(crate) model_set_layout: frame_graph::model_set::Layout,
-    pub(crate) model_set: DoubleBuffered<frame_graph::model_set::Set>,
-    pub(crate) model_buffer: DoubleBuffered<BufferType<frame_graph::model_set::bindings::model>>,
+    pub(crate) model_set_layout: SmartSetLayout<model_set::Layout>,
+    pub(crate) model_set: DoubleBuffered<SmartSet<model_set::Set>>,
+    pub(crate) model_buffer: DoubleBuffered<BufferType<model_set::bindings::model>>,
 }
 
 impl ModelData {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> ModelData {
         let device = &renderer.device;
 
-        let model_set_layout = frame_graph::model_set::Layout::new(&device);
+        let model_set_layout = SmartSetLayout::new(&device);
 
         let model_buffer = renderer.new_buffered(|ix| {
             let b = device.new_static_buffer(
@@ -1301,13 +1221,8 @@ impl ModelData {
             b
         });
         let model_set = renderer.new_buffered(|ix| {
-            let mut s =
-                frame_graph::model_set::Set::new(&renderer.device, &main_descriptor_pool, &model_set_layout, ix);
-            update_whole_buffer::<frame_graph::model_set::bindings::model>(
-                &renderer.device,
-                &mut s,
-                &model_buffer.current(ix),
-            );
+            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &model_set_layout, ix);
+            update_whole_buffer::<model_set::bindings::model>(&renderer.device, &mut s, &model_buffer.current(ix));
             s
         });
 
@@ -1330,10 +1245,10 @@ impl ModelData {
 pub(crate) struct Resized(pub(crate) bool);
 
 pub(crate) struct GltfPassData {
-    pub(crate) gltf_pipeline: SmartPipeline<frame_graph::gltf_mesh::Pipeline>,
+    pub(crate) gltf_pipeline: SmartPipeline<gltf_mesh::Pipeline>,
     #[cfg(feature = "shader_reload")]
-    pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<SmartPipeline<frame_graph::gltf_mesh::Pipeline>>>,
-    pub(crate) gltf_pipeline_layout: frame_graph::gltf_mesh::PipelineLayout,
+    pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<SmartPipeline<gltf_mesh::Pipeline>>>,
+    pub(crate) gltf_pipeline_layout: SmartPipelineLayout<gltf_mesh::PipelineLayout>,
 }
 
 impl GltfPassData {
@@ -1476,7 +1391,7 @@ impl GltfPassData {
         }
         */
 
-        let gltf_pipeline_layout = frame_graph::gltf_mesh::PipelineLayout::new(
+        let gltf_pipeline_layout = SmartPipelineLayout::new(
             &renderer.device,
             (
                 &model_data.model_set_layout,
@@ -1487,7 +1402,7 @@ impl GltfPassData {
             ),
         );
         use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
-        let spec = frame_graph::gltf_mesh::Specialization {
+        let spec = gltf_mesh::Specialization {
             shadow_map_dim: SHADOW_MAP_DIM,
             shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
         };
@@ -1584,7 +1499,7 @@ pub(crate) fn render_frame(
     } = &mut *gltf_pass;
 
     // TODO: count this? pack and defragment draw calls?
-    let total = binding_size::<frame_graph::cull_set::bindings::indirect_commands>() as u32
+    let total = binding_size::<cull_set::bindings::indirect_commands>() as u32
         / size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32;
 
     #[cfg(feature = "shader_reload")]
@@ -1598,7 +1513,7 @@ pub(crate) fn render_frame(
         *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize(
             &renderer.device,
             &gltf_pipeline_layout,
-            &frame_graph::gltf_mesh::Specialization {
+            &gltf_mesh::Specialization {
                 shadow_map_dim: SHADOW_MAP_DIM,
                 shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
             },
@@ -1618,8 +1533,20 @@ pub(crate) fn render_frame(
     command_pool.reset(&renderer.device);
 
     let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
+    let main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
+    let guard = renderer_macros::barrier!(
+        *command_buffer,
+        IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
+        IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
+        ConsolidatedPositionBuffer.in_main r in Main vertex buffer after [in_depth],
+        TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build],
+        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps after [prepare],
+        Color.render rw in Main attachment,
+        ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [consolidate],
+        ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate],
+        CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull]
+    );
     unsafe {
-        let _main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
         renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
             x: 0.0,
             y: swapchain.height as f32,
@@ -1667,7 +1594,7 @@ pub(crate) fn render_frame(
             renderer.device.cmd_bind_pipeline(
                 *command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                *debug_aabb_pass_data.pipeline.pipeline,
+                debug_aabb_pass_data.pipeline.vk(),
             );
             debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
@@ -1679,7 +1606,7 @@ pub(crate) fn render_frame(
                 debug_aabb_pass_data.pipeline_layout.push_constants(
                     &renderer.device,
                     *command_buffer,
-                    &frame_graph::debug_aabb::PushConstants {
+                    &debug_aabb::PushConstants {
                         center: aabb.0.center().coords,
                         half_extent: aabb.0.half_extents(),
                     },
@@ -1754,32 +1681,14 @@ pub(crate) fn render_frame(
             &reloaded_shaders,
         );
         renderer.device.cmd_end_render_pass(*command_buffer);
-        cull_pass_data
-            .culled_commands_buffer
-            .release_draw_from(&renderer, *command_buffer);
-        cull_pass_data
-            .culled_commands_count_buffer
-            .release_draw_from(&renderer, *command_buffer);
     }
+    drop(guard);
+    drop(main_renderpass_marker);
 
     let command_buffer = *command_buffer.end();
 
     *main_pass_cb.command_buffers.current_mut(image_index.0) = command_buffer;
     submissions.submit(&renderer, &image_index, frame_graph::Main::INDEX, Some(command_buffer));
-}
-
-fn submit_main_pass(
-    renderer: Res<RenderFrame>,
-    image_index: Res<ImageIndex>,
-    main_pass_cb: Res<MainPassCommandBuffer>,
-) {
-    scope!("ecs", "submit_main_pass");
-    let command_buffer = *main_pass_cb.command_buffers.current(image_index.0);
-    debug_assert_ne!(command_buffer, vk::CommandBuffer::null());
-
-    let queue = renderer.device.graphics_queue().lock();
-
-    frame_graph::Main::Stage::queue_submit(&image_index, &renderer, *queue, &[command_buffer]).unwrap();
 }
 
 pub(crate) struct GuiRenderData {
@@ -1793,10 +1702,10 @@ pub(crate) struct GuiRenderData {
     #[allow(unused)]
     sampler: Sampler,
     #[allow(unused)]
-    descriptor_set_layout: frame_graph::imgui_set::Layout,
-    descriptor_set: frame_graph::imgui_set::Set,
-    pipeline_layout: frame_graph::imgui_pipe::PipelineLayout,
-    pipeline: frame_graph::imgui_pipe::Pipeline,
+    descriptor_set_layout: SmartSetLayout<imgui_set::Layout>,
+    descriptor_set: SmartSet<imgui_set::Set>,
+    pipeline_layout: SmartPipelineLayout<imgui_pipe::PipelineLayout>,
+    pipeline: SmartPipeline<imgui_pipe::Pipeline>,
 }
 
 impl FromWorld for GuiRenderData {
@@ -1897,21 +1806,21 @@ impl GuiRenderData {
                 .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
         );
 
-        let descriptor_set_layout = frame_graph::imgui_set::Layout::new(&renderer.device);
+        let descriptor_set_layout = SmartSetLayout::new(&renderer.device);
 
-        let descriptor_set = frame_graph::imgui_set::Set::new(
+        let descriptor_set = SmartSet::new(
             &renderer.device,
             &main_descriptor_pool,
             &descriptor_set_layout,
             0, // FIXME
         );
 
-        let pipeline_layout = frame_graph::imgui_pipe::PipelineLayout::new(&renderer.device, (&descriptor_set_layout,));
+        let pipeline_layout = SmartPipelineLayout::new(&renderer.device, (&descriptor_set_layout,));
 
-        let pipeline = frame_graph::imgui_pipe::Pipeline::new(
+        let pipeline = SmartPipeline::new(
             &renderer.device,
             &pipeline_layout,
-            frame_graph::imgui_pipe::Specialization {},
+            imgui_pipe::Specialization {},
             (main_renderpass.renderpass.renderpass.handle, 1),
         );
 
@@ -2187,10 +2096,10 @@ fn render_gui(
 
     let _gui_debug_marker = command_buffer.debug_marker_around("GUI", [1.0, 1.0, 0.0, 1.0]);
     unsafe {
-        pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, (&descriptor_set,));
+        pipeline_layout.bind_descriptor_sets(&renderer.device, **command_buffer, (descriptor_set,));
         renderer
             .device
-            .cmd_bind_pipeline(**command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline.pipeline);
+            .cmd_bind_pipeline(**command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline.vk());
         renderer.device.cmd_bind_vertex_buffers(
             **command_buffer,
             0,
@@ -2206,14 +2115,10 @@ fn render_gui(
             .cmd_bind_index_buffer(**command_buffer, index_buffer.buffer.handle, 0, vk::IndexType::UINT16);
         let [x, y] = gui_draw_data.display_size;
         {
-            pipeline_layout.push_constants(
-                &renderer.device,
-                **command_buffer,
-                &frame_graph::imgui_pipe::PushConstants {
-                    scale: glm::vec2(2.0 / x, 2.0 / y),
-                    translate: glm::vec2(-1.0, -1.0),
-                },
-            );
+            pipeline_layout.push_constants(&renderer.device, **command_buffer, &imgui_pipe::PushConstants {
+                scale: glm::vec2(2.0 / x, 2.0 / y),
+                translate: glm::vec2(-1.0, -1.0),
+            });
         }
         {
             let mut vertex_offset_coarse: usize = 0;
@@ -2312,7 +2217,7 @@ pub(crate) fn camera_matrices_upload(
         .current_mut(image_index.0)
         .map(&renderer.device)
         .expect("failed to map camera matrix buffer");
-    *model_mapped = BindingT::<frame_graph::camera_set::bindings::matrices> {
+    *model_mapped = BindingT::<camera_set::bindings::matrices> {
         projection: camera.projection,
         view: camera.view,
         position: camera.position.coords.push(1.0),

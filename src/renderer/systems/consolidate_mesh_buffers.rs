@@ -7,12 +7,15 @@ use microprofile::scope;
 use num_traits::ToPrimitive;
 
 use crate::renderer::{
-    as_of_previous,
     device::{Buffer, Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
     frame_graph,
-    frame_graph::cull_set,
-    BindingT, BufferType, GltfMesh, ImageIndex, RenderFrame, RenderStage, Submissions, SwapchainIndexToFrameNumber,
+    systems::cull_pipeline::cull_set,
+    BindingT, GltfMesh, ImageIndex, RenderFrame, RenderStage, Submissions, SwapchainIndexToFrameNumber,
 };
+
+renderer_macros::define_resource! { ConsolidatedPositionBuffer = StaticBuffer<crate::renderer::frame_graph::VertexBuffer> }
+renderer_macros::define_resource! { ConsolidatedNormalBuffer = StaticBuffer<crate::renderer::frame_graph::VertexBuffer> }
+renderer_macros::define_resource! { ConsolidatedIndexBuffer = StaticBuffer<crate::renderer::frame_graph::IndexBuffer> }
 
 /// Describes layout of gltf mesh vertex data in a shared buffer
 pub(crate) struct ConsolidatedMeshBuffers {
@@ -26,20 +29,18 @@ pub(crate) struct ConsolidatedMeshBuffers {
     /// Next free index offset in the buffer that can be used for a new mesh
     next_index_offset: vk::DeviceSize,
     /// Stores position data for each mesh
-    pub(crate) position_buffer: BufferType<cull_set::bindings::vertex_buffer>,
+    pub(crate) position_buffer: ConsolidatedPositionBuffer,
     /// Stores normal data for each mesh
-    pub(crate) normal_buffer: BufferType<cull_set::bindings::vertex_buffer>,
+    pub(crate) normal_buffer: ConsolidatedNormalBuffer,
     /// Stores tangent data for each mesh
     pub(crate) tangent_buffer: Buffer,
     /// Stores uv data for each mesh
     pub(crate) uv_buffer: Buffer,
     /// Stores index data for each mesh
-    pub(crate) index_buffer: BufferType<cull_set::bindings::index_buffer>,
+    pub(crate) index_buffer: ConsolidatedIndexBuffer,
     command_pools: DoubleBuffered<StrictCommandPool>,
     command_buffers: DoubleBuffered<vk::CommandBuffer>,
 }
-
-renderer_macros::define_timeline!(pub(crate) ConsolidateTimeline [Perform]);
 
 /// Identifies distinct GLTF meshes in components and copies them to a shared buffer
 pub(crate) fn consolidate_mesh_buffers(
@@ -66,21 +67,23 @@ pub(crate) fn consolidate_mesh_buffers(
         ref command_buffers,
     } = *consolidated_mesh_buffers;
 
-    // Wait until we can reuse the command pool
-    renderer
-        .consolidate_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<ConsolidateTimeline::Perform>(&image_index, &swapchain_index_map),
-        )
-        .unwrap();
+    frame_graph::ConsolidateMeshBuffers::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
     let command_pool = command_pools.current_mut(image_index.0);
 
     command_pool.reset(&renderer.device);
 
-    let mut needs_transfer = false;
     let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
+    let _consolidated_position_buffer = position_buffer;
+    let _consolidated_normal_buffer = normal_buffer;
+    let _consolidated_index_buffer = index_buffer;
+
+    let guard = renderer_macros::barrier!(
+        *command_buffer,
+        ConsolidatedPositionBuffer.consolidate w in ConsolidateMeshBuffers transfer copy,
+        ConsolidatedNormalBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_normal_buffer,
+        ConsolidatedIndexBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_index_buffer
+    );
     for mesh in &mut query.iter() {
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {
             debug_assert!(
@@ -124,7 +127,6 @@ pub(crate) fn consolidate_mesh_buffers(
                     ]);
             }
             *next_vertex_offset += mesh.vertex_len;
-            needs_transfer = true;
         }
 
         for (lod_index_buffer, index_len) in mesh.index_buffers.iter() {
@@ -143,15 +145,18 @@ pub(crate) fn consolidate_mesh_buffers(
                     );
                 }
                 *next_index_offset += index_len;
-                needs_transfer = true;
             }
         }
     }
+    drop(guard);
     let command_buffer = command_buffer.end();
 
-    let cb = if needs_transfer { Some(*command_buffer) } else { None };
-
-    submissions.submit(&renderer, &image_index, frame_graph::ConsolidateMeshBuffers::INDEX, cb);
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::ConsolidateMeshBuffers::INDEX,
+        Some(*command_buffer),
+    );
 }
 
 // TODO: dynamic unloading of meshes
@@ -162,22 +167,8 @@ impl ConsolidatedMeshBuffers {
         let vertex_offsets = HashMap::new();
         let index_offsets = HashMap::new();
 
-        let position_buffer = renderer.device.new_static_buffer(
-            vk::BufferUsageFlags::VERTEX_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::STORAGE_BUFFER, // storage_buffer not needed?
-            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        );
-        renderer
-            .device
-            .set_object_name(position_buffer.buffer.handle, "Consolidated position buffer");
-        let normal_buffer = renderer.device.new_static_buffer(
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        );
-        renderer
-            .device
-            .set_object_name(normal_buffer.buffer.handle, "Consolidated normals buffer");
+        let position_buffer = ConsolidatedPositionBuffer::new(&renderer.device);
+        let normal_buffer = ConsolidatedNormalBuffer::new(&renderer.device);
         let tangent_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
@@ -194,15 +185,7 @@ impl ConsolidatedMeshBuffers {
         renderer
             .device
             .set_object_name(uv_buffer.handle, "Consolidated UV buffer");
-        let index_buffer = renderer.device.new_static_buffer(
-            vk::BufferUsageFlags::INDEX_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::STORAGE_BUFFER,
-            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-        );
-        renderer
-            .device
-            .set_object_name(index_buffer.buffer.handle, "Consolidated Index buffer");
+        let index_buffer = ConsolidatedIndexBuffer::new(&renderer.device);
         let mut command_pools = renderer.new_buffered(|ix| {
             StrictCommandPool::new(
                 &renderer.device,

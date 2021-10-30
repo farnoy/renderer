@@ -29,7 +29,6 @@ pub(crate) mod systems {
     use std::{sync::Arc, time::Instant};
 
     use bevy_ecs::prelude::*;
-    use imgui::im_str;
     use microprofile::scope;
     use na::RealField;
     use winit::{self, event::MouseButton};
@@ -296,69 +295,66 @@ pub(crate) mod systems {
             let mut position = [camera.position[0], camera.position[1], camera.position[2]];
             let (x, y, z) = camera.rotation.euler_angles();
             let mut rotation = [x * 180.0 / f32::pi(), y * 180.0 / f32::pi(), z * 180.0 / f32::pi()];
-            imgui::Window::new(im_str!("Debug"))
-                .always_auto_resize(true)
-                .build(&ui, || {
-                    ui.text(&im_str!("Allocation stats:"));
-                    ui.bullet_text(&im_str!("block count: {}", alloc_stats.total.blockCount));
-                    ui.bullet_text(&im_str!("alloc count: {}", alloc_stats.total.allocationCount));
+            imgui::Window::new("Debug").always_auto_resize(true).build(&ui, || {
+                ui.text("Allocation stats:");
+                ui.bullet_text(&format!("block count: {}", alloc_stats.total.blockCount));
+                ui.bullet_text(&format!("alloc count: {}", alloc_stats.total.allocationCount));
 
-                    use humansize::{file_size_opts, FileSize};
-                    let used = alloc_stats.total.usedBytes.file_size(file_size_opts::BINARY).unwrap();
-                    ui.bullet_text(&im_str!("used size: {}", used));
-                    let unused = alloc_stats.total.unusedBytes.file_size(file_size_opts::BINARY).unwrap();
-                    ui.bullet_text(&im_str!("unused size: {}", unused));
+                use humansize::{file_size_opts, FileSize};
+                let used = alloc_stats.total.usedBytes.file_size(file_size_opts::BINARY).unwrap();
+                ui.bullet_text(&format!("used size: {}", used));
+                let unused = alloc_stats.total.unusedBytes.file_size(file_size_opts::BINARY).unwrap();
+                ui.bullet_text(&format!("unused size: {}", unused));
 
-                    ui.spacing();
+                ui.spacing();
 
-                    if imgui::CollapsingHeader::new(&im_str!("Shader settings"))
-                        .default_open(true)
-                        .build(&ui)
-                    {
-                        ui.set_next_item_width(100.0);
-                        imgui::Slider::new(
-                            im_str!("Compute cull workgroup size"),
-                            1,
-                            renderer.device.limits.max_compute_work_group_size[0],
+                if imgui::CollapsingHeader::new("Shader settings")
+                    .default_open(true)
+                    .build(&ui)
+                {
+                    ui.set_next_item_width(100.0);
+                    imgui::Slider::new(
+                        "Compute cull workgroup size",
+                        1,
+                        renderer.device.limits.max_compute_work_group_size[0],
+                    )
+                    .build(&ui, &mut runtime_config.compute_cull_workgroup_size);
+                }
+
+                if imgui::CollapsingHeader::new("Camera").default_open(true).build(&ui) {
+                    ui.input_float3("position", &mut position).build();
+                    ui.input_float3("rotation", &mut rotation).build();
+                    ui.checkbox("[G] Fly mode", &mut runtime_config.fly_mode);
+                }
+
+                if imgui::CollapsingHeader::new("Debug options")
+                    .default_open(true)
+                    .build(&ui)
+                {
+                    ui.checkbox("Debug collision AABBs", &mut runtime_config.debug_aabbs);
+                    ui.checkbox("Freeze culling data", &mut runtime_config.freeze_culling);
+                }
+
+                #[cfg(feature = "shader_reload")]
+                if imgui::CollapsingHeader::new("Shader reloader")
+                    .default_open(true)
+                    .build(&ui)
+                {
+                    use std::path::Path;
+
+                    ui.label_text("age", "shader");
+                    for (path, (instant, _)) in reloaded_shaders.0.iter() {
+                        let parsed = Path::new(path);
+                        let relative = parsed
+                            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("shaders"))
+                            .unwrap();
+                        ui.label_text(
+                            &format!("{:?}s", instant.elapsed().as_secs()),
+                            relative.to_str().unwrap(),
                         )
-                        .build(&ui, &mut runtime_config.compute_cull_workgroup_size);
                     }
-
-                    if imgui::CollapsingHeader::new(&im_str!("Camera"))
-                        .default_open(true)
-                        .build(&ui)
-                    {
-                        ui.input_float3(&im_str!("position"), &mut position).build();
-                        ui.input_float3(&im_str!("rotation"), &mut rotation).build();
-                        ui.checkbox(&im_str!("[G] Fly mode"), &mut runtime_config.fly_mode);
-                    }
-
-                    if imgui::CollapsingHeader::new(&im_str!("Debug options"))
-                        .default_open(true)
-                        .build(&ui)
-                    {
-                        ui.checkbox(&im_str!("Debug collision AABBs"), &mut runtime_config.debug_aabbs);
-                        ui.checkbox(&im_str!("Freeze culling data"), &mut runtime_config.freeze_culling);
-                    }
-
-                    #[cfg(feature = "shader_reload")]
-                    if imgui::CollapsingHeader::new(&im_str!("Shader reloader"))
-                        .default_open(true)
-                        .build(&ui)
-                    {
-                        use std::path::Path;
-
-                        ui.label_text(&im_str!("age"), &im_str!("shader"));
-                        for (path, (instant, _)) in reloaded_shaders.0.iter() {
-                            let parsed = Path::new(path);
-                            let relative = parsed
-                                .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("shaders"))
-                                .unwrap();
-                            let path_im = imgui::ImString::new(relative.to_str().unwrap());
-                            ui.label_text(&im_str!("{:?}s", instant.elapsed().as_secs()), &path_im)
-                        }
-                    }
-                });
+                }
+            });
 
             camera.position = position.into();
             camera.rotation = na::UnitQuaternion::from_euler_angles(

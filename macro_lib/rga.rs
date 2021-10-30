@@ -1,11 +1,11 @@
 use std::{env, fs::File, path::Path};
 
 use ash::vk;
+use hashbrown::HashMap;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_json::to_writer_pretty;
-use syn::{Ident, LitInt, parse_quote};
 
-use crate::{DescriptorSet, Pipe, SpecificPipe};
+use crate::{DescriptorSet, Pipeline, SpecificPipe};
 
 #[derive(Serialize)]
 pub(crate) struct RgaPipeline {
@@ -32,7 +32,7 @@ pub(crate) struct RgaComputePipeline {
 
 #[derive(Serialize)]
 pub(crate) struct RgaComputeStage {
-    flags: u8,
+    flags: u32,
     #[serde(rename = "pNext", serialize_with = "hex")]
     p_next: usize,
     #[serde(rename = "module", serialize_with = "hex")]
@@ -85,17 +85,17 @@ pub(crate) struct RgaDescriptorSetLayoutCreateInfo {
 pub(crate) struct RgaDescriptorBinding {
     binding: u32,
     #[serde(rename = "descriptorCount")]
-    descriptor_count: usize,
+    descriptor_count: u32,
     #[serde(rename = "descriptorType", serialize_with = "ser_descriptor_type")]
     descriptor_type: vk::DescriptorType,
     #[serde(rename = "stageFlags", serialize_with = "ser_shader_stage")]
     stage_flags: vk::ShaderStageFlags,
 }
 
-pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Option<&spirq::Type>) {
+pub(crate) fn dump_rga(sets: &HashMap<String, DescriptorSet>, pipe: &Pipeline, push_const_ty: Option<&spirq::Type>) {
     let stage_flags = match pipe.specific {
         SpecificPipe::Graphics(_) => vk::ShaderStageFlags::ALL_GRAPHICS,
-        SpecificPipe::Compute(_) => vk::ShaderStageFlags::COMPUTE,
+        SpecificPipe::Compute => vk::ShaderStageFlags::COMPUTE,
     };
     let mut rga_pipe = RgaPipeline {
         pipeline_layout_create_info: RgaPipelineLayoutCreateInfo {
@@ -108,7 +108,7 @@ pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Optio
                         stage_flags,
                     }]
                 })
-                .unwrap_or(vec![]),
+                .unwrap_or_default(),
             s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
             set_layout_count: 0,
             set_layouts: vec![],
@@ -120,17 +120,16 @@ pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Optio
         version: 3,
     };
 
-    for set_id in pipe.descriptors.iter() {
+    for set_id in pipe.descriptor_sets.iter() {
         rga_pipe
             .pipeline_layout_create_info
             .set_layouts
             .push(rga_pipe.pipeline_layout_create_info.set_layout_count);
         rga_pipe.pipeline_layout_create_info.set_layout_count += 1;
 
-        let set = sets
-            .iter()
-            .find(|candidate| candidate.name == *set_id.get_ident().unwrap())
-            .unwrap();
+        let set_id = syn::parse_str::<syn::Path>(set_id).unwrap();
+        let set_id = set_id.segments.last().unwrap().ident.to_string();
+        let set = sets.get(&set_id).unwrap();
         rga_pipe.descriptor_set_layouts.push(RgaDescriptorSetLayoutCreateInfo {
             flags: 0,
             binding_count: set.bindings.len(),
@@ -140,12 +139,12 @@ pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Optio
                 .enumerate()
                 .map(|(ix, binding)| RgaDescriptorBinding {
                     binding: ix as u32,
-                    descriptor_count: binding.count.as_ref().map(|c| c.0.0.clone()).unwrap_or(parse_quote!(1)).base10_parse().unwrap(),
-                    descriptor_type: ident_to_descriptor_type(&binding.descriptor_type),
+                    descriptor_count: binding.count,
+                    descriptor_type: str_to_descriptor_type(&binding.descriptor_type),
                     stage_flags: binding
-                        .stages
+                        .shader_stages
                         .iter()
-                        .map(ident_to_shader_stage)
+                        .map(|x| str_to_shader_stage(x))
                         .fold(vk::ShaderStageFlags::empty(), |acc, stage| acc | stage),
                 })
                 .collect(),
@@ -154,14 +153,18 @@ pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Optio
         });
 
         match &pipe.specific {
-            SpecificPipe::Compute(_) => {
+            SpecificPipe::Compute => {
                 rga_pipe.compute = Some(RgaComputePipeline {
                     base_pipeline_index: -1,
                     flags: 0,
                     p_next: 0,
                     s_type: vk::StructureType::COMPUTE_PIPELINE_CREATE_INFO,
                     stage: RgaComputeStage {
-                        flags: 0,
+                        flags: if pipe.varying_subgroup_stages.iter().any(|s| s == "COMPUTE") {
+                            vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT.as_raw()
+                        } else {
+                            vk::PipelineShaderStageCreateFlags::empty().as_raw()
+                        },
                         p_next: 0,
                         module: 0,
                         s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -179,7 +182,7 @@ pub(crate) fn dump_rga(sets: &[DescriptorSet], pipe: &Pipe, push_const_ty: Optio
         .join("rga")
         .join(format!("{}.{}pso", pipe.name.to_string(), match &pipe.specific {
             SpecificPipe::Graphics(_) => 'g',
-            SpecificPipe::Compute(_) => 'c',
+            SpecificPipe::Compute => 'c',
         }));
 
     let file = File::create(rga_path).unwrap();
@@ -227,7 +230,7 @@ where
     serializer.serialize_u32(shader_stage.as_raw())
 }
 
-fn ident_to_descriptor_type(id: &Ident) -> vk::DescriptorType {
+fn str_to_descriptor_type(id: &str) -> vk::DescriptorType {
     if id == "UNIFORM_BUFFER" {
         vk::DescriptorType::UNIFORM_BUFFER
     } else if id == "STORAGE_BUFFER" {
@@ -243,7 +246,7 @@ fn ident_to_descriptor_type(id: &Ident) -> vk::DescriptorType {
     }
 }
 
-fn ident_to_shader_stage(id: &Ident) -> vk::ShaderStageFlags {
+fn str_to_shader_stage(id: &str) -> vk::ShaderStageFlags {
     if id == "VERTEX" {
         vk::ShaderStageFlags::VERTEX
     } else if id == "FRAGMENT" {

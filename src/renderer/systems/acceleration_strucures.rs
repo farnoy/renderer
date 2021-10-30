@@ -1,28 +1,25 @@
 use std::{
     hash::Hash,
     mem::size_of,
-    slice::from_ref,
     sync::{Arc, Weak},
 };
 
 use ash::vk::{self};
-use bevy_ecs::{prelude::*, schedule::DynEq};
-use gltf::{Gltf, Mesh};
-use hashbrown::{hash_map::Entry, HashMap, HashSet};
+use bevy_ecs::prelude::*;
+use hashbrown::HashMap;
 use microprofile::scope;
 use num_traits::ToPrimitive;
 use renderer_vma::VmaMemoryUsage;
 
 use crate::{
-    ecs::components::{Deleting, ModelMatrix},
+    ecs::components::ModelMatrix,
     renderer::{
-        as_of_previous,
+        acceleration_set,
         device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool},
         frame_graph,
         systems::present::ImageIndex,
-        update_whole_buffer, AccelerationStructuresTimeline, BufferType, CopiedResource, DescriptorSetLayout, Device,
-        DrawIndex, GltfMesh, GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame, RenderStage, Sampler,
-        Submissions, SwapchainIndexToFrameNumber,
+        update_whole_buffer, BufferType, Device, DrawIndex, GltfMesh, MainDescriptorPool, RenderFrame, RenderStage,
+        SmartSet, SmartSetLayout, Submissions, SwapchainIndexToFrameNumber,
     },
 };
 
@@ -36,6 +33,8 @@ pub(crate) struct BottomLevelAccelerationStructure {
 //       for now this is a weak ptr to the vertex buffer of GltfMesh
 struct MeshHandle(Weak<Buffer>);
 
+renderer_macros::define_resource! { TLAS = AccelerationStructure }
+
 pub(crate) struct AccelerationStructuresInternal {
     command_pools: DoubleBuffered<StrictCommandPool>,
     command_buffers: DoubleBuffered<vk::CommandBuffer>,
@@ -44,12 +43,12 @@ pub(crate) struct AccelerationStructuresInternal {
     top_level_scratch_buffers: DoubleBuffered<Option<Buffer>>,
     top_level_handles: DoubleBuffered<Option<vk::AccelerationStructureKHR>>,
     instances_buffer: DoubleBuffered<StaticBuffer<[vk::AccelerationStructureInstanceKHR; 4096]>>,
-    random_seed: BufferType<frame_graph::acceleration_set::bindings::random_seed>,
+    random_seed: BufferType<acceleration_set::bindings::random_seed>,
 }
 
 pub(crate) struct AccelerationStructures {
-    pub(crate) set_layout: frame_graph::acceleration_set::Layout,
-    pub(crate) set: frame_graph::acceleration_set::Set,
+    pub(crate) set_layout: SmartSetLayout<acceleration_set::Layout>,
+    pub(crate) set: SmartSet<acceleration_set::Set>,
 }
 
 impl BottomLevelAccelerationStructure {
@@ -117,7 +116,7 @@ impl FromWorld for AccelerationStructuresInternal {
                 VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
 
-            update_whole_buffer::<frame_graph::acceleration_set::bindings::random_seed>(
+            update_whole_buffer::<acceleration_set::bindings::random_seed>(
                 &renderer.device,
                 &mut acceleration_structures.set,
                 &random_seed,
@@ -185,13 +184,7 @@ pub(crate) fn build_acceleration_structures(
     } = *acceleration_structures_internal;
 
     // Wait for structures to have been used with this swapchain ix
-    renderer
-        .graphics_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_indices),
-        )
-        .unwrap();
+    frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_indices);
 
     random_seed.map(&renderer.device).unwrap().seed = rand::random();
 
@@ -390,6 +383,10 @@ pub(crate) fn build_acceleration_structures(
     // TLAS
     {
         let _tlas_marker = command_buffer.debug_marker_around("TLAS", [0.8, 0.1, 0.1, 1.0]);
+        let _guard = renderer_macros::barrier!(
+            *command_buffer,
+            TLAS.build rw in BuildAccelerationStructures descriptor gltf_mesh.acceleration_set.top_level_as
+        );
 
         fn pack(a: u32, b: u8) -> u32 {
             (a & ((1 << 24) - 1)) | (u32::from(b) << 24)
@@ -569,9 +566,9 @@ pub(crate) fn build_acceleration_structures(
 
 impl AccelerationStructures {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> Self {
-        let set_layout = frame_graph::acceleration_set::Layout::new(&renderer.device);
+        let set_layout = SmartSetLayout::new(&renderer.device);
 
-        let set = frame_graph::acceleration_set::Set::new(&renderer.device, &main_descriptor_pool, &set_layout, 0);
+        let set = SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, 0);
 
         Self { set_layout, set }
     }

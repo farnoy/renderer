@@ -308,14 +308,6 @@ impl Device {
         &self.graphics_queue
     }
 
-    #[deprecated]
-    fn compute_queue(&self, ix: usize) -> &Mutex<vk::Queue> {
-        self.compute_queues
-            .get(ix)
-            .map(|x| &**x)
-            .unwrap_or(&self.graphics_queue)
-    }
-
     pub(crate) fn compute_queue_balanced(&self) -> MutexGuard<vk::Queue> {
         scope!("helpers", "compute_queue_balanced");
         debug_assert!(
@@ -332,14 +324,6 @@ impl Device {
             }
             backoff.spin();
         }
-    }
-
-    pub(crate) fn transfer_queue(&self) -> &Mutex<vk::Queue> {
-        // TODO: better selection?
-        self.transfer_queue
-            .as_ref()
-            .map(|pad| &**pad)
-            .unwrap_or_else(|| self.compute_queue(0))
     }
 
     pub(crate) fn allocation_stats(&self) -> alloc::VmaStats {
@@ -388,14 +372,6 @@ impl Device {
         allocation_usage: VmaMemoryUsage,
     ) -> StaticBuffer<T> {
         StaticBuffer::new(self, buffer_usage, allocation_usage)
-    }
-
-    pub(crate) fn new_static_buffer_exclusive<T: Sized>(
-        &self,
-        buffer_usage: vk::BufferUsageFlags,
-        allocation_usage: VmaMemoryUsage,
-    ) -> StaticBuffer<T> {
-        StaticBuffer::new_exclusive(self, buffer_usage, allocation_usage)
     }
 
     #[allow(clippy::too_many_arguments)]

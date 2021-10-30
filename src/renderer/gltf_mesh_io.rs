@@ -84,7 +84,7 @@ pub(crate) fn load(renderer: &RenderFrame, path: &str) -> LoadedMesh {
         .texture()
         .source()
         .source();
-    let metal_roughness_source = primitive
+    let _metal_roughness_source = primitive
         .material()
         .pbr_metallic_roughness()
         .metallic_roughness_texture()

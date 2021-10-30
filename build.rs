@@ -74,4 +74,9 @@ fn main() {
 
         assert!(result, "failed to compile shader {:?}", &src_path);
     });
+
+    if let Err(errs) = renderer_macro_lib::analyze() {
+        println!("cargo:warning=Analysis failed: {}", errs);
+    }
+    println!("cargo:rerun-if-changed=src");
 }

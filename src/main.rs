@@ -40,19 +40,20 @@ use parking_lot::Mutex;
 #[cfg(feature = "crash_debugging")]
 use renderer::CrashBuffer;
 use renderer::{
-    acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, consolidate_mesh_buffers,
-    graphics_stage, load_gltf, model_matrices_upload, shadow_mapping_mvp_calculation,
-    synchronize_base_color_textures_visit, up_vector, update_shadow_map_descriptors, AccelerationStructures,
-    AccelerationStructuresInternal, BaseColorDescriptorSet, BaseColorVisitedMarker, CameraMatrices, CoarseCulled,
-    ConsolidatedMeshBuffers, CopiedResource, CullPassData, CullPassDataPrivate, DebugAABBPassData, DepthPassData,
-    DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture, GltfPassData, GraphicsTimeline,
-    GuiRenderData, ImageIndex, LoadedMesh, LocalTransferCommandPool, MainAttachments, MainDescriptorPool,
+    acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, graphics_stage, load_gltf,
+    model_matrices_upload, shadow_mapping_mvp_calculation, synchronize_base_color_textures_visit, up_vector,
+    update_shadow_map_descriptors, AccelerationStructures, AccelerationStructuresInternal, BaseColorDescriptorSet,
+    BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
+    CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture,
+    GltfMeshNormalTexture, GltfPassData, GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool,
     MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, NormalMapVisitedMarker, PresentData,
     RenderFrame, Resized, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions,
     SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
+
+use crate::renderer::TransferCullPrivate;
 
 fn main() {
     microprofile::init!();
@@ -61,6 +62,209 @@ fn main() {
     env_logger::init();
 
     let (renderer, swapchain, events_loop) = RenderFrame::new();
+
+    /*
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let park_semaphore = renderer.device.new_semaphore_timeline(1);
+    let park_semaphore = Pin::new(&park_semaphore);
+    let highest_park_value = Arc::new(AtomicU64::new(1));
+    let semaphore_wakers: Arc<Mutex<HashMap<Arc<TimelineSemaphore>, (u64, Waker)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let device = Arc::new(renderer.device);
+
+    struct WaitSemaphore<'a> {
+        semaphore: Arc<TimelineSemaphore>,
+        until: u64,
+        semaphore_wakers: Arc<Mutex<HashMap<Arc<TimelineSemaphore>, (u64, Waker)>>>,
+        park_semaphore: Pin<&'a TimelineSemaphore>,
+        highest_park_value: Arc<AtomicU64>,
+        device: Arc<renderer::device::Device>,
+    }
+
+    impl Future for WaitSemaphore<'_> {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+            let current_value = self.semaphore.value(&self.device).unwrap();
+            dbg!(current_value, self.until);
+            if current_value >= self.until {
+                let mut map = self.semaphore_wakers.lock();
+                map.remove(&self.semaphore);
+                dbg!("removed", self.semaphore.handle);
+                Poll::Ready(())
+            } else {
+                let mut map = self.semaphore_wakers.lock();
+                map.entry(Arc::clone(&self.semaphore))
+                    .insert((self.until, cx.waker().clone()));
+                let previous = self.highest_park_value.fetch_add(1, Ordering::Relaxed);
+                self.park_semaphore
+                    .signal(&self.device, previous.wrapping_add(1))
+                    .unwrap();
+                Poll::Pending
+            }
+        }
+    }
+
+    // let wait = {
+    //     let semaphore_wakers = Arc::clone(&semaphore_wakers);
+    //     move |semaphore: Pin<&TimelineSemaphore>, until: u64| {
+    //         let previous = highest_park_value.fetch_add(1, Ordering::Relaxed);
+    //         park_semaphore.signal(&device, previous.wrapping_add(1)).unwrap();
+    //         WaitSemaphore {
+    //             semaphore,
+    //             until,
+    //             semaphore_wakers,
+    //             device,
+    //         }
+    //         // std::future::poll_fn(move |context| {
+    //         //     let current_value = semaphore.value(device).unwrap();
+    //         //     if current_value >= until {
+    //         //         Poll::Ready(())
+    //         //     } else {
+    //         //         let mut map = semaphore_wakers.lock();
+    //         //         let entry = map.entry(semaphore.handle).or_insert(0);
+    //         //         *entry = std::cmp::max(*entry, until);
+    //         //         Poll::Pending
+    //         //     }
+    //         // })
+    //     }
+    // };
+
+    crossbeam_utils::thread::scope(|s| {
+        s.spawn({
+            let semaphore_wakers = Arc::clone(&semaphore_wakers);
+            let highest_park_value = Arc::clone(&highest_park_value);
+            let device = Arc::clone(&device);
+
+            move |s| loop {
+                let map = semaphore_wakers.lock();
+                let current = highest_park_value.load(Ordering::Relaxed);
+
+                // let wakers_clone = map.clone();
+
+                let mut semaphores = vec![];
+                let mut handles = vec![];
+                let mut wait_values = vec![];
+                let mut wakers = vec![];
+
+                for (semaphore, (until, waker)) in map.iter() {
+                    semaphores.push(Arc::clone(&semaphore));
+                    handles.push(semaphore.handle.clone());
+                    wait_values.push(until.clone());
+                    wakers.push(waker.clone());
+                }
+
+                drop(map);
+
+                handles.push(park_semaphore.handle);
+                wait_values.push(current + 1);
+
+                dbg!(&handles);
+
+                let result = unsafe {
+                    device.wait_semaphores(
+                        &ash::vk::SemaphoreWaitInfo::builder()
+                            .flags(ash::vk::SemaphoreWaitFlags::ANY)
+                            .semaphores(&handles)
+                            .values(&wait_values),
+                        std::u64::MAX,
+                    )
+                };
+                match result {
+                    Ok(()) => {
+                        let mut map = semaphore_wakers.lock();
+                        for ((sem, until), waker) in semaphores.iter().zip(wait_values.iter()).zip(wakers.iter()) {
+                            if sem.value(&device).unwrap() > *until {
+                                if let Some((_until, waker)) = map.remove(sem) {
+                                    waker.wake();
+                                } else {
+                                    // dbg!("no longer in map");
+                                }
+                            }
+                        }
+                    }
+                    Err(ash::vk::Result::TIMEOUT) => {
+                        dbg!("timeout");
+                    }
+                    Err(unknown) => {
+                        dbg!(unknown);
+                    }
+                };
+            }
+        });
+
+        runtime.block_on({
+            let device = Arc::clone(&device);
+            async move {
+                let first = Arc::new(device.new_semaphore_timeline(5));
+                let second = Arc::new(device.new_semaphore_timeline(30));
+                let signal_first = tokio::spawn({
+                    let x = Arc::clone(&first);
+                    let device = Arc::clone(&device);
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(3000)).await;
+                        x.signal(&device, 10).unwrap();
+                    }
+                });
+                let signal_second = {
+                    let second = Arc::clone(&second);
+                    let device = &device;
+                    async move {
+                        second.signal(&device, 34).unwrap();
+                    }
+                };
+
+                let wait_first = {
+                    let semaphore_wakers = Arc::clone(&semaphore_wakers);
+                    let highest_park_value = Arc::clone(&highest_park_value);
+                    let device = Arc::clone(&device);
+
+                    WaitSemaphore {
+                        semaphore: Arc::clone(&first),
+                        until: 8,
+                        semaphore_wakers,
+                        park_semaphore,
+                        highest_park_value,
+                        device,
+                    }
+                };
+
+                let wait_second = {
+                    let semaphore_wakers = Arc::clone(&semaphore_wakers);
+                    let highest_park_value = Arc::clone(&highest_park_value);
+                    let device = Arc::clone(&device);
+
+                    WaitSemaphore {
+                        semaphore: Arc::clone(&second),
+                        until: 34,
+                        semaphore_wakers,
+                        park_semaphore,
+                        highest_park_value,
+                        device,
+                    }
+                };
+
+                // tokio::join!(wait, signaler);
+                wait_first.await;
+                let _ = tokio::join!(signal_second, signal_first);
+                wait_second.await;
+                println!("finished join");
+                drop(Arc::try_unwrap(first).map(|s| s.destroy(&device)));
+                drop(Arc::try_unwrap(second).map(|s| s.destroy(&device)));
+            }
+        });
+
+        println!("quitting");
+    })
+    .unwrap();
+    // renderer.destroy();
+    return;
+    */
 
     let mut app = App::build();
 
@@ -84,15 +288,6 @@ fn main() {
 
     let base_color_descriptor_set = BaseColorDescriptorSet::new(&renderer, &mut main_descriptor_pool);
     let model_data = ModelData::new(&renderer, &main_descriptor_pool);
-
-    let mut cull_bypass_transfer_command_pool = LocalTransferCommandPool::<0>::new(&renderer);
-    let cull_pass_data = CullPassData::new(
-        &renderer,
-        &mut main_descriptor_pool,
-        &consolidated_mesh_buffers,
-        &mut cull_bypass_transfer_command_pool,
-    );
-    let cull_pass_data_private = CullPassDataPrivate::new(&renderer, &cull_pass_data, &model_data, &camera_matrices);
 
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
     let main_renderpass = MainRenderpass::new(&renderer, &main_attachments);
@@ -452,8 +647,9 @@ fn main() {
     app.insert_resource(camera_matrices);
     app.insert_resource(base_color_descriptor_set);
     app.insert_resource(model_data);
-    app.insert_resource(cull_pass_data);
-    app.insert_resource(cull_pass_data_private);
+    app.init_resource::<CullPassData>();
+    app.init_resource::<CullPassDataPrivate>();
+    app.init_resource::<TransferCullPrivate>();
     app.insert_resource(shadow_mapping_data);
     app.init_resource::<ShadowMappingDataInternal>();
     app.init_resource::<DepthPassData>();
@@ -477,7 +673,6 @@ fn main() {
         app.init_non_send_resource::<ShaderReload>();
         app.init_resource::<ReloadedShaders>();
     }
-    app.insert_resource(cull_bypass_transfer_command_pool);
     app.init_resource::<MainPassCommandBuffer>();
 
     app.add_plugin(bevy_log::LogPlugin);
@@ -544,7 +739,6 @@ fn main() {
 
     #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
     enum RenderSetup {
-        ConsolidateMeshBuffers,
         ModelMatrixCalculation,
         AABBCalculation,
         ShadowMappingMVPCalculation,
@@ -692,6 +886,11 @@ fn main() {
     app.app
         .world
         .remove_resource::<CullPassDataPrivate>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<TransferCullPrivate>()
         .unwrap()
         .destroy(&render_frame.device);
     app.app
@@ -870,11 +1069,6 @@ fn main() {
     app.app
         .world
         .remove_resource::<CrashBuffer>()
-        .unwrap()
-        .destroy(&render_frame.device);
-    app.app
-        .world
-        .remove_resource::<LocalTransferCommandPool<0>>()
         .unwrap()
         .destroy(&render_frame.device);
     app.app

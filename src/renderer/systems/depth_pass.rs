@@ -7,14 +7,29 @@ use microprofile::scope;
 use crate::{
     ecs::systems::RuntimeConfiguration,
     renderer::{
-        binding_size, device::Device, frame_graph, helpers::command_util::CommandUtil, CameraMatrices,
-        ConsolidatedMeshBuffers, CopiedResource, CullPassData, ImageIndex, MainAttachments, MainRenderpass, ModelData,
-        Pipeline, PipelineLayout, RenderFrame, RenderStage, Submissions, Swapchain,
+        binding_size, camera_set, device::Device, frame_graph, helpers::command_util::CommandUtil, model_set,
+        systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
+        ImageIndex, MainAttachments, ModelData, RenderFrame, SmartPipeline, SmartPipelineLayout, Submissions,
+        Swapchain,
     },
 };
+
+renderer_macros::define_pipe! {
+    depth_pipe {
+        descriptors [model_set, camera_set]
+        graphics
+        samples dyn
+        vertex_inputs [position: vec3]
+        stages [VERTEX]
+        cull mode BACK
+        depth test true
+        depth write true
+        depth compare op LESS_OR_EQUAL
+    }
+}
 pub(crate) struct DepthPassData {
-    depth_pipeline: frame_graph::depth_pipe::Pipeline,
-    depth_pipeline_layout: frame_graph::depth_pipe::PipelineLayout,
+    depth_pipeline: SmartPipeline<depth_pipe::Pipeline>,
+    depth_pipeline_layout: SmartPipelineLayout<depth_pipe::PipelineLayout>,
     // TODO: present should not have visibility into this stuff
     pub(super) renderpass: frame_graph::DepthOnly::RenderPass,
     command_util: CommandUtil,
@@ -31,14 +46,12 @@ impl FromWorld for DepthPassData {
 
         let renderpass = frame_graph::DepthOnly::RenderPass::new(renderer, ());
 
-        let depth_pipeline_layout = frame_graph::depth_pipe::PipelineLayout::new(
-            &device,
-            (&model_data.model_set_layout, &camera_matrices.set_layout),
-        );
-        let depth_pipeline = frame_graph::depth_pipe::Pipeline::new(
+        let depth_pipeline_layout =
+            SmartPipelineLayout::new(&device, (&model_data.model_set_layout, &camera_matrices.set_layout));
+        let depth_pipeline = SmartPipeline::new(
             &device,
             &depth_pipeline_layout,
-            frame_graph::depth_pipe::Specialization {},
+            depth_pipe::Specialization {},
             (renderpass.renderpass.handle, 0, vk::SampleCountFlags::TYPE_4),
         );
 
@@ -50,7 +63,7 @@ impl FromWorld for DepthPassData {
             (swapchain.width, swapchain.height),
         );
 
-        let command_util = CommandUtil::from_world(world);
+        let command_util = CommandUtil::new(renderer, renderer.device.graphics_queue_family);
 
         DepthPassData {
             depth_pipeline,
@@ -100,12 +113,17 @@ pub(crate) fn depth_only_pass(
 
     let marker = command_buffer.debug_marker_around("depth prepass", [0.3, 0.3, 0.3, 1.0]);
 
-    cull_pass_data
-        .culled_commands_buffer
-        .acquire_draw_depth(&renderer, *command_buffer);
-    cull_pass_data
-        .culled_commands_count_buffer
-        .acquire_draw_depth(&renderer, *command_buffer);
+    let _indirect_commands_buffer = &cull_pass_data.culled_commands_buffer;
+    let _indirect_commands_count = &cull_pass_data.culled_commands_count_buffer;
+    let _cb = *command_buffer;
+    let _consolidated_position_buffer = &consolidated_mesh_buffers.position_buffer;
+    let guard = renderer_macros::barrier!(
+        cb,
+        IndirectCommandsBuffer.draw_depth r in DepthOnly indirect buffer after [compact, copy_frozen],
+        IndirectCommandsCount.draw_depth r in DepthOnly indirect buffer after [compute, copy_frozen],
+        ConsolidatedPositionBuffer.in_depth r in DepthOnly vertex buffer after [in_cull],
+        CulledIndexBuffer.in_depth r in DepthOnly index buffer after [copy_frozen, cull]
+    );
 
     renderpass.begin(
         &renderer,
@@ -141,11 +159,9 @@ pub(crate) fn depth_only_pass(
                     height: swapchain.height,
                 },
             }]);
-            renderer.device.cmd_bind_pipeline(
-                *command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                *depth_pipeline.pipeline,
-            );
+            renderer
+                .device
+                .cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, depth_pipeline.vk());
             depth_pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
@@ -172,7 +188,7 @@ pub(crate) fn depth_only_pass(
                 0,
                 cull_pass_data.culled_commands_count_buffer.buffer.handle,
                 0,
-                binding_size::<frame_graph::cull_set::bindings::indirect_commands>() as u32
+                binding_size::<cull_set::bindings::indirect_commands>() as u32
                     / size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32,
                 size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32,
             );
@@ -181,6 +197,7 @@ pub(crate) fn depth_only_pass(
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
     drop(marker);
+    drop(guard);
 
     let command_buffer = command_buffer.end();
 

@@ -1,218 +1,594 @@
 #![feature(extend_one)]
-#![allow(warnings)]
 
-mod inputs;
-mod keywords;
-mod parsed;
-mod rga;
+use std::env;
 
-use std::{env, fs::File, io::Read, iter::FromIterator};
-
-use convert_case::{Case, Casing};
-use derive_syn_parse::Parse;
 use hashbrown::HashMap;
-use inputs::*;
 use itertools::Itertools;
 use petgraph::{
     graph::{DiGraph, NodeIndex},
-    stable_graph::StableDiGraph,
-    visit::EdgeRef,
+    visit::{EdgeRef, GraphBase, IntoNeighborsDirected, IntoNodeIdentifiers, IntoNodeReferences, Visitable},
     Direction,
 };
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
+use proc_macro_error::{abort_call_site, proc_macro_error};
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse_macro_input, parse_quote, Expr, Ident, Path, Visibility};
+use renderer_macro_lib::{
+    fetch,
+    inputs::{self, extract_optional_dyn, to_rust_type, to_vk_format, DependencyType, FrameInput},
+    resource_claims::{ResourceBarrierInput, ResourceClaim, ResourceDefinitionInput, ResourceDefinitionType},
+    AsyncPass, Binding, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RendererInput,
+    ResourceUsageKind, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
+};
+use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
 
 #[proc_macro]
-pub fn define_timeline(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    define_timeline2(proc_macro2::TokenStream::from(input)).into()
-}
+pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input: ResourceDefinitionInput = syn::parse(input).unwrap();
+    let name = format_ident!("{}", &input.resource_name);
+    let resource_debug_name = format!("Resource[{}]", &input.resource_name);
+    let data = fetch().unwrap();
+    let claims = data.resources.get(&input.resource_name).unwrap();
+    match input.ty {
+        ResourceDefinitionType::StaticBuffer { type_name } => {
+            let type_name = parse_str::<Type>(&type_name).unwrap();
+            let usage_flags = claims
+                .graph
+                .node_weights()
+                .flat_map(|claim| match &claim.usage {
+                    ResourceUsageKind::VertexBuffer => vec![quote!(VERTEX_BUFFER)],
+                    ResourceUsageKind::IndexBuffer => vec![quote!(INDEX_BUFFER)],
+                    ResourceUsageKind::Attachment => todo!(),
+                    ResourceUsageKind::IndirectBuffer => vec![quote!(INDIRECT_BUFFER)],
+                    ResourceUsageKind::TransferCopy | ResourceUsageKind::TransferClear => {
+                        let mut acu = vec![];
+                        if claim.reads {
+                            acu.push(quote!(TRANSFER_SRC));
+                        }
+                        if claim.writes {
+                            acu.push(quote!(TRANSFER_DST));
+                        }
+                        acu
+                    }
+                    ResourceUsageKind::Descriptor(set_name, binding_name, _pipeline_name) => {
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
 
-fn define_timeline2(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-    #[derive(Parse)]
-    struct TimelineInput {
-        visibility: Visibility,
-        name: Ident,
-        stages: Unbracket<UnArray<Ident>>,
-    }
-
-    let TimelineInput {
-        visibility,
-        name,
-        stages,
-    } = match syn::parse2(input) {
-        Ok(i) => i,
-        Err(e) => return proc_macro2::TokenStream::from(e.to_compile_error()),
-    };
-
-    let max = stages.len().next_power_of_two() as u64;
-
-    let variant2 = stages
-        .iter()
-        .enumerate()
-        .map(|(ix, stage)| {
-            let mut ix = ix + 1;
-            if ix == stages.len() {
-                ix = ix.next_power_of_two();
-            }
-            let ix = ix as u64;
+                        match binding.descriptor_type.as_str() {
+                            "STORAGE_BUFFER" => vec![quote!(STORAGE_BUFFER)],
+                            _ => unimplemented!("static buffer usage {}", &binding.descriptor_type),
+                        }
+                    }
+                })
+                .collect_vec();
 
             quote! {
-                #visibility struct #stage;
-                impl crate::renderer::TimelineStage for #stage {
-                    const OFFSET: u64 = #ix;
+                pub(crate) struct #name(pub(crate) crate::renderer::StaticBuffer<#type_name>);
+
+                impl #name {
+                    pub(crate) fn new(device: &Device) -> Self {
+                        let b = device.new_static_buffer(
+                            vk::BufferUsageFlags::empty() #(| vk::BufferUsageFlags::#usage_flags)*,
+                            VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
+                        );
+                        device.set_object_name(b.buffer.handle, #resource_debug_name);
+                        Self(b)
+                    }
+
+                    pub(crate) fn destroy(self, device: &Device) {
+                        self.0.destroy(device);
+                    }
+                }
+
+                impl std::ops::Deref for #name {
+                    type Target = crate::renderer::StaticBuffer<#type_name>;
+
+                    fn deref(&self) -> &Self::Target {
+                        &self.0
+                    }
+                }
+            }
+        }
+        ResourceDefinitionType::Image => quote! {
+            #[allow(non_camel_case_types)]
+            pub(crate) struct #name(pub(crate) Image);
+
+            impl #name {
+                pub(crate) fn import(device: &Device, image: Image) -> Self {
+                    device.set_object_name(image.handle, #resource_debug_name);
+                    Self(image)
+                }
+
+                pub(crate) fn destroy(self, device: &Device) {
+                    self.0.destroy(device);
+                }
+            }
+
+            impl std::ops::Deref for #name {
+                type Target = Image;
+
+                fn deref(&self) -> &Self::Target {
+                    &self.0
+                }
+            }
+        },
+        // TODO: need a better approach probably
+        ResourceDefinitionType::AccelerationStructure => quote!(),
+    }
+    .into()
+}
+
+#[proc_macro_error]
+#[proc_macro]
+pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as ResourceBarrierInput);
+    let data = fetch().unwrap();
+
+    let mut validation_errors = quote!();
+    let mut acquire_buffer_barriers: Vec<TokenStream> = vec![];
+    let mut acquire_memory_barriers: Vec<TokenStream> = vec![];
+    #[allow(unused_mut)]
+    let mut acquire_buffer_barriers_with_bypass: Vec<TokenStream> = vec![];
+    #[allow(unused_mut)]
+    let mut release_buffer_barriers: Vec<TokenStream> = vec![];
+    #[allow(unused_mut)]
+    let mut release_memory_barriers: Vec<TokenStream> = vec![];
+    let command_buffer_expr = input.command_buffer_ident;
+
+    for claim in input.claims {
+        let claims = data.resources.get(&claim.resource_name).unwrap();
+
+        let this_node = *claims.map.get(&claim.step_name).unwrap();
+        let this = &claims.graph[this_node];
+        let get_queue_family_index_for_pass = |pass: &str| {
+            data.passes
+                .get(pass)
+                .and(Some(QueueFamily::Graphics))
+                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .expect("pass not found")
+        };
+        let get_runtime_queue_family = |ty: QueueFamily| match ty {
+            QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
+            QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
+            QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
+        };
+
+        let connected_components = petgraph::algo::connected_components(&claims.graph);
+        if connected_components != 1 {
+            let msg = "resource claims graph must have one connected component".to_string();
+            validation_errors.extend(quote!(compile_error!(#msg);));
+        }
+        if petgraph::algo::is_cyclic_directed(&claims.graph) {
+            let msg = "resource claims graph is cyclic".to_string();
+            validation_errors.extend(quote!(compile_error!(#msg);));
+            // TODO: early exit here so that toposort doesn't see a cycle
+        }
+        // dbg!(&input.resource_name, petgraph::dot::Dot::with_config(
+        //     &claims.graph.map(
+        //         |_, node_ident| node_ident.as_ref().map(|c| c.step_name.clone()),
+        //         |_, _| ""
+        //     ),
+        //     &[petgraph::dot::Config::EdgeNoLabel]
+        // ));
+        let grouped_topo = grouped_toposort(&claims.graph);
+        let in_first_stage = grouped_topo
+            .first()
+            .map(|stage| stage.iter().any(|&candidate| candidate == this_node))
+            .unwrap_or(false);
+        let in_last_stage = grouped_topo
+            .last()
+            .map(|stage| stage.iter().any(|&candidate| candidate == this_node))
+            .unwrap_or(false);
+
+        // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
+        // iterations of the graph
+        let incoming = claims.graph.neighbors_directed(this_node, Direction::Incoming).chain(
+            in_first_stage
+                .then(|| grouped_topo.last())
+                .into_iter()
+                .flatten()
+                .flat_map(|stage| stage.iter().cloned()),
+        );
+        let outgoing = claims.graph.neighbors_directed(this_node, Direction::Outgoing).chain(
+            in_last_stage
+                .then(|| grouped_topo.first())
+                .into_iter()
+                .flatten()
+                .flat_map(|stage| stage.iter().cloned()),
+        );
+
+        let this_queue = get_queue_family_index_for_pass(&this.pass_name);
+        let this_queue_runtime = get_runtime_queue_family(this_queue);
+        let mut acquired_already = false;
+        for dep in incoming {
+            let prev_step = &claims.graph[dep];
+            let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
+            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
+
+            if prev_step.pass_name == this.pass_name
+                && prev_step.usage != ResourceUsageKind::Attachment
+                && this.usage != ResourceUsageKind::Attachment
+            {
+                match claims.ty {
+                    ResourceDefinitionType::StaticBuffer { .. } => {
+                        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+                            let (access_prefixes, stages) = match &step.usage {
+                                ResourceUsageKind::VertexBuffer => (vec![quote!(VERTEX_ATTRIBUTE)], vec![quote!(VERTEX_INPUT)]),
+                                ResourceUsageKind::IndexBuffer => (vec![quote!(INDEX)], vec![quote!(INDEX_INPUT)]),
+                                ResourceUsageKind::Attachment => (vec![quote!(MEMORY)], vec![quote!(
+                                    EARLY_FRAGMENT_TESTS), quote!(
+                                        LATE_FRAGMENT_TESTS), quote!(
+                                        COLOR_ATTACHMENT_OUTPUT)])
+                                , // TODO: imprecise
+                                ResourceUsageKind::IndirectBuffer => (vec![quote!(INDIRECT_COMMAND)], vec![quote!(DRAW_INDIRECT)]),
+                                ResourceUsageKind::TransferCopy => (vec![quote!(TRANSFER)], vec![quote!(COPY)]),
+                                // TODO: sync validation is picky when just CLEAR from sync2 is used
+                                ResourceUsageKind::TransferClear => (vec![quote!(TRANSFER)], vec![quote!(ALL_TRANSFER)]),
+                                ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                                    let pipeline = data.pipelines.get(pipeline_name).expect("pipeline not found in barrier");
+                                    let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                                    let binding = set.bindings.iter().find(|candidate| candidate.name == *binding_name).expect("binding not found in barrier");
+                                    let pipeline_stages = pipeline.specific.stages();
+
+                                    let mut access_prefixes = vec![];
+                                    let mut stages = vec![];
+
+                                    binding.shader_stages.iter()
+                                    .filter(|x| pipeline_stages.contains(*x))
+                                    .map(|stage| match stage.as_str() {
+                                        "COMPUTE" => (quote!(SHADER), quote!(COMPUTE_SHADER)),
+                                        _ => unimplemented!("barrier! descriptor stage {}", stage)
+                                    })
+                                    .for_each(|(x, y)| {
+                                        access_prefixes.push(x);
+                                        stages.push(y);
+                                    });
+                                    (access_prefixes, stages)
+                                }
+                            };
+
+                            let access_prefixes = access_prefixes
+                                .into_iter()
+                                .flat_map(|prefix| {
+                                    let mut output = vec![];
+                                    if step.reads && include_reads {
+                                        output.push(format_ident!("{}_READ", prefix.to_string()).to_token_stream());
+                                    }
+                                    if step.writes && include_writes {
+                                        output.push(format_ident!("{}_WRITE", prefix.to_string()).to_token_stream());
+                                    }
+                                    output
+                                })
+                                .collect_vec();
+
+                            (access_prefixes, stages)
+                        };
+                        let (src_access, src_stage) = stage_flags(&prev_step, false, true);
+                        let (dst_access, dst_stage) = stage_flags(&this, true, true);
+                        assert!(
+                            claim.resource_ident.is_some(),
+                            "Expected barrier call to provide resource expr {:?}",
+                            &claim
+                        );
+                        let resource_ident = &claim.resource_ident;
+
+                        acquire_buffer_barriers.push(quote! {
+                            vk::BufferMemoryBarrier2KHR::builder()
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .src_stage_mask(#(vk::PipelineStageFlags2KHR::#src_stage)|*)
+                            .dst_stage_mask(#(vk::PipelineStageFlags2KHR::#dst_stage)|*)
+                            .src_access_mask(#(vk::AccessFlags2KHR::#src_access)|*)
+                            .dst_access_mask(#(vk::AccessFlags2KHR::#dst_access)|*)
+                            .buffer({#resource_ident}.buffer.handle)
+                            .size(vk::WHOLE_SIZE)
+                            .build()
+                        });
+                    }
+                    ResourceDefinitionType::AccelerationStructure => {
+                        acquire_memory_barriers.push(quote! {
+                            vk::MemoryBarrier2KHR::builder()
+                                .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
+                                .src_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_WRITE)
+                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .dst_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_READ)
+                                .build()
+                        });
+                    }
+                    _ => todo!("acquire unknown resource"),
+                }
+            }
+
+            if prev_queue == this_queue {
+                continue;
+            }
+
+            // TODO: No exclusive resources to transfer for now, bring it back in the future 
+            if acquired_already && false {
+                // Visualize the dependency graph
+                // dbg!(petgraph::dot::Dot::with_config(
+                //     &claims.graph.map(
+                //         |_, node_ident| node_ident.as_ref().unwrap().step_name.clone(),
+                //         |_, _| ""
+                //     ),
+                //     &[petgraph::dot::Config::EdgeNoLabel]
+                // ));
+                eprintln!("Warning: Skipping a duplicate acquire barrier from {} to {} for resource {} because we don't unify these barriers (for now)", &prev_step.step_name, &this.step_name, &claim.resource_name);
+                continue;
+            }
+            acquired_already = true;
+
+            match claims.ty {
+                ResourceDefinitionType::StaticBuffer { .. } => {
+                    // buffers are never exclusive, so we skip this
+                    /*
+                    let acquire_buffer_barrier = quote! {
+                        vk::BufferMemoryBarrier2KHR::builder()
+                            // TODO: granularity
+                            .src_queue_family_index(#prev_queue_runtime)
+                            .dst_queue_family_index(#this_queue_runtime)
+                            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                             vk::AccessFlags2KHR::MEMORY_WRITE)
+                            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                             vk::AccessFlags2KHR::MEMORY_WRITE)
+                            .buffer(#resource_ident.buffer.handle)
+                            .size(vk::WHOLE_SIZE)
+                            .build()
+                    };
+                    if in_first_stage {
+                        acquire_buffer_barriers_with_bypass.push(acquire_buffer_barrier);
+                    } else {
+                        acquire_buffer_barriers.push(acquire_buffer_barrier);
+                    }
+                    */
+                }
+                ResourceDefinitionType::AccelerationStructure => {
+                    // acquire_memory_barriers.push(quote! {
+                    //     vk::MemoryBarrier2KHR::builder()
+                    //         .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    //         .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                    //         .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    //         .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                    //         .build()
+                    // });
+                }
+                _ => todo!("same queue buffer unknown resource"),
+            }
+        }
+        let mut released_already = false;
+        for dep in outgoing {
+            let next_step = &claims.graph[dep];
+            let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
+            let next_queue_runtime = get_runtime_queue_family(next_queue);
+
+            if this_queue == next_queue {
+                continue;
+            }
+
+            // TODO: No exclusive resources to transfer for now, bring it back in the future 
+            if released_already && false {
+                eprintln!("Warning: Skipping a duplicate release barrier from {} to {} for resource {} because we don't unify these barriers (for now)", &this.step_name, &next_step.step_name, &claim.resource_name);
+                continue;
+            }
+            released_already = true;
+
+            match claims.ty {
+                ResourceDefinitionType::StaticBuffer { .. } => {
+                    // buffers are never exclusive, so we skip this
+                    /*
+                    release_buffer_barriers.push(quote! {
+                        vk::BufferMemoryBarrier2KHR::builder()
+                            // TODO: granularity
+                            .src_queue_family_index(#this_queue_runtime)
+                            .dst_queue_family_index(#next_queue_runtime)
+                            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                            .buffer(#resource_ident.buffer.handle)
+                            .size(vk::WHOLE_SIZE)
+                            .build()
+                    });
+                    */
+                }
+                ResourceDefinitionType::AccelerationStructure => {
+                    // release_memory_barriers.push(quote! {
+                    //     vk::MemoryBarrier2KHR::builder()
+                    //         .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    //         .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                    // vk::AccessFlags2KHR::MEMORY_WRITE)
+                    //         .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    //         .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                    // vk::AccessFlags2KHR::MEMORY_WRITE)         .build()
+                    // });
+                }
+                _ => todo!("release unknown resource"),
+            }
+        }
+    }
+
+    let acquire_buffer_barriers_len = acquire_buffer_barriers.len();
+    let acquire_buffer_barriers_with_bypass_len = acquire_buffer_barriers_with_bypass.len();
+    let acquire_block =
+        (acquire_buffer_barriers_len + acquire_buffer_barriers_with_bypass_len + acquire_memory_barriers.len() > 0)
+            .then(|| {
+                quote! {
+                    let acquire_buffer_barriers = [
+                        #(#acquire_buffer_barriers,)*
+                        #(#acquire_buffer_barriers_with_bypass,)*
+                    ];
+                    let acquire_memory_barriers = [
+                        #(#acquire_memory_barriers,)*
+                    ];
+                    let slice_count = if #acquire_buffer_barriers_with_bypass_len > 0 && renderer.frame_number > 1 {
+                        #acquire_buffer_barriers_len + #acquire_buffer_barriers_with_bypass_len
+                    } else {
+                        #acquire_buffer_barriers_len
+                    };
+                    renderer.device.synchronization2.cmd_pipeline_barrier2(
+                        #command_buffer_expr,
+                        &vk::DependencyInfoKHR::builder()
+                            .buffer_memory_barriers(&acquire_buffer_barriers[0..slice_count])
+                            .memory_barriers(&acquire_memory_barriers),
+                    );
+
+                }
+            });
+    let release_block = (release_buffer_barriers.len() + release_memory_barriers.len() > 0).then(|| {
+        quote! {
+            let release_buffer_barriers = [
+                #(#release_buffer_barriers,)*
+            ];
+            let release_memory_barriers = [
+                #(#release_memory_barriers,)*
+            ];
+            renderer.device.synchronization2.cmd_pipeline_barrier2(
+                #command_buffer_expr,
+                &vk::DependencyInfoKHR::builder()
+                    .buffer_memory_barriers(&release_buffer_barriers)
+                    .memory_barriers(&release_memory_barriers),
+            );
+        }
+    });
+    quote! {
+        unsafe {
+            #validation_errors
+            {
+                #acquire_block
+            }
+            scopeguard::guard((), |()| {
+                #release_block
+            })
+        }
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn define_timelines(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let data = fetch().unwrap();
+
+    let mut grouped = HashMap::<_, Vec<_>>::new();
+    for (pass_name, (sem_ix, step_ix)) in data.timeline_semaphore_mapping.iter() {
+        grouped.entry(*sem_ix).or_default().push((*step_ix, pass_name));
+    }
+
+    let auto_count = grouped.len();
+    let mut output = quote!();
+    let mut maximums = HashMap::new();
+
+    for (sem_ix, stages) in grouped.into_iter() {
+        let max = stages.iter().map(|x| x.0).max().unwrap().next_power_of_two();
+        assert!(maximums.insert(sem_ix, max).is_none());
+
+        let stage_definitions = stages.into_iter().map(|(stage_ix, pass_name)| {
+            let stage_name = format_ident!("{}", pass_name);
+            quote! {
+                pub(crate) struct #stage_name;
+                impl crate::renderer::TimelineStage for #stage_name {
+                    const OFFSET: u64 = #stage_ix;
                     const CYCLE: u64 = #max;
                 }
             }
-        })
-        .collect::<Vec<_>>();
+        });
 
-    quote! {
-        #[allow(non_snake_case)]
-        #visibility mod #name {
-            #(
-                #variant2
-            )*
-        }
+        let semaphore_name = format_ident!("AutoSemaphore{}", sem_ix);
+
+        output.extend(quote! {
+            pub(crate) mod #semaphore_name {
+                #(
+                    #stage_definitions
+                )*
+            }
+        });
     }
+
+    let maximums = maximums
+        .into_iter()
+        .sorted_by_key(|(sem_ix, _)| *sem_ix)
+        .map(|(_, max_value)| max_value)
+        .collect_vec();
+
+    output.extend(quote! {
+        pub(crate) struct AutoSemaphores([crate::renderer::device::TimelineSemaphore; #auto_count]);
+
+        impl AutoSemaphores {
+            pub(crate) fn new(device: &crate::renderer::device::Device) -> Self {
+                let mut ix = 0;
+                let maximums = [
+                    #(#maximums),*
+                ];
+                let inner = [(); #auto_count].map(|_| {
+                    let s = device.new_semaphore_timeline(maximums[ix]);
+                    device.set_object_name(s.handle, &format!("AutoSemaphore[{}]", ix));
+                    ix += 1;
+                    s
+                });
+                AutoSemaphores(inner)
+            }
+
+            pub(crate) fn destroy(self, device: &crate::renderer::device::Device) {
+                self.0.into_iter().for_each(|sem| sem.destroy(device));
+            }
+        }
+    });
+
+    output.into()
 }
 
 #[proc_macro]
 pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let frame_input = parse_macro_input!(input as FrameInput);
-    let FrameInput {
-        name,
-        visibility,
-        attachments,
-        formats,
-        samples,
-        passes: UnArray(passes),
-        async_passes: UnArray(async_passes),
-        dependencies,
-        sync: UnArray(sync),
-        sets,
-        pipelines,
-        ..
-    } = &frame_input;
+    let _frame_input = parse_macro_input!(input as FrameInput);
 
-    let renderer_input = parsed::RendererInput::from(&frame_input);
+    define_frame2().into()
+}
 
-    let mut validation_errors = quote!();
+fn define_frame2() -> TokenStream {
+    let validation_errors = quote!();
 
-    let sync: HashMap<String, Expr> = sync
-        .into_iter()
-        .map(|ArrowPair((ident, exp))| (ident.to_string(), exp.clone()))
-        .collect();
+    let new_data = fetch().unwrap();
 
-    let graph_ixes = passes
-        .iter()
-        .map(|pass| &pass.name)
-        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
-        .enumerate()
-        .map(|(ix, a)| (a.clone(), ix as u32))
-        .collect::<HashMap<Ident, u32>>();
+    let dependency_graph = &new_data.dependency_graph;
 
-    let all_passes = passes
-        .iter()
-        .map(|pass| &pass.name)
-        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
-        .collect::<Vec<_>>();
-
-    let mut dependency_graph = DiGraph::<Ident, DependencyType, u32>::new();
-    for (ix, ident) in passes
-        .iter()
-        .map(|pass| &pass.name)
-        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
-        .enumerate()
-    {
-        assert_eq!(ix, dependency_graph.add_node(ident.clone()).index());
-    }
-
-    for resource in renderer_input.resources.values() {
-        for (ix, usage) in resource.usages.iter().enumerate() {
-            let prev_usage = match ix {
-                0 => continue,
-                ix => &resource.usages[ix - 1],
-            };
-
-            if prev_usage.pass == usage.pass {
-                continue;
-            }
-
-            let prev_ix = graph_ixes.get(&prev_usage.pass).unwrap();
-            let this_ix = graph_ixes.get(&usage.pass).unwrap();
-
-            dependency_graph.update_edge(
-                NodeIndex::from(*prev_ix),
-                NodeIndex::from(*this_ix),
-                DependencyType::SameFrame,
-            );
-        }
-    }
-
-    for ArrowPair((from, Sequence((to, dep)))) in dependencies.iter() {
-        dependency_graph.update_edge(
-            NodeIndex::from(*graph_ixes.get(&from).unwrap()),
-            NodeIndex::from(*graph_ixes.get(&to).unwrap()),
-            dep.0.unwrap_or(DependencyType::SameFrame),
-        );
-    }
-    for (name, ix) in graph_ixes.iter() {
-        *dependency_graph.node_weight_mut(NodeIndex::from(*ix)).unwrap() = name.to_owned();
-    }
-    let connected_components = petgraph::algo::connected_components(&dependency_graph);
-    if connected_components != 1 {
-        let msg = format!("sync graph must have one connected component");
-        validation_errors.extend(quote!(compile_error!(#msg);));
-    }
-    if petgraph::algo::is_cyclic_directed(&dependency_graph) {
-        let msg = format!("sync graph is cyclic");
-        validation_errors.extend(quote!(compile_error!(#msg);));
-    }
-
-    /*
-    // Visualize the dependency graph
-    dbg!(petgraph::dot::Dot::with_config(
-        &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
-        &[petgraph::dot::Config::EdgeNoLabel]
-    ));
-    */
-
-    let dynamic_attachments = attachments
-        .iter()
-        .zip(formats.iter())
-        .enumerate()
-        .flat_map(|(ix, (_, format))| if format.is_dyn() { Some(ix) } else { None })
-        .collect::<Vec<_>>();
-
-    let wait_instance = passes
-        .iter()
-        .map(|pass| &pass.name)
-        .chain(async_passes.iter().map(|Sequence((ident, _))| ident))
+    let wait_instance = new_data
+        .passes
+        .keys()
+        .chain(new_data.async_passes.keys())
         .map(|pass| {
-            let signal_out = sync.get(&pass.to_string()).expect("no sync for this pass");
-            let t = syn::parse2::<syn::Path>(signal_out.to_token_stream())
-                .expect("sync values must consist of 2 path segments");
-            let signal_timeline_member = format_ident!(
-                "{}_semaphore",
-                t.segments.first().unwrap().ident.to_string().to_case(Case::Snake)
-            );
+            let ix = dependency_graph
+                .node_indices()
+                .find(|&ix| *pass == dependency_graph[ix])
+                .expect("did not find pass in dependency graph");
+            let (signal_out_sem, _) = new_data
+                .timeline_semaphore_mapping
+                .get(pass)
+                .expect("no sync for this pass");
+            let signal_timeline_ident = format_ident!("AutoSemaphore{}", signal_out_sem);
+            let pass_ident = format_ident!("{}", pass);
+            let signal_timeline_path: Path = parse_quote!(#signal_timeline_ident::#pass_ident);
 
             let wait_inner = dependency_graph
-                .edges_directed(NodeIndex::from(*graph_ixes.get(&pass).unwrap()), Direction::Incoming)
+                .edges_directed(ix, Direction::Incoming)
                 .map(|edge| {
-                    let from = all_passes.get(edge.source().index()).unwrap();
-                    let signaled = sync.get(&from.to_string()).unwrap();
-                    let t = syn::parse2::<Path>(signaled.to_token_stream())
-                        .expect("sync values must consist of 2 path segments");
-                    let timeline_member = format_ident!(
-                        "{}_semaphore",
-                        t.segments.first().unwrap().ident.to_string().to_case(Case::Snake)
-                    );
+                    let from = &dependency_graph[edge.source()];
+                    let (wait_sem, _) = new_data
+                        .timeline_semaphore_mapping
+                        .get(from)
+                        .expect("no sync for this pass");
+                    let wait_timeline_ident = format_ident!("AutoSemaphore{}", wait_sem);
+                    let from_ident = format_ident!("{}", from);
+                    let wait_timeline_path: Path = parse_quote!(#wait_timeline_ident::#from_ident);
 
                     let as_of = match edge.weight() {
-                        &DependencyType::SameFrame => quote!(as_of::<super::super::#signaled>(frame_number)),
-                        &DependencyType::LastFrame => quote!(as_of_last::<super::super::#signaled>(frame_number)),
+                        &DependencyType::SameFrame => quote!(as_of::<super::super::#wait_timeline_path>(frame_number)),
+                        &DependencyType::LastFrame => {
+                            quote!(as_of_last::<super::super::#wait_timeline_path>(frame_number))
+                        }
                         &DependencyType::LastAccess => {
                             // TODO: broken but no need to fix for now
                             quote!(as_of_previous(&image_index, &render_frame))
@@ -220,55 +596,67 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     };
 
                     quote! {
-                        (
-                            |frame_number, image_index| #as_of,
-                            |render_frame| &render_frame.#timeline_member
-                        )
+                        {
+                            fn accessor(frame_number: u64, image_index: &crate::renderer::ImageIndex) -> u64 {
+                                #as_of
+                            }
+                            (accessor as fn(u64, &crate::renderer::ImageIndex) -> u64, #wait_sem)
+                        }
                     }
                 })
                 .collect::<Vec<_>>();
-            let wait_count = wait_inner.len();
 
-            quote! {
-                impl RenderStage<1, #wait_count> for Stage {
-                    const SIGNAL_SEMAPHORE_TIMELINE: [(SignalValueAccessor, SemaphoreAccessor); 1] =
-                        [(|frame_number| as_of::<super::super::#signal_out>(frame_number), |render_frame| &render_frame.#signal_timeline_member)];
-                    
-                    const WAIT_SEMAPHORE_TIMELINE: [(WaitValueAccessor, SemaphoreAccessor); #wait_count] =
-                        [#(#wait_inner),*];
+            (pass, quote! {
+
+                impl RenderStage for Stage {
+                    type SignalTimelineStage = super::super::#signal_timeline_path;
+                    const SIGNAL_AUTO_SEMAPHORE_IX: usize = #signal_out_sem;
+
+                    fn wait_semaphore_timeline() -> smallvec::SmallVec<[(WaitValueAccessor, SemaphoreAccessor); 4]> {
+                        smallvec::smallvec![
+                            #(#wait_inner),*
+                        ]
+                    }
+                    // fn signal_semaphore_timeline() -> smallvec::SmallVec<[(SignalValueAccessor, SemaphoreAccessor); 4]> {
+                    //     fn accessor(frame_number: u64) -> u64 {
+                    //         as_of::<super::super::#signal_timeline_path>(frame_number)
+                    //     }
+                    //     smallvec::smallvec![
+                    //         (accessor as fn(u64) -> u64, #signal_out_sem)
+                    //     ]
+                    // }
                 }
-            }
-        });
+            })
+        })
+        .collect::<HashMap<_, _>>();
 
-    let pass_definitions = passes
-        .iter()
-        .zip(wait_instance.clone())
-        .enumerate()
-        .map(|(pass_ix, (pass, wait_instance))| {
+    let pass_definitions = new_data
+        .passes
+        .values()
+        .map(|pass| {
             let pass_name = &pass.name;
             let format_param_ty = pass
                 .attachments
                 .iter()
-                .filter(|attachment| {
-                    let attachment_ix = attachments.iter().position(|at| at == *attachment).unwrap();
-                    let format = &formats[attachment_ix];
-                    format.is_dyn()
-                })
+                .filter(|&attachment| new_data.attachments.get(attachment).unwrap().format.is_dyn())
                 .map(|_| quote!(vk::Format))
                 .collect_vec();
             let attachment_desc = pass
                 .attachments
                 .iter()
                 .map(|attachment| {
-                    let attachment_ix = attachments.iter().position(|at| at == attachment).unwrap();
-                    let format = &formats[attachment_ix];
-                    let Sequence((
-                        _,
-                        ArrowPair((Sequence((load_op, initial_layout)), Sequence((store_op, final_layout)))),
-                    )) = pass
+                    let data = new_data.attachments.get(attachment).expect("attachment not found");
+                    let format = &data.format;
+                    let PassLayout {
+                        load_op,
+                        initial_layout,
+                        store_op,
+                        final_layout,
+                    } = pass
                         .layouts
                         .iter()
-                        .find(|Sequence((at, _))| at == attachment)
+                        .find(|(name, _)| *name == attachment)
+                        .map(|(_name, layout)| layout)
                         .expect("No layout info for used attachment");
                     let load_op = match load_op {
                         LoadOp::Clear => quote!(CLEAR),
@@ -279,15 +667,23 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         StoreOp::Store => quote!(STORE),
                         StoreOp::Discard => quote!(DONT_CARE),
                     };
+                    let format = format.clone().map(|s| format_ident!("{}", s));
                     let format = match format {
                         StaticOrDyn::Dyn => {
-                            let dyn_ix = dynamic_attachments.binary_search(&attachment_ix).unwrap();
+                            let dyn_ix = pass
+                                .attachments
+                                .iter()
+                                .filter(|&at| new_data.attachments.get(at).unwrap().format.is_dyn())
+                                .position(|at| at == attachment)
+                                .unwrap();
                             let index = syn::Index::from(dyn_ix);
                             quote!(attachment_formats.#index)
                         }
                         StaticOrDyn::Static(format) => quote!(vk::Format::#format),
                     };
-                    let samples = format_ident!("TYPE_{}", samples.0[attachment_ix].base10_parse::<u8>().unwrap());
+                    let samples = format_ident!("TYPE_{}", data.samples);
+                    let initial_layout = format_ident!("{}", initial_layout);
+                    let final_layout = format_ident!("{}", final_layout);
                     quote! {
                         vk::AttachmentDescription::builder()
                             .format(#format)
@@ -304,20 +700,28 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .collect_vec();
 
             let attachment_count = attachment_desc.len();
-            let renderpass_definition = define_renderpass(&frame_input, pass);
-            let framebuffer_definition = define_framebuffer(&frame_input, pass);
+            let renderpass_definition = define_renderpass(&new_data, pass);
+            let framebuffer_definition = define_framebuffer(&new_data, pass);
+            let graph_ix = dependency_graph
+                .node_references()
+                .find(|(_ix, name)| *name == &pass_name.to_string())
+                .map(|x| x.0)
+                .unwrap()
+                .index();
+            let wait_instance = wait_instance.get(&pass_name.to_string()).unwrap();
 
+            let pass_name_ident = format_ident!("{}", pass_name);
             quote! {
                 #[allow(non_snake_case)]
-                pub(crate) mod #pass_name {
-                    use super::{vk, Device, RenderStage, WaitValueAccessor, SignalValueAccessor,
+                pub(crate) mod #pass_name_ident {
+                    use super::{vk, Device, RenderStage, WaitValueAccessor,
                         SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last,
                         OriginalFramebuffer, OriginalRenderPass};
 
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
 
-                    pub(crate) const INDEX: u8 = #pass_ix as u8;
+                    pub(crate) const INDEX: u8 = #graph_ix as u8;
 
                     #renderpass_definition
 
@@ -325,7 +729,7 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
                     #wait_instance
 
-                    #visibility fn get_attachment_descriptions(
+                    pub(crate) fn get_attachment_descriptions(
                         attachment_formats: (#(#format_param_ty,)*)
                     ) -> [vk::AttachmentDescription; #attachment_count] {
                         [
@@ -339,46 +743,43 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         })
         .collect_vec();
 
-    let async_pass_definitions = async_passes
-        .iter()
-        .map(|Sequence((ident, _))| ident)
-        // .zip(passes.len()..)
-        .zip(wait_instance.skip(passes.len()))
-        .enumerate()
-        .map(|(pass_ix, (pass, wait_instance))| {
-            let pass_ix = passes.len() + pass_ix;
+    let async_pass_definitions = new_data.async_passes.keys()
+        .map(|pass_name| {
+            let wait_instance = wait_instance.get(pass_name).unwrap();
+            let graph_ix = dependency_graph
+                .node_references()
+                .find(|(_ix, name)| *name == pass_name)
+                .map(|x| x.0)
+                .unwrap().index();
 
+            let pass_name_ident = format_ident!("{}", pass_name);
             quote! {
                 #[allow(non_snake_case)]
-                pub(crate) mod #pass {
-                    use super::{vk, RenderStage, WaitValueAccessor, SignalValueAccessor, SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last};
+                pub(crate) mod #pass_name_ident {
+                    use super::{vk, RenderStage, WaitValueAccessor, SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last};
 
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
 
-                    pub(crate) const INDEX: u8 = #pass_ix as u8;
+                    pub(crate) const INDEX: u8 = #graph_ix as u8;
 
                     #wait_instance
                 }
             }
         });
 
-    let shader_definitions = define_renderer(sets, pipelines);
-    let resource_definitions = TokenStream::from_iter(
-        renderer_input
-            .resources
-            .values()
-            .map(|resource| define_resource(&renderer_input, resource)),
-    );
+    let shader_definitions =
+        syn::parse_str::<TokenStream>(&new_data.shader_information.shader_type_definitions).unwrap();
 
-    let queue_manager = prepare_queue_manager(&renderer_input, &graph_ixes, &dependency_graph);
+    let queue_manager = prepare_queue_manager(&new_data, &dependency_graph);
 
+    let name = format_ident!("{}", new_data.name);
     let expanded = quote! {
         #validation_errors
 
         pub(crate) mod #name {
             use ash::vk;
-            use super::{Device, RenderStage, WaitValueAccessor, SignalValueAccessor, SemaphoreAccessor,
+            use super::{Device, RenderStage, WaitValueAccessor, SemaphoreAccessor,
                         RenderFrame, ImageIndex, as_of, as_of_last,
                         RenderPass as OriginalRenderPass,
                         Framebuffer as OriginalFramebuffer};
@@ -395,263 +796,19 @@ pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             )*
 
             #shader_definitions
-
-            pub(crate) mod resources {
-                use ash::vk;
-                use crate::renderer::{RenderFrame, device::{Device, Image, StaticBuffer, VmaMemoryUsage}};
-
-                #resource_definitions
-            }
         }
     };
 
-    proc_macro::TokenStream::from(expanded)
+    expanded
 }
 
-fn define_resource(input: &parsed::RendererInput, resource: &parsed::ResourceInput) -> TokenStream {
-    let parsed::ResourceInput { name, kind, .. } = resource;
-
-    let string_name = name.to_string();
-    let string_renderer_name = input.name.to_string();
-    let resource_debug_name = format!("{}::resources::{}", string_renderer_name, string_name);
-
-    let get_queue_family_index_for_pass = |pass: &Ident| {
-        input
-            .passes
-            .get(&pass)
-            .and(Some(parsed::QueueFamily::Graphics))
-            .or_else(|| input.async_passes.get(&pass).map(|async_pass| async_pass.queue))
-            .expect("pass not found")
-    };
-
-    let get_runtime_queue_family = |ty: parsed::QueueFamily| match ty {
-        parsed::QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
-        parsed::QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
-        parsed::QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
-    };
-
-    let per_usage_functions = resource.usages.iter().enumerate().map(|(ix, usage)| {
-        let acquire_ident = format_ident!("acquire_{}", usage.name);
-        let release_ident = format_ident!("release_{}", usage.name);
-        let prev_usage = match ix {
-            0 => resource.usages.last().unwrap(),
-            ix => &resource.usages[(ix - 1) % resource.usages.len()],
-        };
-        let next_usage = &resource.usages[(ix + 1) % resource.usages.len()];
-        let barrier_ident = format_ident!("barrier_{}_{}", prev_usage.name, usage.name);
-
-        let prev_queue = get_queue_family_index_for_pass(&prev_usage.pass);
-        let this_queue = get_queue_family_index_for_pass(&usage.pass);
-        let next_queue = get_queue_family_index_for_pass(&next_usage.pass);
-        let prev_queue_runtime = get_runtime_queue_family(prev_queue);
-        let this_queue_runtime = get_runtime_queue_family(this_queue);
-        let next_queue_runtime = get_runtime_queue_family(next_queue);
-
-        let acquire = {
-            let bypass = if ix == 0 {
-                quote!(if renderer.frame_number == 1 {
-                    return;
-                })
-            } else {
-                quote!()
-            };
-
-            if prev_queue == this_queue {
-                quote!()
-            } else {
-                quote! {
-                    pub(crate) fn #acquire_ident(&self, renderer: &RenderFrame, cb: vk::CommandBuffer) {
-                        #bypass
-
-                        unsafe {
-                            let buffer_barrier = &[
-                                vk::BufferMemoryBarrier2KHR::builder()
-                                    // TODO: granularity
-                                    .src_queue_family_index(#prev_queue_runtime)
-                                    .dst_queue_family_index(#this_queue_runtime)
-                                    .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                    .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                    .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                                     vk::AccessFlags2KHR::MEMORY_WRITE)
-                                    .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                                     vk::AccessFlags2KHR::MEMORY_WRITE)
-                                    .buffer(self.0.buffer.handle)
-                                    .size(vk::WHOLE_SIZE)
-                                    .build()
-                            ];
-                            renderer.device.synchronization2.cmd_pipeline_barrier2(
-                                cb,
-                                &vk::DependencyInfoKHR::builder().buffer_memory_barriers(buffer_barrier),
-                            );
-                        }
-                    }
-                }
-            }
-        };
-
-        // Barriers are only generated within the same pass and when neither one side of the dependency is a
-        // renderpass attachment
-        let barrier = if prev_usage.pass == usage.pass
-            && prev_usage.usage != parsed::ResourceUsageKind::Attachment
-            && usage.usage != parsed::ResourceUsageKind::Attachment
-        {
-            let buffer_barrier = match kind {
-                parsed::ResourceKind::StaticBuffer { .. } => quote!(vk::BufferMemoryBarrier2KHR::builder()
-                    // TODO: granularity
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                    .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                    .buffer(self.0.buffer.handle)
-                    .size(vk::WHOLE_SIZE)
-                    .build()),
-                parsed::ResourceKind::Image => quote!(),
-            };
-            let image_barrier = match kind {
-                parsed::ResourceKind::StaticBuffer { .. } => quote!(),
-                parsed::ResourceKind::Image => todo!("not needed yet"),
-                /* quote!(vk::ImageMemoryBarrier2KHR::builder()
-                 *     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                 *     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                 *     .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                 *     .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                 *     .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                 *     .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                 *     .image(self.0.handle)
-                 *     .subresource_range(vk::ImageSubresource::builder().)), */
-            };
-            quote! {
-                pub(crate) fn #barrier_ident(&self, renderer: &RenderFrame, cb: vk::CommandBuffer) {
-                    unsafe {
-                        let buffer_barrier = &[
-                            #buffer_barrier
-                        ];
-                        let image_barrier = &[
-                            #image_barrier
-                        ];
-                        renderer.device.synchronization2.cmd_pipeline_barrier2(
-                            cb,
-                            &vk::DependencyInfoKHR::builder()
-                                .buffer_memory_barriers(buffer_barrier)
-                                .image_memory_barriers(image_barrier),
-                        );
-                    }
-                }
-            }
-        } else {
-            quote!()
-        };
-
-        let release = if this_queue == next_queue {
-            quote!()
-        } else {
-            quote! {
-                pub(crate) fn #release_ident(&self, renderer: &RenderFrame, cb: vk::CommandBuffer) {
-                    unsafe {
-                        let buffer_barrier = &[
-                            vk::BufferMemoryBarrier2KHR::builder()
-                                // TODO: granularity
-                                .src_queue_family_index(#this_queue_runtime)
-                                .dst_queue_family_index(#next_queue_runtime)
-                                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                                .buffer(self.0.buffer.handle)
-                                .size(vk::WHOLE_SIZE)
-                                .build()
-                        ];
-                        renderer.device.synchronization2.cmd_pipeline_barrier2(
-                            cb,
-                            &vk::DependencyInfoKHR::builder().buffer_memory_barriers(buffer_barrier),
-                        );
-                    }
-                }
-            }
-        };
-
-        quote! {
-            #acquire
-            #barrier
-            #release
-        }
-    });
-
-    let mut validation_errors = quote!();
-
-    match kind {
-        parsed::ResourceKind::StaticBuffer { type_name } => quote! {
-            #[allow(non_camel_case_types)]
-            pub(crate) struct #name(pub(crate) StaticBuffer<super::#type_name>);
-
-            impl #name {
-                pub(crate) fn new(device: &Device) -> Self {
-                    let b = device.new_static_buffer_exclusive(
-                        vk::BufferUsageFlags::INDIRECT_BUFFER
-                            | vk::BufferUsageFlags::STORAGE_BUFFER
-                            | vk::BufferUsageFlags::TRANSFER_SRC
-                            | vk::BufferUsageFlags::TRANSFER_DST,
-                        VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-                    );
-                    device.set_object_name(b.buffer.handle, #resource_debug_name);
-                    Self(b)
-                }
-
-                pub(crate) fn destroy(self, device: &Device) {
-                    self.0.destroy(device);
-                }
-
-                #(#per_usage_functions)*
-            }
-
-            impl std::ops::Deref for #name {
-                type Target = StaticBuffer<super::#type_name>;
-
-                fn deref(&self) -> &Self::Target {
-                    &self.0
-                }
-            }
-
-            #validation_errors
-        },
-        parsed::ResourceKind::Image => quote! {
-            #[allow(non_camel_case_types)]
-            pub(crate) struct #name(pub(crate) Image);
-
-            impl #name {
-                pub(crate) fn import(device: &Device, image: Image) -> Self {
-                    device.set_object_name(image.handle, #resource_debug_name);
-                    Self(image)
-                }
-
-                pub(crate) fn destroy(self, device: &Device) {
-                    self.0.destroy(device);
-                }
-
-                #(#per_usage_functions)*
-            }
-
-            impl std::ops::Deref for #name {
-                type Target = Image;
-
-                fn deref(&self) -> &Self::Target {
-                    &self.0
-                }
-            }
-
-            #validation_errors
-        },
-    }
-}
-
-fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
+fn define_renderpass(new_data: &RendererInput, pass: &Pass) -> TokenStream {
     let passes_that_need_clearing = pass.attachments.iter().enumerate().map(|(ix, attachment)| {
-        let Sequence((_, ArrowPair((Sequence((load_op, _)), _)))) = pass
+        let PassLayout { load_op, .. } = pass
             .layouts
             .iter()
-            .find(|Sequence((at, _))| at == attachment)
+            .find(|(name, _layout)| *name == attachment)
+            .map(|(_name, at)| at)
             .expect("pass missing attachment in layouts block");
         (ix, load_op == &LoadOp::Clear)
     });
@@ -686,39 +843,34 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         .attachments
         .iter()
         .filter(|attachment| {
-            let attachment_ix = frame_input.attachments.iter().position(|at| at == *attachment).unwrap();
-            let format = &frame_input.formats[attachment_ix];
+            let format = &new_data.attachments.get(*attachment).unwrap().format;
             format.is_dyn()
         })
         .map(|_| quote!(vk::Format))
         .collect_vec();
-    let debug_name = format!("{} - {}", frame_input.name.to_string(), pass.name.to_string());
+    let debug_name = format!("{} - {}", new_data.name, pass.name);
 
-    let renderpass_begin = format!("{}::{}::begin", frame_input.name.to_string(), pass.name.to_string(),);
+    let renderpass_begin = format!("{}::{}::begin", new_data.name, pass.name);
 
     let (subpass_prerequisites, subpass_descriptions) = split2(pass.subpasses.iter().map(|subpass| {
         let (color_attachment_name, color_attachment_layout) = split2(
             subpass
-                .color
-                .as_ref()
-                .unwrap_or(&Unbracket(UnArray(vec![])))
+                .color_attachments
                 .iter()
-                .map(|ArrowPair(pair)| pair.clone()),
+                .map(|(name, layout)| (name, format_ident!("{}", layout))),
         );
         let (resolve_attachment_name, resolve_attachment_layout) = split2(
             subpass
-                .resolve
-                .as_ref()
-                .unwrap_or(&Unbracket(UnArray(vec![])))
+                .resolve_attachments
                 .iter()
-                .map(|ArrowPair(pair)| pair.clone()),
+                .map(|(name, layout)| (name, format_ident!("{}", layout))),
         );
         assert!(
             resolve_attachment_name.is_empty() || (color_attachment_name.len() == resolve_attachment_name.len()),
             "If resolving any attachments, must provide one for\
             each color attachment, ATTACHMENT_UNUSED not supported yet"
         );
-        let color_attachment_ix = color_attachment_name.iter().map(|needle| {
+        let color_attachment_ix = color_attachment_name.iter().map(|&needle| {
             pass.attachments
                 .iter()
                 .position(|candidate| candidate == needle)
@@ -726,18 +878,17 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         });
         let (depth_stencil_attachment_name, depth_stencil_attachment_layout) = split2(
             subpass
-                .depth_stencil
-                .as_ref()
+                .depth_stencil_attachments
                 .iter()
-                .map(|Unbrace(ArrowPair(pair))| pair.clone()),
+                .map(|(name, layout)| (name, format_ident!("{}", layout))),
         );
-        let depth_stencil_attachment_ix = depth_stencil_attachment_name.iter().map(|needle| {
+        let depth_stencil_attachment_ix = depth_stencil_attachment_name.iter().map(|&needle| {
             pass.attachments
                 .iter()
                 .position(|candidate| candidate == needle)
                 .expect("subpass depth stencil refers to nonexistent attachment")
         });
-        let resolve_attachment_ix = resolve_attachment_name.iter().map(|needle| {
+        let resolve_attachment_ix = resolve_attachment_name.iter().map(|&needle| {
             pass.attachments
                 .iter()
                 .position(|candidate| candidate == needle)
@@ -813,43 +964,41 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         )
     }));
 
-    let zero_dependencies = Unbrace(UnArray(vec![]));
-    let subpass_dependency = pass
-        .dependencies
-        .as_ref()
-        .unwrap_or(&zero_dependencies)
-        .iter()
-        .map(|dep| {
-            // (dep.from, dep.to, dep.src_stage, dep.dst_stage, dep.src_access, dep.dst_access);
-            let src_subpass = pass
-                .subpasses
-                .iter()
-                .position(|candidate| candidate.name == dep.from)
-                .expect("did not find src subpass");
-            let dst_subpass = pass
-                .subpasses
-                .iter()
-                .position(|candidate| candidate.name == dep.to)
-                .expect("did not find src subpass");
-            let SubpassDependency {
-                src_stage: src_stage_mask,
-                dst_stage: dst_stage_mask,
-                src_access: src_access_mask,
-                dst_access: dst_access_mask,
-                ..
-            } = dep;
+    let subpass_dependency = pass.dependencies.iter().map(|dep| {
+        // (dep.from, dep.to, dep.src_stage, dep.dst_stage, dep.src_access, dep.dst_access);
+        let src_subpass = pass
+            .subpasses
+            .iter()
+            .position(|candidate| candidate.name == dep.src)
+            .expect("did not find src subpass");
+        let dst_subpass = pass
+            .subpasses
+            .iter()
+            .position(|candidate| candidate.name == dep.dst)
+            .expect("did not find src subpass");
+        let SubpassDependency {
+            src_stage: src_stage_mask,
+            dst_stage: dst_stage_mask,
+            src_access: src_access_mask,
+            dst_access: dst_access_mask,
+            ..
+        } = dep;
+        let src_stage_mask = format_ident!("{}", src_stage_mask);
+        let dst_stage_mask = format_ident!("{}", dst_stage_mask);
+        let src_access_mask = format_ident!("{}", src_access_mask);
+        let dst_access_mask = format_ident!("{}", dst_access_mask);
 
-            quote! {
-                vk::SubpassDependency::builder()
-                    .src_subpass(#src_subpass as u32)
-                    .dst_subpass(#dst_subpass as u32)
-                    .src_stage_mask(vk::PipelineStageFlags::#src_stage_mask)
-                    .dst_stage_mask(vk::PipelineStageFlags::#dst_stage_mask)
-                    .src_access_mask(vk::AccessFlags::#src_access_mask)
-                    .dst_access_mask(vk::AccessFlags::#dst_access_mask)
-                    .build()
-            }
-        });
+        quote! {
+            vk::SubpassDependency::builder()
+                .src_subpass(#src_subpass as u32)
+                .dst_subpass(#dst_subpass as u32)
+                .src_stage_mask(vk::PipelineStageFlags::#src_stage_mask)
+                .dst_stage_mask(vk::PipelineStageFlags::#dst_stage_mask)
+                .src_access_mask(vk::AccessFlags::#src_access_mask)
+                .dst_access_mask(vk::AccessFlags::#dst_access_mask)
+                .build()
+        }
+    });
 
     let attachment_count = pass.attachments.len();
 
@@ -930,28 +1079,20 @@ fn define_renderpass(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
     }
 }
 
-fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
+fn define_framebuffer(new_data: &RendererInput, pass: &Pass) -> TokenStream {
     let debug_name = format!(
         "{} framebuffer {} [{{}}]",
-        frame_input.name.to_string(),
+        new_data.name.to_string(),
         pass.name.to_string()
     );
     let attachment_count = pass.attachments.len();
     let attachment_ix = pass.attachments.iter().enumerate().map(|(ix, _)| ix).collect_vec();
 
-    let dynamic_attachments = frame_input
-        .attachments
-        .iter()
-        .zip(frame_input.formats.iter())
-        .enumerate()
-        .flat_map(|(ix, (_, format))| if format.is_dyn() { Some(ix) } else { None })
-        .collect::<Vec<_>>();
     let format_param_ty = pass
         .attachments
         .iter()
         .filter(|attachment| {
-            let attachment_ix = frame_input.attachments.iter().position(|at| at == *attachment).unwrap();
-            let format = &frame_input.formats[attachment_ix];
+            let format = &new_data.attachments.get(*attachment).unwrap().format;
             format.is_dyn()
         })
         .map(|_| quote!(vk::Format))
@@ -960,15 +1101,22 @@ fn define_framebuffer(frame_input: &FrameInput, pass: &Pass) -> TokenStream {
         .attachments
         .iter()
         .map(|attachment| {
-            let attachment_ix = frame_input.attachments.iter().position(|at| at == attachment).unwrap();
-            let format = &frame_input.formats[attachment_ix];
+            let format = &new_data.attachments.get(attachment).unwrap().format;
             match format {
                 StaticOrDyn::Dyn => {
-                    let dyn_ix = dynamic_attachments.binary_search(&attachment_ix).unwrap();
+                    let dyn_ix = pass
+                        .attachments
+                        .iter()
+                        .filter(|&at| new_data.attachments.get(at).unwrap().format.is_dyn())
+                        .position(|at| at == attachment)
+                        .unwrap();
                     let index = syn::Index::from(dyn_ix);
                     quote!(dyn_attachment_formats.#index)
                 }
-                StaticOrDyn::Static(format) => quote!(vk::Format::#format),
+                StaticOrDyn::Static(format) => {
+                    let format = format_ident!("{}", format);
+                    quote!(vk::Format::#format)
+                }
             }
         })
         .collect_vec();
@@ -1096,14 +1244,23 @@ make_split!(split5, [A, B, C, D, E] [0, 1, 2, 3, 4]);
 make_split!(split6, [A, B, C, D, E, F] [0, 1, 2, 3, 4, 5]);
 make_split!(split7, [A, B, C, D, E, F, G] [0, 1, 2, 3, 4, 5, 6]);
 
-fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Ident), Ident>) -> TokenStream {
-    let DescriptorSet {
-        name: set_name,
-        bindings,
-        ..
-    } = set;
+#[proc_macro]
+pub fn define_set(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let inputs::DescriptorSet { name, .. } = parse_macro_input!(input as inputs::DescriptorSet);
+    let data = fetch().unwrap();
+    let set = data.descriptor_sets.get(&name.to_string()).unwrap();
 
-    let binding_count = bindings.len();
+    define_set_old(&data.name, set, &data.shader_information.set_binding_type_names).into()
+}
+
+fn define_set_old(
+    renderer_name: &str,
+    set: &DescriptorSet,
+    set_binding_type_names: &HashMap<(String, String), String>,
+) -> TokenStream {
+    let DescriptorSet { name, bindings, .. } = set;
+    let set_name = format_ident!("{}", name);
+
     let (binding_ix, desc_type, desc_count, stage, const_binding) =
         split5(bindings.iter().enumerate().map(|(ix, binding)| {
             let Binding {
@@ -1111,24 +1268,23 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                 partially_bound,
                 update_after_bind,
                 count,
-                stages,
+                shader_stages,
                 ..
             } = binding;
+            let descriptor_type = format_ident!("{}", descriptor_type);
             (
                 ix,
                 quote! { vk::DescriptorType::#descriptor_type },
-                count.as_ref().map(|c| c.0.0.clone()).unwrap_or(parse_quote!(1)),
-                stages
+                count,
+                shader_stages
                     .iter()
-                    .map(|s| quote!(vk::ShaderStageFlags::#s))
+                    .map(|s| { let s = format_ident!("{}", s); quote!(vk::ShaderStageFlags::#s) })
                     .collect::<Vec<_>>(),
                 {
                     let partially_bound = partially_bound
-                        .as_ref()
-                        .map(|_| quote!(| vk::DescriptorBindingFlags::PARTIALLY_BOUND.as_raw()));
+                        .then(|| quote!(| vk::DescriptorBindingFlags::PARTIALLY_BOUND.as_raw()));
                     let update_after_bind = update_after_bind
-                        .as_ref()
-                        .map(|_| quote!(| vk::DescriptorBindingFlags::UPDATE_AFTER_BIND.as_raw()));
+                        .then(|| quote!(| vk::DescriptorBindingFlags::UPDATE_AFTER_BIND.as_raw()));
                     quote! {
                         vk::DescriptorBindingFlags::from_raw(vk::DescriptorBindingFlags::empty().as_raw() #partially_bound #update_after_bind)
                     }
@@ -1143,18 +1299,23 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
             let Binding {
                 name, descriptor_type, ..
             } = binding;
+            let name = format_ident!("{}", name);
 
             if descriptor_type == "UNIFORM_BUFFER" || descriptor_type == "STORAGE_BUFFER" {
                 let ty = set_binding_type_names
-                    .get(&(set_name.clone(), name.clone()))
+                    .get(&(set_name.to_string(), name.to_string()))
                     .expect("failed to find set binding type name");
+                let ty = format_ident!("{}", ty);
                 let binding_ix = binding_ix as u32;
 
+                let descriptor_type = format_ident!("{}", descriptor_type);
+                let renderer_name = format_ident!("{}", renderer_name);
                 quote! {
                     pub(crate) struct #name;
 
                     impl crate::renderer::DescriptorBufferBinding for #name {
-                        type T = super::super::#ty;
+                        // TODO: root path hardcoded
+                        type T = crate::renderer::#renderer_name::#ty;
                         type Set = super::Set;
                         const INDEX: u32 = #binding_ix;
                         const DESCRIPTOR_TYPE: ash::vk::DescriptorType = ash::vk::DescriptorType::#descriptor_type;
@@ -1167,7 +1328,7 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
         .collect::<Vec<_>>();
 
     let layout_debug_name = format!("{} Layout", set_name.to_string());
-    let set_debug_name = format!("{} Set [{{}}]", set_name.to_string());
+    let set_debug_name = set_name.to_string();
 
     quote! {
         pub(crate) mod #set_name {
@@ -1181,13 +1342,16 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                 pub(crate) layout: DescriptorSetLayout,
             }
 
-            impl crate::renderer::DescriptorSetLayout<#binding_count> for Layout {
-                const BINDING_FLAGS: [vk::DescriptorBindingFlags; #binding_count] = [
-                    #(#const_binding),*
-                ];
+            impl crate::renderer::DescriptorSetLayout for Layout {
+                const DEBUG_NAME: &'static str = #layout_debug_name;
 
-                fn binding_layout() -> [vk::DescriptorSetLayoutBinding; #binding_count] {
-                    [
+                fn binding_flags() -> smallvec::SmallVec<[vk::DescriptorBindingFlags; 8]> {
+                    smallvec::smallvec![
+                        #(#const_binding),*
+                    ]
+                }
+                fn binding_layout() -> smallvec::SmallVec<[vk::DescriptorSetLayoutBinding; 8]> {
+                    smallvec::smallvec![
                         #(
                             vk::DescriptorSetLayoutBinding {
                                 binding: #binding_ix as u32,
@@ -1199,20 +1363,6 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
                         ),*
                     ]
                 }
-
-                fn new(device: &Device) -> Layout {
-                    use crate::renderer::DescriptorSetLayout;
-
-                    Layout {
-                        layout: Layout::new_raw(device, #layout_debug_name)
-                    }
-                }
-            }
-
-            impl Layout {
-                pub(crate) fn destroy(self, device: &Device) {
-                    self.layout.destroy(device);
-                }
             }
 
             pub(crate) struct Set {
@@ -1220,23 +1370,12 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
             }
 
             impl crate::renderer::DescriptorSet for Set {
+                type Layout = Layout;
+
+                const DEBUG_NAME: &'static str = #set_debug_name;
+
                 fn vk_handle(&self) -> vk::DescriptorSet {
                     self.set.handle
-                }
-            }
-
-            impl Set {
-                pub(crate) fn new(device: &Device,
-                                main_descriptor_pool: &MainDescriptorPool,
-                                layout: &Layout,
-                                ix: u32) -> Set {
-                    let set = main_descriptor_pool.0.allocate_set(device, &layout.layout);
-                    device.set_object_name(set.handle, &format!(#set_debug_name, ix));
-                    Set { set }
-                }
-
-                pub(crate) fn destroy(self, pool: &DescriptorPool, device: &Device) {
-                    self.set.destroy(pool, device);
                 }
             }
 
@@ -1249,28 +1388,38 @@ fn define_set(set: &DescriptorSet, set_binding_type_names: &HashMap<(Ident, Iden
     }
 }
 
-fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStream {
-    let Pipe {
+#[proc_macro]
+pub fn define_pipe(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as inputs::Pipe);
+    let pipe = Pipeline::from(input);
+    let data = fetch().unwrap();
+
+    define_pipe_old(
+        &pipe,
+        data.shader_information.push_constant_type_definitions.get(&pipe.name),
+    )
+    .into()
+}
+
+fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> TokenStream {
+    let Pipeline {
         name,
         specialization_constants,
-        descriptors,
+        descriptor_sets: descriptors,
         specific,
         varying_subgroup_stages,
         ..
     } = pipe;
     let specialization = {
-        let empty_vec = vec![];
-        let s = match specialization_constants {
-            Some(Unbracket(UnArray(s))) => s,
-            None => &empty_vec,
-        };
-        let (field_id, field_name, field_ty) = split3(s.iter().map(|ArrowPair((id, field))| {
-            let name = field.ident.as_ref().unwrap();
-            let ty = &field.ty;
-
-            (id, name, ty)
-        }));
-        let field_count = s.len();
+        let (field_id, field_name, field_ty) =
+            split3(specialization_constants.iter().map(|(id, NamedField { name, ty })| {
+                (
+                    id,
+                    syn::parse_str::<Ident>(name).unwrap(),
+                    syn::parse_str::<Type>(ty).unwrap(),
+                )
+            }));
+        let field_count = specialization_constants.len();
         let zero = quote!(0u32);
         let field_offset = field_ty.iter().fold(vec![zero], |mut offsets, ty| {
             let last = offsets.last().unwrap();
@@ -1320,15 +1469,14 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             }
         }
     };
-    let descriptor_ref = descriptors;
     let stage_flags = match specific {
         // TODO: imprecise
         SpecificPipe::Graphics(_) => quote!(vk::ShaderStageFlags::ALL_GRAPHICS),
-        SpecificPipe::Compute(_) => quote!(vk::ShaderStageFlags::COMPUTE),
+        SpecificPipe::Compute => quote!(vk::ShaderStageFlags::COMPUTE),
     };
     let pipeline_bind_point = match specific {
         SpecificPipe::Graphics(_) => quote!(vk::PipelineBindPoint::GRAPHICS),
-        SpecificPipe::Compute(_) => quote!(vk::PipelineBindPoint::COMPUTE),
+        SpecificPipe::Compute => quote!(vk::PipelineBindPoint::COMPUTE),
     };
     let push_constant_range = match push_constant_type {
         Some(_) => quote! {
@@ -1368,23 +1516,22 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     };
 
     let vertex_definitions = match specific {
-        SpecificPipe::Compute(_) => quote!(),
+        SpecificPipe::Compute => quote!(),
         SpecificPipe::Graphics(graphics) => {
             let (binding_ix, binding_format, binding_rust_type) = split3(
                 graphics
                     .vertex_inputs
                     .iter()
-                    .flat_map(|inputs| inputs.iter())
                     .enumerate()
-                    .map(|(binding_ix, field)| {
+                    .map(|(binding_ix, NamedField { ty, .. })| {
                         (
                             binding_ix as u32,
-                            to_vk_format(field.ty.to_token_stream()),
-                            to_rust_type(field.ty.to_token_stream()),
+                            to_vk_format(syn::parse_str::<Type>(ty).unwrap().to_token_stream()),
+                            to_rust_type(syn::parse_str::<Type>(ty).unwrap().to_token_stream()),
                         )
                     }),
             );
-            let binding_count = graphics.vertex_inputs.as_ref().map(|inputs| inputs.len()).unwrap_or(0);
+            let binding_count = graphics.vertex_inputs.len();
 
             quote! {
                 static ATTRIBUTE_DESCS:
@@ -1438,24 +1585,23 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             ));
         let shader_src_path = shader_src_path.to_str().unwrap();
         let shader_stage_path = format_ident!("{}_PATH", &shader_stage);
+        let shader_stage = syn::parse_str::<Ident>(&shader_stage).unwrap();
         spirv_code.extend_one(quote! {
-            pub(crate) static #shader_stage: &'static [u8] = include_bytes_align_as!(u32, #shader_path);
+            pub(crate) static #shader_stage: &'static [u8] = crate::renderer::include_bytes_align_as!(u32, #shader_path);
             #[cfg(feature = "shader_reload")]
             pub(crate) static #shader_stage_path: &'static str = #shader_src_path;
         });
     }
 
-    let mut errors = quote!();
-
     let pipe_arguments_new_types = match specific {
         SpecificPipe::Graphics(specific) => {
             let dynamic_samples =
-                extract_optional_dyn(&specific.samples, quote!(vk::SampleCountFlags)).unwrap_or(quote!());
+                extract_optional_dyn(&specific.samples, quote!(vk::SampleCountFlags)).unwrap_or_default();
             quote! {
                 (vk::RenderPass, u32, #dynamic_samples)
             }
         }
-        SpecificPipe::Compute(_) => quote!(()),
+        SpecificPipe::Compute => quote!(()),
     };
     let pipe_argument_short = match specific {
         SpecificPipe::Graphics(specific) => {
@@ -1468,7 +1614,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             }
             args
         }
-        SpecificPipe::Compute(_) => vec![],
+        SpecificPipe::Compute => vec![],
     };
     let shader_stage = specific.stages();
     let shader_stage_path = shader_stage
@@ -1480,100 +1626,95 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     let varying_subgroup_stages = shader_stage
         .iter()
         .map(|stage| {
-            match varying_subgroup_stages {
-                // varying all stages
-                Some(UnOption(None)) => &allow_varying_snippet,
-                // varying in this stage
-                Some(UnOption(Some(Unbracket(UnArray(stages)))))
-                    if stages.iter().any(|candidate| candidate == stage) =>
-                {
-                    &allow_varying_snippet
-                }
-                _ => &forbid_varying_snippet,
+            if varying_subgroup_stages.iter().any(|candidate| candidate == stage) {
+                &allow_varying_snippet
+            } else {
+                &forbid_varying_snippet
             }
         })
         .collect_vec();
 
     let pipeline_definition_inner = match specific {
         SpecificPipe::Graphics(specific) => {
-            let polygon_mode = parse_quote!(FILL);
+            let truthy: &LitBool = &parse_quote!(true);
+            let falsy: &LitBool = &parse_quote!(false);
+            let polygon_mode: Ident = parse_quote!(FILL);
             let polygon_mode = specific
                 .polygon_mode
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&polygon_mode, &mut errors))
-                .unwrap_or(&polygon_mode);
-            let front_face = parse_quote!(CLOCKWISE);
+                .map(|p| format_ident!("{}", p))
+                .unwrap_or_default(polygon_mode.clone());
+            let front_face: Ident = parse_quote!(CLOCKWISE);
             let front_face = specific
                 .front_face_mode
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&front_face, &mut errors))
-                .unwrap_or(&front_face);
+                .map(|p| format_ident!("{}", p))
+                .unwrap_or_default(front_face.clone());
             let front_face_dynamic =
                 extract_optional_dyn(&specific.front_face_mode, quote!(vk::DynamicState::FRONT_FACE_EXT,));
-            let topology_mode = parse_quote!(TRIANGLE_LIST);
+            let topology_mode: Ident = parse_quote!(TRIANGLE_LIST);
             let topology_mode = specific
                 .topology_mode
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&topology_mode, &mut errors))
-                .unwrap_or(&topology_mode);
+                .map(|p| format_ident!("{}", p))
+                .unwrap_or_default(topology_mode.clone());
             let topology_dynamic = extract_optional_dyn(
                 &specific.topology_mode,
                 quote!(vk::DynamicState::PRIMITIVE_TOPOLOGY_EXT,),
             );
-            let cull_mode = parse_quote!(NONE);
+            let cull_mode: Ident = parse_quote!(NONE);
             let cull_mode = specific
                 .cull_mode
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&cull_mode, &mut errors))
-                .unwrap_or(&cull_mode);
+                .map(|p| format_ident!("{}", p))
+                .unwrap_or_default(cull_mode.clone());
             let cull_mode_dynamic = extract_optional_dyn(&specific.cull_mode, quote!(vk::DynamicState::CULL_MODE_EXT,));
-            let depth_test_enable = parse_quote!(false);
+            let depth_test_enable = falsy;
             let depth_test_enable = specific
                 .depth_test_enable
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_test_enable, &mut errors))
-                .unwrap_or(&depth_test_enable);
+                .map(|p| if *p { truthy } else { falsy })
+                .unwrap_or_default(&depth_test_enable);
             let depth_test_dynamic = extract_optional_dyn(
                 &specific.depth_test_enable,
                 quote!(vk::DynamicState::DEPTH_TEST_ENABLE_EXT,),
             );
-            let depth_write_enable = parse_quote!(false);
+            let depth_write_enable = falsy;
             let depth_write_enable = specific
                 .depth_write_enable
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_write_enable, &mut errors))
-                .unwrap_or(&depth_write_enable);
+                .map(|p| if *p { truthy } else { falsy })
+                .unwrap_or_default(&depth_write_enable);
             let depth_write_dynamic = extract_optional_dyn(
                 &specific.depth_write_enable,
                 quote!(vk::DynamicState::DEPTH_WRITE_ENABLE_EXT,),
             );
-            let depth_bounds_enable = parse_quote!(false);
+            let depth_bounds_enable = falsy;
             let depth_bounds_enable = specific
                 .depth_bounds_enable
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_bounds_enable, &mut errors))
-                .unwrap_or(&depth_bounds_enable);
+                .map(|p| if *p { truthy } else { falsy })
+                .unwrap_or_default(&depth_bounds_enable);
             let depth_bounds_dynamic = extract_optional_dyn(
                 &specific.depth_bounds_enable,
                 quote!(vk::DynamicState::DEPTH_BOUNDS_TEST_ENABLE_EXT,),
             );
-            let depth_compare_op = parse_quote!(NEVER);
+            let depth_compare_op: Ident = parse_quote!(NEVER);
             let depth_compare_op = specific
                 .depth_compare_op
                 .as_ref()
-                .map(|p| p.as_ref().unwrap_or_warn_redundant(&depth_compare_op, &mut errors))
-                .unwrap_or(&depth_compare_op);
+                .map(|p| format_ident!("{}", p))
+                .unwrap_or_default(depth_compare_op.clone());
             let depth_compare_dynamic = extract_optional_dyn(
                 &specific.depth_compare_op,
                 quote!(vk::DynamicState::DEPTH_COMPARE_OP_EXT,),
             );
             let sample_count = match &specific.samples {
-                Some(StaticOrDyn::Static(c)) => {
-                    let s = format_ident!("TYPE_{}", c.base10_parse::<u8>().unwrap());
+                StaticOrDyn::Static(c) => {
+                    let s = format_ident!("TYPE_{}", c);
                     quote!(vk::SampleCountFlags::#s)
                 }
-                Some(StaticOrDyn::Dyn) => quote!(dynamic_samples),
-                None => quote!(vk::SampleCountFlags::TYPE_1),
+                StaticOrDyn::Dyn => quote!(dynamic_samples),
             };
 
             quote! {
@@ -1640,7 +1781,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                                     .build()])
                                 .build(),
                         )
-                        .layout(*layout.layout)
+                        .layout(layout)
                         .render_pass(renderpass)
                         .subpass(subpass)
                         .base_pipeline_handle(base_pipeline_handle)
@@ -1649,12 +1790,12 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
                 );
             }
         }
-        SpecificPipe::Compute(_) => {
+        SpecificPipe::Compute => {
             quote! {
                 let pipeline = device.new_compute_pipelines(&[
                     vk::ComputePipelineCreateInfo::builder()
                         .stage(stages[0])
-                        .layout(*layout.layout)
+                        .layout(layout)
                         .flags(flags)
                         .base_pipeline_handle(base_pipeline_handle)
                         .base_pipeline_index(-1)
@@ -1664,13 +1805,13 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
     };
 
     let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
+    let shader_stage = shader_stage
+        .iter()
+        .map(|x| syn::parse_str::<Ident>(x).unwrap())
+        .collect_vec();
     let pipeline_definition2 = quote! {
-        use std::time::Instant;
-        #[cfg(feature = "shader_reload")]
-        use super::super::{device::Shader, ReloadedShaders};
-
         pub(crate) struct Pipeline {
-            pub(crate) pipeline: device::Pipeline,
+            pub(crate) pipeline: crate::renderer::device::Pipeline,
         }
 
         impl crate::renderer::Pipeline for Pipeline {
@@ -1701,7 +1842,7 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
             fn new_raw(
                 device: &Device,
-                layout: &Self::Layout,
+                layout: vk::PipelineLayout,
                 stages: &[vk::PipelineShaderStageCreateInfo],
                 flags: vk::PipelineCreateFlags,
                 base_pipeline_handle: vk::Pipeline,
@@ -1721,6 +1862,26 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             }
         }
     };
+    let push_constant_type_name = match push_constant_type {
+        Some(_) => quote!(PushConstants),
+        None => quote!(()),
+    };
+    let pipeline_debug_name = name;
+    let is_graphics = match specific {
+        SpecificPipe::Graphics(_) => true,
+        SpecificPipe::Compute => false,
+    };
+    let name = syn::parse_str::<Ident>(&name).unwrap();
+    let descriptor_path = descriptors
+        .iter()
+        .map(|x| syn::parse_str::<Path>(x).unwrap())
+        .collect_vec();
+    let descriptor_ident = descriptor_path
+        .iter()
+        .map(|p| p.segments.last().unwrap().clone())
+        .collect_vec();
+
+    let push_constant_type = push_constant_type.map(|x| syn::parse_str::<TokenStream>(x).unwrap());
 
     quote! {
         pub(crate) mod #name {
@@ -1735,38 +1896,38 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
 
 
             impl crate::renderer::PipelineLayout for PipelineLayout {
-                type DescriptorSetLayouts = (
-                    #(super::#descriptor_ref::Layout,)*
+                type SmartDescriptorSetLayouts = (
+                    #(crate::renderer::SmartSetLayout<super::#descriptor_path::Layout>,)*
                 );
-                type DescriptorSets = (
-                    #(super::#descriptor_ref::Set,)*
+                type SmartDescriptorSets = (
+                    #(crate::renderer::SmartSet<super::#descriptor_path::Set>,)*
                 );
+                type PushConstants = #push_constant_type_name;
 
-                fn new(device: &Device, (#(#descriptor_ref,)*): <Self::DescriptorSetLayouts as crate::renderer::RefTuple>::Ref<'_>) -> Self {
+                const IS_GRAPHICS: bool = #is_graphics;
+                const DEBUG_NAME: &'static str = #pipeline_debug_name;
+
+                fn new(device: &Device, (#(#descriptor_ident,)*): <Self::SmartDescriptorSetLayouts as crate::renderer::RefTuple>::Ref<'_>) -> crate::renderer::device::PipelineLayout {
                     #[allow(unused_qualifications)]
-                    let layout = device.new_pipeline_layout(
-                        &[#(&#descriptor_ref.layout),*],
+                    device.new_pipeline_layout(
+                        &[#(&#descriptor_ident.layout),*],
                         &[#push_constant_range],
-                    );
-
-                    // TOOD: debug name
-
-                    PipelineLayout { layout }
+                    )
                 }
 
                 fn bind_descriptor_sets(
-                    &self,
+                    layout: vk::PipelineLayout,
                     device: &Device,
                     command_buffer: vk::CommandBuffer,
-                    (#(#descriptor_ref,)*): <Self::DescriptorSets as crate::renderer::RefTuple>::Ref<'_>,
+                    (#(#descriptor_ident,)*): <Self::SmartDescriptorSets as crate::renderer::RefTuple>::Ref<'_>,
                 ) {
                     unsafe {
                         device.cmd_bind_descriptor_sets(
                             command_buffer,
                             #pipeline_bind_point,
-                            *self.layout,
+                            layout,
                             0,
-                            &[#(#descriptor_ref.set.handle),*],
+                            &[#(#descriptor_ident.vk_handle()),*],
                             &[],
                         );
                     }
@@ -1790,202 +1951,11 @@ fn define_pipe(pipe: &Pipe, push_constant_type: Option<TokenStream>) -> TokenStr
             #vertex_definitions
 
             #spirv_code
-
-            #errors
         }
     }
 }
 
-fn define_renderer(sets: &UnArray<DescriptorSet>, pipelines: &UnArray<Pipe>) -> proc_macro2::TokenStream {
-    let mut output = quote!();
-
-    let mut defined_types = HashMap::new();
-    // (set_name, binding_name) => type_name
-    // only available for buffers and stuff that is defined, image bindings won't have them
-    let mut set_binding_type_names: HashMap<(Ident, Ident), Ident> = HashMap::new();
-
-    for pipe in pipelines.iter() {
-        let mut push_constant_type = None;
-        let mut push_constant_spir_type = None;
-
-        for shader_stage in pipe.specific.stages() {
-            let shader_path = std::path::Path::new(&env::var("OUT_DIR").unwrap()).join(format!(
-                "{}.{}.spv",
-                pipe.name.to_string(),
-                shader_stage_to_file_extension(&shader_stage),
-            ));
-            let shader_file = File::open(&shader_path).unwrap();
-            let bytes: Vec<u8> = shader_file.bytes().filter_map(std::result::Result::ok).collect();
-            let spv = spirq::SpirvBinary::from(bytes);
-            let entry_points = spv.reflect_vec().expect("failed to reflect on spirv");
-            let entry = entry_points
-                .iter()
-                .find(|entry| entry.name == "main")
-                .expect("Failed to load entry point");
-
-            for spv in entry.spec.spec_consts() {
-                let rusty = pipe
-                    .specialization_constants
-                    .as_ref()
-                    .map(|x| x.iter().find(|p| spv.spec_id == p.0 .0.base10_parse::<u32>().unwrap()))
-                    .flatten();
-
-                match rusty {
-                    Some(rusty) => {
-                        if !compare_types(spv.ty, &rusty.1.ty) {
-                            let msg = format!(
-                                "shader {} spec constant mismatch for id = {} shader type = {:?}, rusty type = {:?}",
-                                shader_path.to_string_lossy(),
-                                spv.spec_id,
-                                spv.ty,
-                                rusty.1.ty,
-                            );
-                            output.extend(quote!(compile_error!(#msg);));
-                            continue;
-                        }
-                    }
-                    None => {
-                        let id = spv.spec_id;
-                        let msg = format!(
-                            "shader {} missing rust side of spec const id = {}",
-                            shader_path.to_string_lossy(),
-                            id
-                        );
-                        output.extend(quote! {
-                            compile_error!(#msg);
-                        });
-                    }
-                }
-            }
-
-            pipe.specialization_constants.as_ref().map(|x| {
-                for ArrowPair((rusty_id, _field)) in x.iter() {
-                    if entry
-                        .spec
-                        .spec_consts()
-                        .any(|c| c.spec_id == rusty_id.base10_parse::<u32>().unwrap())
-                    {
-                        continue;
-                    }
-                    let msg = format!(
-                        "shader {} missing shader side of spec const id = {}",
-                        shader_path.to_string_lossy(),
-                        rusty_id
-                    );
-                    output.extend(quote! {
-                        compile_error!(#msg);
-                    });
-                }
-            });
-
-            for desc in entry.descs() {
-                let rusty = sets
-                    .0
-                    .iter()
-                    .find(|set| {
-                        // TODO: more validation
-                        &set.name
-                            == pipe.descriptors[desc.desc_bind.set() as usize]
-                                .get_ident()
-                                .expect("failed to find a rust-side descriptor for binding")
-                    })
-                    .expect("failed to find a rust-side descriptor set");
-                let rusty_binding = &rusty.bindings[desc.desc_bind.bind() as usize];
-
-                match desc.desc_ty {
-                    spirq::ty::DescriptorType::StorageBuffer(n, spirq::Type::Struct(s))
-                    | spirq::ty::DescriptorType::UniformBuffer(n, spirq::Type::Struct(s)) => {
-                        match (desc.desc_ty, rusty_binding.descriptor_type.to_string().as_str()) {
-                            (spirq::ty::DescriptorType::StorageBuffer(..), "STORAGE_BUFFER") => {}
-                            (spirq::ty::DescriptorType::UniformBuffer(..), "UNIFORM_BUFFER") => {}
-                            (spirq::ty::DescriptorType::Image(..), "COMBINED_IMAGE_SAMPLER") => {}
-                            (spir_ty, rusty_ty) => {
-                                let msg = format!(
-                                    "Incorrect shader binding at set {} binding {}, shader declares {:?}, rusty binding is {}",
-                                    rusty.name.to_string(),
-                                    rusty_binding.name.to_string(),
-                                    spir_ty,
-                                    rusty_ty,
-                                );
-                                output.extend_one(quote! {
-                                    compile_error!(#msg);
-                                })
-                            }
-                        }
-                        if *n != rusty_binding.count.as_ref().map(|c| c.0.0.clone()).unwrap_or(parse_quote!(1)).base10_parse::<u32>().unwrap() {
-                            let msg = format!(
-                                "Wrong descriptor count for set {} binding {}, shader needs {}",
-                                rusty.name.to_string(),
-                                rusty_binding.name.to_string(),
-                                n
-                            );
-                            output.extend_one(quote! {
-                                compile_error!(#msg);
-                            })
-                        }
-                        let name = Ident::new(s.name().unwrap(), proc_macro2::Span::call_site());
-                        let (prerequisites, _name) = spirq_type_to_rust(&spirq::Type::Struct(s.clone()));
-                        for (name, spirq_ty, definition) in prerequisites.into_iter() {
-                            defined_types
-                                .entry(name)
-                                .and_modify(|placed| {
-                                    if placed != &spirq_ty {
-                                        let msg = format!(
-                                            "defined_types mismatch:\n\
-                                            previous: {:?}\n\
-                                            incoming: {:?}",
-                                            placed, &spirq_ty
-                                        );
-                                        output.extend_one(quote! {compile_error!(#msg);});
-                                    }
-                                })
-                                .or_insert_with(|| {
-                                    output.extend_one(definition);
-                                    spirq_ty.clone()
-                                });
-                        }
-
-                        set_binding_type_names
-                            .entry((rusty.name.clone(), rusty_binding.name.clone()))
-                            .and_modify(|placed_ty| {
-                                if placed_ty != &name {
-                                    let msg = format!(
-                                        "set binding type name mismatch:\n\
-                                            previous: {:?}\n\
-                                            incoming: {:?}",
-                                        placed_ty.to_string(),
-                                        &name.to_string()
-                                    );
-                                    output.extend_one(quote! {compile_error!(#msg);});
-                                }
-                            })
-                            .or_insert(name);
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(push_const) = entry.get_push_const() {
-                let (prereqs, _) = spirq_type_to_rust(push_const);
-                assert!(
-                    push_constant_type.is_none(),
-                    "no support for reused/multiple push constant ranges between shader stages"
-                );
-                push_constant_type = Some(prereqs.into_iter().map(|(_, _, tokens)| tokens).collect());
-                push_constant_spir_type = Some(push_const.clone());
-            }
-        }
-
-        rga::dump_rga(&sets.0, pipe, push_constant_spir_type.as_ref());
-        output.extend_one(define_pipe(pipe, push_constant_type))
-    }
-
-    output.extend(sets.iter().map(|set| define_set(set, &set_binding_type_names)));
-
-    output
-}
-
-fn shader_stage_to_file_extension(id: &Ident) -> &'static str {
+fn shader_stage_to_file_extension(id: &str) -> &'static str {
     if id == "VERTEX" {
         "vert"
     } else if id == "COMPUTE" {
@@ -1997,129 +1967,7 @@ fn shader_stage_to_file_extension(id: &Ident) -> &'static str {
     }
 }
 
-fn compare_types(spv: &spirq::Type, rust: &syn::Type) -> bool {
-    match (spv, rust) {
-        (spirq::Type::Scalar(spirq::ty::ScalarType::Signed(4)), syn::Type::Path(p)) => p.path == parse_quote!(i32),
-        (spirq::Type::Scalar(spirq::ty::ScalarType::Unsigned(4)), syn::Type::Path(p)) => p.path == parse_quote!(u32),
-        (spirq::Type::Scalar(spirq::ty::ScalarType::Unsigned(2)), syn::Type::Path(p)) => p.path == parse_quote!(u16),
-        _ => unimplemented!("unimplemented spirq type comparison {:?} and {:?}", spv, rust,),
-    }
-}
-
-// returns prerequisite + struct field definition
-fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStream)>, TokenStream) {
-    use spirq::*;
-    match spv {
-        Type::Matrix(ty::MatrixType {
-            vec_ty:
-                ty::VectorType {
-                    scalar_ty: ty::ScalarType::Float(4),
-                    nscalar: 4,
-                },
-            nvec: 4,
-            stride: 16,
-            major: ty::MatrixAxisOrder::ColumnMajor,
-        }) => (vec![], quote!(glm::Mat4)),
-        Type::Scalar(ty::ScalarType::Float(4)) => (vec![], quote!(f32)),
-        Type::Scalar(ty::ScalarType::Signed(4)) => (vec![], quote!(i32)),
-        Type::Scalar(ty::ScalarType::Unsigned(4)) => (vec![], quote!(u32)),
-        Type::Scalar(ty::ScalarType::Unsigned(2)) => (vec![], quote!(u16)),
-        Type::Struct(s) => {
-            let name = Ident::new(s.name().unwrap(), Span::call_site());
-            let (field_name, field_offset, field_ty) = split3((0..s.nmember()).map(|ix| {
-                let field = s.get_member(ix).unwrap();
-                let field_name = field.name.as_ref().unwrap().to_case(Case::Snake);
-                (
-                    Ident::new(&field_name, Span::call_site()),
-                    field.offset,
-                    spirq_type_to_rust(&field.ty),
-                )
-            }));
-            let (prereq, field_ty) = split2(field_ty.into_iter());
-            let mut prereq = prereq.into_iter().flatten().collect_vec();
-
-            let zero = quote!(0usize);
-            let rust_offset = field_ty.iter().fold(vec![zero], |mut offsets, ty| {
-                let last = offsets.last().unwrap();
-                let this = quote!(size_of::<#ty>());
-                let new = quote!(#last + #this);
-                offsets.push(new);
-                offsets
-            });
-
-            prereq.push((s.name().unwrap().to_string(), spv.clone(), quote! {
-                #[repr(C)]
-                pub(crate) struct #name {
-                    #(pub(crate) #field_name : #field_ty),*
-                }
-
-                #(
-                    static_assertions::const_assert_eq!(#rust_offset, #field_offset);
-                )*
-            }));
-
-            (prereq, quote!(#name))
-        }
-        Type::Vector(ty::VectorType {
-            scalar_ty: ty::ScalarType::Float(4),
-            nscalar: 4,
-        }) => (vec![], quote!(glm::Vec4)),
-        Type::Vector(ty::VectorType {
-            scalar_ty: ty::ScalarType::Unsigned(4),
-            nscalar: 3,
-        }) => (vec![], quote!(glm::UVec3)),
-        Type::Vector(ty::VectorType {
-            scalar_ty: ty::ScalarType::Float(4),
-            nscalar: 3,
-        }) => (vec![], quote!(glm::Vec3)),
-        Type::Vector(ty::VectorType {
-            scalar_ty: ty::ScalarType::Float(4),
-            nscalar: 2,
-        }) => (vec![], quote!(glm::Vec2)),
-        Type::Array(arr) if arr.nrepeat().is_some() => {
-            let nrepeat = arr.nrepeat().unwrap() as usize;
-            let (prereq, inner) = spirq_type_to_rust(arr.proto_ty());
-            (prereq, quote!([#inner; #nrepeat]))
-        }
-        _ => unimplemented!("spirq_type_to_rust {:?}", spv),
-    }
-}
-
-#[test]
-fn test_timeline1() {
-    use std::{io::Write, process::Stdio};
-    let unformatted = format!("{}", define_timeline2(quote! {pub(crate) TestTimeline [One, Two]}));
-    let mut child = std::process::Command::new("rustfmt")
-        .args(&["--config", "newline_style=Unix"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.as_mut().unwrap().write_all(unformatted.as_bytes());
-    let output = child.wait_with_output().unwrap();
-    let formatted = std::str::from_utf8(&output.stdout).unwrap();
-    pretty_assertions::assert_eq!(formatted, indoc::indoc! {"
-        #[allow(non_snake_case)]
-        pub(crate) mod TestTimeline {
-            pub(crate) struct One;
-            impl crate::renderer::TimelineStage for One {
-                const CYCLE: u64 = 2u64;
-                const OFFSET: u64 = 1u64;
-            }
-            pub(crate) struct Two;
-            impl crate::renderer::TimelineStage for Two {
-                const CYCLE: u64 = 2u64;
-                const OFFSET: u64 = 2u64;
-            }
-        }
-    "});
-}
-
-fn prepare_queue_manager(
-    input: &parsed::RendererInput,
-    graph_ixes: &HashMap<Ident, u32>,
-    dependency_graph: &DiGraph<Ident, DependencyType>,
-) -> TokenStream {
+fn prepare_queue_manager(input: &RendererInput, dependency_graph: &DiGraph<String, DependencyType>) -> TokenStream {
     assert!(
         input.passes.len() + input.async_passes.len() < usize::from(u8::MAX),
         "queue_manager can only handle dependency graphs with u8 indices"
@@ -2146,7 +1994,7 @@ fn prepare_queue_manager(
                 input
                     .async_passes
                     .get(name)
-                    .map(|async_pass| async_pass.queue == parsed::QueueFamily::Compute)
+                    .map(|async_pass| async_pass.queue == QueueFamily::Compute)
                     .unwrap_or(false)
             })
             .collect::<Vec<_>>();
@@ -2177,25 +2025,30 @@ fn prepare_queue_manager(
     let submit_clauses = input
         .passes
         .values()
-        .map(|parsed::Pass { ref name, .. }| (name, parsed::QueueFamily::Graphics))
+        .map(|Pass { ref name, .. }| (name, QueueFamily::Graphics))
         .chain(
             input
                 .async_passes
                 .values()
-                .map(|parsed::AsyncPass { name, queue, .. }| (name, *queue)),
+                .map(|AsyncPass { name, queue, .. }| (name, *queue)),
         )
         .map(|(name, queue)| {
+            let graph_ix = dependency_graph
+                .node_indices()
+                .find(|&ix| *name == dependency_graph[ix])
+                .expect("did not find pass in the dependency graph");
             let queue_def = match queue {
-                parsed::QueueFamily::Graphics => quote!(renderer.device.graphics_queue()),
-                parsed::QueueFamily::Compute => {
-                    let ix = graph_ixes.get(name).unwrap();
-                    let virtual_queue_index = toposort_compute_virtual_queue_index.get(&(*ix as usize)).unwrap();
+                QueueFamily::Graphics => quote!(renderer.device.graphics_queue()),
+                QueueFamily::Compute => {
+                    let virtual_queue_index = toposort_compute_virtual_queue_index.get(&graph_ix.index()).unwrap();
                     quote!(renderer.device.compute_queues[#virtual_queue_index % renderer.device.compute_queues.len()])
                 }
-                parsed::QueueFamily::Transfer => quote!(renderer.device.transfer_queue.as_ref().unwrap()),
+                QueueFamily::Transfer => quote!(renderer.device.transfer_queue.as_ref().unwrap()),
             };
+
+            let name_ident = format_ident!("{}", name);
             quote! {
-                ix if ix.index() as u8 == #name::INDEX => {
+                ix if ix.index() as u8 == #name_ident::INDEX => {
                     let queue = #queue_def.lock();
                     let buf = &mut [vk::CommandBuffer::null()];
                     let cmds: &[vk::CommandBuffer] = match cb {
@@ -2205,7 +2058,7 @@ fn prepare_queue_manager(
                         }
                         None => &[],
                     };
-                    #name::Stage::queue_submit(&image_index, &renderer, *queue, cmds).unwrap();
+                    #name_ident::Stage::queue_submit(&image_index, &renderer, *queue, cmds).expect("submit failed");
                 }
             }
         })
@@ -2228,4 +2081,27 @@ fn prepare_queue_manager(
             }
         }
     }
+}
+
+fn grouped_toposort<G: GraphBase + IntoNeighborsDirected + IntoNodeIdentifiers + Visitable>(g: G) -> Vec<Vec<G::NodeId>>
+where
+    G::NodeId: std::fmt::Debug,
+{
+    let toposort = petgraph::algo::toposort(&g, None).unwrap();
+
+    let mut toposort_grouped: Vec<Vec<G::NodeId>> = vec![];
+    for ix in toposort.iter() {
+        match toposort_grouped.last_mut() {
+            // if no path bridges from the last stage to ix
+            Some(last)
+                if !last
+                    .iter()
+                    .any(|candidate| petgraph::algo::has_path_connecting(&g, *candidate, *ix, None)) =>
+            {
+                last.push(*ix);
+            }
+            _ => toposort_grouped.push(vec![*ix]),
+        }
+    }
+    toposort_grouped
 }

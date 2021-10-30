@@ -1,7 +1,4 @@
-use std::{
-    mem::{replace, swap},
-    sync::Arc,
-};
+use std::{mem::replace, sync::Arc};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -10,15 +7,15 @@ use microprofile::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        as_of_previous, device::DoubleBuffered, frame_graph, systems::present::ImageIndex, CopiedResource,
-        DescriptorSetLayout, Device, DrawIndex, GraphicsTimeline, Image, ImageView, MainDescriptorPool, RenderFrame,
-        Sampler, SwapchainIndexToFrameNumber,
+        device::DoubleBuffered, frame_graph, systems::present::ImageIndex, textures_set, CopiedResource, Device,
+        DrawIndex, Image, ImageView, MainDescriptorPool, RenderFrame, RenderStage, Sampler, SmartSet, SmartSetLayout,
+        SwapchainIndexToFrameNumber,
     },
 };
 
 pub(crate) struct BaseColorDescriptorSet {
-    pub(crate) layout: frame_graph::textures_set::Layout,
-    pub(crate) set: DoubleBuffered<frame_graph::textures_set::Set>,
+    pub(crate) layout: SmartSetLayout<textures_set::Layout>,
+    pub(crate) set: DoubleBuffered<SmartSet<textures_set::Set>>,
     sampler: Sampler,
 }
 
@@ -39,11 +36,9 @@ pub(crate) struct GltfMeshNormalTexture(pub(crate) Arc<Image>);
 
 impl BaseColorDescriptorSet {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &mut MainDescriptorPool) -> BaseColorDescriptorSet {
-        let layout = frame_graph::textures_set::Layout::new(&renderer.device);
+        let layout = SmartSetLayout::new(&renderer.device);
 
-        let set = renderer.new_buffered(|ix| {
-            frame_graph::textures_set::Set::new(&renderer.device, &main_descriptor_pool, &layout, ix)
-        });
+        let set = renderer.new_buffered(|ix| SmartSet::new(&renderer.device, &main_descriptor_pool, &layout, ix));
 
         let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -167,15 +162,9 @@ pub(crate) fn recreate_base_color_descriptor_set(
 ) {
     scope!("ecs", "recreate_base_color_descriptor_set");
 
-    renderer
-        .graphics_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_index_map),
-        )
-        .unwrap();
+    frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
-    let new_set = frame_graph::textures_set::Set::new(
+    let new_set = SmartSet::new(
         &renderer.device,
         &main_descriptor_pool,
         &base_color_descriptor_set.layout,
@@ -195,13 +184,7 @@ pub(crate) fn update_base_color_descriptors(
 ) {
     scope!("ecs", "update_base_color_descriptors");
 
-    renderer
-        .graphics_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<GraphicsTimeline::SceneDraw>(&image_index, &swapchain_index_map),
-        )
-        .unwrap();
+    frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
     for (draw_id, base_color, normal_map) in &mut query.iter() {
         let base_color_update = &[vk::DescriptorImageInfo::builder()
@@ -248,13 +231,7 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
         .get_resource::<CopiedResource<SwapchainIndexToFrameNumber>>()
         .unwrap();
 
-    renderer
-        .graphics_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<GraphicsTimeline::SceneDraw>(&swapchain_index, &previous_indices),
-        )
-        .unwrap();
+    frame_graph::Main::Stage::wait_previous(&renderer, &swapchain_index, &previous_indices);
 
     let mut entities = vec![];
 

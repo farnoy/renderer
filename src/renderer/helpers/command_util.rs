@@ -1,5 +1,5 @@
 use ash::vk;
-use bevy_ecs::prelude::{FromWorld, World};
+
 
 use crate::renderer::{
     device::{Device, DoubleBuffered, StrictCommandPool, StrictRecordingCommandBuffer},
@@ -11,13 +11,12 @@ pub(crate) struct CommandUtil {
     command_buffers: DoubleBuffered<vk::CommandBuffer>,
 }
 
-impl FromWorld for CommandUtil {
-    fn from_world(world: &mut World) -> Self {
-        let renderer = world.get_resource::<RenderFrame>().unwrap();
+impl CommandUtil {
+    pub(crate) fn new(renderer: &RenderFrame, queue_family: u32) -> Self {
         let mut command_pools = renderer.new_buffered(|ix| {
             StrictCommandPool::new(
                 &renderer.device,
-                renderer.device.graphics_queue_family,
+                queue_family,
                 &format!("CommandUtil Command Pool[{}]", ix),
             )
         });
@@ -34,10 +33,10 @@ impl FromWorld for CommandUtil {
 }
 
 impl CommandUtil {
-    pub(crate) fn reset_and_record<'s, 'i>(
+    pub(crate) fn reset_and_record<'s>(
         &'s mut self,
         renderer: &'s RenderFrame,
-        image_index: &'i ImageIndex,
+        image_index: &ImageIndex,
     ) -> StrictRecordingCommandBuffer<'s> {
         let command_pool = self.command_pools.current_mut(image_index.0);
 

@@ -1,34 +1,35 @@
 use std::fmt::Debug;
 
-use derive_more::Deref;
 use derive_syn_parse::Parse;
-use proc_macro2::{TokenStream, TokenTree};
+use proc_macro2::TokenTree;
 use quote::quote;
+use serde::{Deserialize, Serialize};
 use syn::{
     braced, bracketed,
     parse::{Parse, ParseStream, Parser, Result},
     parse_quote,
     punctuated::Punctuated,
     token::{Brace, Bracket},
-    Expr, Field, Ident, LitBool, LitInt, Path, Token, Visibility,
+    Expr, Field, Ident, LitBool, LitInt, Path, Token, Type,
 };
 
 use super::keywords as kw;
 
-#[derive(Debug, Parse)]
+#[derive(Parse)]
+#[allow(unused)]
 pub struct ResourceInput {
     pub name: Ident,
-    pub(crate) kind: ResourceKind,
+    pub kind: ResourceKind,
     #[bracket]
     usages_bracket: Bracket,
     #[inside(usages_bracket)]
     pub usages: UnArray<Sequence<Ident, Sequence<Token![in], Sequence<Ident, ResourceUsage>>>>,
 }
 
-#[derive(Debug)]
-pub(crate) enum ResourceKind {
+pub enum ResourceKind {
     StaticBuffer(StaticBufferResource),
     Image,
+    AccelerationStructure,
 }
 
 impl Parse for ResourceKind {
@@ -36,26 +37,33 @@ impl Parse for ResourceKind {
         input
             .parse::<kw::Image>()
             .and(Ok(Self::Image))
+            .or_else(|_| {
+                input
+                    .parse::<kw::AccelerationStructure>()
+                    .and(Ok(Self::AccelerationStructure))
+            })
             .or(input.parse::<StaticBufferResource>().map(Self::StaticBuffer))
     }
 }
 
-#[derive(Debug, Parse)]
+#[derive(Parse)]
 pub struct StaticBufferResource {
     _static_buffer_kw: kw::StaticBuffer,
     _br_start: Token![<],
-    pub type_name: Ident,
+    pub type_name: Type,
     _br_end: Token![>],
 }
 
 #[derive(Clone, Debug)]
 pub enum ResourceUsage {
     Attachment,
+    VertexBuffer,
+    IndexBuffer,
     IndirectBuffer,
     TransferCopy,
     TransferClear,
-    /// (set, binding)
-    Descriptor(Ident, Ident),
+    /// (set, binding, pipeline_name)
+    Descriptor(Ident, Ident, Ident),
 }
 
 impl Parse for ResourceUsage {
@@ -63,26 +71,44 @@ impl Parse for ResourceUsage {
         input
             .parse::<Sequence<kw::indirect, kw::buffer>>()
             .and(Ok(ResourceUsage::IndirectBuffer))
-            .or(input.parse::<kw::attachment>().and(Ok(ResourceUsage::Attachment)))
-            .or(input
-                .parse::<Sequence<kw::transfer, kw::copy>>()
-                .and(Ok(ResourceUsage::TransferCopy)))
-            .or(input
-                .parse::<Sequence<kw::transfer, kw::clear>>()
-                .and(Ok(ResourceUsage::TransferClear)))
-            .or(input
-                .parse::<kw::descriptor>()
-                .and(input.parse::<Ident>().and_then(|set| {
-                    input.parse::<Token![.]>().and(
-                        input
-                            .parse::<Ident>()
-                            .and_then(|binding| Ok(ResourceUsage::Descriptor(set, binding))),
-                    )
-                })))
+            .or_else(|_x| input.parse::<kw::attachment>().and(Ok(ResourceUsage::Attachment)))
+            .or_else(|_| {
+                input
+                    .parse::<Sequence<kw::vertex, kw::buffer>>()
+                    .and(Ok(ResourceUsage::VertexBuffer))
+            })
+            .or_else(|_| {
+                input
+                    .parse::<Sequence<kw::index, kw::buffer>>()
+                    .and(Ok(ResourceUsage::IndexBuffer))
+            })
+            .or_else(|_x| {
+                input
+                    .parse::<Sequence<kw::transfer, kw::copy>>()
+                    .and(Ok(ResourceUsage::TransferCopy))
+            })
+            .or_else(|_x| {
+                input
+                    .parse::<Sequence<kw::transfer, kw::clear>>()
+                    .and(Ok(ResourceUsage::TransferClear))
+            })
+            .or_else(|_x| {
+                input
+                    .parse::<kw::descriptor>()
+                    .and(input.parse::<Ident>().and_then(|pipe_name| {
+                        input.parse::<Token![.]>().and(input.parse::<Ident>().and_then(|set| {
+                            input.parse::<Token![.]>().and(
+                                input
+                                    .parse::<Ident>()
+                                    .and_then(|binding| Ok(ResourceUsage::Descriptor(set, binding, pipe_name))),
+                            )
+                        }))
+                    }))
+            })
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum DependencyType {
     SameFrame,
     LastFrame,
@@ -118,10 +144,10 @@ impl Parse for QueueFamily {
     }
 }
 
-#[derive(Clone, Debug, Deref)]
+#[derive(Clone)]
 pub struct Sequence<A, B>(pub (A, B));
 
-impl<A: Parse + Debug, B: Parse + Debug> Parse for Sequence<A, B> {
+impl<A: Parse, B: Parse> Parse for Sequence<A, B> {
     fn parse(input: ParseStream) -> Result<Self> {
         // Forking here so that Sequence only consumes anything if it can parse everything
         let peeking = input.fork();
@@ -139,7 +165,7 @@ impl<A: Parse + Debug, B: Parse + Debug> Parse for Sequence<A, B> {
     }
 }
 
-#[derive(Clone, Debug, Deref)]
+#[derive(Clone, Debug)]
 pub struct Unbrace<T>(pub T);
 
 impl<T: Parse> Parse for Unbrace<T> {
@@ -151,7 +177,7 @@ impl<T: Parse> Parse for Unbrace<T> {
     }
 }
 
-#[derive(Clone, Debug, Deref)]
+#[derive(Clone, Debug)]
 pub struct Unbracket<T>(pub T);
 
 impl<T: Parse> Parse for Unbracket<T> {
@@ -163,7 +189,7 @@ impl<T: Parse> Parse for Unbracket<T> {
     }
 }
 
-#[derive(Debug, Deref, Clone)]
+#[derive(Debug, Clone)]
 pub struct UnArray<T>(pub Vec<T>);
 
 impl<T: Parse> Parse for UnArray<T> {
@@ -176,7 +202,7 @@ impl<T: Parse> Parse for UnArray<T> {
     }
 }
 
-#[derive(Clone, Debug, Deref)]
+#[derive(Clone, Debug)]
 pub struct UnOption<T>(pub Option<T>);
 
 impl<T: Parse> Parse for UnOption<T> {
@@ -224,22 +250,11 @@ impl<T> StaticOrDyn<T> {
     }
 }
 
-impl<T: PartialEq + Debug> StaticOrDyn<T> {
-    pub fn unwrap_or_warn_redundant(self, default: T, error_container: &mut TokenStream) -> T {
+impl<T: PartialEq + Debug> super::StaticOrDyn<T> {
+    pub fn unwrap_or_default(self, default: T) -> T {
         match self {
-            StaticOrDyn::Static(s) => {
-                if s == default {
-                    let msg = format!(
-                        "redundant static definition, would default to this anyway {:?}",
-                        default,
-                    );
-                    error_container.extend_one(quote!(compile_error!(#msg)));
-                    default
-                } else {
-                    s
-                }
-            }
-            StaticOrDyn::Dyn => default,
+            super::StaticOrDyn::Static(s) => s,
+            super::StaticOrDyn::Dyn => default,
         }
     }
 }
@@ -254,7 +269,7 @@ impl Parse for Pair {
     }
 }
 
-#[derive(Clone, Debug, Deref)]
+#[derive(Clone)]
 pub struct ArrowPair<A, B>(pub (A, B));
 
 impl<A: Parse, B: Parse> Parse for ArrowPair<A, B> {
@@ -266,9 +281,9 @@ impl<A: Parse, B: Parse> Parse for ArrowPair<A, B> {
     }
 }
 
-pub fn extract_optional_dyn<T, R>(a: &Option<StaticOrDyn<T>>, when_dyn: R) -> Option<R> {
+pub fn extract_optional_dyn<T, R>(a: &super::StaticOrDyn<T>, when_dyn: R) -> Option<R> {
     match a {
-        Some(StaticOrDyn::Dyn) => Some(when_dyn),
+        super::StaticOrDyn::Dyn => Some(when_dyn),
         _ => None,
     }
 }
@@ -378,9 +393,8 @@ impl Parse for StoreOp {
 
 #[derive(Parse)]
 pub struct FrameInput {
-    pub visibility: Visibility,
     #[allow(dead_code)]
-    pub name: Ident,
+    pub(crate) name: Ident,
     #[brace]
     #[allow(dead_code)]
     brace: Brace,
@@ -390,73 +404,38 @@ pub struct FrameInput {
     #[allow(dead_code)]
     attachments_brace: Brace,
     #[inside(attachments_brace)]
-    pub attachments: UnArray<Ident>,
+    pub(crate) attachments: UnArray<Ident>,
     #[prefix(kw::formats in brace)]
     #[brace]
     #[inside(brace)]
     #[allow(dead_code)]
     formats_brace: Brace,
     #[inside(formats_brace)]
-    pub formats: UnArray<StaticOrDyn<Expr>>,
+    pub(crate) formats: UnArray<StaticOrDyn<Expr>>,
     #[prefix(kw::samples in brace)]
     #[brace]
     #[inside(brace)]
     #[allow(dead_code)]
     samples_brace: Brace,
     #[inside(samples_brace)]
-    pub samples: UnArray<LitInt>,
+    pub(crate) samples: UnArray<LitInt>,
     #[prefix(kw::passes in brace)]
     #[brace]
     #[inside(brace)]
     #[allow(dead_code)]
     passes_brace: Brace,
     #[inside(passes_brace)]
-    pub passes: UnArray<Pass>,
+    pub(crate) passes: UnArray<Pass>,
     #[prefix(kw::async_passes in brace)]
     #[brace]
     #[inside(brace)]
     #[allow(dead_code)]
     async_passes_brace: Brace,
     #[inside(async_passes_brace)]
-    pub async_passes: UnArray<Sequence<Ident, UnOption<Sequence<kw::on, QueueFamily>>>>,
-    #[prefix(kw::dependencies in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    dependencies_brace: Brace,
-    #[inside(dependencies_brace)]
-    pub dependencies: UnArray<ArrowPair<Ident, Sequence<Ident, UnOption<DependencyType>>>>,
-    #[prefix(kw::sync in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    sync_brace: Brace,
-    #[inside(sync_brace)]
-    pub sync: UnArray<ArrowPair<Ident, Expr>>,
-    #[prefix(kw::resources in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    resources_brace: Brace,
-    #[inside(resources_brace)]
-    pub resources: UnArray<ResourceInput>,
-    #[prefix(kw::sets in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    sets_brace: Brace,
-    #[inside(sets_brace)]
-    pub sets: UnArray<DescriptorSet>,
-    #[prefix(kw::pipelines in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    pipelines_brace: Brace,
-    #[inside(pipelines_brace)]
-    pub pipelines: UnArray<Pipe>,
+    pub(crate) async_passes: UnArray<Sequence<Ident, UnOption<Sequence<kw::on, QueueFamily>>>>,
 }
 
-#[derive(Parse, Debug)]
+#[derive(Parse)]
 pub struct DescriptorSet {
     pub name: Ident,
     #[brace]
@@ -465,7 +444,7 @@ pub struct DescriptorSet {
     #[inside(brace)]
     pub bindings: UnArray<Binding>,
 }
-#[derive(Parse, Debug)]
+#[derive(Parse)]
 #[allow(dead_code)]
 pub struct Binding {
     pub name: Ident,
@@ -477,7 +456,7 @@ pub struct Binding {
     pub stages: Unbracket<UnArray<Ident>>,
 }
 
-#[derive(Parse, Debug)]
+#[derive(Parse)]
 pub struct Pipe {
     pub name: Ident,
     #[brace]
@@ -492,20 +471,15 @@ pub struct Pipe {
     #[inside(brace)]
     pub specialization_constants: Option<Unbracket<UnArray<ArrowPair<LitInt, NamedField>>>>,
     #[inside(brace)]
-    pub subgroup_sizes_kw1: Option<kw::varying>,
-    #[parse_if(subgroup_sizes_kw1.is_some())]
-    #[inside(brace)]
-    pub subgroup_sizes_kw2: Option<kw::subgroup>,
-    #[parse_if(subgroup_sizes_kw2.is_some())]
-    #[inside(brace)]
-    pub subgroup_sizes_kw3: Option<kw::size>,
-    #[parse_if(subgroup_sizes_kw3.is_some())]
+    pub subgroup_sizes_kw: UnOption<Sequence<Sequence<kw::varying, kw::subgroup>, kw::size>>,
+    #[parse_if(subgroup_sizes_kw.0.is_some())]
     #[inside(brace)]
     pub varying_subgroup_stages: Option<UnOption<Unbracket<UnArray<Ident>>>>,
     #[inside(brace)]
     pub specific: SpecificPipe,
 }
-#[derive(Parse, Debug)]
+#[derive(Parse)]
+#[allow(unused)]
 pub struct GraphicsPipe {
     samples_kw: Option<kw::samples>,
     #[parse_if(samples_kw.is_some())]
@@ -540,9 +514,8 @@ pub struct GraphicsPipe {
     #[parse_if(depth_bounds_enable_kw.0.is_some())]
     pub depth_bounds_enable: Option<StaticOrDyn<LitBool>>,
 }
-#[derive(Parse, Debug)]
+#[derive(Parse)]
 pub struct ComputePipe {}
-#[derive(Debug)]
 pub enum SpecificPipe {
     Graphics(GraphicsPipe),
     Compute(ComputePipe),
@@ -563,12 +536,11 @@ impl SpecificPipe {
     pub fn stages(&self) -> Vec<Ident> {
         match self {
             SpecificPipe::Compute(_) => vec![parse_quote!(COMPUTE)],
-            SpecificPipe::Graphics(g) => g.stages.iter().cloned().collect(),
+            SpecificPipe::Graphics(g) => g.stages.0 .0.iter().cloned().collect(),
         }
     }
 }
 
-#[derive(Debug, Deref)]
 pub struct NamedField(pub Field);
 impl Parse for NamedField {
     fn parse(input: ParseStream) -> Result<Self> {
@@ -576,7 +548,7 @@ impl Parse for NamedField {
     }
 }
 
-pub(crate) fn to_vk_format(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+pub fn to_vk_format(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     let parser = |input: ParseStream| {
         input
             .parse::<kw::vec2>()
@@ -592,7 +564,7 @@ pub(crate) fn to_vk_format(input: proc_macro2::TokenStream) -> proc_macro2::Toke
     parser.parse2(input).unwrap()
 }
 
-pub(crate) fn to_rust_type(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+pub fn to_rust_type(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     let parser = |input: ParseStream| {
         input
             .parse::<kw::vec2>()

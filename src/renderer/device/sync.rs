@@ -7,6 +7,7 @@ pub(crate) struct Semaphore {
     pub(crate) handle: vk::Semaphore,
 }
 
+#[derive(PartialEq, Eq, Hash)]
 pub(crate) struct TimelineSemaphore {
     pub(crate) handle: vk::Semaphore,
 }
@@ -59,11 +60,6 @@ impl TimelineSemaphore {
     pub(crate) fn value(&self, device: &Device) -> ash::prelude::VkResult<u64> {
         scope!("vk", "vkGetSemaphoreCounterValue");
         unsafe { device.get_semaphore_counter_value(self.handle) }
-    }
-
-    pub(crate) fn signal(&self, device: &Device, value: u64) -> ash::prelude::VkResult<()> {
-        scope!("vk", "vkSignalSemaphore");
-        unsafe { device.signal_semaphore(&vk::SemaphoreSignalInfo::builder().semaphore(self.handle).value(value)) }
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {

@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "vma", "macros", "macro_lib"]
+
 [package]
 name = "renderer"
 version = "0.1.0"
@@ -5,7 +8,7 @@ build = "build.rs"
 edition = "2021"
 
 [[bin]]
-name = "renderer"
+name = "renderer2"
 path = "src/main.rs"
 bench = false
 
@@ -43,6 +46,7 @@ notify = { version = "4.0.16", optional = true }
 num-traits = "0.2.6"
 petgraph = "0.6.0"
 rand = "0.8.4"
+scopeguard = "1.1.0"
 simba = "0.6.0"
 smallvec = { version = "1.2.0", features = ["union", "const_generics", "const_new", "specialization"] }
 spirq = { version = "0.4.6", optional = true }
@@ -51,10 +55,12 @@ static_assertions= "1.1.0"
 winit = "0.25.0"
 
 [build-dependencies]
+renderer-macro-lib = { path = "macro_lib" }
 bindgen = "0.59.1"
 cc = "1.0"
 jobserver = "0.1.21"
 rayon = "1.1.0"
+serde = { version = "1.0", features = ["derive"] } 
 
 [dev-dependencies]
 criterion = "0.3"

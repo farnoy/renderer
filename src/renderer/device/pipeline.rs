@@ -1,4 +1,4 @@
-use std::{ffi::CString, ops::Deref};
+use std::ops::Deref;
 
 use ash::vk;
 

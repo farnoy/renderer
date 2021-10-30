@@ -16,42 +16,79 @@ use crate::{
         systems::RuntimeConfiguration,
     },
     renderer::{
-        as_of_previous, binding_size,
-        device::{Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
-        frame_graph::{self, compact_draw_stream, cull_commands_count_set, cull_set, generate_work},
-        helpers::pick_lod,
+        binding_size, camera_set,
+        device::{Device, DoubleBuffered, VmaMemoryUsage},
+        frame_graph,
+        helpers::{command_util::CommandUtil, pick_lod},
+        model_set,
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
-        update_whole_buffer, BufferType, CameraMatrices, ComputeTimeline, CopiedResource, DescriptorSetLayout,
-        DrawIndex, GltfMesh, LocalTransferCommandPool, MainDescriptorPool, ModelData, Pipeline, PipelineLayout,
-        RenderFrame, RenderStage, Shader, SmartPipeline, Submissions, SwapchainIndexToFrameNumber, TransferTimeline,
+        update_whole_buffer, CameraMatrices, CopiedResource, DrawIndex, GltfMesh, MainDescriptorPool,
+        ModelData, RenderFrame, RenderStage, SmartPipeline, SmartPipelineLayout, SmartSet, SmartSetLayout,
+        Submissions, SwapchainIndexToFrameNumber,
     },
 };
+
+renderer_macros::define_set! {
+    cull_set {
+        indirect_commands STORAGE_BUFFER from [COMPUTE],
+        out_index_buffer STORAGE_BUFFER from [COMPUTE],
+        vertex_buffer STORAGE_BUFFER from [COMPUTE],
+        index_buffer STORAGE_BUFFER from [COMPUTE]
+    }
+}
+renderer_macros::define_set! {
+    cull_commands_count_set {
+        indirect_commands_count STORAGE_BUFFER from [COMPUTE]
+    }
+}
+renderer_macros::define_pipe! {
+    generate_work {
+        descriptors [model_set, camera_set, cull_set]
+        specialization_constants [1 => local_workgroup_size: u32]
+        compute
+    }
+}
+renderer_macros::define_pipe! {
+    compact_draw_stream {
+        descriptors [cull_set, cull_commands_count_set]
+        specialization_constants [
+            1 => local_workgroup_size: u32,
+            2 => draw_calls_to_compact: u32
+        ]
+        varying subgroup size
+        compute
+    }
+}
 
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
 pub(crate) struct CoarseCulled(pub(crate) bool);
 
+renderer_macros::define_resource! { IndirectCommandsBuffer = StaticBuffer<crate::renderer::frame_graph::IndirectCommands> }
+renderer_macros::define_resource! { IndirectCommandsCount = StaticBuffer<crate::renderer::frame_graph::IndirectCommandsCount> }
+renderer_macros::define_resource! { CulledIndexBuffer = StaticBuffer<crate::renderer::frame_graph::OutIndexBuffer> }
+
 pub(crate) struct CullPassData {
-    pub(crate) culled_commands_buffer: frame_graph::resources::indirect_commands_buffer,
-    pub(crate) culled_commands_count_buffer: frame_graph::resources::indirect_commands_count,
-    pub(crate) culled_index_buffer: BufferType<cull_set::bindings::out_index_buffer>,
-    compact_draw_stream_layout: compact_draw_stream::PipelineLayout,
-    compact_draw_stream_pipeline: compact_draw_stream::Pipeline,
-    cull_set_layout: cull_set::Layout,
-    cull_count_set_layout: cull_commands_count_set::Layout,
-    cull_set: cull_set::Set,
-    cull_count_set: cull_commands_count_set::Set,
-    // TODO: reorganize this
-    bypass_command_buffers: DoubleBuffered<vk::CommandBuffer>,
+    pub(crate) culled_commands_buffer: IndirectCommandsBuffer,
+    pub(crate) culled_commands_count_buffer: IndirectCommandsCount,
+    pub(crate) culled_index_buffer: CulledIndexBuffer,
+    compact_draw_stream_layout: SmartPipelineLayout<compact_draw_stream::PipelineLayout>,
+    compact_draw_stream_pipeline: SmartPipeline<compact_draw_stream::Pipeline>,
+    cull_set_layout: SmartSetLayout<cull_set::Layout>,
+    cull_count_set_layout: SmartSetLayout<cull_commands_count_set::Layout>,
+    cull_set: SmartSet<cull_set::Set>,
+    cull_count_set: SmartSet<cull_commands_count_set::Set>,
 }
 
 pub(crate) struct CullPassDataPrivate {
-    cull_pipeline_layout: generate_work::PipelineLayout,
+    cull_pipeline_layout: SmartPipelineLayout<generate_work::PipelineLayout>,
     cull_pipeline: SmartPipeline<generate_work::Pipeline>,
-    command_pools: DoubleBuffered<StrictCommandPool>,
-    command_buffers: DoubleBuffered<vk::CommandBuffer>,
+    compute_command_util: CommandUtil,
     previous_cull_pipeline: DoubleBuffered<Option<SmartPipeline<generate_work::Pipeline>>>,
-    cull_shader: Shader,
+}
+
+pub(crate) struct TransferCullPrivate {
+    transfer_command_util: CommandUtil,
 }
 
 pub(crate) const INITIAL_WORKGROUP_SIZE: u32 = 384;
@@ -80,7 +117,7 @@ pub(crate) fn coarse_culling(
 }
 
 impl CullPassDataPrivate {
-    pub(crate) fn new(
+    fn new(
         renderer: &RenderFrame,
         cull_pass_data: &CullPassData,
         model_data: &ModelData,
@@ -89,8 +126,7 @@ impl CullPassDataPrivate {
         let cull_specialization = generate_work::Specialization {
             local_workgroup_size: INITIAL_WORKGROUP_SIZE,
         };
-        let cull_shader = renderer.device.new_shader(generate_work::COMPUTE);
-        let cull_pipeline_layout = generate_work::PipelineLayout::new(
+        let cull_pipeline_layout = SmartPipelineLayout::new(
             &renderer.device,
             (
                 &model_data.model_set_layout,
@@ -99,26 +135,12 @@ impl CullPassDataPrivate {
             ),
         );
         let cull_pipeline = SmartPipeline::new(&renderer.device, &cull_pipeline_layout, cull_specialization, ());
-        let mut command_pools = renderer.new_buffered(|ix| {
-            StrictCommandPool::new(
-                &renderer.device,
-                renderer.device.compute_queue_family,
-                &format!("Cull pass Command Pool[{}]", ix),
-            )
-        });
-        let command_buffers = renderer.new_buffered(|ix| {
-            command_pools
-                .current_mut(ix)
-                .allocate(&format!("Cull pass CB[{}]", ix), &renderer.device)
-        });
 
         CullPassDataPrivate {
             cull_pipeline_layout,
             cull_pipeline,
-            command_pools,
-            command_buffers,
+            compute_command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
             previous_cull_pipeline: renderer.new_buffered(|_| None),
-            cull_shader,
         }
     }
 
@@ -128,27 +150,24 @@ impl CullPassDataPrivate {
         for pipe in self.previous_cull_pipeline.into_iter().flatten() {
             pipe.destroy(device);
         }
-        self.command_pools.into_iter().for_each(|pool| pool.destroy(device));
-        self.cull_shader.destroy(device);
+        self.compute_command_util.destroy(device);
     }
 }
 
 impl CullPassData {
-    pub(crate) fn new(
+    fn new(
         renderer: &RenderFrame,
         main_descriptor_pool: &mut MainDescriptorPool,
         consolidated_mesh_buffers: &ConsolidatedMeshBuffers,
-        transfer_command_pool: &mut LocalTransferCommandPool<0>,
     ) -> CullPassData {
         let device = &renderer.device;
 
-        let cull_set_layout = cull_set::Layout::new(&renderer.device);
-        let cull_count_set_layout = cull_commands_count_set::Layout::new(&renderer.device);
+        let cull_set_layout = SmartSetLayout::new(&renderer.device);
+        let cull_count_set_layout = SmartSetLayout::new(&renderer.device);
 
-        let compact_draw_stream_layout =
-            compact_draw_stream::PipelineLayout::new(&device, (&cull_set_layout, &cull_count_set_layout));
+        let compact_draw_stream_layout = SmartPipelineLayout::new(&device, (&cull_set_layout, &cull_count_set_layout));
 
-        let compact_draw_stream_pipeline = compact_draw_stream::Pipeline::new(
+        let compact_draw_stream_pipeline = SmartPipeline::new(
             &renderer.device,
             &compact_draw_stream_layout,
             compact_draw_stream::Specialization {
@@ -158,17 +177,7 @@ impl CullPassData {
             (),
         );
 
-        let culled_index_buffer = {
-            let b = device.new_static_buffer(
-                vk::BufferUsageFlags::INDEX_BUFFER
-                    | vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-                VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
-            );
-            device.set_object_name(b.buffer.handle, "Global culled index buffer");
-            b
-        };
+        let culled_index_buffer = CulledIndexBuffer::new(device);
 
         // let culled_commands_buffer = {
         //     let b = device.new_static_buffer(
@@ -181,10 +190,10 @@ impl CullPassData {
         //     device.set_object_name(b.buffer.handle, "indirect draw commands buffer");
         //     b
         // };
-        let culled_commands_buffer = frame_graph::resources::indirect_commands_buffer::new(device);
+        let culled_commands_buffer = IndirectCommandsBuffer::new(device);
 
         let cull_set = {
-            let mut s = cull_set::Set::new(&renderer.device, &main_descriptor_pool, &cull_set_layout, 0);
+            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &cull_set_layout, 0);
             update_whole_buffer::<cull_set::bindings::indirect_commands>(
                 &renderer.device,
                 &mut s,
@@ -205,11 +214,10 @@ impl CullPassData {
             s
         };
 
-        let culled_commands_count_buffer = frame_graph::resources::indirect_commands_count::new(&device);
+        let culled_commands_count_buffer = IndirectCommandsCount::new(&device);
 
         let cull_count_set = {
-            let mut s =
-                cull_commands_count_set::Set::new(&renderer.device, &main_descriptor_pool, &cull_count_set_layout, 0);
+            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &cull_count_set_layout, 0);
             update_whole_buffer::<cull_commands_count_set::bindings::indirect_commands_count>(
                 &renderer.device,
                 &mut s,
@@ -217,12 +225,6 @@ impl CullPassData {
             );
             s
         };
-        let bypass_command_buffers = renderer.new_buffered(|ix| {
-            transfer_command_pool
-                .pools
-                .current_mut(ix)
-                .allocate(&format!("Cull Pass Bypass CB[{}]", ix), &renderer.device)
-        });
 
         CullPassData {
             culled_commands_buffer,
@@ -234,7 +236,6 @@ impl CullPassData {
             cull_count_set_layout,
             cull_set,
             cull_count_set,
-            bypass_command_buffers,
         }
     }
 
@@ -282,11 +283,53 @@ impl CullPassData {
     }
 }
 
+impl FromWorld for CullPassData {
+    fn from_world(world: &mut World) -> Self {
+        world.resource_scope(|world, mut main_descriptor_pool: Mut<MainDescriptorPool>| {
+            let renderer = world.get_resource().unwrap();
+            let consolidated_mesh_buffers = world.get_resource().unwrap();
+
+            CullPassData::new(renderer, &mut main_descriptor_pool, consolidated_mesh_buffers)
+        })
+    }
+}
+
+impl FromWorld for CullPassDataPrivate {
+    fn from_world(world: &mut World) -> Self {
+        let renderer = world.get_resource().unwrap();
+        let cull_pass_data = world.get_resource().unwrap();
+        let model_data = world.get_resource().unwrap();
+        let camera_matrices = world.get_resource().unwrap();
+
+        CullPassDataPrivate::new(renderer, cull_pass_data, model_data, camera_matrices)
+    }
+}
+
+impl TransferCullPrivate {
+    fn new(renderer: &RenderFrame) -> TransferCullPrivate {
+        TransferCullPrivate {
+            transfer_command_util: CommandUtil::new(renderer, renderer.device.transfer_queue_family),
+        }
+    }
+
+    pub(crate) fn destroy(self, device: &Device) {
+        self.transfer_command_util.destroy(device);
+    }
+}
+
+impl FromWorld for TransferCullPrivate {
+    fn from_world(world: &mut World) -> Self {
+        let renderer = world.get_resource().unwrap();
+
+        Self::new(renderer)
+    }
+}
+
 pub(crate) fn cull_pass_bypass(
     renderer: Res<RenderFrame>,
     cull_pass_data: Res<CullPassData>,
+    mut transfer_cull_private: ResMut<TransferCullPrivate>,
     runtime_config: Res<CopiedResource<RuntimeConfiguration>>,
-    mut transfer_command_pool: ResMut<LocalTransferCommandPool<0>>,
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<CopiedResource<SwapchainIndexToFrameNumber>>,
     submissions: Res<Submissions>,
@@ -298,28 +341,19 @@ pub(crate) fn cull_pass_bypass(
         return;
     }
 
-    renderer
-        .transfer_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<TransferTimeline::Perform>(&image_index, &swapchain_index_map),
-        )
-        .unwrap();
+    frame_graph::TransferCull::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
-    let command_pool = transfer_command_pool.pools.current_mut(image_index.0);
-
-    command_pool.reset(&renderer.device);
-
-    let cull_cb = command_pool.record_to_specific(
-        &renderer.device,
-        *cull_pass_data.bypass_command_buffers.current(image_index.0),
-    );
+    let cull_cb = transfer_cull_private
+        .transfer_command_util
+        .reset_and_record(&renderer, &image_index);
     unsafe {
         scope!("cull pass", "cb recording");
         let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
-        cull_pass_data
-            .culled_commands_buffer
-            .acquire_copy_frozen(&renderer, *cull_cb);
+
+        let _guard = renderer_macros::barrier!(
+            *cull_cb,
+            IndirectCommandsBuffer.copy_frozen rw in TransferCull transfer copy
+        );
         renderer.device.cmd_copy_buffer(
             *cull_cb,
             cull_pass_data.culled_commands_buffer.buffer.handle,
@@ -345,7 +379,8 @@ pub(crate) fn cull_pass_bypass(
         //     &[vk::BufferCopy {
         //         src_offset: 0,
         //         dst_offset: 0,
-        //         size: binding_size::<cull_commands_count_set::bindings::indirect_commands_count>(),
+        //         size:
+        // binding_size::<cull_commands_count_set::bindings::indirect_commands_count>(),
         //     }],
         // );
         // renderer.device.cmd_copy_buffer(
@@ -366,9 +401,6 @@ pub(crate) fn cull_pass_bypass(
         //         size: binding_size::<cull_set::bindings::out_index_buffer>(),
         //     }],
         // );
-        cull_pass_data
-            .culled_commands_buffer
-            .release_copy_frozen(&renderer, *cull_cb);
     }
     let cull_cb = cull_cb.end();
 
@@ -403,13 +435,7 @@ pub(crate) fn cull_pass(
         return;
     }
 
-    renderer
-        .compute_timeline_semaphore
-        .wait(
-            &renderer.device,
-            as_of_previous::<ComputeTimeline::Perform>(&image_index, &swapchain_index_map),
-        )
-        .unwrap();
+    frame_graph::ComputeCull::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
     CullPassData::configure_pipeline(
         &renderer,
@@ -421,30 +447,29 @@ pub(crate) fn cull_pass(
     );
 
     let CullPassDataPrivate {
-        command_pools: ref mut command_pool,
-        ref command_buffers,
+        ref mut compute_command_util,
         ref cull_pipeline_layout,
         ref cull_pipeline,
         ..
     } = *cull_pass_data_private;
 
-    let command_pool = command_pool.current_mut(image_index.0);
-
-    command_pool.reset(&renderer.device);
-
-    let cull_cb = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
+    let cull_cb = compute_command_util.reset_and_record(&renderer, &image_index);
+    let indirect_commands_buffer = &cull_pass_data.culled_commands_buffer;
+    let indirect_commands_count = &cull_pass_data.culled_commands_count_buffer;
     unsafe {
         scope!("cull pass", "cb recording");
 
         let commands_buffer = &cull_pass_data.culled_commands_buffer;
-        commands_buffer.acquire_reset(&renderer, *cull_cb);
-        cull_pass_data
-            .culled_commands_count_buffer
-            .acquire_copy_frozen(&renderer, *cull_cb);
 
         if runtime_config.freeze_culling {
             let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
-            // renderer.device.cmd_copy_buffer(
+
+            let _guard = renderer_macros::barrier!(
+                *cull_cb,
+                IndirectCommandsCount.copy_frozen rw in ComputeCull transfer copy,
+                CulledIndexBuffer.copy_frozen rw in ComputeCull transfer copy
+            );
+            //renderer.device.cmd_copy_buffer(
             //     *cull_cb,
             //     cull_pass_data
             //         .culled_commands_buffer
@@ -464,8 +489,8 @@ pub(crate) fn cull_pass(
             // );
             renderer.device.cmd_copy_buffer(
                 *cull_cb,
-                cull_pass_data.culled_commands_count_buffer.buffer.handle,
-                cull_pass_data.culled_commands_count_buffer.buffer.handle,
+                indirect_commands_count.buffer.handle,
+                indirect_commands_count.buffer.handle,
                 &[vk::BufferCopy {
                     src_offset: 0,
                     dst_offset: 0,
@@ -483,7 +508,12 @@ pub(crate) fn cull_pass(
                 }],
             );
         } else {
+            let cull_pass_marker = cull_cb.debug_marker_around("cull pass", [0.0, 1.0, 0.0, 1.0]);
             // Clear the command buffer before using
+            let guard = renderer_macros::barrier!(
+                *cull_cb,
+                IndirectCommandsBuffer.reset w in ComputeCull transfer clear
+            );
             renderer.device.cmd_fill_buffer(
                 *cull_cb,
                 commands_buffer.buffer.handle,
@@ -491,8 +521,7 @@ pub(crate) fn cull_pass(
                 binding_size::<cull_set::bindings::indirect_commands>(),
                 0,
             );
-            commands_buffer.barrier_reset_cull(&renderer, *cull_cb);
-            let cull_pass_marker = cull_cb.debug_marker_around("cull pass", [0.0, 1.0, 0.0, 1.0]);
+            drop(guard);
             renderer
                 .device
                 .cmd_bind_pipeline(*cull_cb, vk::PipelineBindPoint::COMPUTE, cull_pipeline.vk());
@@ -504,6 +533,33 @@ pub(crate) fn cull_pass(
                     &camera_matrices.set.current(image_index.0),
                     &cull_pass_data.cull_set,
                 ),
+            );
+            // unsafe {
+            //     {
+            //         let acquire_buffer_barriers = [vk::BufferMemoryBarrier2KHR::builder()
+            //             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            //             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            //             .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_TRANSFER)
+            //             .dst_stage_mask(vk::PipelineStageFlags2KHR::COMPUTE_SHADER)
+            //             .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+            //             .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ)
+            //             .buffer(indirect_commands_buffer.buffer.handle)
+            //             .size(vk::WHOLE_SIZE)
+            //             .build()];
+            //         renderer.device.synchronization2.cmd_pipeline_barrier2(
+            //             *cull_cb,
+            //             &vk::DependencyInfoKHR::builder().buffer_memory_barriers(&acquire_buffer_barriers),
+            //         );
+            //     }
+            // }
+
+            let guard = renderer_macros::barrier!(
+                *cull_cb,
+                IndirectCommandsBuffer.cull rw in ComputeCull descriptor generate_work.cull_set.indirect_commands after [reset]; indirect_commands_buffer,
+                IndirectCommandsCount.compute rw in ComputeCull descriptor generate_work.cull_commands_count_set.indirect_commands_count,
+                ConsolidatedPositionBuffer.in_cull r in ComputeCull descriptor generate_work.cull_set.indirect_commands after [consolidate],
+                ConsolidatedIndexBuffer.cull_from r in ComputeCull descriptor generate_work.cull_set.index_buffer after [consolidate],
+                CulledIndexBuffer.cull w in ComputeCull descriptor generate_work.cull_set.out_index_buffer
             );
 
             let mut index_offset_in_output = 0;
@@ -522,7 +578,7 @@ pub(crate) fn cull_pass(
                     .get(&index_buffer.handle.as_raw())
                     .expect("Index buffer not consolidated");
 
-                let push_constants = frame_graph::generate_work::PushConstants {
+                let push_constants = generate_work::PushConstants {
                     gltf_index: draw_index.0,
                     index_count: index_len.to_u32().unwrap(),
                     index_offset: index_offset.to_u32().unwrap(),
@@ -551,15 +607,19 @@ pub(crate) fn cull_pass(
                 renderer.device.cmd_dispatch(*cull_cb, workgroup_count, 1, 1);
             }
 
+            drop(guard);
             drop(cull_pass_marker);
 
-            commands_buffer.barrier_cull_compact(&renderer, *cull_cb);
             let _compact_marker = cull_cb.debug_marker_around("compact draw stream", [0.0, 1.0, 1.0, 1.0]);
+            let _guard = renderer_macros::barrier!(
+                *cull_cb,
+                IndirectCommandsBuffer.compact rw in ComputeCull descriptor compact_draw_stream.cull_set.indirect_commands after [cull]; indirect_commands_buffer
+            );
 
             renderer.device.cmd_bind_pipeline(
                 *cull_cb,
                 vk::PipelineBindPoint::COMPUTE,
-                *cull_pass_data.compact_draw_stream_pipeline.pipeline,
+                cull_pass_data.compact_draw_stream_pipeline.vk(),
             );
             cull_pass_data.compact_draw_stream_layout.bind_descriptor_sets(
                 &renderer.device,
@@ -568,10 +628,6 @@ pub(crate) fn cull_pass(
             );
             renderer.device.cmd_dispatch(*cull_cb, 1, 1, 1);
         }
-        commands_buffer.release_compact(&renderer, *cull_cb);
-        cull_pass_data
-            .culled_commands_count_buffer
-            .release_compute(&renderer, *cull_cb);
     }
     let cull_cb = cull_cb.end();
 

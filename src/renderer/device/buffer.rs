@@ -59,33 +59,6 @@ impl Buffer {
         Buffer { handle, allocation }
     }
 
-    pub(super) fn new_exclusive(
-        device: &Device,
-        buffer_usage: vk::BufferUsageFlags,
-        allocation_usage: alloc::VmaMemoryUsage,
-        size: vk::DeviceSize,
-    ) -> Buffer {
-        let buffer_create_info = vk::BufferCreateInfo::builder()
-            .size(size)
-            .usage(buffer_usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let allocation_create_info = alloc::VmaAllocationCreateInfo {
-            flags: alloc::VmaAllocationCreateFlagBits(0),
-            memoryTypeBits: 0,
-            pUserData: ptr::null_mut(),
-            pool: ptr::null_mut(),
-            preferredFlags: 0,
-            requiredFlags: 0,
-            usage: allocation_usage,
-        };
-
-        let (handle, allocation, _) =
-            alloc::create_buffer(device.allocator, &buffer_create_info, &allocation_create_info).unwrap();
-
-        Buffer { handle, allocation }
-    }
-
     pub(crate) fn map<'a, T>(&'a self, device: &Device) -> ash::prelude::VkResult<MappedBuffer<'a, T>> {
         MappedBuffer::import(
             device.allocator,
@@ -107,18 +80,6 @@ impl<T: Sized> StaticBuffer<T> {
         allocation_usage: alloc::VmaMemoryUsage,
     ) -> Self {
         let buffer = Buffer::new(device, buffer_usage, allocation_usage, size_of::<T>() as vk::DeviceSize);
-        StaticBuffer {
-            buffer,
-            _marker: PhantomData,
-        }
-    }
-
-    pub(super) fn new_exclusive(
-        device: &Device,
-        buffer_usage: vk::BufferUsageFlags,
-        allocation_usage: alloc::VmaMemoryUsage,
-    ) -> Self {
-        let buffer = Buffer::new_exclusive(device, buffer_usage, allocation_usage, size_of::<T>() as vk::DeviceSize);
         StaticBuffer {
             buffer,
             _marker: PhantomData,

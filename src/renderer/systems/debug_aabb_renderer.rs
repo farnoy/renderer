@@ -1,13 +1,13 @@
 use bevy_ecs::prelude::*;
 
 use crate::{
-    renderer::{device::Device, frame_graph, Pipeline, PipelineLayout},
+    renderer::{debug_aabb, device::Device, SmartPipeline, SmartPipelineLayout},
     CameraMatrices, MainRenderpass, RenderFrame,
 };
 
 pub(crate) struct DebugAABBPassData {
-    pub(crate) pipeline_layout: frame_graph::debug_aabb::PipelineLayout,
-    pub(crate) pipeline: frame_graph::debug_aabb::Pipeline,
+    pub(crate) pipeline_layout: SmartPipelineLayout<debug_aabb::PipelineLayout>,
+    pub(crate) pipeline: SmartPipeline<debug_aabb::Pipeline>,
 }
 
 impl FromWorld for DebugAABBPassData {
@@ -17,11 +17,11 @@ impl FromWorld for DebugAABBPassData {
         let camera_matrices = world.get_resource::<CameraMatrices>().unwrap();
         let device = &renderer.device;
 
-        let pipeline_layout = frame_graph::debug_aabb::PipelineLayout::new(&device, (&camera_matrices.set_layout,));
-        let pipeline = frame_graph::debug_aabb::Pipeline::new(
+        let pipeline_layout = SmartPipelineLayout::new(&device, (&camera_matrices.set_layout,));
+        let pipeline = SmartPipeline::new(
             &renderer.device,
             &pipeline_layout,
-            frame_graph::debug_aabb::Specialization {},
+            debug_aabb::Specialization {},
             (main_renderpass.renderpass.renderpass.handle, 0),
         );
 

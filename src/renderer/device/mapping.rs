@@ -67,7 +67,9 @@ impl<T> MappedStaticBuffer<'_, T> {
 
     pub(crate) fn unmap_used_range(mut self, range: Range<vk::DeviceSize>) {
         unsafe {
-            alloc::vmaFlushAllocation(self.allocator, self.allocation, range.start, range.end);
+            alloc::vmaFlushAllocation(self.allocator, self.allocation, range.start, range.end)
+                .result()
+                .unwrap();
             alloc::vmaUnmapMemory(self.allocator, self.allocation);
         }
         self.allocation = alloc::VmaAllocation(ptr::null_mut());
@@ -133,7 +135,9 @@ impl<T> DerefMut for MappedStaticBuffer<'_, T> {
 impl<T> Drop for MappedBuffer<'_, T> {
     fn drop(&mut self) {
         unsafe {
-            alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE);
+            alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE)
+                .result()
+                .unwrap();
             alloc::vmaUnmapMemory(self.allocator, self.allocation);
         }
     }
@@ -143,7 +147,9 @@ impl<T> Drop for MappedStaticBuffer<'_, T> {
     fn drop(&mut self) {
         if self.allocation.0 != ptr::null_mut() {
             unsafe {
-                alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE);
+                alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE)
+                    .result()
+                    .unwrap();
                 alloc::vmaUnmapMemory(self.allocator, self.allocation);
             }
         }
