@@ -13,7 +13,7 @@ use std::time::Instant;
 use std::{
     cmp::max,
     marker::PhantomData,
-    mem::{size_of, take},
+    mem::{replace, size_of, take},
     sync::Arc,
 };
 
@@ -724,7 +724,7 @@ impl<P: Pipeline> SmartPipeline<P> {
                 .zip(new_shaders.into_iter())
             {
                 if let Some(new) = new {
-                    std::mem::replace(shader, new).destroy(device);
+                    replace(shader, new).destroy(device);
                     *last_update = t;
                 }
             }
@@ -2225,6 +2225,26 @@ pub(crate) fn camera_matrices_upload(
     };
 }
 
+pub(crate) fn recreate_main_framebuffer(
+    renderer: Res<RenderFrame>,
+    main_renderpass: Res<MainRenderpass>,
+    mut attachments: ResMut<MainAttachments>,
+    mut framebuffer: ResMut<MainFramebuffer>,
+    resized: Res<Resized>,
+    swapchain: Res<Swapchain>,
+) {
+    if resized.0 == false {
+        return;
+    }
+
+    replace(&mut *attachments, MainAttachments::new(&renderer, &swapchain)).destroy(&renderer.device);
+    replace(
+        &mut *framebuffer,
+        MainFramebuffer::new(&renderer, &main_renderpass, &swapchain),
+    )
+    .destroy(&renderer.device);
+}
+
 pub(crate) fn graphics_stage() -> SystemStage {
     let stage = SystemStage::parallel();
 
@@ -2258,30 +2278,24 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let consolidate_mesh_buffers = setup_submissions.then(consolidate_mesh_buffers);
 
     let initial = (copy_runtime_config, copy_camera, copy_indices, consolidate_mesh_buffers);
-    let (recreate_base_color, cull, cull_bypass, depth, build_as, shadow_mapping) = initial.join_all((
-        recreate_base_color_descriptor_set.system(),
-        cull_pass.system(),
-        cull_pass_bypass.system(),
-        depth_only_pass.system(),
-        build_acceleration_structures.system(),
-        prepare_shadow_maps.system(),
-    ));
+    let (recreate_main_framebuffer, recreate_base_color, cull, cull_bypass, build_as, shadow_mapping) = initial
+        .join_all((
+            recreate_main_framebuffer.system(),
+            recreate_base_color_descriptor_set.system(),
+            cull_pass.system(),
+            cull_pass_bypass.system(),
+            build_acceleration_structures.system(),
+            prepare_shadow_maps.system(),
+        ));
+
+    let depth = recreate_main_framebuffer.then(depth_only_pass.system());
 
     let update_base_color = recreate_base_color.then(update_base_color_descriptors);
 
     // TODO: this only needs to wait before submission, could record in parallel
-    let main_pass = update_base_color.then(render_frame);
+    let main_pass = (recreate_main_framebuffer, update_base_color).join(render_frame);
 
-    (
-        main_pass,
-        update_base_color,
-        cull,
-        cull_bypass,
-        depth,
-        build_as,
-        shadow_mapping,
-    )
-        .join(PresentFramebuffer::exec);
+    (main_pass, cull, cull_bypass, depth, build_as, shadow_mapping).join(PresentFramebuffer::exec);
 
     stage.with_system_set(test)
 }

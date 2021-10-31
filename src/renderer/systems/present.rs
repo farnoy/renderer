@@ -1,4 +1,4 @@
-use std::{mem::swap, u64};
+use std::u64;
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -6,8 +6,7 @@ use microprofile::scope;
 
 use super::super::{device::Semaphore, RenderFrame, Swapchain};
 use crate::renderer::{
-    as_of, as_of_last, frame_graph, DepthPassData, Device, MainAttachments, MainFramebuffer, MainRenderpass,
-    RenderStage, Resized, Submissions, SwapchainIndexToFrameNumber,
+    as_of, as_of_last, frame_graph, Device, RenderStage, Resized, Submissions, SwapchainIndexToFrameNumber,
 };
 
 pub(crate) struct PresentData {
@@ -54,66 +53,13 @@ impl PresentData {
 
 pub(crate) fn acquire_framebuffer(
     renderer: Res<RenderFrame>,
-    main_renderpass: Res<MainRenderpass>,
-    mut swapchain: ResMut<Swapchain>,
-    mut main_attachments: ResMut<MainAttachments>,
-    mut main_framebuffer: ResMut<MainFramebuffer>,
-    mut depth_pass_data: ResMut<DepthPassData>,
+    swapchain: Res<Swapchain>,
     mut present_data: ResMut<PresentData>,
     mut image_index: ResMut<ImageIndex>,
-    resized: Res<Resized>,
 ) {
     scope!("ecs", "AcquireFramebuffer");
 
-    if resized.0 {
-        scope!("ecs", "recreate framebuffer from resize");
-        unsafe {
-            renderer.device.device_wait_idle().unwrap();
-        }
-        swapchain.resize_to_fit(&renderer.device);
-        let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
-        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &swapchain);
-        let mut new_depth_framebuffer = frame_graph::DepthOnly::Framebuffer::new(
-            &renderer,
-            &depth_pass_data.renderpass,
-            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT],
-            (),
-            (swapchain.width, swapchain.height),
-        );
-        swap(&mut *main_attachments, &mut new_attachments);
-        swap(&mut *main_framebuffer, &mut new_framebuffer);
-        swap(&mut depth_pass_data.framebuffer, &mut new_depth_framebuffer);
-        new_attachments.destroy(&renderer.device);
-        new_framebuffer.destroy(&renderer.device);
-        new_depth_framebuffer.destroy(&renderer.device);
-    }
-
-    let swapchain_needs_recreating =
-        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
-
-    if swapchain_needs_recreating {
-        scope!("ecs", "recreate framebuffer from out of date");
-        unsafe {
-            renderer.device.device_wait_idle().unwrap();
-        }
-        swapchain.resize_to_fit(&renderer.device);
-        let mut new_attachments = MainAttachments::new(&renderer, &swapchain);
-        let mut new_framebuffer = MainFramebuffer::new(&renderer, &main_renderpass, &swapchain);
-        let mut new_depth_framebuffer = frame_graph::DepthOnly::Framebuffer::new(
-            &renderer,
-            &depth_pass_data.renderpass,
-            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT],
-            (),
-            (swapchain.width, swapchain.height),
-        );
-        swap(&mut *main_attachments, &mut new_attachments);
-        swap(&mut *main_framebuffer, &mut new_framebuffer);
-        swap(&mut depth_pass_data.framebuffer, &mut new_depth_framebuffer);
-        new_attachments.destroy(&renderer.device);
-        new_framebuffer.destroy(&renderer.device);
-        new_depth_framebuffer.destroy(&renderer.device);
-        AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
-    }
+    AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
 }
 
 impl AcquireFramebuffer {
@@ -123,7 +69,7 @@ impl AcquireFramebuffer {
         swapchain: &Swapchain,
         present_data: &mut PresentData,
         image_index: &mut ImageIndex,
-    ) -> bool {
+    ) {
         scope!("presentation", "acquire framebuffer");
         let result = unsafe {
             scope!("vk", "vkAcquireNextImageKHR");
@@ -142,8 +88,7 @@ impl AcquireFramebuffer {
                 println!("AcquireFramebuffer image suboptimal");
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                println!("out of date in AcquireFramebuffer");
-                return true;
+                panic!("out of date in AcquireFramebuffer");
             }
             _ => panic!("unknown condition in AcquireFramebuffer"),
         }
@@ -194,8 +139,6 @@ impl AcquireFramebuffer {
                 .queue_submit(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
-
-        false
     }
 }
 
@@ -203,8 +146,9 @@ impl PresentFramebuffer {
     pub(crate) fn exec(
         renderer: Res<RenderFrame>,
         present_data: Res<PresentData>,
-        swapchain: Res<Swapchain>,
+        mut swapchain: ResMut<Swapchain>,
         image_index: Res<ImageIndex>,
+        mut resized: ResMut<Resized>,
         mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
         #[cfg(debug_assertions)] mut submissions: ResMut<Submissions>,
     ) {
@@ -263,9 +207,19 @@ impl PresentFramebuffer {
         };
         drop(queue);
         match result {
-            Ok(false) => (),
-            Ok(true) => println!("PresentFramebuffer image suboptimal"),
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => println!("out of date in PresentFramebuffer"),
+            Ok(false) => {
+                resized.0 = false;
+            }
+            Ok(true) => {
+                println!("PresentFramebuffer image suboptimal");
+                scope!("ecs", "resized wait");
+                unsafe {
+                    renderer.device.device_wait_idle().unwrap();
+                }
+                swapchain.resize_to_fit(&renderer.device);
+                resized.0 = true;
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => panic!("out of date in PresentFramebuffer"),
             Err(vk::Result::ERROR_DEVICE_LOST) => panic!("device lost in PresentFramebuffer"),
             _ => panic!("unknown condition in PresentFramebuffer"),
         }

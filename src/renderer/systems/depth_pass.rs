@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::mem::{replace, size_of};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -9,7 +9,7 @@ use crate::{
     renderer::{
         binding_size, camera_set, device::Device, frame_graph, helpers::command_util::CommandUtil, model_set,
         systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
-        ImageIndex, MainAttachments, ModelData, RenderFrame, SmartPipeline, SmartPipelineLayout, Submissions,
+        ImageIndex, MainAttachments, ModelData, RenderFrame, Resized, SmartPipeline, SmartPipelineLayout, Submissions,
         Swapchain,
     },
 };
@@ -97,17 +97,32 @@ pub(crate) fn depth_only_pass(
     runtime_config: Res<CopiedResource<RuntimeConfiguration>>,
     camera_matrices: Res<CameraMatrices>,
     submissions: Res<Submissions>,
+    resized: Res<Resized>,
 ) {
     scope!("rendering", "depth_only_pass");
 
     let DepthPassData {
         ref renderpass,
-        ref framebuffer,
+        ref mut framebuffer,
         ref mut command_util,
         ref depth_pipeline,
         ref depth_pipeline_layout,
         ..
     } = *depth_pass;
+
+    if resized.0 {
+        replace(
+            framebuffer,
+            frame_graph::DepthOnly::Framebuffer::new(
+                &renderer,
+                renderpass,
+                &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT],
+                (),
+                (swapchain.width, swapchain.height),
+            ),
+        )
+        .destroy(&renderer.device);
+    }
 
     let command_buffer = command_util.reset_and_record(&renderer, &image_index);
 

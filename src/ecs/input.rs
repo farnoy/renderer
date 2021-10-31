@@ -18,7 +18,7 @@ use crate::{
         resources::Camera,
         systems::{Gui, RuntimeConfiguration},
     },
-    renderer::{right_vector, up_vector, RenderFrame, Resized},
+    renderer::{right_vector, up_vector, RenderFrame},
 };
 
 #[derive(Debug)]
@@ -79,7 +79,6 @@ impl InputHandler {
         mut runtime_config: ResMut<RuntimeConfiguration>,
         mut input_actions: ResMut<InputActions>,
         mut camera: ResMut<Camera>,
-        mut resized: ResMut<Resized>,
         mut input_handler: NonSendMut<InputHandler>,
         mut gui: NonSendMut<Gui>,
     ) {
@@ -94,7 +93,6 @@ impl InputHandler {
         input_actions.promote();
         let fly_mode = runtime_config.fly_mode;
         let mut toggle_fly_mode = false;
-        resized.0 = false;
         events_loop.run_return(|event, _window_target, control_flow| {
             scope!("input", "event_loop");
             {
@@ -108,9 +106,9 @@ impl InputHandler {
                 } => {
                     println!("The window was resized to {}x{}", width, height);
                     // hangs for now
-                    // let logical_size = PhysicalSize { width, height }.to_logical::<f32>(window.scale_factor());
+                    // let logical_size = PhysicalSize { width, height
+                    // }.to_logical::<f32>(window.scale_factor());
                     // println!("logical {:?}", logical_size);
-                    resized.0 = true;
                 }
                 Event::WindowEvent {
                     event: WindowEvent::ScaleFactorChanged { scale_factor, .. },
