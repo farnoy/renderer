@@ -295,47 +295,48 @@ pub fn analyze() -> anyhow::Result<()> {
 
 fn dump_dependency_graph(data: &RendererInput) -> Result<(), anyhow::Error> {
     let root_dir = env::var("CARGO_MANIFEST_DIR")?;
-        let src = Path::new(&root_dir)
-            .join("diagnostics")
-            .join("dependency_graph.dot");
-        let mut file = File::create(src)?;
-        
-        let graph = &data.dependency_graph;
+    let src = Path::new(&root_dir).join("diagnostics").join("dependency_graph.dot");
+    let mut file = File::create(src)?;
 
-        writeln!(file, "digraph {{")?;
-        for (ix, pass) in graph.node_references() {
-            let (sem_ix, step_ix) = data.timeline_semaphore_mapping.get(pass).unwrap();
-            writeln!(file, "{} [ label = \"{} ({}, {})\" ]", ix.index(), pass, sem_ix, step_ix)?;
-        }
-        for edge in graph.edge_references() {
-            let source = graph[edge.source()].as_str();
-            let target = graph[edge.target()].as_str();
-            let source_queue = data
-                .passes
-                .get(source)
-                .map(|_| QueueFamily::Graphics)
-                .or_else(|| data.async_passes.get(source).map(|p| p.queue))
-                .unwrap();
-            let target_queue = data
-                .passes
-                .get(target)
-                .map(|_| QueueFamily::Graphics)
-                .or_else(|| data.async_passes.get(target).map(|p| p.queue))
-                .unwrap();
-            let color = if source_queue == target_queue {
-                "blue"
-            } else {
-                "red"
-            };
-            writeln!(
-                file,
-                "{} -> {} [ color = {} ]",
-                edge.source().index(),
-                edge.target().index(),
-                color
-            )?;
-        }
-        writeln!(file, "}}")?;
+    let graph = &data.dependency_graph;
+
+    writeln!(file, "digraph {{")?;
+    for (ix, pass) in graph.node_references() {
+        let (sem_ix, step_ix) = data.timeline_semaphore_mapping.get(pass).unwrap();
+        writeln!(
+            file,
+            "{} [ label = \"{} ({}, {})\" ]",
+            ix.index(),
+            pass,
+            sem_ix,
+            step_ix
+        )?;
+    }
+    for edge in graph.edge_references() {
+        let source = graph[edge.source()].as_str();
+        let target = graph[edge.target()].as_str();
+        let source_queue = data
+            .passes
+            .get(source)
+            .map(|_| QueueFamily::Graphics)
+            .or_else(|| data.async_passes.get(source).map(|p| p.queue))
+            .unwrap();
+        let target_queue = data
+            .passes
+            .get(target)
+            .map(|_| QueueFamily::Graphics)
+            .or_else(|| data.async_passes.get(target).map(|p| p.queue))
+            .unwrap();
+        let color = if source_queue == target_queue { "blue" } else { "red" };
+        writeln!(
+            file,
+            "{} -> {} [ color = {} ]",
+            edge.source().index(),
+            edge.target().index(),
+            color
+        )?;
+    }
+    writeln!(file, "}}")?;
 
     Ok(())
 }
@@ -477,7 +478,8 @@ fn analyze_shader_types(
                             (spirq::ty::DescriptorType::Image(..), "COMBINED_IMAGE_SAMPLER") => {}
                             (spir_ty, rusty_ty) => {
                                 let msg = format!(
-                                    "Incorrect shader binding at set {} binding {}, shader declares {:?}, rusty binding is {}",
+                                    "Incorrect shader binding at set {} binding {}\
+                                    , shader declares {:?}, rusty binding is {}",
                                     rusty.name.to_string(),
                                     rusty_binding.name.to_string(),
                                     spir_ty,

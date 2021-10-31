@@ -10,7 +10,7 @@ use petgraph::{
     Direction,
 };
 use proc_macro2::TokenStream;
-use proc_macro_error::{abort_call_site, proc_macro_error};
+use proc_macro_error::proc_macro_error;
 use quote::{format_ident, quote, ToTokens};
 use renderer_macro_lib::{
     fetch,
@@ -150,7 +150,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
                 .expect("pass not found")
         };
-        let get_runtime_queue_family = |ty: QueueFamily| match ty {
+        let _get_runtime_queue_family = |ty: QueueFamily| match ty {
             QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
             QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
             QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
@@ -201,12 +201,74 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         );
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
-        let this_queue_runtime = get_runtime_queue_family(this_queue);
-        let mut acquired_already = false;
+        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+            let (access_prefixes, stages) = match &step.usage {
+                ResourceUsageKind::VertexBuffer => (vec![quote!(VERTEX_ATTRIBUTE)], vec![quote!(VERTEX_INPUT)]),
+                ResourceUsageKind::IndexBuffer => (vec![quote!(INDEX)], vec![quote!(INDEX_INPUT)]),
+                ResourceUsageKind::Attachment => {
+                    // TODO: imprecise
+                    (vec![quote!(MEMORY)], vec![
+                        quote!(EARLY_FRAGMENT_TESTS),
+                        quote!(LATE_FRAGMENT_TESTS),
+                        quote!(COLOR_ATTACHMENT_OUTPUT),
+                    ])
+                }
+                ResourceUsageKind::IndirectBuffer => (vec![quote!(INDIRECT_COMMAND)], vec![quote!(DRAW_INDIRECT)]),
+                ResourceUsageKind::TransferCopy => (vec![quote!(TRANSFER)], vec![quote!(COPY)]),
+                // TODO: sync validation is picky when just CLEAR from sync2 is used
+                ResourceUsageKind::TransferClear => (vec![quote!(TRANSFER)], vec![quote!(ALL_TRANSFER)]),
+                ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                    let pipeline = data
+                        .pipelines
+                        .get(pipeline_name)
+                        .expect("pipeline not found in barrier");
+                    let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                    let binding = set
+                        .bindings
+                        .iter()
+                        .find(|candidate| candidate.name == *binding_name)
+                        .expect("binding not found in barrier");
+                    let pipeline_stages = pipeline.specific.stages();
+
+                    let mut access_prefixes = vec![];
+                    let mut stages = vec![];
+
+                    binding
+                        .shader_stages
+                        .iter()
+                        .filter(|x| pipeline_stages.contains(*x))
+                        .map(|stage| match stage.as_str() {
+                            "COMPUTE" => (quote!(SHADER), quote!(COMPUTE_SHADER)),
+                            _ => unimplemented!("barrier! descriptor stage {}", stage),
+                        })
+                        .for_each(|(x, y)| {
+                            access_prefixes.push(x);
+                            stages.push(y);
+                        });
+                    (access_prefixes, stages)
+                }
+            };
+
+            let access_prefixes = access_prefixes
+                .into_iter()
+                .flat_map(|prefix| {
+                    let mut output = vec![];
+                    if step.reads && include_reads {
+                        output.push(format_ident!("{}_READ", prefix.to_string()).to_token_stream());
+                    }
+                    if step.writes && include_writes {
+                        output.push(format_ident!("{}_WRITE", prefix.to_string()).to_token_stream());
+                    }
+                    output
+                })
+                .collect_vec();
+
+            (access_prefixes, stages)
+        };
+        let mut emitted_barriers = 0;
         for dep in incoming {
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
-            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
 
             if prev_step.pass_name == this.pass_name
                 && prev_step.usage != ResourceUsageKind::Attachment
@@ -214,58 +276,6 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             {
                 match claims.ty {
                     ResourceDefinitionType::StaticBuffer { .. } => {
-                        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
-                            let (access_prefixes, stages) = match &step.usage {
-                                ResourceUsageKind::VertexBuffer => (vec![quote!(VERTEX_ATTRIBUTE)], vec![quote!(VERTEX_INPUT)]),
-                                ResourceUsageKind::IndexBuffer => (vec![quote!(INDEX)], vec![quote!(INDEX_INPUT)]),
-                                ResourceUsageKind::Attachment => (vec![quote!(MEMORY)], vec![quote!(
-                                    EARLY_FRAGMENT_TESTS), quote!(
-                                        LATE_FRAGMENT_TESTS), quote!(
-                                        COLOR_ATTACHMENT_OUTPUT)])
-                                , // TODO: imprecise
-                                ResourceUsageKind::IndirectBuffer => (vec![quote!(INDIRECT_COMMAND)], vec![quote!(DRAW_INDIRECT)]),
-                                ResourceUsageKind::TransferCopy => (vec![quote!(TRANSFER)], vec![quote!(COPY)]),
-                                // TODO: sync validation is picky when just CLEAR from sync2 is used
-                                ResourceUsageKind::TransferClear => (vec![quote!(TRANSFER)], vec![quote!(ALL_TRANSFER)]),
-                                ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
-                                    let pipeline = data.pipelines.get(pipeline_name).expect("pipeline not found in barrier");
-                                    let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
-                                    let binding = set.bindings.iter().find(|candidate| candidate.name == *binding_name).expect("binding not found in barrier");
-                                    let pipeline_stages = pipeline.specific.stages();
-
-                                    let mut access_prefixes = vec![];
-                                    let mut stages = vec![];
-
-                                    binding.shader_stages.iter()
-                                    .filter(|x| pipeline_stages.contains(*x))
-                                    .map(|stage| match stage.as_str() {
-                                        "COMPUTE" => (quote!(SHADER), quote!(COMPUTE_SHADER)),
-                                        _ => unimplemented!("barrier! descriptor stage {}", stage)
-                                    })
-                                    .for_each(|(x, y)| {
-                                        access_prefixes.push(x);
-                                        stages.push(y);
-                                    });
-                                    (access_prefixes, stages)
-                                }
-                            };
-
-                            let access_prefixes = access_prefixes
-                                .into_iter()
-                                .flat_map(|prefix| {
-                                    let mut output = vec![];
-                                    if step.reads && include_reads {
-                                        output.push(format_ident!("{}_READ", prefix.to_string()).to_token_stream());
-                                    }
-                                    if step.writes && include_writes {
-                                        output.push(format_ident!("{}_WRITE", prefix.to_string()).to_token_stream());
-                                    }
-                                    output
-                                })
-                                .collect_vec();
-
-                            (access_prefixes, stages)
-                        };
                         let (src_access, src_stage) = stage_flags(&prev_step, false, true);
                         let (dst_access, dst_stage) = stage_flags(&this, true, true);
                         assert!(
@@ -275,6 +285,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         );
                         let resource_ident = &claim.resource_ident;
 
+                        emitted_barriers += 1;
                         acquire_buffer_barriers.push(quote! {
                             vk::BufferMemoryBarrier2KHR::builder()
                             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -289,6 +300,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         });
                     }
                     ResourceDefinitionType::AccelerationStructure => {
+                        emitted_barriers += 1;
                         acquire_memory_barriers.push(quote! {
                             vk::MemoryBarrier2KHR::builder()
                                 .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
@@ -306,110 +318,47 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 continue;
             }
 
-            // TODO: No exclusive resources to transfer for now, bring it back in the future 
-            if acquired_already && false {
-                // Visualize the dependency graph
-                // dbg!(petgraph::dot::Dot::with_config(
-                //     &claims.graph.map(
-                //         |_, node_ident| node_ident.as_ref().unwrap().step_name.clone(),
-                //         |_, _| ""
-                //     ),
-                //     &[petgraph::dot::Config::EdgeNoLabel]
-                // ));
-                eprintln!("Warning: Skipping a duplicate acquire barrier from {} to {} for resource {} because we don't unify these barriers (for now)", &prev_step.step_name, &this.step_name, &claim.resource_name);
-                continue;
-            }
-            acquired_already = true;
-
             match claims.ty {
                 ResourceDefinitionType::StaticBuffer { .. } => {
                     // buffers are never exclusive, so we skip this
-                    /*
-                    let acquire_buffer_barrier = quote! {
-                        vk::BufferMemoryBarrier2KHR::builder()
-                            // TODO: granularity
-                            .src_queue_family_index(#prev_queue_runtime)
-                            .dst_queue_family_index(#this_queue_runtime)
-                            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                            .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                             vk::AccessFlags2KHR::MEMORY_WRITE)
-                            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                             vk::AccessFlags2KHR::MEMORY_WRITE)
-                            .buffer(#resource_ident.buffer.handle)
-                            .size(vk::WHOLE_SIZE)
-                            .build()
-                    };
-                    if in_first_stage {
-                        acquire_buffer_barriers_with_bypass.push(acquire_buffer_barrier);
-                    } else {
-                        acquire_buffer_barriers.push(acquire_buffer_barrier);
-                    }
-                    */
                 }
                 ResourceDefinitionType::AccelerationStructure => {
-                    // acquire_memory_barriers.push(quote! {
-                    //     vk::MemoryBarrier2KHR::builder()
-                    //         .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    //         .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                    //         .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    //         .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                    //         .build()
-                    // });
+                    // ASes have no sharing mode and therefore no exclusive ownership
                 }
                 _ => todo!("same queue buffer unknown resource"),
             }
         }
-        let mut released_already = false;
+        assert!(
+            emitted_barriers <= 1,
+            "Resource claim {}.{} generated more than one acquire barrier, please disambiguate edges at runtime",
+            claim.resource_name,
+            claim.step_name
+        );
+        emitted_barriers = 0;
         for dep in outgoing {
             let next_step = &claims.graph[dep];
             let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
-            let next_queue_runtime = get_runtime_queue_family(next_queue);
 
             if this_queue == next_queue {
                 continue;
             }
 
-            // TODO: No exclusive resources to transfer for now, bring it back in the future 
-            if released_already && false {
-                eprintln!("Warning: Skipping a duplicate release barrier from {} to {} for resource {} because we don't unify these barriers (for now)", &this.step_name, &next_step.step_name, &claim.resource_name);
-                continue;
-            }
-            released_already = true;
-
             match claims.ty {
                 ResourceDefinitionType::StaticBuffer { .. } => {
                     // buffers are never exclusive, so we skip this
-                    /*
-                    release_buffer_barriers.push(quote! {
-                        vk::BufferMemoryBarrier2KHR::builder()
-                            // TODO: granularity
-                            .src_queue_family_index(#this_queue_runtime)
-                            .dst_queue_family_index(#next_queue_runtime)
-                            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                            .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
-                            .buffer(#resource_ident.buffer.handle)
-                            .size(vk::WHOLE_SIZE)
-                            .build()
-                    });
-                    */
                 }
                 ResourceDefinitionType::AccelerationStructure => {
-                    // release_memory_barriers.push(quote! {
-                    //     vk::MemoryBarrier2KHR::builder()
-                    //         .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    //         .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                    // vk::AccessFlags2KHR::MEMORY_WRITE)
-                    //         .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    //         .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                    // vk::AccessFlags2KHR::MEMORY_WRITE)         .build()
-                    // });
+                    // ASes have no sharing mode and therefore no exclusive ownership
                 }
                 _ => todo!("release unknown resource"),
             }
         }
+        assert!(
+            emitted_barriers <= 1,
+            "Resource claim {}.{} generated more than one release barrier, please disambiguate edges at runtime",
+            claim.resource_name,
+            claim.step_name
+        );
     }
 
     let acquire_buffer_barriers_len = acquire_buffer_barriers.len();

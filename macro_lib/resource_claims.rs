@@ -1,5 +1,3 @@
-use std::{env, fs::File, io::Write, path::Path};
-
 use anyhow::ensure;
 use derive_syn_parse::Parse;
 use hashbrown::HashMap;
@@ -9,7 +7,7 @@ use petgraph::{
 };
 use quote::ToTokens;
 use serde::{Deserialize, Serialize};
-use syn::{parse::Parse, token::Brace, Expr, Ident, Token};
+use syn::{parse::Parse, Expr, Ident, Token};
 
 use super::keywords as kw;
 use crate::inputs::{self, UnArray, Unbracket};

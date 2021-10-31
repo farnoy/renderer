@@ -22,9 +22,9 @@ use crate::{
         helpers::{command_util::CommandUtil, pick_lod},
         model_set,
         systems::{consolidate_mesh_buffers::ConsolidatedMeshBuffers, present::ImageIndex},
-        update_whole_buffer, CameraMatrices, CopiedResource, DrawIndex, GltfMesh, MainDescriptorPool,
-        ModelData, RenderFrame, RenderStage, SmartPipeline, SmartPipelineLayout, SmartSet, SmartSetLayout,
-        Submissions, SwapchainIndexToFrameNumber,
+        update_whole_buffer, CameraMatrices, CopiedResource, DrawIndex, GltfMesh, MainDescriptorPool, ModelData,
+        RenderFrame, RenderStage, SmartPipeline, SmartPipelineLayout, SmartSet, SmartSetLayout, Submissions,
+        SwapchainIndexToFrameNumber,
     },
 };
 

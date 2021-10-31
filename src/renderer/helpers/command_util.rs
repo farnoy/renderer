@@ -1,6 +1,5 @@
 use ash::vk;
 
-
 use crate::renderer::{
     device::{Device, DoubleBuffered, StrictCommandPool, StrictRecordingCommandBuffer},
     ImageIndex, RenderFrame,
