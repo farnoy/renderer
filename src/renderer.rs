@@ -37,6 +37,7 @@ use self::{
         Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, RenderPass, Sampler, Shader,
         StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, VmaMemoryUsage,
     },
+    helpers::command_util::CommandUtil,
     systems::{cull_pipeline::cull_set, depth_pass::depth_only_pass, shadow_mapping::shadow_map_set},
 };
 pub(crate) use self::{
@@ -1249,6 +1250,7 @@ pub(crate) struct GltfPassData {
     #[cfg(feature = "shader_reload")]
     pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<SmartPipeline<gltf_mesh::Pipeline>>>,
     pub(crate) gltf_pipeline_layout: SmartPipelineLayout<gltf_mesh::PipelineLayout>,
+    command_util: CommandUtil,
 }
 
 impl GltfPassData {
@@ -1412,12 +1414,14 @@ impl GltfPassData {
             spec,
             (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
         );
+        let command_util = CommandUtil::new(renderer, renderer.device.graphics_queue_family);
 
         GltfPassData {
             gltf_pipeline,
             #[cfg(feature = "shader_reload")]
             previous_gltf_pipeline: renderer.new_buffered(|_| None),
             gltf_pipeline_layout,
+            command_util,
         }
     }
 
@@ -1428,39 +1432,7 @@ impl GltfPassData {
             .into_iter()
             .for_each(|p| p.into_iter().for_each(|p| p.destroy(device)));
         self.gltf_pipeline_layout.destroy(device);
-    }
-}
-
-pub(crate) struct MainPassCommandBuffer {
-    command_pools: DoubleBuffered<StrictCommandPool>,
-    command_buffers: DoubleBuffered<vk::CommandBuffer>,
-}
-
-impl FromWorld for MainPassCommandBuffer {
-    fn from_world(world: &mut World) -> Self {
-        let renderer = world.get_resource::<RenderFrame>().unwrap();
-        let mut command_pools = renderer.new_buffered(|ix| {
-            StrictCommandPool::new(
-                &renderer.device,
-                renderer.device.graphics_queue_family,
-                &format!("Main Pass Command Pool[{}]", ix),
-            )
-        });
-        let command_buffers = renderer.new_buffered(|ix| {
-            command_pools
-                .current_mut(ix)
-                .allocate(&format!("Main Pass CB[{}]", ix), &renderer.device)
-        });
-        MainPassCommandBuffer {
-            command_pools,
-            command_buffers,
-        }
-    }
-}
-
-impl MainPassCommandBuffer {
-    pub(crate) fn destroy(self, device: &Device) {
-        self.command_pools.into_iter().for_each(|p| p.destroy(device));
+        self.command_util.destroy(device);
     }
 }
 
@@ -1476,9 +1448,8 @@ pub(crate) fn render_frame(
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
     (main_framebuffer, acceleration_structures): (Res<MainFramebuffer>, Res<AccelerationStructures>),
-    (submissions, mut main_pass_cb, mut gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
+    (submissions, mut gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
         Res<Submissions>,
-        ResMut<MainPassCommandBuffer>,
         ResMut<GltfPassData>,
         ResMut<GuiRenderData>,
         ResMut<Camera>,
@@ -1496,6 +1467,7 @@ pub(crate) fn render_frame(
         ref gltf_pipeline_layout,
         #[cfg(feature = "shader_reload")]
         ref mut previous_gltf_pipeline,
+        ref mut command_util,
     } = &mut *gltf_pass;
 
     // TODO: count this? pack and defragment draw calls?
@@ -1523,16 +1495,7 @@ pub(crate) fn render_frame(
         );
     }
 
-    let MainPassCommandBuffer {
-        ref mut command_pools,
-        ref command_buffers,
-    } = *main_pass_cb;
-
-    let command_pool = command_pools.current_mut(image_index.0);
-
-    command_pool.reset(&renderer.device);
-
-    let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
+    let command_buffer = command_util.reset_and_record(&renderer, &image_index);
     let main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
     let guard = renderer_macros::barrier!(
         *command_buffer,
@@ -1687,7 +1650,6 @@ pub(crate) fn render_frame(
 
     let command_buffer = *command_buffer.end();
 
-    *main_pass_cb.command_buffers.current_mut(image_index.0) = command_buffer;
     submissions.submit(&renderer, &image_index, frame_graph::Main::INDEX, Some(command_buffer));
 }
 

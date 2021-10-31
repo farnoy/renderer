@@ -46,9 +46,8 @@ use renderer::{
     BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
     CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture,
     GltfMeshNormalTexture, GltfPassData, GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool,
-    MainFramebuffer, MainPassCommandBuffer, MainRenderpass, ModelData, NormalMapVisitedMarker, PresentData,
-    RenderFrame, Resized, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions,
-    SwapchainIndexToFrameNumber,
+    MainFramebuffer, MainRenderpass, ModelData, NormalMapVisitedMarker, PresentData, RenderFrame, Resized,
+    ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions, SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
@@ -673,7 +672,6 @@ fn main() {
         app.init_non_send_resource::<ShaderReload>();
         app.init_resource::<ReloadedShaders>();
     }
-    app.init_resource::<MainPassCommandBuffer>();
 
     app.add_plugin(bevy_log::LogPlugin);
 
@@ -1069,11 +1067,6 @@ fn main() {
     app.app
         .world
         .remove_resource::<CrashBuffer>()
-        .unwrap()
-        .destroy(&render_frame.device);
-    app.app
-        .world
-        .remove_resource::<MainPassCommandBuffer>()
         .unwrap()
         .destroy(&render_frame.device);
     app.app
