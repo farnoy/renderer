@@ -271,7 +271,7 @@ pub fn analyze() -> anyhow::Result<()> {
         data.resources = ResourceClaimsBuilder::convert(visitor.resource_claims)?;
 
         let dependency_graph = calculate_depencency_graph(&data)?;
-        let semaphore_mapping = dbg!(assign_semaphores_to_stages(&dependency_graph));
+        let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph);
         data.timeline_semaphore_mapping = semaphore_mapping
             .into_iter()
             .map(|(k, v)| (dependency_graph[k].clone(), v))
