@@ -50,6 +50,7 @@ fn main() {
         .allowlist_function("vmaFlushAllocation")
         .allowlist_function("vmaUnmapMemory")
         .allowlist_function("vmaCreateBuffer")
+        .allowlist_function("vmaCreateBufferWithAlignment")
         .allowlist_function("vmaDestroyBuffer")
         .allowlist_function("vmaCreateImage")
         .allowlist_function("vmaDestroyImage")

@@ -164,6 +164,7 @@ pub fn create(
         pHeapSizeLimit: ptr::null(),
         pVulkanFunctions: &vma_functions,
         pRecordSettings: ptr::null(),
+        pTypeExternalMemoryHandleTypes: ptr::null(),
     };
     let mut allocator: VmaAllocator = VmaAllocator(ptr::null_mut());
     let err_code = unsafe { vmaCreateAllocator(&create_info as *const _, &mut allocator as *mut _) };
@@ -189,19 +190,31 @@ pub fn create_buffer(
     allocator: VmaAllocator,
     buffer_create_info: &vk::BufferCreateInfo,
     allocation_create_info: &VmaAllocationCreateInfo,
+    alignment: Option<vk::DeviceSize>,
 ) -> prelude::VkResult<(vk::Buffer, VmaAllocation, VmaAllocationInfo)> {
     unsafe {
         let mut buffer = MaybeUninit::<vk::Buffer>::uninit();
         let mut allocation = MaybeUninit::<VmaAllocation>::uninit();
         let mut info = MaybeUninit::<VmaAllocationInfo>::uninit();
-        let err_code = vmaCreateBuffer(
-            allocator,
-            buffer_create_info as *const _,
-            allocation_create_info as *const _,
-            buffer.as_mut_ptr(),
-            allocation.as_mut_ptr(),
-            info.as_mut_ptr(),
-        );
+        let err_code = match alignment {
+            Some(alignment) => vmaCreateBufferWithAlignment(
+                allocator,
+                buffer_create_info as *const _,
+                allocation_create_info as *const _,
+                alignment,
+                buffer.as_mut_ptr(),
+                allocation.as_mut_ptr(),
+                info.as_mut_ptr(),
+            ),
+            None => vmaCreateBuffer(
+                allocator,
+                buffer_create_info as *const _,
+                allocation_create_info as *const _,
+                buffer.as_mut_ptr(),
+                allocation.as_mut_ptr(),
+                info.as_mut_ptr(),
+            ),
+        };
         match err_code {
             vk::Result::SUCCESS => Ok((buffer.assume_init(), allocation.assume_init(), info.assume_init())),
             _ => Err(err_code),

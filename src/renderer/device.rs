@@ -66,6 +66,7 @@ pub(crate) struct Device {
     pub(crate) extended_dynamic_state_fn: vk::ExtExtendedDynamicStateFn,
     pub(crate) synchronization2: Synchronization2,
     pub(crate) acceleration_structure: AccelerationStructure,
+    pub(crate) min_acceleration_structure_scratch_offset_alignment: u32,
 }
 
 impl Device {
@@ -77,6 +78,11 @@ impl Device {
         let physical_device = pdevices[0];
         let queue_families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+
+        let mut acceleration_structure_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+        let mut properties2 =
+            vk::PhysicalDeviceProperties2::builder().push_next(&mut acceleration_structure_properties);
+        unsafe { instance.get_physical_device_properties2(physical_device, &mut properties2) };
         /*
         unsafe {
             for format in vk::Format::UNDEFINED.as_raw()..vk::Format::ASTC_12X12_SRGB_BLOCK.as_raw()
@@ -290,6 +296,8 @@ impl Device {
             extended_dynamic_state_fn,
             synchronization2,
             acceleration_structure,
+            min_acceleration_structure_scratch_offset_alignment: acceleration_structure_properties
+                .min_acceleration_structure_scratch_offset_alignment,
         };
         device.set_object_name(graphics_queue, "Graphics Queue");
         for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
@@ -330,6 +338,10 @@ impl Device {
         alloc::stats(self.allocator)
     }
 
+    pub(crate) fn allocation_info(&self, allocation: alloc::VmaAllocation) -> alloc::VmaAllocationInfo {
+        alloc::get_allocation_info(self.allocator, allocation)
+    }
+
     pub(crate) fn new_descriptor_pool(&self, max_sets: u32, pool_sizes: &[vk::DescriptorPoolSize]) -> DescriptorPool {
         DescriptorPool::new(self, max_sets, pool_sizes)
     }
@@ -364,6 +376,16 @@ impl Device {
         size: vk::DeviceSize,
     ) -> Buffer {
         Buffer::new(self, buffer_usage, allocation_usage, size)
+    }
+
+    pub(crate) fn new_buffer_aligned(
+        &self,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: VmaMemoryUsage,
+        size: vk::DeviceSize,
+        alignment: vk::DeviceSize,
+    ) -> Buffer {
+        Buffer::new_aligned(self, buffer_usage, allocation_usage, size, alignment)
     }
 
     pub(crate) fn new_static_buffer<T: Sized>(

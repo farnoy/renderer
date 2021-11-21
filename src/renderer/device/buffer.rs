@@ -19,11 +19,31 @@ pub(crate) struct StaticBuffer<T: Sized> {
 }
 
 impl Buffer {
-    pub(super) fn new(
+    pub(crate) fn new(
         device: &Device,
         buffer_usage: vk::BufferUsageFlags,
         allocation_usage: alloc::VmaMemoryUsage,
         size: vk::DeviceSize,
+    ) -> Buffer {
+        Self::new_internal(device, buffer_usage, allocation_usage, size, None)
+    }
+
+    pub(crate) fn new_aligned(
+        device: &Device,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+        size: vk::DeviceSize,
+        alignment: vk::DeviceSize,
+    ) -> Buffer {
+        Self::new_internal(device, buffer_usage, allocation_usage, size, Some(alignment))
+    }
+
+    fn new_internal(
+        device: &Device,
+        buffer_usage: vk::BufferUsageFlags,
+        allocation_usage: alloc::VmaMemoryUsage,
+        size: vk::DeviceSize,
+        alignment: Option<vk::DeviceSize>,
     ) -> Buffer {
         let mut queue_family_indices = vec![
             device.graphics_queue_family,
@@ -53,8 +73,13 @@ impl Buffer {
             usage: allocation_usage,
         };
 
-        let (handle, allocation, _) =
-            alloc::create_buffer(device.allocator, &buffer_create_info, &allocation_create_info).unwrap();
+        let (handle, allocation, _) = alloc::create_buffer(
+            device.allocator,
+            &buffer_create_info,
+            &allocation_create_info,
+            alignment,
+        )
+        .unwrap();
 
         Buffer { handle, allocation }
     }
@@ -65,6 +90,10 @@ impl Buffer {
             self.allocation,
             &alloc::get_allocation_info(device.allocator, self.allocation),
         )
+    }
+
+    pub(crate) fn allocation_info(&self, device: &Device) -> alloc::VmaAllocationInfo {
+        device.allocation_info(self.allocation)
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {

@@ -1,4 +1,8 @@
-use std::{hash::Hash, mem::{replace, size_of}, sync::{Arc, Weak}};
+use std::{
+    hash::Hash,
+    mem::{replace, size_of},
+    sync::{Arc, Weak},
+};
 
 use ash::vk::{self};
 use bevy_ecs::prelude::*;
@@ -9,7 +13,18 @@ use renderer_vma::VmaMemoryUsage;
 
 #[cfg(feature = "crash_debugging")]
 use crate::renderer::CrashBuffer;
-use crate::{ecs::components::ModelMatrix, renderer::{BufferType, Device, DrawIndex, GltfMesh, MainDescriptorPool, RenderFrame, RenderStage, SmartSet, SmartSetLayout, Submissions, SwapchainIndexToFrameNumber, acceleration_set, as_of_last, device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool}, frame_graph, helpers::command_util::CommandUtil, systems::present::ImageIndex, update_whole_buffer}};
+use crate::{
+    ecs::components::ModelMatrix,
+    renderer::{
+        acceleration_set, as_of_last,
+        device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool},
+        frame_graph,
+        helpers::command_util::CommandUtil,
+        systems::present::ImageIndex,
+        update_whole_buffer, BufferType, Device, DrawIndex, GltfMesh, MainDescriptorPool, RenderFrame, RenderStage,
+        SmartSet, SmartSetLayout, Submissions, SwapchainIndexToFrameNumber,
+    },
+};
 
 pub(crate) struct BottomLevelAccelerationStructure {
     buffer: Buffer,
@@ -166,20 +181,20 @@ pub(crate) fn build_acceleration_structures(
     // Wait for structures to have been used with this swapchain ix
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_indices);
 
-        // renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX]
-        //     .wait(
-        //         &renderer.device,
-        //         as_of_last::<<frame_graph::Main::Stage as RenderStage>::SignalTimelineStage>(renderer.frame_number),
-        //     )
-        //     .unwrap();
+    // renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX]
+    //     .wait(
+    //         &renderer.device,
+    //         as_of_last::<<frame_graph::Main::Stage as
+    // RenderStage>::SignalTimelineStage>(renderer.frame_number),     )
+    //     .unwrap();
 
     // TODO: double-buffer
     random_seed.map(&renderer.device).unwrap().seed = rand::random();
 
     // Free up structures used for this swapchain previously
     // TODO: inefficient and these can be reused in some cases
-    // for buffer in replace(previous_top_level_buffers.current_mut(image_index.0), vec![]).into_iter() {
-    //     buffer.destroy(&renderer.device);
+    // for buffer in replace(previous_top_level_buffers.current_mut(image_index.0), vec![]).into_iter()
+    // {     buffer.destroy(&renderer.device);
     // }
     if let Some(previous_scratch) = top_level_scratch_buffers.current_mut(image_index.0).take() {
         previous_scratch.destroy(&renderer.device);
@@ -251,11 +266,11 @@ pub(crate) fn build_acceleration_structures(
                     build_sizes.acceleration_structure_size,
                 );
 
-                let scratch_buffer = renderer.device.new_buffer(
-                        vk::BufferUsageFlags::STORAGE_BUFFER
-                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                let scratch_buffer = renderer.device.new_buffer_aligned(
+                    vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                     build_sizes.build_scratch_size,
+                    renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
                 );
 
                 let handle = unsafe {
@@ -490,13 +505,13 @@ pub(crate) fn build_acceleration_structures(
             build_sizes.acceleration_structure_size,
         );
 
-        let top_level_scratch_buffer = renderer.device.new_buffer(
-                vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        let top_level_scratch_buffer = renderer.device.new_buffer_aligned(
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             build_sizes.build_scratch_size,
+            renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
         );
-        
+
         let scratch_addr = unsafe {
             renderer.device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::builder().buffer(top_level_scratch_buffer.handle),
