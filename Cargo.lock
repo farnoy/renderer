@@ -1602,15 +1602,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "microprofile"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998988e00fcd6a009cd74528f25051d3a0c414c51f30e4696b59346c6d754257"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "minimal-lexical"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2268,6 +2259,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "profiling"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9926767b8b8244d7b6b64546585121d193c3d0b4856ccd656b7bfa9deb91ab6a"
+dependencies = [
+ "profiling-procmacros",
+]
+
+[[package]]
+name = "profiling-procmacros"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f899bc77213a95c5b7272c1f9889c1948eacafe06b035e976abbcadbb34fe517"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2423,6 +2433,7 @@ dependencies = [
  "criterion",
  "crossbeam-utils",
  "env_logger 0.9.0",
+ "futures-lite",
  "gltf",
  "hashbrown",
  "humansize",
@@ -2432,7 +2443,6 @@ dependencies = [
  "intel_tex",
  "jobserver",
  "meshopt",
- "microprofile",
  "nalgebra",
  "nalgebra-glm",
  "ncollide3d",
@@ -2440,6 +2450,7 @@ dependencies = [
  "num-traits",
  "parking_lot",
  "petgraph 0.6.0",
+ "profiling",
  "rand",
  "rayon",
  "renderer-macro-lib",
@@ -2497,7 +2508,6 @@ dependencies = [
  "renderer-macro-lib",
  "serde",
  "serde_json",
- "spirq",
  "syn",
 ]
 
@@ -2728,9 +2738,8 @@ dependencies = [
 
 [[package]]
 name = "spirq"
-version = "0.4.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c86f5f8758f01914de87288f123a43af7659e32c808ad3c4cb8ab1574543405"
+version = "0.4.17"
+source = "git+https://github.com/PENGUINLIONG/spirq-rs?branch=dev#864ed21993a0c00ab6558f56021682718191ec1e"
 dependencies = [
  "fnv",
  "num-derive",

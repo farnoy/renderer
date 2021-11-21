@@ -27,37 +27,37 @@ layout (constant_id = 2) const uint draw_calls_to_compact = 1;
 layout (local_size_y = 999) in;
 #endif
 
-// TODO: this needs to scale beyond vkCmdDispatch(1, 1, 1)
 layout (local_size_y_id = 1) in;
 
-shared uint localOffset;
+shared uint workgroupCounter;
 
 void main() {
     if (gl_LocalInvocationID.y == 0)
-        localOffset = 0;
+        workgroupCounter = 0;
+
+    barrier();
 
     VkDrawIndexedIndirectCommand copied = indirect_commands.indirect_commands[gl_LocalInvocationID.y];
     bool use = copied.indexCount > 0;
     uvec4 ballot = subgroupBallot(use);
     uint count = subgroupBallotBitCount(ballot);
+    uint subgroupOffset = subgroupBallotExclusiveBitCount(ballot);
+
+    uint localOffset = 0;
+    if (subgroupElect())
+        localOffset = atomicAdd(workgroupCounter, count);
+    localOffset = subgroupBroadcastFirst(localOffset);
 
     barrier();
 
-    uint subgroupOffset = 0;
-    if (subgroupElect()) {
-        subgroupOffset = atomicAdd(localOffset, count);
-    }
-    subgroupOffset = subgroupBroadcastFirst(subgroupOffset);
-
-    barrier();
-
-    uint exclusiveBitCount = subgroupBallotExclusiveBitCount(ballot);
-    uint offset = subgroupOffset + exclusiveBitCount;
-
-    if (use) {
-        indirect_commands.indirect_commands[offset] = copied;
-    }
-    
+    // workgroupCounter switches from a counter to the shared offset base for the workgroup
     if (gl_LocalInvocationID.y == 0)
-        indirect_commands_count.count = localOffset;
+        workgroupCounter = atomicAdd(indirect_commands_count.count, workgroupCounter);
+        
+    barrier();
+
+    uint offset = workgroupCounter + localOffset + subgroupOffset;
+
+    if (use)
+        indirect_commands.indirect_commands[offset] = copied;
 }

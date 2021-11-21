@@ -24,6 +24,7 @@ use bevy_ecs::{
     component::{ComponentDescriptor, StorageType},
     prelude::*,
 };
+use bevy_tasks::Task;
 use ecs::{
     components::{Deleting, Light, ModelMatrix, Position, Rotation, Scale, AABB},
     resources::{Camera, InputActions, MeshLibrary},
@@ -34,9 +35,9 @@ use ecs::{
     },
 };
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
-use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
+use profiling::scope;
 #[cfg(feature = "crash_debugging")]
 use renderer::CrashBuffer;
 use renderer::{
@@ -47,16 +48,19 @@ use renderer::{
     CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture,
     GltfMeshNormalTexture, GltfPassData, GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool,
     MainFramebuffer, MainRenderpass, ModelData, NormalMapVisitedMarker, PresentData, RenderFrame, Resized,
-    ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions, SwapchainIndexToFrameNumber,
+    SceneLoaderLoadedMesh, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions,
+    SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
 
-use crate::renderer::TransferCullPrivate;
+use crate::renderer::{
+    initiate_scene_loader, load_scene, traverse_and_decode_scenes, upload_loaded_meshes, ScenesToLoad,
+    TransferCullPrivate, UploadMeshesData,
+};
 
 fn main() {
-    microprofile::init!();
-    microprofile::on_thread_create!("main");
+    profiling::register_thread!("main");
 
     env_logger::init();
 
@@ -403,41 +407,41 @@ fn main() {
     //     )
     // };
 
-    let (
-        dmgh_vertex_buffer,
-        dmgh_normal_buffer,
-        dmgh_tangent_buffer,
-        dmgh_uv_buffer,
-        dmgh_index_buffers,
-        dmgh_base_color,
-        dmgh_normal_map,
-        dmgh_vertex_len,
-        dmgh_aabb,
-    ) = {
-        let LoadedMesh {
-            vertex_buffer,
-            normal_buffer,
-            tangent_buffer,
-            uv_buffer,
-            index_buffers,
-            vertex_len,
-            aabb,
-            base_color,
-            normal_map,
-        } = { load_gltf(&renderer, "vendor/glTF-Sample-Models/2.0/Corset/glTF/Corset.gltf") };
+    // let (
+    //     dmgh_vertex_buffer,
+    //     dmgh_normal_buffer,
+    //     dmgh_tangent_buffer,
+    //     dmgh_uv_buffer,
+    //     dmgh_index_buffers,
+    //     dmgh_base_color,
+    //     dmgh_normal_map,
+    //     dmgh_vertex_len,
+    //     dmgh_aabb,
+    // ) = {
+    //     let LoadedMesh {
+    //         vertex_buffer,
+    //         normal_buffer,
+    //         tangent_buffer,
+    //         uv_buffer,
+    //         index_buffers,
+    //         vertex_len,
+    //         aabb,
+    //         base_color,
+    //         normal_map,
+    //     } = { load_gltf(&renderer, "vendor/glTF-Sample-Models/2.0/Corset/glTF/Corset.gltf") };
 
-        (
-            Arc::new(vertex_buffer),
-            Arc::new(normal_buffer),
-            Arc::new(tangent_buffer),
-            Arc::new(uv_buffer),
-            Arc::new(index_buffers),
-            Arc::new(base_color),
-            Arc::new(normal_map),
-            vertex_len,
-            aabb,
-        )
-    };
+    //     (
+    //         Arc::new(vertex_buffer),
+    //         Arc::new(normal_buffer),
+    //         Arc::new(tangent_buffer),
+    //         Arc::new(uv_buffer),
+    //         Arc::new(index_buffers),
+    //         Arc::new(base_color),
+    //         Arc::new(normal_map),
+    //         vertex_len,
+    //         aabb,
+    //     )
+    // };
 
     let mesh_library = MeshLibrary {
         projectile: GltfMesh {
@@ -454,104 +458,104 @@ fn main() {
     };
 
     // objects
-    app.app.world.spawn_batch(vec![
-        (
-            Position(na::Point3::new(0.0, -25.0, 0.0)),
-            Rotation(na::UnitQuaternion::identity()),
-            Scale(20.0),
-            ModelMatrix::default(),
-            GltfMeshBaseColorTexture(Arc::clone(&base_color)),
-            GltfMeshNormalTexture(Arc::clone(&normal_map)),
-            GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                tangent_buffer: Arc::clone(&tangent_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb,
-            },
-            AABB::default(),
-            CoarseCulled(false),
-            DrawIndex::default(),
-        ),
-        (
-            Position(na::Point3::new(0.0, 5.0, 5.0)),
-            Rotation(na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 2.0)),
-            Scale(1.0),
-            ModelMatrix::default(),
-            GltfMeshBaseColorTexture(Arc::clone(&base_color)),
-            GltfMeshNormalTexture(Arc::clone(&normal_map)),
-            GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                tangent_buffer: Arc::clone(&tangent_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb,
-            },
-            AABB::default(),
-            CoarseCulled(false),
-            DrawIndex::default(),
-        ),
-        (
-            Position(na::Point3::new(-5.0, 5.0, 0.0)),
-            Rotation(na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 3.0)),
-            Scale(1.0),
-            ModelMatrix::default(),
-            GltfMeshBaseColorTexture(Arc::clone(&base_color)),
-            GltfMeshNormalTexture(Arc::clone(&normal_map)),
-            GltfMesh {
-                vertex_buffer: Arc::clone(&vertex_buffer),
-                normal_buffer: Arc::clone(&normal_buffer),
-                tangent_buffer: Arc::clone(&tangent_buffer),
-                uv_buffer: Arc::clone(&uv_buffer),
-                index_buffers: Arc::clone(&index_buffers),
-                vertex_len,
-                aabb,
-            },
-            AABB::default(),
-            CoarseCulled(false),
-            DrawIndex::default(),
-        ),
-        /* (
-         *     Position(na::Point3::new(5.0, 3.0, 2.0)),
-         *     Rotation(na::UnitQuaternion::identity()),
-         *     Scale(1.0),
-         *     ModelMatrix::default(),
-         *     GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
-         *     GltfMesh {
-         *         vertex_buffer: Arc::clone(&box_vertex_buffer),
-         *         normal_buffer: Arc::clone(&box_normal_buffer),
-         *         uv_buffer: Arc::clone(&box_uv_buffer),
-         *         index_buffers: Arc::clone(&box_index_buffers),
-         *         vertex_len: box_vertex_len,
-         *         aabb: box_aabb,
-         *     },
-         *     AABB::default(),
-         *     CoarseCulled(false),
-         *     DrawIndex::default(),
-         * ),
-         * (
-         *     Position(na::Point3::new(0.0, -29.0, 0.0)),
-         *     Rotation(na::UnitQuaternion::identity()),
-         *     Scale(50.0),
-         *     ModelMatrix::default(),
-         *     GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
-         *     GltfMesh {
-         *         vertex_buffer: Arc::clone(&box_vertex_buffer),
-         *         normal_buffer: Arc::clone(&box_normal_buffer),
-         *         uv_buffer: Arc::clone(&box_uv_buffer),
-         *         index_buffers: Arc::clone(&box_index_buffers),
-         *         vertex_len: box_vertex_len,
-         *         aabb: box_aabb,
-         *     },
-         *     AABB::default(),
-         *     CoarseCulled(false),
-         *     DrawIndex::default(),
-         * ), */
-    ]);
+    // app.app.world.spawn_batch(vec![
+    //     (
+    //         Position(na::Point3::new(0.0, -25.0, 0.0)),
+    //         Rotation(na::UnitQuaternion::identity()),
+    //         Scale(20.0),
+    //         ModelMatrix::default(),
+    //         GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+    //         GltfMeshNormalTexture(Arc::clone(&normal_map)),
+    //         GltfMesh {
+    //             vertex_buffer: Arc::clone(&vertex_buffer),
+    //             normal_buffer: Arc::clone(&normal_buffer),
+    //             tangent_buffer: Arc::clone(&tangent_buffer),
+    //             uv_buffer: Arc::clone(&uv_buffer),
+    //             index_buffers: Arc::clone(&index_buffers),
+    //             vertex_len,
+    //             aabb,
+    //         },
+    //         AABB::default(),
+    //         CoarseCulled(false),
+    //         DrawIndex::default(),
+    //     ),
+    //     (
+    //         Position(na::Point3::new(0.0, 5.0, 5.0)),
+    //         Rotation(na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 2.0)),
+    //         Scale(1.0),
+    //         ModelMatrix::default(),
+    //         GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+    //         GltfMeshNormalTexture(Arc::clone(&normal_map)),
+    //         GltfMesh {
+    //             vertex_buffer: Arc::clone(&vertex_buffer),
+    //             normal_buffer: Arc::clone(&normal_buffer),
+    //             tangent_buffer: Arc::clone(&tangent_buffer),
+    //             uv_buffer: Arc::clone(&uv_buffer),
+    //             index_buffers: Arc::clone(&index_buffers),
+    //             vertex_len,
+    //             aabb,
+    //         },
+    //         AABB::default(),
+    //         CoarseCulled(false),
+    //         DrawIndex::default(),
+    //     ),
+    //     (
+    //         Position(na::Point3::new(-5.0, 5.0, 0.0)),
+    //         Rotation(na::UnitQuaternion::from_axis_angle(&up_vector(), f32::pi() / 3.0)),
+    //         Scale(1.0),
+    //         ModelMatrix::default(),
+    //         GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+    //         GltfMeshNormalTexture(Arc::clone(&normal_map)),
+    //         GltfMesh {
+    //             vertex_buffer: Arc::clone(&vertex_buffer),
+    //             normal_buffer: Arc::clone(&normal_buffer),
+    //             tangent_buffer: Arc::clone(&tangent_buffer),
+    //             uv_buffer: Arc::clone(&uv_buffer),
+    //             index_buffers: Arc::clone(&index_buffers),
+    //             vertex_len,
+    //             aabb,
+    //         },
+    //         AABB::default(),
+    //         CoarseCulled(false),
+    //         DrawIndex::default(),
+    //     ),
+    //     /* (
+    //      * Position(na::Point3::new(5.0, 3.0, 2.0)),
+    //      * Rotation(na::UnitQuaternion::identity()),
+    //      * Scale(1.0),
+    //      * ModelMatrix::default(),
+    //      * GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
+    //      * GltfMesh {
+    //      * vertex_buffer: Arc::clone(&box_vertex_buffer),
+    //      * normal_buffer: Arc::clone(&box_normal_buffer),
+    //      * uv_buffer: Arc::clone(&box_uv_buffer),
+    //      * index_buffers: Arc::clone(&box_index_buffers),
+    //      * vertex_len: box_vertex_len,
+    //      * aabb: box_aabb,
+    //      * },
+    //      * AABB::default(),
+    //      * CoarseCulled(false),
+    //      * DrawIndex::default(),
+    //      * ),
+    //      * (
+    //      * Position(na::Point3::new(0.0, -29.0, 0.0)),
+    //      * Rotation(na::UnitQuaternion::identity()),
+    //      * Scale(50.0),
+    //      * ModelMatrix::default(),
+    //      * GltfMeshBaseColorTexture(Arc::clone(&box_base_color)),
+    //      * GltfMesh {
+    //      * vertex_buffer: Arc::clone(&box_vertex_buffer),
+    //      * normal_buffer: Arc::clone(&box_normal_buffer),
+    //      * uv_buffer: Arc::clone(&box_uv_buffer),
+    //      * index_buffers: Arc::clone(&box_index_buffers),
+    //      * vertex_len: box_vertex_len,
+    //      * aabb: box_aabb,
+    //      * },
+    //      * AABB::default(),
+    //      * CoarseCulled(false),
+    //      * DrawIndex::default(),
+    //      * ), */
+    // ]);
 
     // drop(box_vertex_buffer);
     // drop(box_normal_buffer);
@@ -559,59 +563,60 @@ fn main() {
     // drop(box_index_buffers);
     // drop(box_base_color);
 
-    app.app.world.spawn_batch((7..max_entities).map(|ix| {
-        let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
-        let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
-        let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix / 10) as f32));
+    // app.app.world.spawn_batch((7..max_entities).map(|ix| {
+    //     let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
+    //     let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
+    //     let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix /
+    // 10) as f32));
 
-        let (scale, base_color, normal_map, mesh) = if ix % 2 == 0 {
-            (
-                Scale(0.6),
-                GltfMeshBaseColorTexture(Arc::clone(&base_color)),
-                GltfMeshNormalTexture(Arc::clone(&normal_map)),
-                GltfMesh {
-                    vertex_buffer: Arc::clone(&vertex_buffer),
-                    normal_buffer: Arc::clone(&normal_buffer),
-                    tangent_buffer: Arc::clone(&tangent_buffer),
-                    uv_buffer: Arc::clone(&uv_buffer),
-                    index_buffers: Arc::clone(&index_buffers),
-                    vertex_len,
-                    aabb,
-                },
-            )
-        } else {
-            (
-                Scale(20.),
-                GltfMeshBaseColorTexture(Arc::clone(&dmgh_base_color)),
-                GltfMeshNormalTexture(Arc::clone(&dmgh_normal_map)),
-                GltfMesh {
-                    vertex_buffer: Arc::clone(&dmgh_vertex_buffer),
-                    normal_buffer: Arc::clone(&dmgh_normal_buffer),
-                    tangent_buffer: Arc::clone(&dmgh_tangent_buffer),
-                    uv_buffer: Arc::clone(&dmgh_uv_buffer),
-                    index_buffers: Arc::clone(&dmgh_index_buffers),
-                    vertex_len: dmgh_vertex_len,
-                    aabb: dmgh_aabb,
-                },
-            )
-        };
+    //     let (scale, base_color, normal_map, mesh) = if ix % 2 == 0 {
+    //         (
+    //             Scale(0.6),
+    //             GltfMeshBaseColorTexture(Arc::clone(&base_color)),
+    //             GltfMeshNormalTexture(Arc::clone(&normal_map)),
+    //             GltfMesh {
+    //                 vertex_buffer: Arc::clone(&vertex_buffer),
+    //                 normal_buffer: Arc::clone(&normal_buffer),
+    //                 tangent_buffer: Arc::clone(&tangent_buffer),
+    //                 uv_buffer: Arc::clone(&uv_buffer),
+    //                 index_buffers: Arc::clone(&index_buffers),
+    //                 vertex_len,
+    //                 aabb,
+    //             },
+    //         )
+    //     } else {
+    //         (
+    //             Scale(20.),
+    //             GltfMeshBaseColorTexture(Arc::clone(&dmgh_base_color)),
+    //             GltfMeshNormalTexture(Arc::clone(&dmgh_normal_map)),
+    //             GltfMesh {
+    //                 vertex_buffer: Arc::clone(&dmgh_vertex_buffer),
+    //                 normal_buffer: Arc::clone(&dmgh_normal_buffer),
+    //                 tangent_buffer: Arc::clone(&dmgh_tangent_buffer),
+    //                 uv_buffer: Arc::clone(&dmgh_uv_buffer),
+    //                 index_buffers: Arc::clone(&dmgh_index_buffers),
+    //                 vertex_len: dmgh_vertex_len,
+    //                 aabb: dmgh_aabb,
+    //             },
+    //         )
+    //     };
 
-        (
-            Position(pos),
-            Rotation(na::UnitQuaternion::from_axis_angle(
-                &na::Unit::new_normalize(na::Vector3::y()),
-                angle,
-            )),
-            scale,
-            ModelMatrix::default(),
-            base_color,
-            normal_map,
-            mesh,
-            AABB::default(),
-            CoarseCulled(false),
-            DrawIndex::default(),
-        )
-    }));
+    //     (
+    //         Position(pos),
+    //         Rotation(na::UnitQuaternion::from_axis_angle(
+    //             &na::Unit::new_normalize(na::Vector3::y()),
+    //             angle,
+    //         )),
+    //         scale,
+    //         ModelMatrix::default(),
+    //         base_color,
+    //         normal_map,
+    //         mesh,
+    //         AABB::default(),
+    //         CoarseCulled(false),
+    //         DrawIndex::default(),
+    //     )
+    // }));
 
     drop(vertex_buffer);
     drop(normal_buffer);
@@ -621,14 +626,20 @@ fn main() {
     drop(base_color);
     drop(normal_map);
 
-    drop(dmgh_vertex_buffer);
-    drop(dmgh_normal_buffer);
-    drop(dmgh_tangent_buffer);
-    drop(dmgh_uv_buffer);
-    drop(dmgh_index_buffers);
-    drop(dmgh_base_color);
-    drop(dmgh_normal_map);
+    // drop(dmgh_vertex_buffer);
+    // drop(dmgh_normal_buffer);
+    // drop(dmgh_tangent_buffer);
+    // drop(dmgh_uv_buffer);
+    // drop(dmgh_index_buffers);
+    // drop(dmgh_base_color);
+    // drop(dmgh_normal_map);
 
+    // load_scene(&mut app.app.world, &renderer, "assets/bistro.gltf");
+
+    app.insert_resource(ScenesToLoad {
+        scene_paths: vec!["assets/bistro.gltf".to_string()],
+        scenes: vec![],
+    });
     app.insert_resource(Submissions::new());
     app.insert_resource(swapchain);
     app.insert_resource(mesh_library);
@@ -646,6 +657,7 @@ fn main() {
     app.insert_resource(camera_matrices);
     app.insert_resource(base_color_descriptor_set);
     app.insert_resource(model_data);
+    app.init_resource::<UploadMeshesData>();
     app.init_resource::<CullPassData>();
     app.init_resource::<CullPassDataPrivate>();
     app.init_resource::<TransferCullPrivate>();
@@ -745,6 +757,8 @@ fn main() {
         CameraMatricesUpload,
         ModelMatricesUpload,
         UpdateShadowMapDescriptors,
+        InitiateSceneLoader,
+        TraverseAndDecodeScenes,
     }
 
     app.add_system_set(
@@ -798,6 +812,13 @@ fn main() {
                     .system()
                     .label(RenderSetup::UpdateShadowMapDescriptors)
                     .after(RenderSetup::ShadowMappingMVPCalculation),
+            )
+            .with_system(initiate_scene_loader.system().label(RenderSetup::InitiateSceneLoader))
+            .with_system(
+                traverse_and_decode_scenes
+                    .system()
+                    .label(RenderSetup::TraverseAndDecodeScenes)
+                    .before(RenderSetup::InitiateSceneLoader),
             ),
     );
 
@@ -840,18 +861,28 @@ fn main() {
             ),
     );
 
-    app.insert_resource(bevy_tasks::ComputeTaskPool(bevy_tasks::TaskPool::new()));
+    app.insert_resource(bevy_tasks::ComputeTaskPool(
+        bevy_tasks::TaskPoolBuilder::new()
+            .thread_name("ComputeThread".to_string())
+            .build(),
+    ));
+    app.insert_resource(bevy_tasks::AsyncComputeTaskPool(
+        bevy_tasks::TaskPoolBuilder::new()
+            .num_threads(bevy_tasks::physical_core_count() / 2)
+            .thread_name("AsyncThread".to_string())
+            .build(),
+    ));
 
     if cfg!(debug_assertions) {
         app.insert_resource(bevy_ecs::schedule::ReportExecutionOrderAmbiguities);
     }
 
     'frame: loop {
-        microprofile::flip!();
-
-        scope!("game-loop", "all");
+        scope!("game-loop");
 
         app.app.update();
+
+        profiling::finish_frame!();
 
         if *quit_handle.lock() {
             unsafe {
@@ -917,6 +948,11 @@ fn main() {
         .remove_resource::<AccelerationStructures>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
+    app.app
+        .world
+        .remove_resource::<UploadMeshesData>()
+        .unwrap()
+        .destroy(&render_frame.device);
     app.app
         .world
         .remove_resource::<CullPassData>()
@@ -1061,6 +1097,24 @@ fn main() {
             .remove::<GltfMesh>()
             .unwrap()
             .destroy(&render_frame.device);
+    }
+
+    let entities = app
+        .app
+        .world
+        .query_filtered::<Entity, With<Task<SceneLoaderLoadedMesh>>>()
+        .iter(&app.app.world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        futures_lite::future::block_on(async {
+            app.app
+                .world
+                .entity_mut(entity)
+                .remove::<Task<SceneLoaderLoadedMesh>>()
+                .unwrap()
+                .cancel()
+                .await;
+        });
     }
 
     #[cfg(feature = "crash_debugging")]
@@ -1225,6 +1279,4 @@ fn main() {
     println!("}}");
 
     */
-
-    microprofile::shutdown!();
 }

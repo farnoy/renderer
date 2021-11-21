@@ -8,7 +8,7 @@ build = "build.rs"
 edition = "2021"
 
 [[bin]]
-name = "renderer2"
+name = "renderer4"
 path = "src/main.rs"
 bench = false
 
@@ -30,6 +30,7 @@ cache-padded = "1.1.1"
 crossbeam-utils = "0.8.5"
 env_logger = "0.9.0"
 parking_lot = { version = "0.11.0", features = ["deadlock_detection"] }
+futures-lite = "1.12.0"
 gltf = { version = "0.16.0", features = ["KHR_materials_pbrSpecularGlossiness"] }
 hashbrown = "0.11.2"
 humansize = "1.1.0"
@@ -38,18 +39,18 @@ imgui = "0.8.0"
 imgui-winit-support = { version = "0.8.0", default-features = false, features = ["winit-25"] }
 intel_tex = { version = "0.1.4", optional = true }
 meshopt = "0.1.9"
-microprofile = "0.2.0"
 nalgebra = "0.29.0"
 nalgebra-glm = "0.15.0"
 ncollide3d = "0.32.0"
 notify = { version = "4.0.16", optional = true }
 num-traits = "0.2.6"
 petgraph = "0.6.0"
+profiling = "1.0"
 rand = "0.8.4"
 scopeguard = "1.1.0"
 simba = "0.6.0"
 smallvec = { version = "1.2.0", features = ["union", "const_generics", "const_new", "specialization"] }
-spirq = { version = "0.4.6", optional = true }
+spirq = { git = "https://github.com/PENGUINLIONG/spirq-rs", branch = "dev", optional = true } # { version = "0.4.6", optional = true }
 static_assertions= "1.1.0"
 # tokio = { version = "1", features = ["full", "parking_lot"] }
 winit = "0.25.0"
@@ -79,7 +80,6 @@ gpu_printf = ["standard_validation"]
 silence_validation = ["standard_validation"]
 sync_validation = ["crash_debugging", "standard_validation"]
 uncapped = []
-no_profiling = ["microprofile/disabled"]
 profiling_bevy = ["bevy_ecs/trace", "bevy_log/tracing-chrome"]
 shader_reload = ["notify", "spirq"]
 

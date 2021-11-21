@@ -3,9 +3,11 @@ use std::{mem::size_of, u64};
 use ash::vk::{self, Handle};
 use bevy_ecs::prelude::*;
 use hashbrown::{hash_map::Entry, HashMap};
-use microprofile::scope;
 use num_traits::ToPrimitive;
+use profiling::scope;
 
+#[cfg(feature = "crash_debugging")]
+use crate::renderer::CrashBuffer;
 use crate::renderer::{
     device::{Buffer, Device, DoubleBuffered, StrictCommandPool, VmaMemoryUsage},
     frame_graph,
@@ -50,8 +52,9 @@ pub(crate) fn consolidate_mesh_buffers(
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
     submissions: Res<Submissions>,
     query: Query<&GltfMesh>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("ecs", "consolidate mesh buffers");
+    scope!("ecs::consolidate_mesh_buffers");
 
     let ConsolidatedMeshBuffers {
         ref mut next_vertex_offset,
@@ -80,6 +83,7 @@ pub(crate) fn consolidate_mesh_buffers(
 
     let guard = renderer_macros::barrier!(
         *command_buffer,
+        IndividualGltfMeshBuffer.consolidate r in ConsolidateMeshBuffers transfer copy after [upload],
         ConsolidatedPositionBuffer.consolidate w in ConsolidateMeshBuffers transfer copy,
         ConsolidatedNormalBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_normal_buffer,
         ConsolidatedIndexBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_index_buffer
@@ -156,6 +160,8 @@ pub(crate) fn consolidate_mesh_buffers(
         &image_index,
         frame_graph::ConsolidateMeshBuffers::INDEX,
         Some(*command_buffer),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
     );
 }
 

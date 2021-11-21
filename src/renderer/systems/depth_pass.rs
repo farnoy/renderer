@@ -2,8 +2,10 @@ use std::mem::{replace, size_of};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
-use microprofile::scope;
+use profiling::scope;
 
+#[cfg(feature = "crash_debugging")]
+use crate::renderer::CrashBuffer;
 use crate::{
     ecs::systems::RuntimeConfiguration,
     renderer::{
@@ -98,8 +100,9 @@ pub(crate) fn depth_only_pass(
     camera_matrices: Res<CameraMatrices>,
     submissions: Res<Submissions>,
     resized: Res<Resized>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("rendering", "depth_only_pass");
+    scope!("rendering::depth_only_pass");
 
     let DepthPassData {
         ref renderpass,
@@ -221,5 +224,7 @@ pub(crate) fn depth_only_pass(
         &image_index,
         frame_graph::DepthOnly::INDEX,
         Some(*command_buffer),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
     );
 }

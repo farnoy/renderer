@@ -69,7 +69,7 @@ pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 pub(crate) struct #name(pub(crate) crate::renderer::StaticBuffer<#type_name>);
 
                 impl #name {
-                    pub(crate) fn new(device: &Device) -> Self {
+                    pub(crate) fn new(device: &crate::renderer::device::Device) -> Self {
                         let b = device.new_static_buffer(
                             vk::BufferUsageFlags::empty() #(| vk::BufferUsageFlags::#usage_flags)*,
                             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
@@ -78,7 +78,7 @@ pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                         Self(b)
                     }
 
-                    pub(crate) fn destroy(self, device: &Device) {
+                    pub(crate) fn destroy(self, device: &crate::renderer::device::Device) {
                         self.0.destroy(device);
                     }
                 }
@@ -993,8 +993,8 @@ fn define_renderpass(new_data: &RendererInput, pass: &Pass) -> TokenStream {
                 attachments: &[vk::ImageView; #attachment_count],
                 clear_values: &[vk::ClearValue; #passes_that_need_clearing_len],
             ) {
-                use microprofile::scope;
-                scope!("macros", #renderpass_begin);
+                use profiling::scope;
+                scope!(#renderpass_begin);
 
                 let mut attachment_info = vk::RenderPassAttachmentBeginInfo::builder()
                     .attachments(attachments);
@@ -1011,7 +1011,7 @@ fn define_renderpass(new_data: &RendererInput, pass: &Pass) -> TokenStream {
                     .clear_values(&clear_values);
 
                 unsafe {
-                    scope!("vk", "vkCmdBeginRenderPass");
+                    scope!("vk::CmdBeginRenderPass");
 
                     renderer.device.cmd_begin_render_pass(
                         command_buffer,
@@ -1837,7 +1837,7 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
             use crate::renderer::device::{self, Device};
             use ash::vk;
             use std::{mem::size_of, slice::from_raw_parts};
-            use microprofile::scope;
+            use profiling::scope;
 
             pub(crate) struct PipelineLayout {
                 pub(crate) layout: device::PipelineLayout,
@@ -2007,7 +2007,7 @@ fn prepare_queue_manager(input: &RendererInput, dependency_graph: &DiGraph<Strin
                         }
                         None => &[],
                     };
-                    #name_ident::Stage::queue_submit(&image_index, &renderer, *queue, cmds).expect("submit failed");
+                    #name_ident::Stage::queue_submit(&image_index, &renderer, *queue, cmds)
                 }
             }
         })
@@ -2023,7 +2023,7 @@ fn prepare_queue_manager(input: &RendererInput, dependency_graph: &DiGraph<Strin
             image_index: &ImageIndex,
             ix: petgraph::stable_graph::NodeIndex<u8>,
             cb: Option<vk::CommandBuffer>
-        ) {
+        ) -> ash::prelude::VkResult<()> {
             match ix {
                 #(#submit_clauses),*
                 _ => panic!("Invalid pass index in queue_manager submit()"),

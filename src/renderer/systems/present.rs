@@ -2,9 +2,11 @@ use std::u64;
 
 use ash::vk;
 use bevy_ecs::prelude::*;
-use microprofile::scope;
+use profiling::scope;
 
 use super::super::{device::Semaphore, RenderFrame, Swapchain};
+#[cfg(feature = "crash_debugging")]
+use crate::renderer::CrashBuffer;
 use crate::renderer::{
     as_of, as_of_last, frame_graph, Device, RenderStage, Resized, Submissions, SwapchainIndexToFrameNumber,
 };
@@ -56,10 +58,18 @@ pub(crate) fn acquire_framebuffer(
     swapchain: Res<Swapchain>,
     mut present_data: ResMut<PresentData>,
     mut image_index: ResMut<ImageIndex>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("ecs", "AcquireFramebuffer");
+    scope!("ecs::AcquireFramebuffer");
 
-    AcquireFramebuffer::exec(&renderer, &swapchain, &mut *present_data, &mut *image_index);
+    AcquireFramebuffer::exec(
+        &renderer,
+        &swapchain,
+        &mut *present_data,
+        &mut *image_index,
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
+    );
 }
 
 impl AcquireFramebuffer {
@@ -69,10 +79,11 @@ impl AcquireFramebuffer {
         swapchain: &Swapchain,
         present_data: &mut PresentData,
         image_index: &mut ImageIndex,
+        #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
     ) {
-        scope!("presentation", "acquire framebuffer");
+        scope!("presentation::acquire_framebuffer");
         let result = unsafe {
-            scope!("vk", "vkAcquireNextImageKHR");
+            scope!("vk::AcquireNextImageKHR");
             swapchain.ext.acquire_next_image(
                 swapchain.swapchain,
                 u64::MAX,
@@ -93,20 +104,25 @@ impl AcquireFramebuffer {
             _ => panic!("unknown condition in AcquireFramebuffer"),
         }
 
-        debug_assert!(
-            {
-                let counter = renderer.auto_semaphores.0
-                    [<frame_graph::PresentationAcquire::Stage as RenderStage>::SIGNAL_AUTO_SEMAPHORE_IX]
-                    .value(&renderer.device)
-                    .unwrap();
+        #[cfg(debug_assertions)]
+        {
+            let counter = renderer.auto_semaphores.0
+                [<frame_graph::PresentationAcquire::Stage as RenderStage>::SIGNAL_AUTO_SEMAPHORE_IX]
+                .value(&renderer.device)
+                .unwrap();
 
-                counter
-                    < as_of::<<frame_graph::PresentationAcquire::Stage as RenderStage>::SignalTimelineStage>(
-                        renderer.frame_number,
-                    )
-            },
-            "AcquireFramebuffer assumption incorrect"
-        );
+            let actual = as_of::<<frame_graph::PresentationAcquire::Stage as RenderStage>::SignalTimelineStage>(
+                renderer.frame_number,
+            );
+
+            if counter >= actual {
+                println!(
+                    "AcquireFramebuffer assumption incorrect, counter at {} but expected < {}",
+                    counter, actual
+                );
+            }
+        }
+
         let wait_semaphore_values = &[
             as_of_last::<<frame_graph::Main::Stage as RenderStage>::SignalTimelineStage>(renderer.frame_number),
             0,
@@ -133,12 +149,16 @@ impl AcquireFramebuffer {
             .signal_semaphores(signal_semaphores)
             .build();
 
-        unsafe {
-            renderer
-                .device
-                .queue_submit(*queue, &[submit], vk::Fence::null())
-                .unwrap();
-        }
+        let result = unsafe { renderer.device.queue_submit(*queue, &[submit], vk::Fence::null()) };
+
+        match result {
+            Ok(()) => {}
+            Err(res) => {
+                #[cfg(feature = "crash_debugging")]
+                crash_buffer.dump(&renderer.device);
+                panic!("Submit failed, frame={}, error={:?}", renderer.frame_number, res);
+            }
+        };
     }
 }
 
@@ -152,11 +172,14 @@ impl PresentFramebuffer {
         mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
         #[cfg(debug_assertions)] mut submissions: ResMut<Submissions>,
     ) {
-        scope!("ecs", "PresentFramebuffer");
+        scope!("ecs::PresentFramebuffer");
 
-        let graph = submissions.remaining.get_mut();
-        debug_assert_eq!(graph.node_count(), 0);
-        debug_assert_eq!(graph.edge_count(), 0);
+        #[cfg(debug_assertions)]
+        {
+            let graph = submissions.remaining.get_mut();
+            debug_assert_eq!(graph.node_count(), 0);
+            debug_assert_eq!(graph.edge_count(), 0);
+        }
 
         let queue = if swapchain.supports_present_from_compute {
             renderer.device.compute_queue_balanced()
@@ -165,7 +188,7 @@ impl PresentFramebuffer {
         };
 
         {
-            scope!("present", "first_submit");
+            scope!("present::first_submit");
             let wait_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
                 .semaphore(renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX].handle)
                 .value(as_of::<<frame_graph::Main::Stage as RenderStage>::SignalTimelineStage>(
@@ -183,7 +206,7 @@ impl PresentFramebuffer {
                 .build();
 
             unsafe {
-                scope!("vk", "vkQueueSubmit");
+                scope!("vk::QueueSubmit");
 
                 renderer
                     .device
@@ -202,7 +225,7 @@ impl PresentFramebuffer {
             .image_indices(image_indices);
 
         let result = {
-            scope!("vk", "vkQueuePresentKHR");
+            scope!("vk::QueuePresentKHR");
             unsafe { swapchain.ext.queue_present(*queue, &present_info) }
         };
         drop(queue);
@@ -212,7 +235,7 @@ impl PresentFramebuffer {
             }
             Ok(true) => {
                 println!("PresentFramebuffer image suboptimal");
-                scope!("ecs", "resized wait");
+                scope!("ecs::resized_wait");
                 unsafe {
                     renderer.device.device_wait_idle().unwrap();
                 }

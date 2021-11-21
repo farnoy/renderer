@@ -1,27 +1,15 @@
-use std::{
-    hash::Hash,
-    mem::size_of,
-    sync::{Arc, Weak},
-};
+use std::{hash::Hash, mem::{replace, size_of}, sync::{Arc, Weak}};
 
 use ash::vk::{self};
 use bevy_ecs::prelude::*;
 use hashbrown::HashMap;
-use microprofile::scope;
 use num_traits::ToPrimitive;
+use profiling::scope;
 use renderer_vma::VmaMemoryUsage;
 
-use crate::{
-    ecs::components::ModelMatrix,
-    renderer::{
-        acceleration_set,
-        device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool},
-        frame_graph,
-        systems::present::ImageIndex,
-        update_whole_buffer, BufferType, Device, DrawIndex, GltfMesh, MainDescriptorPool, RenderFrame, RenderStage,
-        SmartSet, SmartSetLayout, Submissions, SwapchainIndexToFrameNumber,
-    },
-};
+#[cfg(feature = "crash_debugging")]
+use crate::renderer::CrashBuffer;
+use crate::{ecs::components::ModelMatrix, renderer::{BufferType, Device, DrawIndex, GltfMesh, MainDescriptorPool, RenderFrame, RenderStage, SmartSet, SmartSetLayout, Submissions, SwapchainIndexToFrameNumber, acceleration_set, as_of_last, device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool}, frame_graph, helpers::command_util::CommandUtil, systems::present::ImageIndex, update_whole_buffer}};
 
 pub(crate) struct BottomLevelAccelerationStructure {
     buffer: Buffer,
@@ -36,11 +24,12 @@ struct MeshHandle(Weak<Buffer>);
 renderer_macros::define_resource! { TLAS = AccelerationStructure }
 
 pub(crate) struct AccelerationStructuresInternal {
-    command_pools: DoubleBuffered<StrictCommandPool>,
-    command_buffers: DoubleBuffered<vk::CommandBuffer>,
+    command_util: CommandUtil,
     bottom_structures: HashMap<MeshHandle, BottomLevelAccelerationStructure>,
     top_level_buffers: DoubleBuffered<Option<Buffer>>,
     top_level_scratch_buffers: DoubleBuffered<Option<Buffer>>,
+    // TODO: This is hack to further defer reclaim of old TLAS resources, as they hang the GPU if freed to early
+    // previous_top_level_buffers: DoubleBuffered<Vec<Buffer>>,
     top_level_handles: DoubleBuffered<Option<vk::AccelerationStructureKHR>>,
     instances_buffer: DoubleBuffered<StaticBuffer<[vk::AccelerationStructureInstanceKHR; 4096]>>,
     random_seed: BufferType<acceleration_set::bindings::random_seed>,
@@ -83,19 +72,6 @@ impl FromWorld for AccelerationStructuresInternal {
         world.resource_scope(|world, mut acceleration_structures: Mut<AccelerationStructures>| {
             let renderer = world.get_resource::<RenderFrame>().unwrap();
 
-            let mut command_pools = renderer.new_buffered(|ix| {
-                StrictCommandPool::new(
-                    &renderer.device,
-                    renderer.device.compute_queue_family,
-                    &format!("AccelerationStructuresInternal Command Pool[{}]", ix),
-                )
-            });
-            let command_buffers = renderer.new_buffered(|ix| {
-                command_pools
-                    .current_mut(ix)
-                    .allocate(&format!("AccelerationStructursInternal CB[{}]", ix), &renderer.device)
-            });
-
             let instances_buffer = renderer.new_buffered(|ix| {
                 let b = renderer
                     .device
@@ -123,12 +99,12 @@ impl FromWorld for AccelerationStructuresInternal {
             );
 
             AccelerationStructuresInternal {
-                command_pools,
-                command_buffers,
+                command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
                 bottom_structures: HashMap::new(),
                 top_level_buffers: renderer.new_buffered(|_| None),
                 top_level_scratch_buffers: renderer.new_buffered(|_| None),
                 top_level_handles: renderer.new_buffered(|_| None),
+                // previous_top_level_buffers: renderer.new_buffered(|_| vec![]),
                 instances_buffer,
                 random_seed,
             }
@@ -138,7 +114,7 @@ impl FromWorld for AccelerationStructuresInternal {
 
 impl AccelerationStructuresInternal {
     pub(crate) fn destroy(self, device: &Device) {
-        self.command_pools.into_iter().for_each(|pool| pool.destroy(device));
+        self.command_util.destroy(device);
         self.bottom_structures
             .into_iter()
             .for_each(|(_, blas)| blas.destroy(device));
@@ -169,16 +145,20 @@ pub(crate) fn build_acceleration_structures(
         Query<&GltfMesh, With<ModelMatrix>>,
         Query<(&GltfMesh, &DrawIndex, &ModelMatrix)>,
     )>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("renderer", "build_acceleration_structures");
+    scope!("renderer::build_acceleration_structures");
+
+    // TODO: there's a bug somewhere when new BLASes are being built and added to the scene while
+    // actively ray tracing on screen? investigate synchronization
 
     let AccelerationStructuresInternal {
-        ref mut command_pools,
-        ref command_buffers,
+        ref mut command_util,
         ref mut bottom_structures,
         ref mut top_level_buffers,
         ref mut top_level_handles,
         ref mut top_level_scratch_buffers,
+        // ref mut previous_top_level_buffers,
         ref mut instances_buffer,
         ref random_seed,
     } = *acceleration_structures_internal;
@@ -186,10 +166,29 @@ pub(crate) fn build_acceleration_structures(
     // Wait for structures to have been used with this swapchain ix
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_indices);
 
+        // renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX]
+        //     .wait(
+        //         &renderer.device,
+        //         as_of_last::<<frame_graph::Main::Stage as RenderStage>::SignalTimelineStage>(renderer.frame_number),
+        //     )
+        //     .unwrap();
+
+    // TODO: double-buffer
     random_seed.map(&renderer.device).unwrap().seed = rand::random();
 
     // Free up structures used for this swapchain previously
     // TODO: inefficient and these can be reused in some cases
+    // for buffer in replace(previous_top_level_buffers.current_mut(image_index.0), vec![]).into_iter() {
+    //     buffer.destroy(&renderer.device);
+    // }
+    if let Some(previous_scratch) = top_level_scratch_buffers.current_mut(image_index.0).take() {
+        previous_scratch.destroy(&renderer.device);
+        // previous_top_level_buffers.current_mut(image_index.0).push(previous_scratch);
+    }
+    if let Some(previous_buffer) = top_level_buffers.current_mut(image_index.0).take() {
+        previous_buffer.destroy(&renderer.device);
+        // previous_top_level_buffers.current_mut(image_index.0).push(previous_buffer);
+    }
     if let Some(previous_handle) = top_level_handles.current_mut(image_index.0).take() {
         unsafe {
             renderer
@@ -198,18 +197,8 @@ pub(crate) fn build_acceleration_structures(
                 .destroy_acceleration_structure(previous_handle, None);
         }
     }
-    if let Some(previous_scratch) = top_level_scratch_buffers.current_mut(image_index.0).take() {
-        previous_scratch.destroy(&renderer.device);
-    }
-    if let Some(previous_buffer) = top_level_buffers.current_mut(image_index.0).take() {
-        previous_buffer.destroy(&renderer.device);
-    }
 
-    let command_pool = command_pools.current_mut(image_index.0);
-
-    command_pool.reset(&renderer.device);
-
-    let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
+    let command_buffer = command_util.reset_and_record(&renderer, &image_index);
 
     let all_marker = command_buffer.debug_marker_around("build_acceleration_structures", [0.3, 0.3, 0.3, 1.0]);
 
@@ -246,9 +235,8 @@ pub(crate) fn build_acceleration_structures(
                             &vk::AccelerationStructureBuildGeometryInfoKHR::builder()
                                 .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
                                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                                 .geometries(geometries),
-                            &[mesh.index_buffers.first().unwrap().1.to_u32().unwrap() / 3],
+                            &[mesh.index_buffers.last().unwrap().1.to_u32().unwrap() / 3],
                         )
                 };
 
@@ -264,8 +252,7 @@ pub(crate) fn build_acceleration_structures(
                 );
 
                 let scratch_buffer = renderer.device.new_buffer(
-                    vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                        | vk::BufferUsageFlags::STORAGE_BUFFER
+                        vk::BufferUsageFlags::STORAGE_BUFFER
                         | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                     build_sizes.build_scratch_size,
@@ -299,7 +286,7 @@ pub(crate) fn build_acceleration_structures(
                 };
                 let index_addr = unsafe {
                     renderer.device.get_buffer_device_address(
-                        &vk::BufferDeviceAddressInfo::builder().buffer(mesh.index_buffers.first().unwrap().0.handle),
+                        &vk::BufferDeviceAddressInfo::builder().buffer(mesh.index_buffers.last().unwrap().0.handle),
                     )
                 };
                 let ix = geometries.len();
@@ -326,7 +313,7 @@ pub(crate) fn build_acceleration_structures(
                 );
                 debug_assert_eq!(range_infos.len(), ix);
                 range_infos.push(vec![vk::AccelerationStructureBuildRangeInfoKHR::builder()
-                    .primitive_count(mesh.index_buffers.first().unwrap().1.to_u32().unwrap() / 3)
+                    .primitive_count(mesh.index_buffers.last().unwrap().1.to_u32().unwrap() / 3)
                     .build()]);
 
                 let scratch_addr = unsafe {
@@ -358,6 +345,15 @@ pub(crate) fn build_acceleration_structures(
             info.p_geometries = &geometries[ix];
         }
 
+        #[cfg(feature = "crash_debugging")]
+        crash_buffer.record(
+            &renderer,
+            *command_buffer,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            &image_index,
+            2,
+        );
+
         if infos.len() > 0 {
             let _blas_marker = command_buffer.debug_marker_around("BLAS", [0.1, 0.8, 0.1, 1.0]);
 
@@ -378,6 +374,15 @@ pub(crate) fn build_acceleration_structures(
                 );
             }
         }
+
+        #[cfg(feature = "crash_debugging")]
+        crash_buffer.record(
+            &renderer,
+            *command_buffer,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            &image_index,
+            3,
+        );
     }
 
     // TLAS
@@ -469,16 +474,15 @@ pub(crate) fn build_acceleration_structures(
                     &vk::AccelerationStructureBuildGeometryInfoKHR::builder()
                         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
                         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-                        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                         .geometries(&geometries),
                     &[instance_count],
                 )
         };
 
-        debug_assert_eq!(
-            build_sizes.update_scratch_size, 0,
-            "expected update to be done in place, possible AMD specific thing"
-        );
+        // debug_assert_eq!(
+        //     build_sizes.update_scratch_size, 0,
+        //     "expected update to be done in place, possible AMD specific thing"
+        // );
 
         let top_level_buffer = renderer.device.new_buffer(
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
@@ -487,13 +491,12 @@ pub(crate) fn build_acceleration_structures(
         );
 
         let top_level_scratch_buffer = renderer.device.new_buffer(
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                | vk::BufferUsageFlags::STORAGE_BUFFER
+                vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             build_sizes.build_scratch_size,
         );
-
+        
         let scratch_addr = unsafe {
             renderer.device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::builder().buffer(top_level_scratch_buffer.handle),
@@ -534,6 +537,14 @@ pub(crate) fn build_acceleration_structures(
                         .primitive_count(instance_count)
                         .build()]],
                 );
+            #[cfg(feature = "crash_debugging")]
+            crash_buffer.record(
+                &renderer,
+                *command_buffer,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                &image_index,
+                4,
+            );
 
             let structures = [top_level_as];
             let mut write_as =
@@ -561,6 +572,8 @@ pub(crate) fn build_acceleration_structures(
         &image_index,
         frame_graph::BuildAccelerationStructures::INDEX,
         Some(*command_buffer),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
     );
 }
 

@@ -2,7 +2,7 @@ use std::{mem::replace, sync::Arc};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
-use microprofile::scope;
+use profiling::scope;
 
 use crate::{
     ecs::components::Deleting,
@@ -29,9 +29,11 @@ pub(crate) struct NormalMapVisitedMarker {
 
 // Holds the base color texture that will be mapped into a single,
 // shared Descriptor Set
+#[derive(Clone)]
 pub(crate) struct GltfMeshBaseColorTexture(pub(crate) Arc<Image>);
 
 // Holds the normal map texture
+#[derive(Clone)]
 pub(crate) struct GltfMeshNormalTexture(pub(crate) Arc<Image>);
 
 impl BaseColorDescriptorSet {
@@ -160,7 +162,7 @@ pub(crate) fn recreate_base_color_descriptor_set(
     mut base_color_descriptor_set: ResMut<BaseColorDescriptorSet>,
     main_descriptor_pool: Res<MainDescriptorPool>,
 ) {
-    scope!("ecs", "recreate_base_color_descriptor_set");
+    scope!("ecs::recreate_base_color_descriptor_set");
 
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
@@ -182,7 +184,7 @@ pub(crate) fn update_base_color_descriptors(
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     query: Query<(&DrawIndex, &BaseColorVisitedMarker, &NormalMapVisitedMarker)>,
 ) {
-    scope!("ecs", "update_base_color_descriptors");
+    scope!("ecs::update_base_color_descriptors");
 
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
@@ -222,7 +224,7 @@ pub(crate) fn update_base_color_descriptors(
 }
 
 pub(crate) fn cleanup_base_color_markers(world: &mut World) {
-    scope!("ecs", "cleanup_base_color_markers");
+    scope!("ecs::cleanup_base_color_markers");
 
     let renderer = world.get_resource::<RenderFrame>().unwrap();
     let frame_number = world.get_resource::<RenderFrame>().unwrap().frame_number;

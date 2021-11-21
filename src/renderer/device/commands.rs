@@ -3,7 +3,7 @@ use std::{marker::PhantomData, ops::Deref};
 use ash::vk;
 #[cfg(debug_assertions)]
 use hashbrown::HashSet;
-use microprofile::scope;
+use profiling::scope;
 
 use super::{sync::Fence, Device};
 
@@ -56,7 +56,7 @@ impl StrictCommandPool {
     }
 
     pub(crate) fn reset(&mut self, device: &Device) {
-        scope!("vk", "vkResetCommandPool");
+        scope!("vk::ResetCommandPool");
 
         unsafe {
             device
@@ -72,7 +72,7 @@ impl StrictCommandPool {
             .level(vk::CommandBufferLevel::PRIMARY);
 
         let command_buffers = unsafe {
-            scope!("vk", "vkAllocateCommandBuffers");
+            scope!("vk::AllocateCommandBuffers");
             device.allocate_command_buffers(&command_buffer_allocate_info).unwrap()
         };
         let command_buffer = command_buffers[0];
@@ -94,7 +94,7 @@ impl StrictCommandPool {
         device: &'c Device,
         handle: vk::CommandBuffer,
     ) -> StrictRecordingCommandBuffer<'c> {
-        scope!("helpers", "record_to_command_buffer");
+        scope!("helpers::record_to_command_buffer");
 
         debug_assert!(handle != vk::CommandBuffer::null());
         #[cfg(debug_assertions)]
@@ -103,7 +103,7 @@ impl StrictCommandPool {
         let begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe {
-            scope!("vk", "vkBeginCommandBuffer");
+            scope!("vk::BeginCommandBuffer");
             device.begin_command_buffer(handle, &begin_info).unwrap();
         }
 
@@ -120,7 +120,7 @@ impl StrictCommandPool {
         device: &'c Device,
         name: &str,
     ) -> StrictRecordingCommandBuffer<'c> {
-        scope!("helpers", "record_one_time");
+        scope!("helpers::record_one_time");
 
         let command_buffer = self.allocate(name, device);
         device.set_object_name(command_buffer, name);
@@ -128,7 +128,7 @@ impl StrictCommandPool {
         let begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe {
-            scope!("vk", "vkBeginCommandBuffer");
+            scope!("vk::BeginCommandBuffer");
             device.begin_command_buffer(command_buffer, &begin_info).unwrap();
         }
 
@@ -211,7 +211,7 @@ impl<'p> StrictRecordingCommandBuffer<'p> {
     // }
 
     pub(crate) fn end(self) -> StrictCommandBuffer {
-        scope!("vk", "vkEndCommandBuffer");
+        scope!("vk::EndCommandBuffer");
         unsafe {
             self.device.end_command_buffer(self.handle).unwrap();
         }

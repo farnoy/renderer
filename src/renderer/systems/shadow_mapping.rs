@@ -2,9 +2,11 @@ use std::{convert::TryInto, mem::size_of};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
-use microprofile::scope;
+use profiling::scope;
 use static_assertions::const_assert_eq;
 
+#[cfg(feature = "crash_debugging")]
+use crate::renderer::CrashBuffer;
 use crate::{
     ecs::components::{Light, Position, Rotation},
     renderer::{
@@ -323,7 +325,7 @@ pub(crate) fn shadow_mapping_mvp_calculation(
 ) {
     const_assert_eq!(size_of::<LightMatrices>(), 208);
 
-    scope!("ecs", "shadow mapping light matrices calculation");
+    scope!("ecs::shadow_mapping_light_matrices_calculation");
 
     query.for_each_mut(|(light_position, light_rotation, mut light_matrix)| {
         let near = 10.0;
@@ -357,8 +359,9 @@ pub(crate) fn prepare_shadow_maps(
     submissions: Res<Submissions>,
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("ecs", "shadow_mapping");
+    scope!("ecs::shadow_mapping");
 
     frame_graph::ShadowMapping::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
@@ -484,6 +487,8 @@ pub(crate) fn prepare_shadow_maps(
         &image_index,
         frame_graph::ShadowMapping::INDEX,
         Some(*command_buffer),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
     );
 }
 
@@ -494,7 +499,7 @@ pub(crate) fn update_shadow_map_descriptors(
     shadow_mapping: Res<ShadowMappingData>,
     shadow_query: Query<&ShadowMappingLightMatrices, With<Light>>,
 ) {
-    scope!("ecs", "update_shadow_map_descriptors");
+    scope!("ecs::update_shadow_map_descriptors");
 
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 

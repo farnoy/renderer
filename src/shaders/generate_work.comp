@@ -42,11 +42,11 @@ layout(set = 2, binding = 1, scalar) buffer OutIndexBuffer {
 };
 
 layout(set = 2, binding = 2, scalar) buffer readonly VertexBuffer {
-    vec3 vertex_buffer[300000];
+    vec3 vertex_buffer[3000000];
 };
 
 layout(set = 2, binding = 3, scalar) buffer readonly IndexBuffer {
-    uvec3 index_buffer[300000];
+    uvec3 index_buffer[3000000];
 };
 
 #ifdef RGA

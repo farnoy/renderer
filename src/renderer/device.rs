@@ -10,8 +10,8 @@ use ash::{
 };
 use cache_padded::CachePadded;
 use crossbeam_utils::Backoff;
-use microprofile::scope;
 use parking_lot::{Mutex, MutexGuard};
+use profiling::scope;
 
 mod alloc;
 mod buffer;
@@ -309,7 +309,7 @@ impl Device {
     }
 
     pub(crate) fn compute_queue_balanced(&self) -> MutexGuard<vk::Queue> {
-        scope!("helpers", "compute_queue_balanced");
+        scope!("helpers::compute_queue_balanced");
         debug_assert!(
             self.compute_queues.len() > 0,
             "No compute queues to acquire in compute_queue_balanced"

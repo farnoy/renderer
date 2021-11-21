@@ -19,15 +19,13 @@ use std::{
 
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
-use microprofile::scope;
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
+use profiling::scope;
 use smallvec::{smallvec, SmallVec};
 use static_assertions::const_assert_eq;
 
-#[cfg(not(feature = "no_profiling"))]
-pub(crate) use self::helpers::MP_INDIAN_RED;
 #[cfg(feature = "crash_debugging")]
 pub(crate) use self::systems::crash_debugging::CrashBuffer;
 #[cfg(feature = "shader_reload")]
@@ -41,7 +39,7 @@ use self::{
     systems::{cull_pipeline::cull_set, depth_pass::depth_only_pass, shadow_mapping::shadow_map_set},
 };
 pub(crate) use self::{
-    gltf_mesh_io::{load as load_gltf, LoadedMesh},
+    gltf_mesh_io::{load as load_gltf, load_scene, LoadedMesh},
     helpers::pick_lod,
     instance::Instance,
     swapchain::{Surface, Swapchain},
@@ -57,6 +55,10 @@ pub(crate) use self::{
         debug_aabb_renderer::DebugAABBPassData,
         depth_pass::DepthPassData,
         present::{acquire_framebuffer, ImageIndex, PresentData, PresentFramebuffer},
+        scene_loader::{
+            initiate_scene_loader, traverse_and_decode_scenes, upload_loaded_meshes,
+            LoadedMesh as SceneLoaderLoadedMesh, ScenesToLoad, UploadMeshesData,
+        },
         shadow_mapping::{
             prepare_shadow_maps, shadow_mapping_mvp_calculation, update_shadow_map_descriptors, ShadowMappingData,
             ShadowMappingDataInternal, ShadowMappingLightMatrices,
@@ -147,7 +149,7 @@ pub(crate) type TangentBuffer = [[f32; 4]; size_of::<frame_graph::VertexBuffer>(
 // sanity checks
 const_assert_eq!(
     size_of::<frame_graph::VertexBuffer>() / size_of::<[f32; 3]>(),
-    10 * 30_000
+    10 * 300_000
 );
 const_assert_eq!(
     size_of::<frame_graph::VkDrawIndexedIndirectCommand>(),
@@ -255,6 +257,7 @@ renderer_macros::define_frame! {
             BuildAccelerationStructures on compute,
             TransferCull on transfer,
             ConsolidateMeshBuffers on graphics,
+            UploadMeshes on compute,
         }
     }
 }
@@ -357,7 +360,7 @@ pub(crate) trait RenderStage {
         queue: vk::Queue,
         command_buffers: &[vk::CommandBuffer],
     ) -> ash::prelude::VkResult<()> {
-        scope!("vk", "vkQueueSubmit");
+        scope!("vk::QueueSubmit");
 
         let signal_semaphore = vk::SemaphoreSubmitInfoKHR::builder()
             .semaphore(render_frame.auto_semaphores.0[Self::SIGNAL_AUTO_SEMAPHORE_IX].handle)
@@ -591,7 +594,7 @@ impl<P: Pipeline> SmartPipeline<P> {
         specialization: P::Specialization,
         dynamic_arguments: P::DynamicArguments,
     ) -> Self {
-        scope!("pipelines", "new");
+        scope!("pipelines::new");
         Self::new_internal(device, layout, specialization, None, dynamic_arguments)
     }
 
@@ -643,7 +646,7 @@ impl<P: Pipeline> SmartPipeline<P> {
         dynamic_arguments: P::DynamicArguments,
         #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
     ) -> Option<Self> {
-        scope!("pipelines", "specialize");
+        scope!("pipelines::specialize");
         use std::mem::swap;
 
         #[cfg(feature = "shader_reload")]
@@ -1460,7 +1463,7 @@ pub(crate) fn render_frame(
     #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
     query: Query<&AABB>,
 ) {
-    scope!("ecs", "render_frame");
+    scope!("ecs::render_frame");
 
     let GltfPassData {
         ref mut gltf_pipeline,
@@ -1551,7 +1554,7 @@ pub(crate) fn render_frame(
             ],
         );
         if runtime_config.debug_aabbs {
-            scope!("ecs", "debug aabb pass");
+            scope!("ecs::debug_aabb_pass");
 
             let _aabb_marker = command_buffer.debug_marker_around("aabb debug", [1.0, 0.0, 0.0, 1.0]);
             renderer.device.cmd_bind_pipeline(
@@ -1610,6 +1613,14 @@ pub(crate) fn render_frame(
                 ],
                 &[0, 0, 0, 0],
             );
+            #[cfg(feature = "crash_debugging")]
+            crash_buffer.record(
+                &renderer,
+                *command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                &image_index,
+                0,
+            );
             renderer.device.cmd_draw_indexed_indirect_count(
                 *command_buffer,
                 cull_pass_data.culled_commands_buffer.buffer.handle,
@@ -1625,7 +1636,7 @@ pub(crate) fn render_frame(
                 *command_buffer,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 &image_index,
-                0,
+                1,
             );
         }
         renderer
@@ -1650,7 +1661,14 @@ pub(crate) fn render_frame(
 
     let command_buffer = *command_buffer.end();
 
-    submissions.submit(&renderer, &image_index, frame_graph::Main::INDEX, Some(command_buffer));
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::Main::INDEX,
+        Some(command_buffer),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
+    );
 }
 
 pub(crate) struct GuiRenderData {
@@ -2005,8 +2023,8 @@ impl<T: FromWorld> FromWorld for CopiedResource<T> {
 /// Remember to use [writeback_resource] if the mutations are made to the wrapper.
 pub(crate) fn copy_resource<T: Component + Clone>(from: Res<T>, mut to: ResMut<CopiedResource<T>>) {
     #[allow(unused_variables)]
-    let scope_name = format!("copy_resource<{}>", std::any::type_name::<T>());
-    scope!("ecs", scope_name);
+    let scope_name = format!("ecs::copy_resource<{}>", std::any::type_name::<T>());
+    scope!(&scope_name);
 
     to.0.clone_from(&from);
 }
@@ -2017,8 +2035,8 @@ pub(crate) fn copy_resource<T: Component + Clone>(from: Res<T>, mut to: ResMut<C
 #[allow(dead_code)]
 pub(crate) fn writeback_resource<T: Component + Clone>(from: Res<CopiedResource<T>>, mut to: ResMut<T>) {
     #[allow(unused_variables)]
-    let scope_name = format!("writeback_resource<{}>", std::any::type_name::<T>());
-    scope!("ecs", scope_name);
+    let scope_name = format!("ecs::writeback_resource<{}>", std::any::type_name::<T>());
+    scope!(&scope_name);
 
     to.clone_from(&from.0);
 }
@@ -2034,7 +2052,7 @@ fn render_gui(
     command_buffer: &StrictRecordingCommandBuffer,
     #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
 ) {
-    scope!("rendering", "render_gui");
+    scope!("rendering::render_gui");
 
     let GuiRenderData {
         ref pos_buffer,
@@ -2098,7 +2116,7 @@ fn render_gui(
                 .map(&renderer.device)
                 .expect("Failed to map gui index buffer");
             for draw_list in gui_draw_data.draw_lists() {
-                scope!("rendering", "gui draw list");
+                scope!("rendering::gui_draw_list");
 
                 let index_len = draw_list.idx_buffer().len();
                 index_slice[index_offset_coarse..index_offset_coarse + index_len]
@@ -2149,7 +2167,7 @@ pub(crate) fn model_matrices_upload(
     mut model_data: ResMut<ModelData>,
     query: Query<(&DrawIndex, &ModelMatrix)>,
 ) {
-    scope!("ecs", "ModelMatricesUpload");
+    scope!("ecs::ModelMatricesUpload");
     let mut model_mapped = model_data
         .model_buffer
         .current_mut(image_index.0)
@@ -2173,7 +2191,7 @@ pub(crate) fn camera_matrices_upload(
     camera: Res<Camera>,
     mut camera_matrices: ResMut<CameraMatrices>,
 ) {
-    scope!("ecs", "CameraMatricesUpload");
+    scope!("ecs::CameraMatricesUpload");
     let mut model_mapped = camera_matrices
         .buffer
         .current_mut(image_index.0)
@@ -2210,21 +2228,22 @@ pub(crate) fn recreate_main_framebuffer(
 pub(crate) fn graphics_stage() -> SystemStage {
     let stage = SystemStage::parallel();
 
-    #[cfg(not(feature = "no_profiling"))]
+    // TODO
+    #[cfg(feature = "profiling/profile-with-tracy")]
     let stage = {
-        let token = microprofile::get_token("ecs".to_string(), "graphics_stage".to_string(), 0);
+        let token = profiling::get_token("ecs".to_string(), "graphics_stage".to_string(), 0);
 
         stage
             .with_system(
                 (move || {
-                    microprofile::enter(token);
+                    profiling::enter(token);
                 })
                 .exclusive_system()
                 .at_start(),
             )
             .with_system(
                 (|| {
-                    microprofile::leave();
+                    profiling::leave();
                 })
                 .exclusive_system()
                 .at_end(),
@@ -2237,7 +2256,8 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let copy_camera = test.root(copy_resource::<Camera>);
     let copy_indices = test.root(copy_resource::<SwapchainIndexToFrameNumber>);
     let setup_submissions = test.root(setup_submissions);
-    let consolidate_mesh_buffers = setup_submissions.then(consolidate_mesh_buffers);
+    let (consolidate_mesh_buffers, upload_loaded_meshes) =
+        setup_submissions.fork((consolidate_mesh_buffers.system(), upload_loaded_meshes.system()));
 
     let initial = (copy_runtime_config, copy_camera, copy_indices, consolidate_mesh_buffers);
     let (recreate_main_framebuffer, recreate_base_color, cull, cull_bypass, build_as, shadow_mapping) = initial
@@ -2255,9 +2275,17 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let update_base_color = recreate_base_color.then(update_base_color_descriptors);
 
     // TODO: this only needs to wait before submission, could record in parallel
-    let main_pass = (recreate_main_framebuffer, update_base_color).join(render_frame);
+    let main_pass = (recreate_main_framebuffer, update_base_color, build_as).join(render_frame);
 
-    (main_pass, cull, cull_bypass, depth, build_as, shadow_mapping).join(PresentFramebuffer::exec);
+    (
+        main_pass,
+        cull,
+        cull_bypass,
+        depth,
+        shadow_mapping,
+        upload_loaded_meshes,
+    )
+        .join(PresentFramebuffer::exec);
 
     stage.with_system_set(test)
 }
@@ -2279,20 +2307,27 @@ impl Submissions {
         image_index: &ImageIndex,
         node_ix: u8,
         cb: Option<vk::CommandBuffer>,
+        #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
     ) {
-        scope!("rendering", "submit command buffer");
+        scope!("rendering::submit_command_buffer");
         let mut g = self.remaining.lock();
         let weight = g
             .node_weight_mut(NodeIndex::from(node_ix))
             .expect(&format!("Node not found while submitting {}", node_ix));
         debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
         *weight = Some(cb);
-        update_submissions(renderer, image_index, g);
+        update_submissions(
+            renderer,
+            image_index,
+            g,
+            #[cfg(feature = "crash_debugging")]
+            crash_buffer,
+        );
     }
 }
 
 fn setup_submissions(mut submissions: ResMut<Submissions>) {
-    scope!("rendering", "setup_submissions");
+    scope!("rendering::setup_submissions");
     let graph = submissions.remaining.get_mut();
     assert_eq!(graph.node_count(), 0);
     assert_eq!(graph.edge_count(), 0);
@@ -2305,8 +2340,9 @@ fn update_submissions(
     renderer: &RenderFrame,
     image_index: &ImageIndex,
     mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, (), u8>>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
-    scope!("rendering", "update_submissions");
+    scope!("rendering::update_submissions");
     use petgraph::Direction;
 
     let mut should_continue = true;
@@ -2321,7 +2357,14 @@ fn update_submissions(
                     // leave None behind so that others won't try to submit this, but will
                     // continue to see it as a blocking dependency
                     MutexGuard::unlocked_fair(&mut graph, || {
-                        frame_graph::submit_stage_by_index(renderer, image_index, node, cb.unwrap());
+                        match frame_graph::submit_stage_by_index(renderer, image_index, node, cb.unwrap()) {
+                            Ok(()) => {}
+                            Err(res) => {
+                                #[cfg(feature = "crash_debugging")]
+                                crash_buffer.dump(&renderer.device);
+                                panic!("Submit failed, frame={}, error={:?}", renderer.frame_number, res);
+                            }
+                        };
                     });
                     // we can clean it up now to unlock downstream submissions
                     graph.remove_node(node).expect("remove node failed");

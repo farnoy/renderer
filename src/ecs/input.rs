@@ -3,9 +3,9 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use hashbrown::HashSet;
 use imgui_winit_support::WinitPlatform;
-use microprofile::scope;
 use na::RealField;
 use parking_lot::Mutex;
+use profiling::scope;
 use winit::{
     self,
     dpi::PhysicalSize,
@@ -82,7 +82,7 @@ impl InputHandler {
         mut input_handler: NonSendMut<InputHandler>,
         mut gui: NonSendMut<Gui>,
     ) {
-        scope!("ecs", "InputHandler");
+        scope!("ecs::InputHandler");
 
         let InputHandler {
             ref mut events_loop,
@@ -94,9 +94,9 @@ impl InputHandler {
         let fly_mode = runtime_config.fly_mode;
         let mut toggle_fly_mode = false;
         events_loop.run_return(|event, _window_target, control_flow| {
-            scope!("input", "event_loop");
+            scope!("input::event_loop");
             {
-                scope!("input", "imgui handle_event");
+                scope!("input::imgui_handle_event");
                 imgui_platform.handle_event(gui.imgui.io_mut(), &renderer.instance.window, &event);
             }
             match event {
@@ -187,7 +187,7 @@ impl InputHandler {
         runtime_config.fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
 
         {
-            scope!("input", "imgui prepare_frame");
+            scope!("input::imgui_prepare_frame");
             imgui_platform
                 .prepare_frame(gui.imgui.io_mut(), &renderer.instance.window)
                 .expect("Failed to prepare frame");

@@ -29,15 +29,13 @@ pub(crate) mod systems {
     use std::{sync::Arc, time::Instant};
 
     use bevy_ecs::prelude::*;
-    use microprofile::scope;
     use na::RealField;
+    use profiling::scope;
     use winit::{self, event::MouseButton};
 
     pub(crate) use super::{camera_controller::camera_controller, input::InputHandler};
     #[cfg(feature = "shader_reload")]
     pub(crate) use crate::renderer::ReloadedShaders;
-    #[cfg(not(feature = "no_profiling"))]
-    pub(crate) use crate::renderer::MP_INDIAN_RED;
     use crate::{
         ecs::{
             components::{
@@ -55,10 +53,10 @@ pub(crate) mod systems {
         task_pool: Res<bevy_tasks::ComputeTaskPool>,
         mut query: Query<(&Position, &Rotation, &Scale, &mut ModelMatrix)>,
     ) {
-        scope!("ecs", "ModelMatrixCalculation");
+        scope!("ecs::ModelMatrixCalculation");
 
         query.par_for_each_mut(&task_pool, 2, |(pos, rot, scale, mut model_matrix)| {
-            scope!("parallel", "ModelMatrixCalculation", MP_INDIAN_RED);
+            scope!("parallel::ModelMatrixCalculation");
 
             model_matrix.0 =
                 glm::translation(&pos.0.coords) * rot.0.to_homogeneous() * glm::scaling(&glm::Vec3::repeat(scale.0));
@@ -66,7 +64,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn project_camera(swapchain: Res<Swapchain>, mut camera: ResMut<Camera>) {
-        scope!("ecs", "project camera");
+        scope!("ecs::project_camera");
 
         let near = 0.1;
         let far = 100.0;
@@ -107,7 +105,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn calculate_frame_timing(mut frame_timing: ResMut<FrameTiming>) {
-        scope!("ecs", "CalculateFrameTiming");
+        scope!("ecs::CalculateFrameTiming");
 
         let now = Instant::now();
         let duration = now - frame_timing.previous_frame;
@@ -127,7 +125,7 @@ pub(crate) mod systems {
             ),
         >,
     ) {
-        scope!("ecs", "AssignDrawIndex");
+        scope!("ecs::AssignDrawIndex");
 
         let mut counter = 0u32;
 
@@ -141,10 +139,10 @@ pub(crate) mod systems {
         task_pool: Res<bevy_tasks::ComputeTaskPool>,
         mut query: Query<(&ModelMatrix, &GltfMesh, &mut AABB)>,
     ) {
-        scope!("ecs", "AABBCalculation");
+        scope!("ecs::AABBCalculation");
 
         query.par_for_each_mut(&task_pool, 2, |(model_matrix, mesh, mut aabb)| {
-            scope!("parallel", "AABBCalculation", MP_INDIAN_RED);
+            scope!("parallel::AABBCalculation");
 
             let min = mesh.aabb.mins;
             let max = mesh.aabb.maxs;
@@ -190,7 +188,7 @@ pub(crate) mod systems {
         renderer: Res<RenderFrame>,
         mut last_frame_launched: Local<u64>, // stores frame number so we can debounce the launches
     ) {
-        scope!("ecs", "LaunchProjectiles");
+        scope!("ecs::LaunchProjectiles");
 
         if *last_frame_launched + 60 < renderer.frame_number && input_actions.get_mouse_down(MouseButton::Left) {
             let target = camera.position + camera.rotation * (100.0 * (&forward_vector().into_inner()));
@@ -219,7 +217,7 @@ pub(crate) mod systems {
         image_index: Res<ImageIndex>,
         mut query: Query<(Entity, &mut Position, &Rotation, &ProjectileTarget, &ProjectileVelocity), Without<Deleting>>,
     ) {
-        scope!("ecs", "UpdateProjectiles");
+        scope!("ecs::UpdateProjectiles");
 
         for (entity, mut position, rotation, target, velocity) in query.iter_mut() {
             if na::distance(&position.0, &target.0) < 0.1 {
@@ -281,7 +279,7 @@ pub(crate) mod systems {
             runtime_config: &mut RuntimeConfiguration,
             #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
         ) -> &'a imgui::DrawData {
-            scope!("gui", "update");
+            scope!("gui::update");
 
             let imgui = &mut self.imgui;
             imgui.io_mut().display_size = [swapchain.width as f32, swapchain.height as f32];
@@ -378,7 +376,7 @@ pub(crate) mod systems {
     }
 
     pub(crate) fn cleanup_deleted_entities(world: &mut World) {
-        scope!("ecs", "cleanup_deleted_entities");
+        scope!("ecs::cleanup_deleted_entities");
 
         let frame_number = world.get_resource::<RenderFrame>().unwrap().frame_number;
         let swapchain_index = world.get_resource::<ImageIndex>().cloned().unwrap();

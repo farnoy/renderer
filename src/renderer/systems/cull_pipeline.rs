@@ -1,12 +1,12 @@
-use std::cmp::min;
+use std::cmp::{max, min};
 
 use ash::vk::{self, Handle};
 use bevy_ecs::prelude::*;
-use microprofile::scope;
 use num_traits::ToPrimitive;
+use profiling::scope;
 
-#[cfg(not(feature = "no_profiling"))]
-use crate::renderer::helpers::MP_INDIAN_RED;
+#[cfg(feature = "crash_debugging")]
+use crate::renderer::CrashBuffer;
 #[cfg(feature = "shader_reload")]
 use crate::renderer::ReloadedShaders;
 use crate::{
@@ -98,10 +98,10 @@ pub(crate) fn coarse_culling(
     camera: Res<Camera>,
     mut query: Query<(&AABB, &mut CoarseCulled)>,
 ) {
-    scope!("ecs", "coarse_culling");
+    scope!("ecs::coarse_culling");
 
     query.par_for_each_mut(&task_pool, 2, |(aabb, mut coarse_culled)| {
-        scope!("parallel", "coarse_culling", MP_INDIAN_RED);
+        scope!("parallel::coarse_culling");
         let mut outside = false;
         'per_plane: for plane in camera.frustum_planes.iter() {
             let e = aabb.0.half_extents().dot(&plane.xyz().abs());
@@ -333,11 +333,19 @@ pub(crate) fn cull_pass_bypass(
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<CopiedResource<SwapchainIndexToFrameNumber>>,
     submissions: Res<Submissions>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("ecs", "cull pass bypass");
+    scope!("ecs::cull_pass_bypass");
 
     if runtime_config.debug_aabbs {
-        submissions.submit(&renderer, &image_index, frame_graph::TransferCull::INDEX, None);
+        submissions.submit(
+            &renderer,
+            &image_index,
+            frame_graph::TransferCull::INDEX,
+            None,
+            #[cfg(feature = "crash_debugging")]
+            &crash_buffer,
+        );
         return;
     }
 
@@ -347,7 +355,7 @@ pub(crate) fn cull_pass_bypass(
         .transfer_command_util
         .reset_and_record(&renderer, &image_index);
     unsafe {
-        scope!("cull pass", "cb recording");
+        scope!("cull_pass::cb_recording");
         let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
 
         let _guard = renderer_macros::barrier!(
@@ -409,6 +417,8 @@ pub(crate) fn cull_pass_bypass(
         &image_index,
         frame_graph::TransferCull::INDEX,
         Some(*cull_cb),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
     );
 }
 
@@ -426,11 +436,19 @@ pub(crate) fn cull_pass(
     submissions: Res<Submissions>,
     query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
     #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("ecs", "cull pass");
+    scope!("ecs::cull_pass");
 
     if runtime_config.debug_aabbs {
-        submissions.submit(&renderer, &image_index, frame_graph::ComputeCull::INDEX, None);
+        submissions.submit(
+            &renderer,
+            &image_index,
+            frame_graph::ComputeCull::INDEX,
+            None,
+            #[cfg(feature = "crash_debugging")]
+            &crash_buffer,
+        );
 
         return;
     }
@@ -457,7 +475,7 @@ pub(crate) fn cull_pass(
     let indirect_commands_buffer = &cull_pass_data.culled_commands_buffer;
     let indirect_commands_count = &cull_pass_data.culled_commands_count_buffer;
     unsafe {
-        scope!("cull pass", "cb recording");
+        scope!("cull pass::cb_recording");
 
         let commands_buffer = &cull_pass_data.culled_commands_buffer;
 
@@ -512,13 +530,21 @@ pub(crate) fn cull_pass(
             // Clear the command buffer before using
             let guard = renderer_macros::barrier!(
                 *cull_cb,
-                IndirectCommandsBuffer.reset w in ComputeCull transfer clear
+                IndirectCommandsBuffer.reset w in ComputeCull transfer clear,
+                IndirectCommandsCount.reset w in ComputeCull transfer clear
             );
             renderer.device.cmd_fill_buffer(
                 *cull_cb,
                 commands_buffer.buffer.handle,
                 0,
                 binding_size::<cull_set::bindings::indirect_commands>(),
+                0,
+            );
+            renderer.device.cmd_fill_buffer(
+                *cull_cb,
+                indirect_commands_count.buffer.handle,
+                0,
+                binding_size::<cull_commands_count_set::bindings::indirect_commands_count>(),
                 0,
             );
             drop(guard);
@@ -556,7 +582,6 @@ pub(crate) fn cull_pass(
             let guard = renderer_macros::barrier!(
                 *cull_cb,
                 IndirectCommandsBuffer.cull rw in ComputeCull descriptor generate_work.cull_set.indirect_commands after [reset]; indirect_commands_buffer,
-                IndirectCommandsCount.compute rw in ComputeCull descriptor generate_work.cull_commands_count_set.indirect_commands_count,
                 ConsolidatedPositionBuffer.in_cull r in ComputeCull descriptor generate_work.cull_set.indirect_commands after [consolidate],
                 ConsolidatedIndexBuffer.cull_from r in ComputeCull descriptor generate_work.cull_set.index_buffer after [consolidate],
                 CulledIndexBuffer.cull w in ComputeCull descriptor generate_work.cull_set.out_index_buffer
@@ -591,7 +616,7 @@ pub(crate) fn cull_pass(
                 cull_pipeline_layout.push_constants(&renderer.device, *cull_cb, &push_constants);
                 let index_len = *index_len as u32;
                 let workgroup_size = cull_pipeline.specialization.local_workgroup_size;
-                let workgroup_count = index_len / 3 / workgroup_size + min(1, index_len / 3 % workgroup_size);
+                let workgroup_count = index_len / 3 / workgroup_size + u32::from(index_len / 3 % workgroup_size > 0);
                 debug_assert!(
                     renderer.device.limits.max_compute_work_group_count[0] >= workgroup_count,
                     "max_compute_work_group_count[0] violated"
@@ -613,7 +638,8 @@ pub(crate) fn cull_pass(
             let _compact_marker = cull_cb.debug_marker_around("compact draw stream", [0.0, 1.0, 1.0, 1.0]);
             let _guard = renderer_macros::barrier!(
                 *cull_cb,
-                IndirectCommandsBuffer.compact rw in ComputeCull descriptor compact_draw_stream.cull_set.indirect_commands after [cull]; indirect_commands_buffer
+                IndirectCommandsBuffer.compact rw in ComputeCull descriptor compact_draw_stream.cull_set.indirect_commands after [cull]; indirect_commands_buffer,
+                IndirectCommandsCount.compute rw in ComputeCull descriptor compact_draw_stream.cull_commands_count_set.indirect_commands_count after [reset]; indirect_commands_count,
             );
 
             renderer.device.cmd_bind_pipeline(
@@ -626,10 +652,23 @@ pub(crate) fn cull_pass(
                 *cull_cb,
                 (&cull_pass_data.cull_set, &cull_pass_data.cull_count_set),
             );
-            renderer.device.cmd_dispatch(*cull_cb, 1, 1, 1);
+            let calls_to_compact = query.iter().count() as u32;
+            let workgroup_size = cull_pass_data
+                .compact_draw_stream_pipeline
+                .specialization
+                .local_workgroup_size;
+            let workgroup_count = calls_to_compact / workgroup_size + u32::from(calls_to_compact % workgroup_size > 0);
+            renderer.device.cmd_dispatch(*cull_cb, 1, workgroup_count, 1);
         }
     }
     let cull_cb = cull_cb.end();
 
-    submissions.submit(&renderer, &image_index, frame_graph::ComputeCull::INDEX, Some(*cull_cb));
+    submissions.submit(
+        &renderer,
+        &image_index,
+        frame_graph::ComputeCull::INDEX,
+        Some(*cull_cb),
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
+    );
 }

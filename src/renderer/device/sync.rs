@@ -1,5 +1,5 @@
 use ash::vk;
-use microprofile::scope;
+use profiling::scope;
 
 use super::Device;
 
@@ -48,7 +48,7 @@ impl TimelineSemaphore {
     }
 
     pub(crate) fn wait(&self, device: &Device, value: u64) -> ash::prelude::VkResult<()> {
-        scope!("vk", "vkWaitSemaphores");
+        scope!("vk::WaitSemaphores");
         let wait_ixes = &[value];
         let wait_semaphores = &[self.handle];
         let wait_info = vk::SemaphoreWaitInfo::builder()
@@ -58,7 +58,7 @@ impl TimelineSemaphore {
     }
 
     pub(crate) fn value(&self, device: &Device) -> ash::prelude::VkResult<u64> {
-        scope!("vk", "vkGetSemaphoreCounterValue");
+        scope!("vk::GetSemaphoreCounterValue");
         unsafe { device.get_semaphore_counter_value(self.handle) }
     }
 

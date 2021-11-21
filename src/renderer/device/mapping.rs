@@ -113,8 +113,8 @@ impl<T> IndexMut<Range<usize>> for MappedBuffer<'_, T> {
 }
 
 impl<T> IndexMut<RangeFull> for MappedBuffer<'_, T> {
-    fn index_mut(&mut self, _ix: RangeFull) -> &mut [T] {
-        &mut *self.ptr
+    fn index_mut(&mut self, ix: RangeFull) -> &mut [T] {
+        &mut self.ptr[ix]
     }
 }
 

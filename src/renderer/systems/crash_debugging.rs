@@ -5,7 +5,7 @@ use bevy_ecs::prelude::*;
 
 use super::super::{Buffer, Device, DoubleBuffered, ImageIndex, RenderFrame, VmaMemoryUsage};
 
-pub(crate) type CrashStages = [u32; 2];
+pub(crate) type CrashStages = [u32; 5];
 
 pub(crate) struct CrashBuffer(DoubleBuffered<Buffer>);
 
@@ -48,5 +48,11 @@ impl CrashBuffer {
 
     pub(crate) fn destroy(self, device: &Device) {
         self.0.into_iter().for_each(|buf| buf.destroy(device));
+    }
+
+    pub(crate) fn dump(&self, device: &Device) {
+        self.0.iter().for_each(|buf| {
+            dbg!(&buf.map::<CrashStages>(device).expect("Failed to map crash buffer")[..]);
+        });
     }
 }
