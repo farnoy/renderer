@@ -1,7 +1,7 @@
 use std::{
     ffi::c_void,
     mem,
-    ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFull},
+    ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFull, RangeTo},
     ptr, slice,
 };
 
@@ -92,6 +92,14 @@ impl<T> Index<Range<usize>> for MappedBuffer<'_, T> {
     }
 }
 
+impl<T> Index<RangeTo<usize>> for MappedBuffer<'_, T> {
+    type Output = [T];
+
+    fn index(&self, ix: RangeTo<usize>) -> &[T] {
+        &self.ptr[ix]
+    }
+}
+
 impl<T> Index<RangeFull> for MappedBuffer<'_, T> {
     type Output = [T];
 
@@ -108,6 +116,12 @@ impl<T> IndexMut<usize> for MappedBuffer<'_, T> {
 
 impl<T> IndexMut<Range<usize>> for MappedBuffer<'_, T> {
     fn index_mut(&mut self, ix: Range<usize>) -> &mut [T] {
+        &mut self.ptr[ix]
+    }
+}
+
+impl<T> IndexMut<RangeTo<usize>> for MappedBuffer<'_, T> {
+    fn index_mut(&mut self, ix: RangeTo<usize>) -> &mut [T] {
         &mut self.ptr[ix]
     }
 }

@@ -43,8 +43,6 @@ pub(crate) struct AccelerationStructuresInternal {
     bottom_structures: HashMap<MeshHandle, BottomLevelAccelerationStructure>,
     top_level_buffers: DoubleBuffered<Option<Buffer>>,
     top_level_scratch_buffers: DoubleBuffered<Option<Buffer>>,
-    // TODO: This is hack to further defer reclaim of old TLAS resources, as they hang the GPU if freed to early
-    // previous_top_level_buffers: DoubleBuffered<Vec<Buffer>>,
     top_level_handles: DoubleBuffered<Option<vk::AccelerationStructureKHR>>,
     instances_buffer: DoubleBuffered<StaticBuffer<[vk::AccelerationStructureInstanceKHR; 4096]>>,
     random_seed: BufferType<acceleration_set::bindings::random_seed>,
@@ -52,7 +50,7 @@ pub(crate) struct AccelerationStructuresInternal {
 
 pub(crate) struct AccelerationStructures {
     pub(crate) set_layout: SmartSetLayout<acceleration_set::Layout>,
-    pub(crate) set: SmartSet<acceleration_set::Set>,
+    pub(crate) set: DoubleBuffered<SmartSet<acceleration_set::Set>>,
 }
 
 impl BottomLevelAccelerationStructure {
@@ -107,11 +105,9 @@ impl FromWorld for AccelerationStructuresInternal {
                 VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU,
             );
 
-            update_whole_buffer::<acceleration_set::bindings::random_seed>(
-                &renderer.device,
-                &mut acceleration_structures.set,
-                &random_seed,
-            );
+            for set in acceleration_structures.set.iter_mut() {
+                update_whole_buffer::<acceleration_set::bindings::random_seed>(&renderer.device, set, &random_seed);
+            }
 
             AccelerationStructuresInternal {
                 command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
@@ -119,7 +115,6 @@ impl FromWorld for AccelerationStructuresInternal {
                 top_level_buffers: renderer.new_buffered(|_| None),
                 top_level_scratch_buffers: renderer.new_buffered(|_| None),
                 top_level_handles: renderer.new_buffered(|_| None),
-                // previous_top_level_buffers: renderer.new_buffered(|_| vec![]),
                 instances_buffer,
                 random_seed,
             }
@@ -164,16 +159,12 @@ pub(crate) fn build_acceleration_structures(
 ) {
     scope!("renderer::build_acceleration_structures");
 
-    // TODO: there's a bug somewhere when new BLASes are being built and added to the scene while
-    // actively ray tracing on screen? investigate synchronization
-
     let AccelerationStructuresInternal {
         ref mut command_util,
         ref mut bottom_structures,
         ref mut top_level_buffers,
         ref mut top_level_handles,
         ref mut top_level_scratch_buffers,
-        // ref mut previous_top_level_buffers,
         ref mut instances_buffer,
         ref random_seed,
     } = *acceleration_structures_internal;
@@ -181,28 +172,16 @@ pub(crate) fn build_acceleration_structures(
     // Wait for structures to have been used with this swapchain ix
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_indices);
 
-    // renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX]
-    //     .wait(
-    //         &renderer.device,
-    //         as_of_last::<<frame_graph::Main::Stage as
-    // RenderStage>::SignalTimelineStage>(renderer.frame_number),     )
-    //     .unwrap();
-
     // TODO: double-buffer
     random_seed.map(&renderer.device).unwrap().seed = rand::random();
 
     // Free up structures used for this swapchain previously
     // TODO: inefficient and these can be reused in some cases
-    // for buffer in replace(previous_top_level_buffers.current_mut(image_index.0), vec![]).into_iter()
-    // {     buffer.destroy(&renderer.device);
-    // }
     if let Some(previous_scratch) = top_level_scratch_buffers.current_mut(image_index.0).take() {
         previous_scratch.destroy(&renderer.device);
-        // previous_top_level_buffers.current_mut(image_index.0).push(previous_scratch);
     }
     if let Some(previous_buffer) = top_level_buffers.current_mut(image_index.0).take() {
         previous_buffer.destroy(&renderer.device);
-        // previous_top_level_buffers.current_mut(image_index.0).push(previous_buffer);
     }
     if let Some(previous_handle) = top_level_handles.current_mut(image_index.0).take() {
         unsafe {
@@ -336,6 +315,11 @@ pub(crate) fn build_acceleration_structures(
                         &vk::BufferDeviceAddressInfo::builder().buffer(blas.scratch_buffer.handle),
                     )
                 };
+                debug_assert_eq!(
+                    scratch_addr
+                        % renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
+                    0
+                );
                 debug_assert_eq!(infos.len(), ix);
                 infos.push(
                     vk::AccelerationStructureBuildGeometryInfoKHR::builder()
@@ -517,6 +501,10 @@ pub(crate) fn build_acceleration_structures(
                 &vk::BufferDeviceAddressInfo::builder().buffer(top_level_scratch_buffer.handle),
             )
         };
+        debug_assert_eq!(
+            scratch_addr % renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
+            0
+        );
 
         let top_level_as = unsafe {
             renderer
@@ -566,7 +554,7 @@ pub(crate) fn build_acceleration_structures(
                 vk::WriteDescriptorSetAccelerationStructureKHR::builder().acceleration_structures(&structures);
             let mut write = vk::WriteDescriptorSet::builder()
                 .push_next(&mut write_as)
-                .dst_set(acceleration_structures.set.set.handle)
+                .dst_set(acceleration_structures.set.current(image_index.0).set.handle)
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .build();
@@ -596,13 +584,15 @@ impl AccelerationStructures {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> Self {
         let set_layout = SmartSetLayout::new(&renderer.device);
 
-        let set = SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, 0);
+        let set = renderer.new_buffered(|ix| SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, ix));
 
         Self { set_layout, set }
     }
 
     pub(crate) fn destroy(self, device: &Device, main_descriptor_pool: &MainDescriptorPool) {
-        self.set.destroy(&main_descriptor_pool.0, device);
+        self.set
+            .into_iter()
+            .for_each(|set| set.destroy(&main_descriptor_pool.0, device));
         self.set_layout.destroy(device);
     }
 }

@@ -1593,7 +1593,7 @@ pub(crate) fn render_frame(
                     &camera_matrices.set.current(image_index.0),
                     &shadow_mapping_data.user_set.current(image_index.0),
                     &base_color_descriptor_set.set.current(image_index.0),
-                    &acceleration_structures.set,
+                    &acceleration_structures.set.current(image_index.0),
                 ),
             );
             renderer.device.cmd_bind_index_buffer(

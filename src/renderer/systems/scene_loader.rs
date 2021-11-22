@@ -205,7 +205,7 @@ pub(crate) fn upload_loaded_meshes(
                 let mut mapped = buf
                     .map::<[f32; 3]>(&renderer.device)
                     .expect("Failed to map vertex buffer");
-                mapped[..].copy_from_slice(&mesh.vertex_buffer);
+                mapped[..mesh.vertex_buffer.len()].copy_from_slice(&mesh.vertex_buffer);
             }
             buf
         };
@@ -223,7 +223,7 @@ pub(crate) fn upload_loaded_meshes(
                 let mut mapped = buf
                     .map::<[f32; 3]>(&renderer.device)
                     .expect("Failed to map normal buffer");
-                mapped[..].copy_from_slice(&mesh.normal_buffer);
+                mapped[..mesh.normal_buffer.len()].copy_from_slice(&mesh.normal_buffer);
             }
             buf
         };
@@ -257,7 +257,7 @@ pub(crate) fn upload_loaded_meshes(
             {
                 scope!("scene_loader::cpu_copy_uvs");
                 let mut mapped = buf.map::<[f32; 2]>(&renderer.device).expect("Failed to map uv buffer");
-                mapped[..].copy_from_slice(&mesh.uv_buffer);
+                mapped[..mesh.uv_buffer.len()].copy_from_slice(&mesh.uv_buffer);
             }
             buf
         };
