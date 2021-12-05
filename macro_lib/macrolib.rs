@@ -345,16 +345,17 @@ fn dump_dependency_graph(data: &RendererInput) -> Result<(), anyhow::Error> {
                     .map(|c| format!("{}{}", if c.neg { "!" } else { "" }, &c.switch_name))
                     .collect::<Vec<_>>()
             })
-            .map(|strings| format!("[{}] ", strings.join(", ")))
+            .filter(|strings| !strings.is_empty())
+            .map(|strings| format!("\n[{}] ", strings.join(", ")))
             .unwrap_or("".to_string());
         writeln!(
             file,
-            "{} [ label = \"{} {}({}, {})\" ]",
+            "{} [ label = \"{}\n({}, {}){}\", shape = \"rectangle\" ]",
             ix.index(),
             pass,
-            conditional,
             sem_ix,
-            step_ix
+            step_ix,
+            conditional,
         )?;
     }
     for edge in graph.edge_references() {
