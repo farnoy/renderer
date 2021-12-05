@@ -17,7 +17,7 @@ pub(crate) struct Surface {
 
 impl Surface {
     pub(crate) fn new(instance: &Arc<Instance>) -> Surface {
-        let surface = unsafe { create_surface(instance.entry.vk(), &instance.vk(), &instance.window).unwrap() };
+        let surface = unsafe { create_surface(instance.entry.vk(), instance.vk(), &instance.window).unwrap() };
 
         let pdevices = unsafe { instance.enumerate_physical_devices().expect("Physical device error") };
         let physical_device = pdevices[0];
@@ -47,7 +47,7 @@ impl Surface {
             surface,
             ext: surface_loader,
             surface_format,
-            _instance: Arc::clone(&instance),
+            _instance: Arc::clone(instance),
         }
     }
 }

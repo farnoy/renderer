@@ -16,14 +16,8 @@ pub(crate) struct PresentData {
     render_complete_semaphore: Semaphore,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Default, Clone, Debug, PartialEq)]
 pub(crate) struct ImageIndex(pub(crate) u32);
-
-impl Default for ImageIndex {
-    fn default() -> Self {
-        ImageIndex(0)
-    }
-}
 
 // Acquire swapchain image and store the index
 pub(crate) struct AcquireFramebuffer;
@@ -140,7 +134,7 @@ impl AcquireFramebuffer {
         ];
         let queue = renderer.device.graphics_queue().lock();
         let signal_semaphores =
-            &[renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX].handle];
+            &[renderer.auto_semaphores.0[frame_graph::PresentationAcquire::Stage::SIGNAL_AUTO_SEMAPHORE_IX].handle];
         let dst_stage_masks = &[vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TOP_OF_PIPE];
         let submit = vk::SubmitInfo::builder()
             .push_next(&mut wait_timeline)

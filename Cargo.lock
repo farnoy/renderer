@@ -2427,6 +2427,7 @@ dependencies = [
  "bevy_ecs",
  "bevy_log",
  "bevy_tasks",
+ "bincode",
  "bindgen",
  "cache-padded",
  "cc",
@@ -2507,7 +2508,6 @@ dependencies = [
  "quote",
  "renderer-macro-lib",
  "serde",
- "serde_json",
  "syn",
 ]
 

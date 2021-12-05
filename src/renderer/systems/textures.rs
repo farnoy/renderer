@@ -40,7 +40,7 @@ impl BaseColorDescriptorSet {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &mut MainDescriptorPool) -> BaseColorDescriptorSet {
         let layout = SmartSetLayout::new(&renderer.device);
 
-        let set = renderer.new_buffered(|ix| SmartSet::new(&renderer.device, &main_descriptor_pool, &layout, ix));
+        let set = renderer.new_buffered(|ix| SmartSet::new(&renderer.device, main_descriptor_pool, &layout, ix));
 
         let sampler = renderer.device.new_sampler(
             &vk::SamplerCreateInfo::builder()
@@ -233,7 +233,7 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
         .get_resource::<CopiedResource<SwapchainIndexToFrameNumber>>()
         .unwrap();
 
-    frame_graph::Main::Stage::wait_previous(&renderer, &swapchain_index, &previous_indices);
+    frame_graph::Main::Stage::wait_previous(renderer, &swapchain_index, previous_indices);
 
     let mut entities = vec![];
 
@@ -245,22 +245,19 @@ pub(crate) fn cleanup_base_color_markers(world: &mut World) {
             }
         });
 
-    let markers = entities
-        .into_iter()
-        .map(|entity| {
+    world.resource_scope(|world, renderer: Mut<RenderFrame>| {
+        let markers = entities.into_iter().map(|entity| {
             (
                 world.entity_mut(entity).remove::<BaseColorVisitedMarker>().unwrap(),
                 world.entity_mut(entity).remove::<NormalMapVisitedMarker>().unwrap(),
             )
-        })
-        .collect::<Vec<_>>();
+        });
 
-    let renderer = world.get_resource::<RenderFrame>().unwrap();
-
-    for (base_color, normal_map) in markers.into_iter() {
-        base_color.destroy(&renderer.device);
-        normal_map.destroy(&renderer.device);
-    }
+        for (base_color, normal_map) in markers {
+            base_color.destroy(&renderer.device);
+            normal_map.destroy(&renderer.device);
+        }
+    });
 
     // the descriptor binding isn't UPDATE_AFTER_BIND (TODO: const assertion would be nice)
     // so we shouldn't need to overwrite it, if the DrawIndex of that entity gets reused, the

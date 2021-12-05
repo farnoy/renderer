@@ -1,5 +1,5 @@
-#![feature(const_fn_trait_bound, generic_associated_types)]
-#![allow(clippy::new_without_default)]
+#![feature(generic_associated_types)]
+#![allow(clippy::new_without_default, clippy::type_complexity)]
 #![warn(clippy::cast_lossless)]
 #![warn(
     unreachable_pub,
@@ -26,7 +26,7 @@ use bevy_ecs::{
 };
 use bevy_tasks::Task;
 use ecs::{
-    components::{Deleting, Light, ModelMatrix, Position, Rotation, Scale, AABB},
+    components::{Deleting, Light, Position, Rotation},
     resources::{Camera, InputActions, MeshLibrary},
     systems::{
         aabb_calculation, assign_draw_index, calculate_frame_timing, camera_controller, cleanup_deleted_entities,
@@ -35,7 +35,6 @@ use ecs::{
     },
 };
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
-use na::RealField;
 use parking_lot::Mutex;
 use profiling::scope;
 #[cfg(feature = "crash_debugging")]
@@ -44,19 +43,17 @@ use renderer::{
     acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, graphics_stage, load_gltf,
     model_matrices_upload, shadow_mapping_mvp_calculation, synchronize_base_color_textures_visit, up_vector,
     update_shadow_map_descriptors, AccelerationStructures, AccelerationStructuresInternal, BaseColorDescriptorSet,
-    BaseColorVisitedMarker, CameraMatrices, CoarseCulled, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
-    CullPassDataPrivate, DebugAABBPassData, DepthPassData, DrawIndex, GltfMesh, GltfMeshBaseColorTexture,
-    GltfMeshNormalTexture, GltfPassData, GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool,
-    MainFramebuffer, MainRenderpass, ModelData, NormalMapVisitedMarker, PresentData, RenderFrame, Resized,
-    SceneLoaderLoadedMesh, ShadowMappingData, ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions,
-    SwapchainIndexToFrameNumber,
+    BaseColorVisitedMarker, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData, CullPassDataPrivate,
+    DebugAABBPassData, DepthPassData, GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture, GltfPassData,
+    GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool, MainFramebuffer, MainRenderpass,
+    ModelData, NormalMapVisitedMarker, PresentData, RenderFrame, Resized, SceneLoaderLoadedMesh, ShadowMappingData,
+    ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions, SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
 
 use crate::renderer::{
-    initiate_scene_loader, load_scene, traverse_and_decode_scenes, upload_loaded_meshes, ScenesToLoad,
-    TransferCullPrivate, UploadMeshesData,
+    initiate_scene_loader, traverse_and_decode_scenes, ScenesToLoad, TransferCullPrivate, UploadMeshesData,
 };
 
 fn main() {

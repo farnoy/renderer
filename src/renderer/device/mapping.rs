@@ -56,7 +56,7 @@ impl<T> MappedStaticBuffer<'_, T> {
             let mut ptr: *mut c_void = ptr::null_mut();
             match alloc::vmaMapMemory(allocator, allocation, &mut ptr) {
                 vk::Result::SUCCESS => Ok(MappedStaticBuffer {
-                    ptr: transmute::<*mut c_void, &mut T>(ptr),
+                    ptr: transmute::<&mut c_void, &mut T>(&mut *ptr),
                     allocator,
                     allocation,
                 }),
@@ -127,8 +127,8 @@ impl<T> IndexMut<RangeTo<usize>> for MappedBuffer<'_, T> {
 }
 
 impl<T> IndexMut<RangeFull> for MappedBuffer<'_, T> {
-    fn index_mut(&mut self, ix: RangeFull) -> &mut [T] {
-        &mut self.ptr[ix]
+    fn index_mut(&mut self, _ix: RangeFull) -> &mut [T] {
+        &mut *self.ptr
     }
 }
 
@@ -159,7 +159,7 @@ impl<T> Drop for MappedBuffer<'_, T> {
 
 impl<T> Drop for MappedStaticBuffer<'_, T> {
     fn drop(&mut self) {
-        if self.allocation.0 != ptr::null_mut() {
+        if !self.allocation.0.is_null() {
             unsafe {
                 alloc::vmaFlushAllocation(self.allocator, self.allocation, 0, vk::WHOLE_SIZE)
                     .result()

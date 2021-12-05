@@ -42,7 +42,7 @@ impl Parse for ResourceKind {
                     .parse::<kw::AccelerationStructure>()
                     .and(Ok(Self::AccelerationStructure))
             })
-            .or(input.parse::<StaticBufferResource>().map(Self::StaticBuffer))
+            .or_else(|_| input.parse::<StaticBufferResource>().map(Self::StaticBuffer))
     }
 }
 
@@ -426,13 +426,28 @@ pub struct FrameInput {
     passes_brace: Brace,
     #[inside(passes_brace)]
     pub(crate) passes: UnArray<Pass>,
-    #[prefix(kw::async_passes in brace)]
-    #[brace]
-    #[inside(brace)]
+}
+
+#[derive(Parse)]
+// TODO: rename to just pass, rename passes to renderpasses
+pub struct AsyncPass {
+    pub name: Ident,
     #[allow(dead_code)]
-    async_passes_brace: Brace,
-    #[inside(async_passes_brace)]
-    pub(crate) async_passes: UnArray<Sequence<Ident, UnOption<Sequence<kw::on, QueueFamily>>>>,
+    on: kw::on,
+    pub family: QueueFamily,
+    #[allow(dead_code)]
+    if_cond: Option<Token![if]>,
+    #[parse_if(if_cond.is_some())]
+    pub conditional: Option<Conditional>,
+}
+
+#[derive(Parse)]
+pub struct Conditional {
+    #[bracket]
+    #[allow(dead_code)]
+    bracket: Bracket,
+    #[inside(bracket)]
+    pub conditions: UnArray<Sequence<UnOption<Token![!]>, Ident>>,
 }
 
 #[derive(Parse)]

@@ -118,12 +118,8 @@ impl Instance {
                     vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "PERFORMANCE",
                     _ => "OTHER",
                 };
-                println!(
-                    "{} & {} => {}",
-                    severity_str,
-                    type_str,
-                    CStr::from_ptr((*data).p_message).to_string_lossy()
-                );
+                let message = CStr::from_ptr((*data).p_message).to_string_lossy();
+                println!("{} & {} => {}", severity_str, type_str, &message);
                 for ix in 0..((*data).object_count) {
                     let object = (*data).p_objects.offset(ix as isize).read();
                     let name = match object.p_object_name {
@@ -135,8 +131,11 @@ impl Instance {
                         ix, object.object_type, object.object_handle, name
                     );
                 }
-                if severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
-                    // panic!();
+                if severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                    && !message.contains("VUID-VkPipelineShaderStageCreateInfo-module-parameter")
+                    && !message.contains("VUID-VkPresentInfoKHR-pImageIndices-01296")
+                {
+                    panic!();
                 }
                 0
             }

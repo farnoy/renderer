@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use syn::{parse::Parse, Expr, Ident, Token};
 
 use super::keywords as kw;
-use crate::inputs::{self, UnArray, Unbracket};
+use crate::{
+    inputs::{self, ArrowPair, Sequence, UnArray, UnOption, Unbracket},
+    Conditional,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResourceClaims {
@@ -87,12 +90,14 @@ pub struct ResourceClaim {
     pub usage: super::ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
+    pub conditional: Conditional,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResourceBarrierInput {
     pub command_buffer_ident: Expr,
     pub claims: Vec<ResourceClaimInput>,
+    pub conditional_context: HashMap<String, Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +134,7 @@ impl ResourceClaimInput {
             usage: self.usage,
             reads: self.reads,
             writes: self.writes,
+            conditional: Conditional::default(),
         }
     }
 }
@@ -138,6 +144,8 @@ impl Parse for ResourceBarrierInput {
         #[derive(Parse)]
         struct Inner {
             command_buffer: Expr,
+            #[allow(unused)]
+            conditionals: UnOption<Sequence<Token![,], Unbracket<UnArray<ArrowPair<Ident, Expr>>>>>,
             _sep: Token![,],
             claims: UnArray<ResourceClaimInput>,
         }
@@ -146,6 +154,15 @@ impl Parse for ResourceBarrierInput {
         Ok(ResourceBarrierInput {
             command_buffer_ident: s.command_buffer,
             claims: s.claims.0,
+            conditional_context: s
+                .conditionals
+                .0
+                .map(|Sequence((_, Unbracket(UnArray(c))))| {
+                    c.into_iter()
+                        .map(|ArrowPair((name, value))| (name.to_string(), value))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }

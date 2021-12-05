@@ -4,19 +4,15 @@ use std::env;
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use petgraph::{
-    graph::{DiGraph, NodeIndex},
-    visit::{EdgeRef, GraphBase, IntoNeighborsDirected, IntoNodeIdentifiers, IntoNodeReferences, Visitable},
-    Direction,
-};
+use petgraph::{visit::IntoNodeReferences, Direction};
 use proc_macro2::TokenStream;
 use proc_macro_error::proc_macro_error;
 use quote::{format_ident, quote, ToTokens};
 use renderer_macro_lib::{
     fetch,
-    inputs::{self, extract_optional_dyn, to_rust_type, to_vk_format, DependencyType, FrameInput},
+    inputs::{self, extract_optional_dyn, to_rust_type, to_vk_format, FrameInput},
     resource_claims::{ResourceBarrierInput, ResourceClaim, ResourceDefinitionInput, ResourceDefinitionType},
-    AsyncPass, Binding, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RendererInput,
+    Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RendererInput,
     ResourceUsageKind, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
 };
 use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
@@ -131,8 +127,6 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut acquire_buffer_barriers: Vec<TokenStream> = vec![];
     let mut acquire_memory_barriers: Vec<TokenStream> = vec![];
     #[allow(unused_mut)]
-    let mut acquire_buffer_barriers_with_bypass: Vec<TokenStream> = vec![];
-    #[allow(unused_mut)]
     let mut release_buffer_barriers: Vec<TokenStream> = vec![];
     #[allow(unused_mut)]
     let mut release_memory_barriers: Vec<TokenStream> = vec![];
@@ -164,41 +158,41 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         if petgraph::algo::is_cyclic_directed(&claims.graph) {
             let msg = "resource claims graph is cyclic".to_string();
             validation_errors.extend(quote!(compile_error!(#msg);));
-            // TODO: early exit here so that toposort doesn't see a cycle
         }
-        // dbg!(&input.resource_name, petgraph::dot::Dot::with_config(
-        //     &claims.graph.map(
-        //         |_, node_ident| node_ident.as_ref().map(|c| c.step_name.clone()),
-        //         |_, _| ""
-        //     ),
-        //     &[petgraph::dot::Config::EdgeNoLabel]
-        // ));
-        let grouped_topo = grouped_toposort(&claims.graph);
-        let in_first_stage = grouped_topo
-            .first()
-            .map(|stage| stage.iter().any(|&candidate| candidate == this_node))
-            .unwrap_or(false);
-        let in_last_stage = grouped_topo
-            .last()
-            .map(|stage| stage.iter().any(|&candidate| candidate == this_node))
-            .unwrap_or(false);
+        if claim.resource_name == "IndirectCommandsCount" {
+            // dbg!(
+            //     &claim.resource_name,
+            //     petgraph::dot::Dot::with_config(
+            //         &claims.graph.map(|_, node_ident| &node_ident.step_name, |_, _| ""),
+            //         &[petgraph::dot::Config::EdgeNoLabel]
+            //     )
+            // );
+        }
 
         // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
         // iterations of the graph
-        let incoming = claims.graph.neighbors_directed(this_node, Direction::Incoming).chain(
-            in_first_stage
-                .then(|| grouped_topo.last())
-                .into_iter()
-                .flatten()
-                .flat_map(|stage| stage.iter().cloned()),
-        );
-        let outgoing = claims.graph.neighbors_directed(this_node, Direction::Outgoing).chain(
-            in_last_stage
-                .then(|| grouped_topo.first())
-                .into_iter()
-                .flatten()
-                .flat_map(|stage| stage.iter().cloned()),
-        );
+        let mut incoming = claims
+            .graph
+            .neighbors_directed(this_node, Direction::Incoming)
+            .peekable();
+        let incoming = if let None = incoming.peek() {
+            incoming
+                .chain(claims.graph.externals(Direction::Outgoing))
+                .collect_vec()
+        } else {
+            incoming.collect_vec()
+        };
+        let mut outgoing = claims
+            .graph
+            .neighbors_directed(this_node, Direction::Outgoing)
+            .peekable();
+        let outgoing = if let None = outgoing.peek() {
+            outgoing
+                .chain(claims.graph.externals(Direction::Incoming))
+                .collect_vec()
+        } else {
+            outgoing.collect_vec()
+        };
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
         let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
@@ -266,6 +260,32 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             (access_prefixes, stages)
         };
         let mut emitted_barriers = 0;
+
+        // {
+        //     // TODO: enhance these validations with proper boolean expressions & evaluation engine likely
+        //     // solution: each incoming resource usage branch must add something to the simplified boolean
+        //     // expression. For example, 1 A and 1 !A end in a truism, but 2 A branches end in the same
+        //     // simplified expression as 1 A, so the second branch didn't change anything
+        //     //
+        //     // Right now, we're only checking for the exact same Conditional object we've seen already,
+        // which     // is not a nuanced analysis.
+        //     let mut seen_conditionals: Vec<&Conditional> = vec![];
+        //     for &dep in incoming.iter() {
+        //         let prev_step = &claims.graph[dep];
+        //         if prev_step.conditional == Conditional::default() {
+        //             continue;
+        //         }
+        //         if seen_conditionals.iter().any(|&c| *c == prev_step.conditional) {
+        //             let msg = format!(
+        //                 "Duplicate conditional while evaluating resource claim {}.{}, offending
+        // conditional: {:?}",                 claim.resource_name, this.step_name,
+        // prev_step.conditional             );
+        //             validation_errors.extend(quote!(compile_error!(#msg);));
+        //         }
+        //         seen_conditionals.push(&prev_step.conditional);
+        //     }
+        // }
+
         for dep in incoming {
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
@@ -285,29 +305,50 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         );
                         let resource_ident = &claim.resource_ident;
 
+                        let conditions =
+                            prev_step
+                                .conditional
+                                .conditions
+                                .iter()
+                                .map(|Condition { switch_name, neg }| {
+                                    match input.conditional_context.get(switch_name) {
+                                        Some(expr) => {
+                                            let neg = if *neg { quote!(!) } else { quote!() };
+                                            quote!(#neg {#expr})
+                                        }
+                                        None => {
+                                            let msg = format!("Missing conditional expression for {}", switch_name);
+                                            validation_errors.extend(quote!(compile_error!(#msg);));
+                                            quote!(false)
+                                        }
+                                    }
+                                });
+
                         emitted_barriers += 1;
                         acquire_buffer_barriers.push(quote! {
-                            vk::BufferMemoryBarrier2KHR::builder()
-                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .src_stage_mask(#(vk::PipelineStageFlags2KHR::#src_stage)|*)
-                            .dst_stage_mask(#(vk::PipelineStageFlags2KHR::#dst_stage)|*)
-                            .src_access_mask(#(vk::AccessFlags2KHR::#src_access)|*)
-                            .dst_access_mask(#(vk::AccessFlags2KHR::#dst_access)|*)
-                            .buffer({#resource_ident}.buffer.handle)
-                            .size(vk::WHOLE_SIZE)
-                            .build()
+                            if true #(&& #conditions)* {
+                                acquire_buffer_barriers.push(vk::BufferMemoryBarrier2KHR::builder()
+                                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                    .src_stage_mask(#(vk::PipelineStageFlags2KHR::#src_stage)|*)
+                                    .dst_stage_mask(#(vk::PipelineStageFlags2KHR::#dst_stage)|*)
+                                    .src_access_mask(#(vk::AccessFlags2KHR::#src_access)|*)
+                                    .dst_access_mask(#(vk::AccessFlags2KHR::#dst_access)|*)
+                                    .buffer({#resource_ident}.buffer.handle)
+                                    .size(vk::WHOLE_SIZE)
+                                    .build());
+                            }
                         });
                     }
                     ResourceDefinitionType::AccelerationStructure => {
                         emitted_barriers += 1;
                         acquire_memory_barriers.push(quote! {
-                            vk::MemoryBarrier2KHR::builder()
+                            acquire_memory_barriers.push(vk::MemoryBarrier2KHR::builder()
                                 .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
                                 .src_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_WRITE)
                                 .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
                                 .dst_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_READ)
-                                .build()
+                                .build())
                         });
                     }
                     _ => todo!("acquire unknown resource"),
@@ -362,40 +403,41 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 
     let acquire_buffer_barriers_len = acquire_buffer_barriers.len();
-    let acquire_buffer_barriers_with_bypass_len = acquire_buffer_barriers_with_bypass.len();
-    let acquire_block =
-        (acquire_buffer_barriers_len + acquire_buffer_barriers_with_bypass_len + acquire_memory_barriers.len() > 0)
-            .then(|| {
-                quote! {
-                    let acquire_buffer_barriers = [
-                        #(#acquire_buffer_barriers,)*
-                        #(#acquire_buffer_barriers_with_bypass,)*
-                    ];
-                    let acquire_memory_barriers = [
-                        #(#acquire_memory_barriers,)*
-                    ];
-                    let slice_count = if #acquire_buffer_barriers_with_bypass_len > 0 && renderer.frame_number > 1 {
-                        #acquire_buffer_barriers_len + #acquire_buffer_barriers_with_bypass_len
-                    } else {
-                        #acquire_buffer_barriers_len
-                    };
-                    renderer.device.synchronization2.cmd_pipeline_barrier2(
-                        #command_buffer_expr,
-                        &vk::DependencyInfoKHR::builder()
-                            .buffer_memory_barriers(&acquire_buffer_barriers[0..slice_count])
-                            .memory_barriers(&acquire_memory_barriers),
-                    );
-
-                }
-            });
-    let release_block = (release_buffer_barriers.len() + release_memory_barriers.len() > 0).then(|| {
-        quote! {
-            let release_buffer_barriers = [
-                #(#release_buffer_barriers,)*
-            ];
-            let release_memory_barriers = [
-                #(#release_memory_barriers,)*
-            ];
+    let acquire_memory_barriers_len = acquire_memory_barriers.len();
+    let acquire_block = quote! {
+        let mut acquire_buffer_barriers: smallvec::SmallVec<[vk::BufferMemoryBarrier2KHR; #acquire_buffer_barriers_len]> = smallvec::SmallVec::new_const();
+        {
+            #(#acquire_buffer_barriers;)*
+        }
+        let acquire_buffer_barriers = acquire_buffer_barriers;
+        let mut acquire_memory_barriers: smallvec::SmallVec<[vk::MemoryBarrier2KHR; #acquire_memory_barriers_len]> = smallvec::SmallVec::new_const();
+        {
+            #(#acquire_memory_barriers;)*
+        }
+        let acquire_memory_barriers = acquire_memory_barriers;
+        if !acquire_buffer_barriers.is_empty() || !acquire_memory_barriers.is_empty() {
+            renderer.device.synchronization2.cmd_pipeline_barrier2(
+                #command_buffer_expr,
+                &vk::DependencyInfoKHR::builder()
+                    .buffer_memory_barriers(&acquire_buffer_barriers)
+                    .memory_barriers(&acquire_memory_barriers),
+            );
+        }
+    };
+    let release_buffer_barriers_len = release_buffer_barriers.len();
+    let release_memory_barriers_len = release_memory_barriers.len();
+    let release_block = quote! {
+        let mut release_buffer_barriers: smallvec::SmallVec<[vk::BufferMemoryBarrier2KHR; #release_buffer_barriers_len]> = smallvec::SmallVec::new_const();
+        {
+            #(#release_buffer_barriers;)*
+        }
+        let release_buffer_barriers = release_buffer_barriers;
+        let mut release_memory_barriers: smallvec::SmallVec<[vk::MemoryBarrier2KHR; #release_memory_barriers_len]> = smallvec::SmallVec::new_const();
+        {
+            #(#release_memory_barriers;)*
+        }
+        let release_memory_barriers = release_memory_barriers;
+        if !release_buffer_barriers.is_empty() || !release_memory_barriers.is_empty() {
             renderer.device.synchronization2.cmd_pipeline_barrier2(
                 #command_buffer_expr,
                 &vk::DependencyInfoKHR::builder()
@@ -403,7 +445,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     .memory_barriers(&release_memory_barriers),
             );
         }
-    });
+    };
     quote! {
         unsafe {
             #validation_errors
@@ -434,6 +476,8 @@ pub fn define_timelines(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
     for (sem_ix, stages) in grouped.into_iter() {
         let max = stages.iter().map(|x| x.0).max().unwrap().next_power_of_two();
         assert!(maximums.insert(sem_ix, max).is_none());
+        // TODO: reuse prevomputed timeline_semaphore_cycles
+        assert_eq!(data.timeline_semaphore_cycles.get(&sem_ix), Some(&max));
 
         let stage_definitions = stages.into_iter().map(|(stage_ix, pass_name)| {
             let stage_name = format_ident!("{}", pass_name);
@@ -509,10 +553,6 @@ fn define_frame2() -> TokenStream {
         .keys()
         .chain(new_data.async_passes.keys())
         .map(|pass| {
-            let ix = dependency_graph
-                .node_indices()
-                .find(|&ix| *pass == dependency_graph[ix])
-                .expect("did not find pass in dependency graph");
             let (signal_out_sem, _) = new_data
                 .timeline_semaphore_mapping
                 .get(pass)
@@ -521,59 +561,11 @@ fn define_frame2() -> TokenStream {
             let pass_ident = format_ident!("{}", pass);
             let signal_timeline_path: Path = parse_quote!(#signal_timeline_ident::#pass_ident);
 
-            let wait_inner = dependency_graph
-                .edges_directed(ix, Direction::Incoming)
-                .map(|edge| {
-                    let from = &dependency_graph[edge.source()];
-                    let (wait_sem, _) = new_data
-                        .timeline_semaphore_mapping
-                        .get(from)
-                        .expect("no sync for this pass");
-                    let wait_timeline_ident = format_ident!("AutoSemaphore{}", wait_sem);
-                    let from_ident = format_ident!("{}", from);
-                    let wait_timeline_path: Path = parse_quote!(#wait_timeline_ident::#from_ident);
-
-                    let as_of = match edge.weight() {
-                        &DependencyType::SameFrame => quote!(as_of::<super::super::#wait_timeline_path>(frame_number)),
-                        &DependencyType::LastFrame => {
-                            quote!(as_of_last::<super::super::#wait_timeline_path>(frame_number))
-                        }
-                        &DependencyType::LastAccess => {
-                            // TODO: broken but no need to fix for now
-                            quote!(as_of_previous(&image_index, &render_frame))
-                        }
-                    };
-
-                    quote! {
-                        {
-                            fn accessor(frame_number: u64, image_index: &crate::renderer::ImageIndex) -> u64 {
-                                #as_of
-                            }
-                            (accessor as fn(u64, &crate::renderer::ImageIndex) -> u64, #wait_sem)
-                        }
-                    }
-                })
-                .collect::<Vec<_>>();
-
             (pass, quote! {
 
                 impl RenderStage for Stage {
                     type SignalTimelineStage = super::super::#signal_timeline_path;
                     const SIGNAL_AUTO_SEMAPHORE_IX: usize = #signal_out_sem;
-
-                    fn wait_semaphore_timeline() -> smallvec::SmallVec<[(WaitValueAccessor, SemaphoreAccessor); 4]> {
-                        smallvec::smallvec![
-                            #(#wait_inner),*
-                        ]
-                    }
-                    // fn signal_semaphore_timeline() -> smallvec::SmallVec<[(SignalValueAccessor, SemaphoreAccessor); 4]> {
-                    //     fn accessor(frame_number: u64) -> u64 {
-                    //         as_of::<super::super::#signal_timeline_path>(frame_number)
-                    //     }
-                    //     smallvec::smallvec![
-                    //         (accessor as fn(u64) -> u64, #signal_out_sem)
-                    //     ]
-                    // }
                 }
             })
         })
@@ -663,14 +655,14 @@ fn define_frame2() -> TokenStream {
             quote! {
                 #[allow(non_snake_case)]
                 pub(crate) mod #pass_name_ident {
-                    use super::{vk, Device, RenderStage, WaitValueAccessor,
-                        SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last,
+                    use super::{vk, Device, RenderStage,
+                        RenderFrame, ImageIndex, as_of, as_of_last,
                         OriginalFramebuffer, OriginalRenderPass};
 
                     #[derive(Debug, Clone, Copy)]
                     pub(crate) struct Stage;
 
-                    pub(crate) const INDEX: u8 = #graph_ix as u8;
+                    pub(crate) const INDEX: u32 = #graph_ix as u32;
 
                     #renderpass_definition
 
@@ -692,49 +684,52 @@ fn define_frame2() -> TokenStream {
         })
         .collect_vec();
 
-    let async_pass_definitions = new_data.async_passes.keys()
-        .map(|pass_name| {
-            let wait_instance = wait_instance.get(pass_name).unwrap();
-            let graph_ix = dependency_graph
-                .node_references()
-                .find(|(_ix, name)| *name == pass_name)
-                .map(|x| x.0)
-                .unwrap().index();
+    let async_pass_definitions = new_data.async_passes.keys().map(|pass_name| {
+        let wait_instance = wait_instance.get(pass_name).unwrap();
+        let graph_ix = dependency_graph
+            .node_references()
+            .find(|(_ix, name)| *name == pass_name)
+            .map(|x| x.0)
+            .unwrap()
+            .index();
 
-            let pass_name_ident = format_ident!("{}", pass_name);
-            quote! {
-                #[allow(non_snake_case)]
-                pub(crate) mod #pass_name_ident {
-                    use super::{vk, RenderStage, WaitValueAccessor, SemaphoreAccessor, RenderFrame, ImageIndex, as_of, as_of_last};
+        let pass_name_ident = format_ident!("{}", pass_name);
+        quote! {
+            #[allow(non_snake_case)]
+            pub(crate) mod #pass_name_ident {
+                use super::{vk, RenderStage, RenderFrame, ImageIndex, as_of, as_of_last};
 
-                    #[derive(Debug, Clone, Copy)]
-                    pub(crate) struct Stage;
+                #[derive(Debug, Clone, Copy)]
+                pub(crate) struct Stage;
 
-                    pub(crate) const INDEX: u8 = #graph_ix as u8;
+                pub(crate) const INDEX: u32 = #graph_ix as u32;
 
-                    #wait_instance
-                }
+                #wait_instance
             }
-        });
+        }
+    });
 
     let shader_definitions =
         syn::parse_str::<TokenStream>(&new_data.shader_information.shader_type_definitions).unwrap();
 
-    let queue_manager = prepare_queue_manager(&new_data, &dependency_graph);
+    // let queue_manager = prepare_queue_manager(&new_data, &dependency_graph);
 
     let name = format_ident!("{}", new_data.name);
+    let src = env::var("OUT_DIR").unwrap();
+    let src = std::path::Path::new(&src).join("crossbar.bincode");
+    let src = src.to_string_lossy();
     let expanded = quote! {
         #validation_errors
 
         pub(crate) mod #name {
             use ash::vk;
-            use super::{Device, RenderStage, WaitValueAccessor, SemaphoreAccessor,
+            use super::{Device, RenderStage,
                         RenderFrame, ImageIndex, as_of, as_of_last,
                         RenderPass as OriginalRenderPass,
                         Framebuffer as OriginalFramebuffer};
             use std::mem::size_of;
 
-            #queue_manager
+            pub(crate) static CROSSBAR: &[u8] = include_bytes!(#src);
 
             #(
                 #pass_definitions
@@ -1904,6 +1899,14 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
     }
 }
 
+#[proc_macro]
+pub fn define_pass(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    // let input = parse_macro_input!(input as inputs::AsyncPass);
+    // let pass = AsyncPass::from(&input);
+
+    quote!().into()
+}
+
 fn shader_stage_to_file_extension(id: &str) -> &'static str {
     if id == "VERTEX" {
         "vert"
@@ -1914,143 +1917,4 @@ fn shader_stage_to_file_extension(id: &str) -> &'static str {
     } else {
         unimplemented!("Unknown shader stage")
     }
-}
-
-fn prepare_queue_manager(input: &RendererInput, dependency_graph: &DiGraph<String, DependencyType>) -> TokenStream {
-    assert!(
-        input.passes.len() + input.async_passes.len() < usize::from(u8::MAX),
-        "queue_manager can only handle dependency graphs with u8 indices"
-    );
-
-    let edges_definitions = dependency_graph
-        .edge_references()
-        .map(|edge| {
-            let source = edge.source().index() as u8;
-            let target = edge.target().index() as u8;
-            quote! {
-                (#source, #target)
-            }
-        })
-        .collect_vec();
-    let edges_count = edges_definitions.len();
-
-    let toposort_compute_virtual_queue_index = {
-        let toposort = petgraph::algo::toposort(&dependency_graph, None).unwrap();
-        let toposort_compute = toposort
-            .iter()
-            .filter(|ix| {
-                let name = dependency_graph.node_weight(**ix).unwrap();
-                input
-                    .async_passes
-                    .get(name)
-                    .map(|async_pass| async_pass.queue == QueueFamily::Compute)
-                    .unwrap_or(false)
-            })
-            .collect::<Vec<_>>();
-
-        let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
-        for ix in toposort_compute.iter() {
-            match toposort_grouped_compute.last_mut() {
-                // if no path bridges from the last stage to ix
-                Some(last)
-                    if !last.iter().any(|candidate| {
-                        petgraph::algo::has_path_connecting(&dependency_graph, *candidate, **ix, None)
-                    }) =>
-                {
-                    last.push(**ix);
-                }
-                _ => toposort_grouped_compute.push(vec![**ix]),
-            }
-        }
-        let mut mapping = HashMap::new();
-        for stage in toposort_grouped_compute {
-            for (queue_ix, node_ix) in stage.iter().enumerate() {
-                assert!(mapping.insert(node_ix.index(), queue_ix).is_none());
-            }
-        }
-        mapping
-    };
-
-    let submit_clauses = input
-        .passes
-        .values()
-        .map(|Pass { ref name, .. }| (name, QueueFamily::Graphics))
-        .chain(
-            input
-                .async_passes
-                .values()
-                .map(|AsyncPass { name, queue, .. }| (name, *queue)),
-        )
-        .map(|(name, queue)| {
-            let graph_ix = dependency_graph
-                .node_indices()
-                .find(|&ix| *name == dependency_graph[ix])
-                .expect("did not find pass in the dependency graph");
-            let queue_def = match queue {
-                QueueFamily::Graphics => quote!(renderer.device.graphics_queue()),
-                QueueFamily::Compute => {
-                    let virtual_queue_index = toposort_compute_virtual_queue_index.get(&graph_ix.index()).unwrap();
-                    quote!(renderer.device.compute_queues[#virtual_queue_index % renderer.device.compute_queues.len()])
-                }
-                QueueFamily::Transfer => quote!(renderer.device.transfer_queue.as_ref().unwrap()),
-            };
-
-            let name_ident = format_ident!("{}", name);
-            quote! {
-                ix if ix.index() as u8 == #name_ident::INDEX => {
-                    let queue = #queue_def.lock();
-                    let buf = &mut [vk::CommandBuffer::null()];
-                    let cmds: &[vk::CommandBuffer] = match cb {
-                        Some(cmd) => {
-                            buf[0] = cmd;
-                            buf
-                        }
-                        None => &[],
-                    };
-                    #name_ident::Stage::queue_submit(&image_index, &renderer, *queue, cmds)
-                }
-            }
-        })
-        .collect_vec();
-
-    quote! {
-        use bevy_ecs::prelude::*;
-
-        pub(crate) const DEPENDENCY_GRAPH: [(u8, u8); #edges_count] = [#(#edges_definitions),*];
-
-        pub(crate) fn submit_stage_by_index(
-            renderer: &RenderFrame,
-            image_index: &ImageIndex,
-            ix: petgraph::stable_graph::NodeIndex<u8>,
-            cb: Option<vk::CommandBuffer>
-        ) -> ash::prelude::VkResult<()> {
-            match ix {
-                #(#submit_clauses),*
-                _ => panic!("Invalid pass index in queue_manager submit()"),
-            }
-        }
-    }
-}
-
-fn grouped_toposort<G: GraphBase + IntoNeighborsDirected + IntoNodeIdentifiers + Visitable>(g: G) -> Vec<Vec<G::NodeId>>
-where
-    G::NodeId: std::fmt::Debug,
-{
-    let toposort = petgraph::algo::toposort(&g, None).unwrap();
-
-    let mut toposort_grouped: Vec<Vec<G::NodeId>> = vec![];
-    for ix in toposort.iter() {
-        match toposort_grouped.last_mut() {
-            // if no path bridges from the last stage to ix
-            Some(last)
-                if !last
-                    .iter()
-                    .any(|candidate| petgraph::algo::has_path_connecting(&g, *candidate, *ix, None)) =>
-            {
-                last.push(*ix);
-            }
-            _ => toposort_grouped.push(vec![*ix]),
-        }
-    }
-    toposort_grouped
 }

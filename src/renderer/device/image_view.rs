@@ -7,7 +7,7 @@ pub(crate) struct ImageView {
 }
 impl ImageView {
     pub(super) fn new(device: &Device, create_info: &vk::ImageViewCreateInfo) -> ImageView {
-        let handle = unsafe { device.create_image_view(&create_info, None).unwrap() };
+        let handle = unsafe { device.create_image_view(create_info, None).unwrap() };
 
         ImageView { handle }
     }

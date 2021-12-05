@@ -230,7 +230,7 @@ impl Device {
                     let p = priorities.last().unwrap();
                     vk::DeviceQueueCreateInfo::builder()
                         .queue_family_index(*family)
-                        .queue_priorities(&p)
+                        .queue_priorities(p)
                         .build()
                 })
                 .collect::<Vec<_>>();
@@ -258,10 +258,8 @@ impl Device {
                 .collect::<Vec<_>>(),
             None => vec![],
         };
-        let transfer_queue = match transfer_queue_family {
-            Some(transfer_queue_family) => Some(unsafe { device.get_device_queue(transfer_queue_family, 0) }),
-            None => None,
-        };
+        let transfer_queue = transfer_queue_family
+            .map(|transfer_queue_family| unsafe { device.get_device_queue(transfer_queue_family, 0) });
 
         let compute_queue_family = compute_queues_spec.map(|a| a.0).unwrap_or(graphics_queue_family);
 
@@ -319,7 +317,7 @@ impl Device {
     pub(crate) fn compute_queue_balanced(&self) -> MutexGuard<vk::Queue> {
         scope!("helpers::compute_queue_balanced");
         debug_assert!(
-            self.compute_queues.len() > 0,
+            !self.compute_queues.is_empty(),
             "No compute queues to acquire in compute_queue_balanced"
         );
 
@@ -338,6 +336,7 @@ impl Device {
         alloc::stats(self.allocator)
     }
 
+    #[allow(unused)]
     pub(crate) fn allocation_info(&self, allocation: alloc::VmaAllocation) -> alloc::VmaAllocationInfo {
         alloc::get_allocation_info(self.allocator, allocation)
     }

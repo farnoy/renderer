@@ -17,7 +17,7 @@ impl FromWorld for DebugAABBPassData {
         let camera_matrices = world.get_resource::<CameraMatrices>().unwrap();
         let device = &renderer.device;
 
-        let pipeline_layout = SmartPipelineLayout::new(&device, (&camera_matrices.set_layout,));
+        let pipeline_layout = SmartPipelineLayout::new(device, (&camera_matrices.set_layout,));
         let pipeline = SmartPipeline::new(
             &renderer.device,
             &pipeline_layout,

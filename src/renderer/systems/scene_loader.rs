@@ -1,14 +1,14 @@
 use std::{
     mem::size_of,
     path::{Path, PathBuf},
-    sync::{Arc, Weak},
+    sync::Arc,
     u64,
 };
 
 use ash::vk;
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
-use hashbrown::{hash_map::Entry, HashMap};
+use hashbrown::HashMap;
 #[cfg(feature = "compress_textures")]
 use num_traits::ToPrimitive;
 use profiling::scope;
@@ -18,13 +18,15 @@ use crate::renderer::CrashBuffer;
 use crate::{
     ecs::components::{ModelMatrix, Position, Rotation, Scale, AABB},
     renderer::{
-        device::{Buffer, Device, DoubleBuffered, Image, StrictRecordingCommandBuffer, VmaMemoryUsage},
+        device::{Buffer, Device, DoubleBuffered, Image, VmaMemoryUsage},
         frame_graph,
         helpers::command_util::CommandUtil,
         CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture, ImageIndex, RenderFrame,
-        StrictCommandPool, Submissions,
+        RenderStage, Submissions, SwapchainIndexToFrameNumber,
     },
 };
+
+renderer_macros::define_pass!(UploadMeshes on compute);
 
 pub(crate) struct MeshToLoad {
     pub(crate) pos: [f32; 3],
@@ -143,6 +145,7 @@ pub(crate) fn upload_loaded_meshes(
     mut commands: Commands,
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
+    swapchain_indices: Res<SwapchainIndexToFrameNumber>,
     submissions: Res<Submissions>,
     mut upload_data: ResMut<UploadMeshesData>,
     mut query: Query<(Entity, &mut Task<LoadedMesh>)>,
@@ -155,12 +158,9 @@ pub(crate) fn upload_loaded_meshes(
             break;
         }
         futures_lite::future::block_on(async {
-            match futures_lite::future::poll_once(&mut *mesh).await {
-                Some(loaded_mesh) => {
-                    commands.entity(entity).remove::<Task<LoadedMesh>>();
-                    loaded_meshes.push(loaded_mesh);
-                }
-                None => {}
+            if let Some(loaded_mesh) = futures_lite::future::poll_once(&mut *mesh).await {
+                commands.entity(entity).remove::<Task<LoadedMesh>>();
+                loaded_meshes.push(loaded_mesh);
             }
         });
     }
@@ -170,6 +170,8 @@ pub(crate) fn upload_loaded_meshes(
         ref mut deferred_buffers,
         ref mut texture_cache,
     } = *upload_data;
+
+    frame_graph::UploadMeshes::Stage::wait_previous(&renderer, &image_index, &swapchain_indices);
 
     let command_buffer = command_util.reset_and_record(&renderer, &image_index);
 
@@ -286,7 +288,7 @@ pub(crate) fn upload_loaded_meshes(
                     let mut mapped = index_buffer
                         .map::<u32>(&renderer.device)
                         .expect("failed to map index upload buffer");
-                    mapped[0..index_len as usize].copy_from_slice(&indices);
+                    mapped[0..index_len as usize].copy_from_slice(indices);
                 }
 
                 (index_buffer, index_len)
@@ -511,7 +513,7 @@ pub(crate) fn upload_loaded_meshes(
                         .src_stage_mask(vk::PipelineStageFlags2KHR::HOST)
                         .src_access_mask(vk::AccessFlags2KHR::HOST_WRITE)
                         .dst_stage_mask(vk::PipelineStageFlags2KHR::TRANSFER)
-                        .dst_access_mask(vk::AccessFlags2KHR::NONE)
+                        .dst_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
                         .old_layout(vk::ImageLayout::UNDEFINED)
                         .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -594,7 +596,6 @@ pub(crate) fn upload_loaded_meshes(
 
     submissions.submit(
         &renderer,
-        &image_index,
         frame_graph::UploadMeshes::INDEX,
         Some(*command_buffer),
         #[cfg(feature = "crash_debugging")]
@@ -634,7 +635,7 @@ fn visit_node(
     // mesh_cache: &mut HashMap<(usize, usize), (GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture)>,
     commands: &mut Commands,
     async_pool: &AsyncComputeTaskPool,
-    buffers: &Vec<gltf::buffer::Data>,
+    buffers: &[gltf::buffer::Data],
     // deferred_buffers: &mut Vec<Buffer>,
     // command_buffer: &mut StrictRecordingCommandBuffer,
     path: &str,

@@ -50,7 +50,7 @@ impl Buffer {
             device.compute_queue_family,
             device.transfer_queue_family,
         ];
-        queue_family_indices.sort();
+        queue_family_indices.sort_unstable();
         queue_family_indices.dedup();
         let sharing_mode = if queue_family_indices.len() > 1 {
             vk::SharingMode::CONCURRENT
@@ -92,6 +92,7 @@ impl Buffer {
         )
     }
 
+    #[allow(unused)]
     pub(crate) fn allocation_info(&self, device: &Device) -> alloc::VmaAllocationInfo {
         device.allocation_info(self.allocation)
     }

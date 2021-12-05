@@ -26,7 +26,10 @@ fn main() {
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .clang_arg(if cfg!(windows) {
-            sdk_path.as_ref().map(|s| format!("-I{}", s)).unwrap_or("".to_string())
+            sdk_path
+                .as_ref()
+                .map(|s| format!("-I{}", s))
+                .unwrap_or_else(|_| "".to_string())
         } else {
             "".to_string()
         })

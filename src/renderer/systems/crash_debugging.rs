@@ -40,8 +40,10 @@ impl CrashBuffer {
                 command_buffer,
                 pipeline_stage,
                 self.0.current(image_index.0).handle,
-                (step as vk::DeviceSize) * size_of::<u32>() as vk::DeviceSize,
-                (renderer.frame_number % (u32::MAX as u64)).try_into().unwrap(),
+                vk::DeviceSize::from(step) * size_of::<u32>() as vk::DeviceSize,
+                (renderer.frame_number % vk::DeviceSize::from(u32::MAX))
+                    .try_into()
+                    .unwrap(),
             );
         }
     }

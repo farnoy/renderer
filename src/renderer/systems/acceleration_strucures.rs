@@ -1,6 +1,6 @@
 use std::{
     hash::Hash,
-    mem::{replace, size_of},
+    mem::size_of,
     sync::{Arc, Weak},
 };
 
@@ -16,8 +16,8 @@ use crate::renderer::CrashBuffer;
 use crate::{
     ecs::components::ModelMatrix,
     renderer::{
-        acceleration_set, as_of_last,
-        device::{Buffer, DoubleBuffered, StaticBuffer, StrictCommandPool},
+        acceleration_set,
+        device::{Buffer, DoubleBuffered, StaticBuffer},
         frame_graph,
         helpers::command_util::CommandUtil,
         systems::present::ImageIndex,
@@ -36,6 +36,7 @@ pub(crate) struct BottomLevelAccelerationStructure {
 //       for now this is a weak ptr to the vertex buffer of GltfMesh
 struct MeshHandle(Weak<Buffer>);
 
+renderer_macros::define_pass!(BuildAccelerationStructures on compute);
 renderer_macros::define_resource! { TLAS = AccelerationStructure }
 
 pub(crate) struct AccelerationStructuresInternal {
@@ -249,7 +250,7 @@ pub(crate) fn build_acceleration_structures(
                     vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                     VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
                     build_sizes.build_scratch_size,
-                    renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
+                    u64::from(renderer.device.min_acceleration_structure_scratch_offset_alignment),
                 );
 
                 let handle = unsafe {
@@ -316,8 +317,7 @@ pub(crate) fn build_acceleration_structures(
                     )
                 };
                 debug_assert_eq!(
-                    scratch_addr
-                        % renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
+                    scratch_addr % u64::from(renderer.device.min_acceleration_structure_scratch_offset_alignment),
                     0
                 );
                 debug_assert_eq!(infos.len(), ix);
@@ -353,7 +353,7 @@ pub(crate) fn build_acceleration_structures(
             2,
         );
 
-        if infos.len() > 0 {
+        if !infos.is_empty() {
             let _blas_marker = command_buffer.debug_marker_around("BLAS", [0.1, 0.8, 0.1, 1.0]);
 
             unsafe {
@@ -493,7 +493,7 @@ pub(crate) fn build_acceleration_structures(
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             build_sizes.build_scratch_size,
-            renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
+            u64::from(renderer.device.min_acceleration_structure_scratch_offset_alignment),
         );
 
         let scratch_addr = unsafe {
@@ -502,7 +502,7 @@ pub(crate) fn build_acceleration_structures(
             )
         };
         debug_assert_eq!(
-            scratch_addr % renderer.device.min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize,
+            scratch_addr % u64::from(renderer.device.min_acceleration_structure_scratch_offset_alignment),
             0
         );
 
@@ -572,7 +572,6 @@ pub(crate) fn build_acceleration_structures(
 
     submissions.submit(
         &renderer,
-        &image_index,
         frame_graph::BuildAccelerationStructures::INDEX,
         Some(*command_buffer),
         #[cfg(feature = "crash_debugging")]
@@ -584,7 +583,7 @@ impl AccelerationStructures {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> Self {
         let set_layout = SmartSetLayout::new(&renderer.device);
 
-        let set = renderer.new_buffered(|ix| SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, ix));
+        let set = renderer.new_buffered(|ix| SmartSet::new(&renderer.device, main_descriptor_pool, &set_layout, ix));
 
         Self { set_layout, set }
     }

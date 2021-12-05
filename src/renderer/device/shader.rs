@@ -10,7 +10,7 @@ impl Shader {
     pub(super) fn new(device: &Device, bytes: &[u8]) -> Shader {
         let (l, aligned, r) = unsafe { bytes.align_to() };
         assert!(l.is_empty() && r.is_empty(), "failed to realign code");
-        let shader_info = vk::ShaderModuleCreateInfo::builder().code(&aligned);
+        let shader_info = vk::ShaderModuleCreateInfo::builder().code(aligned);
         let shader_module = unsafe {
             device
                 .device

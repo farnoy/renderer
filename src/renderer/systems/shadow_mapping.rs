@@ -181,7 +181,7 @@ impl ShadowMappingData {
         );
 
         let user_set = renderer.new_buffered(|ix| {
-            let s = SmartSet::new(&renderer.device, &main_descriptor_pool, &user_set_layout, ix);
+            let s = SmartSet::new(&renderer.device, main_descriptor_pool, &user_set_layout, ix);
 
             {
                 let sampler_updates = &[vk::DescriptorImageInfo::builder()
@@ -291,7 +291,7 @@ impl ShadowMappingLightMatrices {
             b
         });
         let matrices_set = renderer.new_buffered(|ix| {
-            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &camera_matrices.set_layout, ix);
+            let mut s = SmartSet::new(&renderer.device, main_descriptor_pool, &camera_matrices.set_layout, ix);
             renderer.device.set_object_name(
                 s.set.handle,
                 &format!("camera_set Set [{}] - entity={:?}", ix, entity_ix),
@@ -299,7 +299,7 @@ impl ShadowMappingLightMatrices {
             update_whole_buffer::<camera_set::bindings::matrices>(
                 &renderer.device,
                 &mut s,
-                &matrices_buffer.current(ix),
+                matrices_buffer.current(ix),
             );
             s
         });
@@ -408,8 +408,8 @@ pub(crate) fn prepare_shadow_maps(
                 &renderer.device,
                 *command_buffer,
                 (
-                    &model_data.model_set.current(image_index.0),
-                    &shadow_mvp.matrices_set.current(image_index.0),
+                    model_data.model_set.current(image_index.0),
+                    shadow_mvp.matrices_set.current(image_index.0),
                 ),
             );
 
@@ -484,7 +484,6 @@ pub(crate) fn prepare_shadow_maps(
 
     submissions.submit(
         &renderer,
-        &image_index,
         frame_graph::ShadowMapping::INDEX,
         Some(*command_buffer),
         #[cfg(feature = "crash_debugging")]

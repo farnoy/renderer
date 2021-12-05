@@ -15,6 +15,8 @@ use crate::renderer::{
     BindingT, GltfMesh, ImageIndex, RenderFrame, RenderStage, Submissions, SwapchainIndexToFrameNumber,
 };
 
+renderer_macros::define_pass!(ConsolidateMeshBuffers on graphics);
+
 renderer_macros::define_resource! { ConsolidatedPositionBuffer = StaticBuffer<crate::renderer::frame_graph::VertexBuffer> }
 renderer_macros::define_resource! { ConsolidatedNormalBuffer = StaticBuffer<crate::renderer::frame_graph::VertexBuffer> }
 renderer_macros::define_resource! { ConsolidatedIndexBuffer = StaticBuffer<crate::renderer::frame_graph::IndexBuffer> }
@@ -157,7 +159,6 @@ pub(crate) fn consolidate_mesh_buffers(
 
     submissions.submit(
         &renderer,
-        &image_index,
         frame_graph::ConsolidateMeshBuffers::INDEX,
         Some(*command_buffer),
         #[cfg(feature = "crash_debugging")]

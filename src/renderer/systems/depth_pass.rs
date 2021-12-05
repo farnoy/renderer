@@ -49,9 +49,9 @@ impl FromWorld for DepthPassData {
         let renderpass = frame_graph::DepthOnly::RenderPass::new(renderer, ());
 
         let depth_pipeline_layout =
-            SmartPipelineLayout::new(&device, (&model_data.model_set_layout, &camera_matrices.set_layout));
+            SmartPipelineLayout::new(device, (&model_data.model_set_layout, &camera_matrices.set_layout));
         let depth_pipeline = SmartPipeline::new(
-            &device,
+            device,
             &depth_pipeline_layout,
             depth_pipe::Specialization {},
             (renderpass.renderpass.handle, 0, vk::SampleCountFlags::TYPE_4),
@@ -131,12 +131,8 @@ pub(crate) fn depth_only_pass(
 
     let marker = command_buffer.debug_marker_around("depth prepass", [0.3, 0.3, 0.3, 1.0]);
 
-    let _indirect_commands_buffer = &cull_pass_data.culled_commands_buffer;
-    let _indirect_commands_count = &cull_pass_data.culled_commands_count_buffer;
-    let _cb = *command_buffer;
-    let _consolidated_position_buffer = &consolidated_mesh_buffers.position_buffer;
     let guard = renderer_macros::barrier!(
-        cb,
+        *command_buffer,
         IndirectCommandsBuffer.draw_depth r in DepthOnly indirect buffer after [compact, copy_frozen],
         IndirectCommandsCount.draw_depth r in DepthOnly indirect buffer after [compute, copy_frozen],
         ConsolidatedPositionBuffer.in_depth r in DepthOnly vertex buffer after [in_cull],
@@ -145,7 +141,7 @@ pub(crate) fn depth_only_pass(
 
     renderpass.begin(
         &renderer,
-        &framebuffer,
+        framebuffer,
         *command_buffer,
         vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
@@ -184,8 +180,8 @@ pub(crate) fn depth_only_pass(
                 &renderer.device,
                 *command_buffer,
                 (
-                    &model_data.model_set.current(image_index.0),
-                    &camera_matrices.set.current(image_index.0),
+                    model_data.model_set.current(image_index.0),
+                    camera_matrices.set.current(image_index.0),
                 ),
             );
             renderer.device.cmd_bind_index_buffer(
@@ -221,7 +217,6 @@ pub(crate) fn depth_only_pass(
 
     submissions.submit(
         &renderer,
-        &image_index,
         frame_graph::DepthOnly::INDEX,
         Some(*command_buffer),
         #[cfg(feature = "crash_debugging")]

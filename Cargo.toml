@@ -8,7 +8,7 @@ build = "build.rs"
 edition = "2021"
 
 [[bin]]
-name = "renderer4"
+name = "renderer9"
 path = "src/main.rs"
 bench = false
 
@@ -18,10 +18,12 @@ bench = false
 # harness = false
 
 [dependencies]
+renderer-macro-lib = { path = "macro_lib" }
 renderer-macros = { path = "macros" }
 renderer-vma = { path = "vma" }
 arrayvec = "0.7.1"
 ash = { git = "https://github.com/MaikKlein/ash", rev = "ed351996e57006f3984f634cc8a10988a3220041" } # version = "0.32.0"
+bincode = "1.3.3"
 bevy_app = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
 bevy_ecs = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
 bevy_log = { git = "https://github.com/james7132/bevy", branch = "sequential-system-set" }
@@ -78,7 +80,7 @@ standard_validation = ["vk_names"]
 gpu_validation = ["standard_validation"]
 gpu_printf = ["standard_validation"]
 silence_validation = ["standard_validation"]
-sync_validation = ["crash_debugging", "standard_validation"]
+sync_validation = ["standard_validation"]
 uncapped = []
 profiling_bevy = ["bevy_ecs/trace", "bevy_log/tracing-chrome"]
 shader_reload = ["notify", "spirq"]

@@ -13,7 +13,8 @@ use itertools::Itertools;
 use petgraph::{
     algo::has_path_connecting,
     graph::{DiGraph, NodeIndex},
-    visit::{EdgeRef, IntoNodeIdentifiers, IntoNodeReferences},
+    stable_graph::StableDiGraph,
+    visit::{EdgeRef, IntoNodeReferences},
     Direction,
 };
 use proc_macro2::TokenStream;
@@ -47,6 +48,8 @@ pub struct RendererInput {
     pub dependency_graph: DiGraph<String, inputs::DependencyType>,
     /// Pass -> (SemaphoreIx, StageIx)
     pub timeline_semaphore_mapping: HashMap<String, (usize, u64)>,
+    /// SemaphoreIx -> CycleValue
+    pub timeline_semaphore_cycles: HashMap<usize, u64>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -128,6 +131,18 @@ pub enum QueueFamily {
 pub struct AsyncPass {
     pub name: String,
     pub queue: QueueFamily,
+    pub conditional: Conditional,
+}
+
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Conditional {
+    pub conditions: Vec<Condition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Condition {
+    pub neg: bool,
+    pub switch_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -271,11 +286,28 @@ pub fn analyze() -> anyhow::Result<()> {
         data.resources = ResourceClaimsBuilder::convert(visitor.resource_claims)?;
 
         let dependency_graph = calculate_depencency_graph(&data)?;
+        propagate_resource_conditionals(&mut data);
         let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph);
         data.timeline_semaphore_mapping = semaphore_mapping
             .into_iter()
             .map(|(k, v)| (dependency_graph[k].clone(), v))
             .collect();
+
+        data.timeline_semaphore_cycles =
+            data.timeline_semaphore_mapping
+                .iter()
+                .fold(HashMap::new(), |mut map, (_stage, (sem_ix, value))| {
+                    map.entry(*sem_ix)
+                        .and_modify(|x| {
+                            *x = std::cmp::max(*x, *value);
+                        })
+                        .or_insert(*value);
+                    map
+                });
+        data.timeline_semaphore_cycles.values_mut().for_each(|x| {
+            *x = x.next_power_of_two();
+        });
+
         data.dependency_graph = dependency_graph;
 
         dump_dependency_graph(&data)?;
@@ -303,11 +335,24 @@ fn dump_dependency_graph(data: &RendererInput) -> Result<(), anyhow::Error> {
     writeln!(file, "digraph {{")?;
     for (ix, pass) in graph.node_references() {
         let (sem_ix, step_ix) = data.timeline_semaphore_mapping.get(pass).unwrap();
+        let conditional = data
+            .async_passes
+            .get(pass)
+            .map(|p| &p.conditional)
+            .map(|c| {
+                c.conditions
+                    .iter()
+                    .map(|c| format!("{}{}", if c.neg { "!" } else { "" }, &c.switch_name))
+                    .collect::<Vec<_>>()
+            })
+            .map(|strings| format!("[{}] ", strings.join(", ")))
+            .unwrap_or("".to_string());
         writeln!(
             file,
-            "{} [ label = \"{} ({}, {})\" ]",
+            "{} [ label = \"{} {}({}, {})\" ]",
             ix.index(),
             pass,
+            conditional,
             sem_ix,
             step_ix
         )?;
@@ -351,7 +396,20 @@ fn dump_resource_graphs(data: &RendererInput) -> Result<(), anyhow::Error> {
 
         writeln!(file, "digraph {{")?;
         for (ix, claim) in claim.graph.node_references() {
-            writeln!(file, "{} [ label = \"{}\" ]", ix.index(), &claim.step_name)?;
+            let conditional = claim
+                .conditional
+                .conditions
+                .iter()
+                .map(|c| format!("{}{}", if c.neg { "!" } else { "" }, &c.switch_name))
+                .collect_vec();
+            let conditional = format!("[{}] ", conditional.join(", "));
+            writeln!(
+                file,
+                "{} [ label = \"{} {}\" ]",
+                ix.index(),
+                &claim.step_name,
+                conditional
+            )?;
         }
         for edge in claim.graph.edge_references() {
             let source = &claim.graph[edge.source()];
@@ -389,8 +447,8 @@ fn dump_resource_graphs(data: &RendererInput) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Returns Rust type definitions corresponding shader types and a map of (set_name, binding_name)
-/// -> type_name
+/// Returns Rust type definitions corresponding shader types and a map of `(set_name, binding_name)
+/// -> type_name`
 fn analyze_shader_types(
     sets: &HashMap<String, DescriptorSet>,
     pipelines: &HashMap<String, Pipeline>,
@@ -728,6 +786,20 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
             } else {
                 self.had_errors = true;
             }
+        } else if node.mac.path == parse_quote!(renderer_macros::define_pass) {
+            if let Ok(parsed) = parse2::<inputs::AsyncPass>(node.mac.tokens.clone()) {
+                let pass = AsyncPass::from(&parsed);
+                self.data
+                    .async_passes
+                    .entry(pass.name.clone())
+                    .and_modify(|_| {
+                        println!("cargo:warning=Duplicate async pass definition: {}", &pass.name);
+                        self.had_errors = true;
+                    })
+                    .or_insert(pass);
+            } else {
+                self.had_errors = true;
+            }
         }
 
         visit::visit_item_macro(self, node);
@@ -753,7 +825,7 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
 
 /// https://cs.stackexchange.com/a/29133
 pub fn transitive_reduction<A, B>(g: &mut DiGraph<A, B>) {
-    for u in g.node_identifiers() {
+    for u in g.node_indices() {
         let descendants = g.neighbors_directed(u, Direction::Outgoing).collect_vec();
         for v in descendants {
             let mut dfs = petgraph::visit::Dfs::new(&*g, v);
@@ -765,7 +837,20 @@ pub fn transitive_reduction<A, B>(g: &mut DiGraph<A, B>) {
     }
 }
 
-pub fn calculate_depencency_graph(
+pub fn transitive_reduction_stable<A, B, Ix: petgraph::adj::IndexType>(g: &mut StableDiGraph<A, B, Ix>) {
+    for u in g.node_indices().collect::<Vec<_>>() {
+        let descendants = g.neighbors_directed(u, Direction::Outgoing).collect_vec();
+        for v in descendants {
+            let mut dfs = petgraph::visit::Dfs::new(&*g, v);
+            dfs.next(&*g); // skip self
+            while let Some(v_prime) = dfs.next(&*g) {
+                g.find_edge(u, v_prime).map(|edge_ix| g.remove_edge(edge_ix).unwrap());
+            }
+        }
+    }
+}
+
+fn calculate_depencency_graph(
     new_data: &RendererInput,
 ) -> anyhow::Result<DiGraph<String, inputs::DependencyType, u32>> {
     let mut dependency_graph = DiGraph::<String, inputs::DependencyType, u32>::new();
@@ -825,6 +910,21 @@ pub fn calculate_depencency_graph(
     );
 
     Ok(dependency_graph)
+}
+
+/// Copies conditionals from passes to resource claims they appear in
+fn propagate_resource_conditionals(data: &mut RendererInput) {
+    for claims in data.resources.values_mut() {
+        for claim in claims.graph.node_weights_mut() {
+            claim.conditional = /*data
+                .passes
+                .get(&claim.pass_name)
+                .map(|p| &p.conditional)
+                .or_else(||  */ data.async_passes.get(&claim.pass_name).map(|p| &p.conditional) // )
+                .cloned()
+                .unwrap_or_default();
+        }
+    }
 }
 
 /// Takes a validated dependency graph and comes up with an assignment of semaphores, returing a
@@ -947,7 +1047,6 @@ impl From<inputs::Pipe> for Pipeline {
 impl From<inputs::FrameInput> for RendererInput {
     fn from(input: inputs::FrameInput) -> Self {
         let passes = input.passes.0.iter().map(Pass::from);
-        let async_passes = input.async_passes.0.iter().map(AsyncPass::from);
         let attachments = input
             .attachments
             .0
@@ -965,16 +1064,8 @@ impl From<inputs::FrameInput> for RendererInput {
         RendererInput {
             name: input.name.to_string(),
             passes: HashMap::from_iter(passes.map(|pass| (pass.name.to_string(), pass.into()))),
-            async_passes: HashMap::from_iter(
-                async_passes.map(|async_pass| (async_pass.name.to_string(), async_pass.into())),
-            ),
-            resources: Default::default(),
-            descriptor_sets: Default::default(),
             attachments,
-            pipelines: Default::default(),
-            shader_information: Default::default(),
-            timeline_semaphore_mapping: Default::default(),
-            dependency_graph: Default::default(),
+            ..Default::default()
         }
     }
 }
@@ -989,6 +1080,40 @@ impl From<&inputs::Sequence<Ident, inputs::UnOption<inputs::Sequence<keywords::o
         AsyncPass {
             name: name.to_string(),
             queue: QueueFamily::from(queue),
+            conditional: Default::default(),
+        }
+    }
+}
+
+impl From<&inputs::AsyncPass> for AsyncPass {
+    fn from(i: &inputs::AsyncPass) -> Self {
+        AsyncPass {
+            name: i.name.to_string(),
+            queue: QueueFamily::from(&i.family),
+            conditional: i
+                .conditional
+                .as_ref()
+                .map(Conditional::from)
+                .unwrap_or(Default::default()),
+        }
+    }
+}
+
+impl From<&inputs::Conditional> for Conditional {
+    fn from(i: &inputs::Conditional) -> Self {
+        Conditional {
+            conditions: i
+                .conditions
+                .0
+                .iter()
+                .map(|c| {
+                    let (ref bang, ref x) = c.0;
+                    Condition {
+                        neg: bang.0.is_some(),
+                        switch_name: x.to_string(),
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -1125,12 +1250,18 @@ impl From<inputs::ResourceUsage> for ResourceUsageKind {
 impl From<&inputs::UnOption<inputs::Sequence<keywords::on, inputs::QueueFamily>>> for QueueFamily {
     fn from(i: &inputs::UnOption<inputs::Sequence<keywords::on, inputs::QueueFamily>>) -> Self {
         i.0.as_ref()
-            .map(|inputs::Sequence((_kw, queue))| match queue {
-                inputs::QueueFamily::Graphics => Self::Graphics,
-                inputs::QueueFamily::Compute => Self::Compute,
-                inputs::QueueFamily::Transfer => Self::Transfer,
-            })
+            .map(|inputs::Sequence((_kw, queue))| QueueFamily::from(queue))
             .unwrap_or(Self::Graphics)
+    }
+}
+
+impl From<&inputs::QueueFamily> for QueueFamily {
+    fn from(i: &inputs::QueueFamily) -> Self {
+        match i {
+            inputs::QueueFamily::Graphics => Self::Graphics,
+            inputs::QueueFamily::Compute => Self::Compute,
+            inputs::QueueFamily::Transfer => Self::Transfer,
+        }
     }
 }
 

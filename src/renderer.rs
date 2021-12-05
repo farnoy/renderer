@@ -19,11 +19,15 @@ use std::{
 
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
+use hashbrown::HashMap;
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use profiling::scope;
-use smallvec::{smallvec, SmallVec};
+use renderer_macro_lib::{inputs::DependencyType, QueueFamily};
+#[cfg(feature = "shader_reload")]
+use smallvec::smallvec;
+use smallvec::SmallVec;
 use static_assertions::const_assert_eq;
 
 #[cfg(feature = "crash_debugging")]
@@ -39,7 +43,7 @@ use self::{
     systems::{cull_pipeline::cull_set, depth_pass::depth_only_pass, shadow_mapping::shadow_map_set},
 };
 pub(crate) use self::{
-    gltf_mesh_io::{load as load_gltf, load_scene, LoadedMesh},
+    gltf_mesh_io::{load as load_gltf, LoadedMesh},
     helpers::pick_lod,
     instance::Instance,
     swapchain::{Surface, Swapchain},
@@ -250,17 +254,11 @@ renderer_macros::define_frame! {
                 }
             }
         }
-        async_passes {
-            // purely virtual, just to have a synchronization point at the start of the frame
-            PresentationAcquire,
-            ComputeCull on compute,
-            BuildAccelerationStructures on compute,
-            TransferCull on transfer,
-            ConsolidateMeshBuffers on graphics,
-            UploadMeshes on compute,
-        }
     }
 }
+
+// purely virtual, just to have a synchronization point at the start of the frame
+renderer_macros::define_pass!(PresentationAcquire on graphics);
 
 renderer_macros::define_set!(
     model_set {
@@ -327,19 +325,16 @@ renderer_macros::define_pipe! {
     }
 }
 
-pub(crate) type WaitValueAccessor = fn(u64, &ImageIndex) -> u64;
-pub(crate) type SemaphoreAccessor = usize;
-
 pub(crate) trait TimelineStage {
     const OFFSET: u64;
     const CYCLE: u64;
 }
 
-const fn as_of<T: TimelineStage>(frame_number: u64) -> u64 {
+fn as_of<T: TimelineStage>(frame_number: u64) -> u64 {
     frame_number * T::CYCLE + T::OFFSET
 }
 
-const fn as_of_last<T: TimelineStage>(frame_number: u64) -> u64 {
+fn as_of_last<T: TimelineStage>(frame_number: u64) -> u64 {
     as_of::<T>(frame_number - 1)
 }
 
@@ -352,50 +347,6 @@ pub(crate) trait RenderStage {
     type SignalTimelineStage: TimelineStage;
     const SIGNAL_AUTO_SEMAPHORE_IX: usize;
 
-    fn wait_semaphore_timeline() -> SmallVec<[(WaitValueAccessor, SemaphoreAccessor); 4]>;
-
-    fn queue_submit(
-        image_index: &ImageIndex,
-        render_frame: &RenderFrame,
-        queue: vk::Queue,
-        command_buffers: &[vk::CommandBuffer],
-    ) -> ash::prelude::VkResult<()> {
-        scope!("vk::QueueSubmit");
-
-        let signal_semaphore = vk::SemaphoreSubmitInfoKHR::builder()
-            .semaphore(render_frame.auto_semaphores.0[Self::SIGNAL_AUTO_SEMAPHORE_IX].handle)
-            .value(as_of::<Self::SignalTimelineStage>(render_frame.frame_number))
-            .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-            .build();
-        let mut wait_semaphores: SmallVec<[vk::SemaphoreSubmitInfoKHR; 4]> = smallvec![];
-        for (value_accessor, semaphore_ix) in Self::wait_semaphore_timeline() {
-            wait_semaphores.push(
-                vk::SemaphoreSubmitInfoKHR::builder()
-                    .semaphore(render_frame.auto_semaphores.0[semaphore_ix].handle)
-                    .value(value_accessor(render_frame.frame_number, image_index))
-                    .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                    .build(),
-            );
-        }
-        let command_buffer_infos = command_buffers
-            .iter()
-            .map(|cb| vk::CommandBufferSubmitInfoKHR::builder().command_buffer(*cb).build())
-            .collect::<Vec<_>>();
-
-        let submit = vk::SubmitInfo2KHR::builder()
-            .wait_semaphore_infos(&wait_semaphores)
-            .signal_semaphore_infos(std::slice::from_ref(&signal_semaphore))
-            .command_buffer_infos(&command_buffer_infos)
-            .build();
-
-        unsafe {
-            render_frame
-                .device
-                .synchronization2
-                .queue_submit2(queue, &[submit], vk::Fence::null())
-        }
-    }
-
     fn wait_previous(
         renderer: &RenderFrame,
         image_index: &ImageIndex,
@@ -404,7 +355,7 @@ pub(crate) trait RenderStage {
         renderer.auto_semaphores.0[Self::SIGNAL_AUTO_SEMAPHORE_IX]
             .wait(
                 &renderer.device,
-                as_of_previous::<Self::SignalTimelineStage>(&image_index, &swapchain_index_map),
+                as_of_previous::<Self::SignalTimelineStage>(image_index, swapchain_index_map),
             )
             .unwrap();
     }
@@ -424,6 +375,7 @@ pub(crate) trait PipelineLayout {
     const IS_GRAPHICS: bool;
     const DEBUG_NAME: &'static str;
 
+    #[allow(clippy::new_ret_no_self)]
     fn new(device: &Device, sets: <Self::SmartDescriptorSetLayouts as RefTuple>::Ref<'_>) -> device::PipelineLayout;
 
     fn bind_descriptor_sets(
@@ -489,7 +441,7 @@ fn new_pipe_generic<P: Pipeline>(
         .map(|((shader, stage), &varying_subgroup)| {
             vk::PipelineShaderStageCreateInfo::builder()
                 .module(shader.vk())
-                .name(&shader_entry_name)
+                .name(shader_entry_name)
                 .stage(*stage)
                 .specialization_info(&spec_info)
                 .flags(if varying_subgroup {
@@ -501,7 +453,7 @@ fn new_pipe_generic<P: Pipeline>(
         })
         .collect::<SmallVec<[_; 4]>>();
 
-    let base_pipeline_handle = base_pipeline_handle.clone().unwrap_or_else(vk::Pipeline::null);
+    let base_pipeline_handle = base_pipeline_handle.unwrap_or_else(vk::Pipeline::null);
 
     (
         shaders,
@@ -560,7 +512,6 @@ impl<L: PipelineLayout> SmartPipelineLayout<L> {
                 0,
                 casted,
             );
-            return;
         }
     }
 
@@ -605,12 +556,17 @@ impl<P: Pipeline> SmartPipeline<P> {
         mut base_pipeline: Option<&mut Self>,
         dynamic_arguments: P::DynamicArguments,
     ) -> Self {
+        #[allow(clippy::needless_option_as_deref)]
         let base_pipeline_handle = base_pipeline.as_ref().map(|pipe| pipe.inner.vk());
+        #[allow(clippy::needless_option_as_deref)]
         let shaders = base_pipeline.as_deref_mut().map(|p| take(&mut p.shaders));
+        #[cfg(feature = "shader_reload")]
+        #[allow(clippy::needless_option_as_deref)]
+        let base_last_updates = base_pipeline.as_deref_mut().map(|p| take(&mut p.last_updates));
 
         let (shaders, pipe) = new_pipe_generic(
             device,
-            &layout,
+            layout,
             &specialization,
             base_pipeline_handle,
             shaders,
@@ -621,8 +577,8 @@ impl<P: Pipeline> SmartPipeline<P> {
         let last_updates;
 
         #[cfg(feature = "shader_reload")]
-        if let Some(base_pipe) = base_pipeline {
-            last_updates = take(&mut base_pipe.last_updates);
+        if let Some(base_last_updates) = base_last_updates {
+            last_updates = base_last_updates
         } else {
             let stage_count = P::default_shader_stages().len();
             last_updates = smallvec![Instant::now(); stage_count];
@@ -691,7 +647,7 @@ impl<P: Pipeline> SmartPipeline<P> {
                                     && static_outputs == entry_outputs
                                     && static_spec_consts == entry_spec_consts
                                 {
-                                    (ts.clone(), Some(device.new_shader(&code)))
+                                    (*ts, Some(device.new_shader(code)))
                                 } else {
                                     eprintln!(
                                         "Failed to validate live reloaded shader interface \
@@ -814,7 +770,7 @@ impl<T: DescriptorSetLayout> SmartSetLayout<T> {
             .flags(flags)
             .push_next(&mut binding_flags);
         let layout = device.new_descriptor_set_layout(&create_info);
-        device.set_object_name(layout.handle, &format!("{}", T::DEBUG_NAME));
+        device.set_object_name(layout.handle, &T::DEBUG_NAME.to_string());
 
         SmartSetLayout { layout, t: PhantomData }
     }
@@ -887,7 +843,7 @@ fn update_whole_buffer<T: DescriptorBufferBinding>(device: &Device, set: &mut Sm
 
 pub(crate) type BufferType<B> = StaticBuffer<BindingT<B>>;
 pub(crate) type BindingT<B> = <B as DescriptorBufferBinding>::T;
-pub(crate) const fn binding_size<B: DescriptorBufferBinding>() -> vk::DeviceSize {
+pub(crate) fn binding_size<B: DescriptorBufferBinding>() -> vk::DeviceSize {
     B::SIZE
 }
 
@@ -1128,7 +1084,7 @@ impl FromWorld for MainFramebuffer {
         let renderer = world.get_resource::<RenderFrame>().unwrap();
         let main_renderpass = world.get_resource::<MainRenderpass>().unwrap();
         let swapchain = world.get_resource::<Swapchain>().unwrap();
-        Self::new(&renderer, &main_renderpass, &swapchain)
+        Self::new(renderer, main_renderpass, swapchain)
     }
 }
 
@@ -1181,9 +1137,9 @@ impl CameraMatrices {
         });
         let set_layout = SmartSetLayout::new(&renderer.device);
         let set = renderer.new_buffered(|ix| {
-            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, ix);
+            let mut s = SmartSet::new(&renderer.device, main_descriptor_pool, &set_layout, ix);
 
-            update_whole_buffer::<camera_set::bindings::matrices>(&renderer.device, &mut s, &buffer.current(ix));
+            update_whole_buffer::<camera_set::bindings::matrices>(&renderer.device, &mut s, buffer.current(ix));
 
             s
         });
@@ -1214,7 +1170,7 @@ impl ModelData {
     pub(crate) fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool) -> ModelData {
         let device = &renderer.device;
 
-        let model_set_layout = SmartSetLayout::new(&device);
+        let model_set_layout = SmartSetLayout::new(device);
 
         let model_buffer = renderer.new_buffered(|ix| {
             let b = device.new_static_buffer(
@@ -1225,8 +1181,8 @@ impl ModelData {
             b
         });
         let model_set = renderer.new_buffered(|ix| {
-            let mut s = SmartSet::new(&renderer.device, &main_descriptor_pool, &model_set_layout, ix);
-            update_whole_buffer::<model_set::bindings::model>(&renderer.device, &mut s, &model_buffer.current(ix));
+            let mut s = SmartSet::new(&renderer.device, main_descriptor_pool, &model_set_layout, ix);
+            update_whole_buffer::<model_set::bindings::model>(&renderer.device, &mut s, model_buffer.current(ix));
             s
         });
 
@@ -1487,7 +1443,7 @@ pub(crate) fn render_frame(
         use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
         *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize(
             &renderer.device,
-            &gltf_pipeline_layout,
+            gltf_pipeline_layout,
             &gltf_mesh::Specialization {
                 shadow_map_dim: SHADOW_MAP_DIM,
                 shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
@@ -1504,11 +1460,10 @@ pub(crate) fn render_frame(
         *command_buffer,
         IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
         IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
-        ConsolidatedPositionBuffer.in_main r in Main vertex buffer after [in_depth],
         TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build],
         ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps after [prepare],
         Color.render rw in Main attachment,
-        ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [consolidate],
+        ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth],
         ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate],
         CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull]
     );
@@ -1565,7 +1520,7 @@ pub(crate) fn render_frame(
             debug_aabb_pass_data.pipeline_layout.bind_descriptor_sets(
                 &renderer.device,
                 *command_buffer,
-                (&camera_matrices.set.current(image_index.0),),
+                (camera_matrices.set.current(image_index.0),),
             );
 
             for aabb in &mut query.iter() {
@@ -1589,11 +1544,11 @@ pub(crate) fn render_frame(
                 &renderer.device,
                 *command_buffer,
                 (
-                    &model_data.model_set.current(image_index.0),
-                    &camera_matrices.set.current(image_index.0),
-                    &shadow_mapping_data.user_set.current(image_index.0),
-                    &base_color_descriptor_set.set.current(image_index.0),
-                    &acceleration_structures.set.current(image_index.0),
+                    model_data.model_set.current(image_index.0),
+                    camera_matrices.set.current(image_index.0),
+                    shadow_mapping_data.user_set.current(image_index.0),
+                    base_color_descriptor_set.set.current(image_index.0),
+                    acceleration_structures.set.current(image_index.0),
                 ),
             );
             renderer.device.cmd_bind_index_buffer(
@@ -1663,7 +1618,6 @@ pub(crate) fn render_frame(
 
     submissions.submit(
         &renderer,
-        &image_index,
         frame_graph::Main::INDEX,
         Some(command_buffer),
         #[cfg(feature = "crash_debugging")]
@@ -1694,7 +1648,7 @@ impl FromWorld for GuiRenderData {
         let main_descriptor_pool = world.get_resource::<MainDescriptorPool>().unwrap();
         let main_renderpass = world.get_resource::<MainRenderpass>().unwrap();
         let mut gui = unsafe { world.get_non_send_resource_unchecked_mut::<Gui>().unwrap() };
-        Self::new(&renderer, &main_descriptor_pool, &mut gui, &main_renderpass)
+        Self::new(renderer, main_descriptor_pool, &mut gui, main_renderpass)
     }
 }
 
@@ -1790,7 +1744,7 @@ impl GuiRenderData {
 
         let descriptor_set = SmartSet::new(
             &renderer.device,
-            &main_descriptor_pool,
+            main_descriptor_pool,
             &descriptor_set_layout,
             0, // FIXME
         );
@@ -1844,7 +1798,7 @@ impl GuiRenderData {
         let mut command_pool = StrictCommandPool::new(
             &renderer.device,
             renderer.device.graphics_queue_family,
-            &"GuiRender Initialization Command Pool",
+            "GuiRender Initialization Command Pool",
         );
 
         let cb = command_pool.record_one_time(&renderer.device, "prepare gui texture");
@@ -2065,9 +2019,9 @@ fn render_gui(
         ..
     } = *gui_render_data;
     let gui_draw_data = gui.update(
-        &renderer,
+        renderer,
         input_handler,
-        &swapchain,
+        swapchain,
         camera,
         runtime_config,
         #[cfg(feature = "shader_reload")]
@@ -2127,7 +2081,7 @@ fn render_gui(
                     uv_slice[ix] = glm::Vec2::from(vertex.uv);
                     // TODO: this conversion sucks, need to add customizable vertex attribute formats
                     let byte_color = na::SVector::<u8, 4>::from(vertex.col);
-                    col_slice[ix] = byte_color.map(|byte| byte as f32 / 255.0);
+                    col_slice[ix] = byte_color.map(|byte| f32::from(byte) / 255.0);
                 }
                 for draw_cmd in draw_list.commands() {
                     match draw_cmd {
@@ -2182,7 +2136,7 @@ pub(crate) fn model_matrices_upload(
 
     // sanity check for the following flush calculation
     const_assert_eq!(size_of::<glm::Mat4>(), size_of::<frame_graph::ModelMatrices>() / 4096,);
-    model_mapped.unmap_used_range(0..(max_accessed as vk::DeviceSize * size_of::<glm::Mat4>() as vk::DeviceSize));
+    model_mapped.unmap_used_range(0..(u64::from(max_accessed) * size_of::<glm::Mat4>() as vk::DeviceSize));
 }
 
 pub(crate) fn camera_matrices_upload(
@@ -2213,7 +2167,7 @@ pub(crate) fn recreate_main_framebuffer(
     resized: Res<Resized>,
     swapchain: Res<Swapchain>,
 ) {
-    if resized.0 == false {
+    if !resized.0 {
         return;
     }
 
@@ -2291,21 +2245,33 @@ pub(crate) fn graphics_stage() -> SystemStage {
 }
 
 pub(crate) struct Submissions {
-    pub(crate) remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, (), u8>>,
+    pub(crate) active_graph: StableDiGraph<String, DependencyType>,
+    pub(crate) remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
+    /// When the graph is simplified according to conditionals, we pick up inactive nodes and signal
+    /// them at the next downstream opportunity. This allows us to increment all the semaphores
+    /// appropriately all of the time while toggle freely between conditionals.
+    pub(crate) extra_signals: HashMap<NodeIndex, Vec<NodeIndex>>,
+    /// Holds the mapping from a the graph node index of each compute pass to the virtualized index
+    /// of the compute queue to use. This exposes all the underlying parallelism of compute
+    /// submissions. The virtual queue index can be modulo'd with the number of queues exposed by
+    /// the hardware.
+    pub(crate) compute_virtual_queue_indices: HashMap<NodeIndex, usize>,
 }
 
 impl Submissions {
     pub(crate) fn new() -> Submissions {
         Submissions {
+            active_graph: Default::default(),
             remaining: Mutex::default(),
+            extra_signals: Default::default(),
+            compute_virtual_queue_indices: Default::default(),
         }
     }
 
     pub(crate) fn submit(
         &self,
         renderer: &RenderFrame,
-        image_index: &ImageIndex,
-        node_ix: u8,
+        node_ix: u32,
         cb: Option<vk::CommandBuffer>,
         #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
     ) {
@@ -2313,12 +2279,12 @@ impl Submissions {
         let mut g = self.remaining.lock();
         let weight = g
             .node_weight_mut(NodeIndex::from(node_ix))
-            .expect(&format!("Node not found while submitting {}", node_ix));
+            .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
         debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
         *weight = Some(cb);
         update_submissions(
             renderer,
-            image_index,
+            self,
             g,
             #[cfg(feature = "crash_debugging")]
             crash_buffer,
@@ -2326,38 +2292,264 @@ impl Submissions {
     }
 }
 
-fn setup_submissions(mut submissions: ResMut<Submissions>) {
+fn setup_submissions(mut submissions: ResMut<Submissions>, runtime_config: Res<RuntimeConfiguration>) {
     scope!("rendering::setup_submissions");
+    let input: renderer_macro_lib::RendererInput = {
+        scope!("deserialize crossbar");
+        bincode::deserialize(frame_graph::CROSSBAR).unwrap()
+    };
+
+    let mut graph2 = petgraph::stable_graph::StableDiGraph::from(input.dependency_graph.clone());
+    use petgraph::visit::IntoNodeReferences;
+
+    let switches: HashMap<String, bool> = [("FREEZE_CULLING".to_string(), runtime_config.freeze_culling)]
+        .into_iter()
+        .collect();
+
+    submissions.extra_signals.clear();
+
+    for (pass_name, async_pass) in input.async_passes.iter() {
+        for cond in async_pass.conditional.conditions.iter() {
+            let mut eval = switches.get(&cond.switch_name).cloned().unwrap_or(false);
+            if cond.neg {
+                eval = !eval;
+            }
+            if !eval {
+                let to_remove = graph2
+                    .node_references()
+                    .find(|(_, name)| *name == pass_name)
+                    .map(|(ix, _)| ix)
+                    .unwrap();
+                debug_assert!(
+                    !submissions.extra_signals.contains_key(&to_remove),
+                    "Does not implement copying extra signals forward for chained conditionals"
+                );
+                let incoming: Vec<_> = graph2
+                    .neighbors_directed(to_remove, petgraph::EdgeDirection::Incoming)
+                    .collect();
+                let outgoing: Vec<_> = graph2
+                    .neighbors_directed(to_remove, petgraph::EdgeDirection::Outgoing)
+                    .collect();
+                debug_assert!(graph2.remove_node(to_remove).is_some());
+
+                // TODO: this is just an obvious solution to "plug" the hole, a better idea could be to cull the
+                // entire resource claims graph to discover work that is completely redundant after removing
+                // this node
+                let mut assigned_outgoing = false;
+                for src in incoming {
+                    for &dst in outgoing.iter() {
+                        graph2.add_edge(src, dst, renderer_macro_lib::inputs::DependencyType::SameFrame);
+                        if !assigned_outgoing {
+                            submissions.extra_signals.entry(dst).or_insert(vec![]).push(to_remove);
+                        }
+                        assigned_outgoing = true;
+                    }
+                }
+                debug_assert!(
+                    assigned_outgoing,
+                    "could not find a candidate to place the extra signal on"
+                );
+            }
+        }
+    }
+
+    renderer_macro_lib::transitive_reduction_stable(&mut graph2);
+
+    // dbg!(petgraph::dot::Dot::with_config(
+    //     &graph2.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
+    //     &[petgraph::dot::Config::EdgeNoLabel]
+    // ));
+
+    // dbg!(&submissions.extra_signals);
+
     let graph = submissions.remaining.get_mut();
     assert_eq!(graph.node_count(), 0);
     assert_eq!(graph.edge_count(), 0);
 
-    graph.extend_with_edges(frame_graph::DEPENDENCY_GRAPH);
+    *graph = graph2.map(|_, _| None, |_, _| ());
     graph.remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
+
+    submissions.compute_virtual_queue_indices = {
+        let toposort = petgraph::algo::toposort(&*graph, None).unwrap();
+        let toposort_compute = toposort
+            .iter()
+            .filter(|ix| {
+                let name = &graph2[**ix];
+                input
+                    .async_passes
+                    .get(name)
+                    .map(|async_pass| async_pass.queue == QueueFamily::Compute)
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
+        for ix in toposort_compute.iter() {
+            match toposort_grouped_compute.last_mut() {
+                // if no path bridges from the last stage to ix
+                Some(last)
+                    if !last
+                        .iter()
+                        .any(|candidate| petgraph::algo::has_path_connecting(&*graph, *candidate, **ix, None)) =>
+                {
+                    last.push(**ix);
+                }
+                _ => toposort_grouped_compute.push(vec![**ix]),
+            }
+        }
+        let mut mapping = HashMap::new();
+        for stage in toposort_grouped_compute {
+            for (queue_ix, &node_ix) in stage.iter().enumerate() {
+                assert!(mapping.insert(node_ix, queue_ix).is_none());
+            }
+        }
+        mapping
+    };
+
+    submissions.active_graph = graph2;
 }
 
 fn update_submissions(
     renderer: &RenderFrame,
-    image_index: &ImageIndex,
-    mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, (), u8>>,
+    submissions: &Submissions,
+    mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
     #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
     scope!("rendering::update_submissions");
-    use petgraph::Direction;
+    use petgraph::{visit::EdgeRef, Direction};
+
+    let Submissions {
+        ref extra_signals,
+        ref active_graph,
+        ref compute_virtual_queue_indices,
+        ..
+    } = submissions;
 
     let mut should_continue = true;
     while graph.node_count() > 0 && should_continue {
         should_continue = false;
         let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
         'inner: for node in roots {
-            match graph.node_weight_mut(node) {
-                None => break 'inner, // someone else changed it up while we were unlocked
-                Some(ref mut cb @ Some(_)) => {
-                    let cb = cb.take();
+            match (active_graph.node_weight(node), graph.node_weight_mut(node)) {
+                (_, None) => break 'inner, // someone else changed it up while we were unlocked
+                (None, Some(_)) => {
+                    dbg!("redundant submit skipped", node);
+                }
+                (Some(pass_name), Some(ref mut cb @ Some(_))) => {
+                    let cb = cb.take().unwrap();
                     // leave None behind so that others won't try to submit this, but will
                     // continue to see it as a blocking dependency
                     MutexGuard::unlocked_fair(&mut graph, || {
-                        match frame_graph::submit_stage_by_index(renderer, image_index, node, cb.unwrap()) {
+                        let input: renderer_macro_lib::RendererInput = {
+                            scope!("deserialize crossbar");
+                            bincode::deserialize(frame_graph::CROSSBAR).unwrap()
+                        };
+                        let queue_family = input
+                            .passes
+                            .get(pass_name)
+                            .and(Some(QueueFamily::Graphics))
+                            .unwrap_or_else(|| input.async_passes.get(pass_name).expect("failed to find pass").queue);
+                        let queue = match queue_family {
+                            QueueFamily::Graphics => renderer.device.graphics_queue(),
+                            QueueFamily::Compute => {
+                                let virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                &renderer.device.compute_queues[virtualized_ix % renderer.device.compute_queues.len()]
+                            }
+                            QueueFamily::Transfer => renderer.device.transfer_queue.as_ref().unwrap(),
+                        };
+                        let buf = &mut [vk::CommandBuffer::null()];
+                        let command_buffers: &[vk::CommandBuffer] = match cb {
+                            Some(cmd) => {
+                                buf[0] = cmd;
+                                buf
+                            }
+                            None => &[],
+                        };
+                        let submit_result = {
+                            let wait_semaphores = active_graph
+                                .edges_directed(node, Direction::Incoming)
+                                .map(|edge| {
+                                    let incoming_pass_name = &active_graph[edge.source()];
+                                    let &(semaphore_ix, stage_ix) =
+                                        input.timeline_semaphore_mapping.get(incoming_pass_name).unwrap();
+                                    let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+                                    let value = match edge.weight() {
+                                        DependencyType::SameFrame => renderer.frame_number * cycle_value + stage_ix,
+                                        DependencyType::LastFrame => {
+                                            (renderer.frame_number - 1) * cycle_value + stage_ix
+                                        }
+                                        DependencyType::LastAccess => todo!(),
+                                    };
+
+                                    vk::SemaphoreSubmitInfoKHR::builder()
+                                        .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
+                                        .value(value)
+                                        .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                        .build()
+                                })
+                                .collect::<Vec<_>>();
+                            let mut signal_semaphores = HashMap::new();
+                            {
+                                // Signal this submission
+                                let &(semaphore_ix, stage_ix) =
+                                    input.timeline_semaphore_mapping.get(pass_name).unwrap();
+                                let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+
+                                signal_semaphores.insert(semaphore_ix, renderer.frame_number * cycle_value + stage_ix);
+                            };
+                            // Signal extra submissions that are inactive in the current configuration
+                            for &extra in extra_signals.get(&node).unwrap_or(&vec![]) {
+                                let input: renderer_macro_lib::RendererInput = {
+                                    scope!("deserialize crossbar");
+                                    bincode::deserialize(frame_graph::CROSSBAR).unwrap()
+                                };
+
+                                let extra_pass_name = &input.dependency_graph[extra];
+                                let &(semaphore_ix, stage_ix) =
+                                    input.timeline_semaphore_mapping.get(extra_pass_name).unwrap();
+                                let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+
+                                let value = renderer.frame_number * cycle_value + stage_ix;
+                                signal_semaphores
+                                    .entry(semaphore_ix)
+                                    .and_modify(|existing| {
+                                        *existing = max(*existing, value);
+                                    })
+                                    .or_insert(value);
+                            }
+                            let signal_semaphores = signal_semaphores
+                                .into_iter()
+                                .map(|(semaphore_ix, value)| {
+                                    vk::SemaphoreSubmitInfoKHR::builder()
+                                        .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
+                                        .value(value)
+                                        .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                        .build()
+                                })
+                                .collect::<Vec<_>>();
+                            let command_buffer_infos = command_buffers
+                                .iter()
+                                .map(|cb| vk::CommandBufferSubmitInfoKHR::builder().command_buffer(*cb).build())
+                                .collect::<Vec<_>>();
+
+                            let submit = vk::SubmitInfo2KHR::builder()
+                                .wait_semaphore_infos(&wait_semaphores)
+                                .signal_semaphore_infos(&signal_semaphores)
+                                .command_buffer_infos(&command_buffer_infos)
+                                .build();
+
+                            let queue = queue.lock();
+
+                            unsafe {
+                                scope!("vk::QueueSubmit");
+                                renderer
+                                    .device
+                                    .synchronization2
+                                    .queue_submit2(*queue, &[submit], vk::Fence::null())
+                            }
+                        };
+
+                        match submit_result {
                             Ok(()) => {}
                             Err(res) => {
                                 #[cfg(feature = "crash_debugging")]
