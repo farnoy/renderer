@@ -287,7 +287,7 @@ pub fn analyze() -> anyhow::Result<()> {
 
         let dependency_graph = calculate_depencency_graph(&data)?;
         propagate_resource_conditionals(&mut data);
-        let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph);
+        let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph, &data.passes, &data.async_passes);
         data.timeline_semaphore_mapping = semaphore_mapping
             .into_iter()
             .map(|(k, v)| (dependency_graph[k].clone(), v))
@@ -931,6 +931,8 @@ fn propagate_resource_conditionals(data: &mut RendererInput) {
 /// mapping from each node to (semaphore_index, stage_within_semaphore_index)
 pub fn assign_semaphores_to_stages(
     graph: &DiGraph<String, inputs::DependencyType>,
+    passes: &HashMap<String, Pass>,
+    async_passes: &HashMap<String, AsyncPass>,
 ) -> HashMap<NodeIndex, (usize, u64)> {
     let mut mapping = HashMap::new();
 
@@ -947,15 +949,23 @@ pub fn assign_semaphores_to_stages(
     let mut last_semaphore_ix = 0;
     let mut last_stage_ix = 1;
     let mut last_node = presentation_acquire;
+    let mut last_queue_family = QueueFamily::Graphics;
 
     while let Some(this_node) = dfs.next(graph) {
         // TODO: preallocate DfsSpace?
-        if has_path_connecting(graph, last_node, this_node, None) {
+        // TODO: queue_family matching is a workaround for https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
+        let queue_family = passes
+            .get(&graph[this_node])
+            .map(|_| QueueFamily::Graphics)
+            .or_else(|| async_passes.get(&graph[this_node]).map(|p| p.queue))
+            .unwrap();
+        if last_queue_family == queue_family && has_path_connecting(graph, last_node, this_node, None) {
             last_stage_ix += 1;
             assert!(mapping.insert(this_node, (last_semaphore_ix, last_stage_ix)).is_none());
         } else {
             last_semaphore_ix += 1;
             last_stage_ix = 1;
+            last_queue_family = queue_family;
             assert!(mapping.insert(this_node, (last_semaphore_ix, last_stage_ix)).is_none());
         }
         last_node = this_node;
