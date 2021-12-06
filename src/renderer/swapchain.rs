@@ -92,6 +92,8 @@ impl Swapchain {
                 999
             } else {
                 // TODO: This is likely also affected by https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
+                // It's because of setup_submissions() that pulls signals forward for inactive stages, crossing the
+                // queue boundary potentially
                 1
             },
             surface_capabilities.min_image_count,

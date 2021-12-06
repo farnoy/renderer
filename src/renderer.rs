@@ -2327,12 +2327,6 @@ fn setup_submissions(mut submissions: ResMut<Submissions>, runtime_config: Res<R
                     !submissions.extra_signals.contains_key(&to_remove),
                     "Does not implement copying extra signals forward for chained conditionals"
                 );
-                let incoming: Vec<_> = graph2
-                    .neighbors_directed(to_remove, petgraph::EdgeDirection::Incoming)
-                    .collect();
-                let outgoing: Vec<_> = graph2
-                    .neighbors_directed(to_remove, petgraph::EdgeDirection::Outgoing)
-                    .collect();
                 debug_assert!(graph2.remove_node(to_remove).is_some());
             }
         }
@@ -2461,6 +2455,7 @@ fn update_submissions(
                             QueueFamily::Graphics => renderer.device.graphics_queue(),
                             QueueFamily::Compute => {
                                 let _virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                // TODO: Disabling virtualizes queues because of https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
                                 let virtualized_ix = 0;
                                 &renderer.device.compute_queues[virtualized_ix % renderer.device.compute_queues.len()]
                             }
