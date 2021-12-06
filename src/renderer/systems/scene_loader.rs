@@ -11,6 +11,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 use hashbrown::HashMap;
 #[cfg(feature = "compress_textures")]
 use num_traits::ToPrimitive;
+use petgraph::prelude::NodeIndex;
 use profiling::scope;
 
 #[cfg(feature = "crash_debugging")]
@@ -152,6 +153,14 @@ pub(crate) fn upload_loaded_meshes(
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("scene_loader::upload_loaded_meshes");
+
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::UploadMeshes::INDEX))
+    {
+        return;
+    }
+
     let mut loaded_meshes = vec![];
     for (entity, mut mesh) in query.iter_mut() {
         if loaded_meshes.len() > 8 {

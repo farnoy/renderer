@@ -22,7 +22,10 @@ use bevy_ecs::{component::Component, prelude::*};
 use hashbrown::HashMap;
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
-use petgraph::stable_graph::{NodeIndex, StableDiGraph};
+use petgraph::{
+    algo::has_path_connecting,
+    stable_graph::{NodeIndex, StableDiGraph},
+};
 use profiling::scope;
 use renderer_macro_lib::{inputs::DependencyType, QueueFamily};
 #[cfg(feature = "shader_reload")]
@@ -2331,29 +2334,34 @@ fn setup_submissions(mut submissions: ResMut<Submissions>, runtime_config: Res<R
                     .neighbors_directed(to_remove, petgraph::EdgeDirection::Outgoing)
                     .collect();
                 debug_assert!(graph2.remove_node(to_remove).is_some());
-
-                // TODO: this is just an obvious solution to "plug" the hole, a better idea could be to cull the
-                // entire resource claims graph to discover work that is completely redundant after removing
-                // this node
-                let mut assigned_outgoing = false;
-                for src in incoming {
-                    for &dst in outgoing.iter() {
-                        graph2.add_edge(src, dst, renderer_macro_lib::inputs::DependencyType::SameFrame);
-                        if !assigned_outgoing {
-                            submissions.extra_signals.entry(dst).or_insert(vec![]).push(to_remove);
-                        }
-                        assigned_outgoing = true;
-                    }
-                }
-                debug_assert!(
-                    assigned_outgoing,
-                    "could not find a candidate to place the extra signal on"
-                );
             }
         }
     }
 
     renderer_macro_lib::transitive_reduction_stable(&mut graph2);
+
+    // Cull the active graph to everything that leads to Main
+    // TODO: cull the resource graphs as well
+    let main_node = NodeIndex::from(frame_graph::Main::INDEX);
+    for u in graph2.node_indices().collect::<Vec<_>>() {
+        if !has_path_connecting(&graph2, u, main_node, None) {
+            graph2.remove_node(u);
+        }
+    }
+    for node in input.dependency_graph.node_indices() {
+        // If the node is missing from the active graph, find the first active downstream node to pick up
+        // extra_signals
+        if !graph2.contains_node(node) {
+            let mut dfs = petgraph::visit::Dfs::new(&input.dependency_graph, node);
+            dfs.next(&input.dependency_graph); // skip self
+            while let Some(candidate) = dfs.next(&input.dependency_graph) {
+                if graph2.contains_node(candidate) {
+                    submissions.extra_signals.entry(candidate).or_insert(vec![]).push(node);
+                    break;
+                }
+            }
+        }
+    }
 
     // dbg!(petgraph::dot::Dot::with_config(
     //     &graph2.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
@@ -2390,7 +2398,7 @@ fn setup_submissions(mut submissions: ResMut<Submissions>, runtime_config: Res<R
                 Some(last)
                     if !last
                         .iter()
-                        .any(|candidate| petgraph::algo::has_path_connecting(&*graph, *candidate, **ix, None)) =>
+                        .any(|candidate| has_path_connecting(&*graph, *candidate, **ix, None)) =>
                 {
                     last.push(**ix);
                 }

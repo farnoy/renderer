@@ -1,6 +1,7 @@
 use ash::vk::{self, Handle};
 use bevy_ecs::prelude::*;
 use num_traits::ToPrimitive;
+use petgraph::graph::NodeIndex;
 use profiling::scope;
 
 #[cfg(feature = "crash_debugging")]
@@ -338,7 +339,10 @@ pub(crate) fn cull_pass_bypass(
 ) {
     scope!("ecs::cull_pass_bypass");
 
-    if !runtime_config.freeze_culling {
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::TransferCull::INDEX))
+    {
         return;
     }
 
@@ -428,7 +432,10 @@ pub(crate) fn cull_pass(
 ) {
     scope!("ecs::cull_pass");
 
-    if runtime_config.freeze_culling {
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::ComputeCull::INDEX))
+    {
         return;
     }
 

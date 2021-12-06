@@ -4,6 +4,7 @@ use ash::vk::{self, Handle};
 use bevy_ecs::prelude::*;
 use hashbrown::{hash_map::Entry, HashMap};
 use num_traits::ToPrimitive;
+use petgraph::prelude::NodeIndex;
 use profiling::scope;
 
 #[cfg(feature = "crash_debugging")]
@@ -57,6 +58,13 @@ pub(crate) fn consolidate_mesh_buffers(
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("ecs::consolidate_mesh_buffers");
+
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::ConsolidateMeshBuffers::INDEX))
+    {
+        return;
+    }
 
     let ConsolidatedMeshBuffers {
         ref mut next_vertex_offset,
