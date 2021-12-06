@@ -87,10 +87,8 @@ pub(crate) fn consolidate_mesh_buffers(
     command_pool.reset(&renderer.device);
 
     let command_buffer = command_pool.record_to_specific(&renderer.device, *command_buffers.current(image_index.0));
-    let _consolidated_position_buffer = position_buffer;
-    let _consolidated_normal_buffer = normal_buffer;
-    let _consolidated_index_buffer = index_buffer;
 
+    let marker = command_buffer.debug_marker_around("consolidate mesh buffers", [0.0, 1.0, 0.0, 1.0]);
     let guard = renderer_macros::barrier!(
         *command_buffer,
         IndividualGltfMeshBuffer.consolidate r in ConsolidateMeshBuffers transfer copy after [upload],
@@ -163,6 +161,7 @@ pub(crate) fn consolidate_mesh_buffers(
         }
     }
     drop(guard);
+    drop(marker);
     let command_buffer = command_buffer.end();
 
     submissions.submit(
