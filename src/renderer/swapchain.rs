@@ -88,7 +88,12 @@ impl Swapchain {
         };
         println!("new swapchain surface capabilities {:?}", surface_capabilities);
         let desired_image_count = na::clamp(
-            if cfg!(feature = "uncapped") { 999 } else { 3 },
+            if cfg!(feature = "uncapped") {
+                999
+            } else {
+                // TODO: This is likely also affected by https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
+                1
+            },
             surface_capabilities.min_image_count,
             surface_capabilities.max_image_count,
         );

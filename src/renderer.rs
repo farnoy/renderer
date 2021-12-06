@@ -2452,7 +2452,8 @@ fn update_submissions(
                         let queue = match queue_family {
                             QueueFamily::Graphics => renderer.device.graphics_queue(),
                             QueueFamily::Compute => {
-                                let virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                let _virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                let virtualized_ix = 0;
                                 &renderer.device.compute_queues[virtualized_ix % renderer.device.compute_queues.len()]
                             }
                             QueueFamily::Transfer => renderer.device.transfer_queue.as_ref().unwrap(),
