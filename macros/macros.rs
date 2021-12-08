@@ -150,11 +150,11 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
         };
 
-        let connected_components = petgraph::algo::connected_components(&claims.graph);
-        if connected_components != 1 {
-            let msg = "resource claims graph must have one connected component".to_string();
-            validation_errors.extend(quote!(compile_error!(#msg);));
-        }
+        // let connected_components = petgraph::algo::connected_components(&claims.graph);
+        // if connected_components != 1 {
+        //     let msg = "resource claims graph must have one connected component".to_string();
+        //     validation_errors.extend(quote!(compile_error!(#msg);));
+        // }
         if petgraph::algo::is_cyclic_directed(&claims.graph) {
             let msg = "resource claims graph is cyclic".to_string();
             validation_errors.extend(quote!(compile_error!(#msg);));

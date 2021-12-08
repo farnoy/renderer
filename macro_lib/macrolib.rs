@@ -12,9 +12,9 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use petgraph::{
     algo::has_path_connecting,
-    graph::{DiGraph, NodeIndex},
-    stable_graph::StableDiGraph,
-    visit::{EdgeRef, IntoNodeReferences},
+    graph::DiGraph,
+    stable_graph::{NodeIndex, StableDiGraph},
+    visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
     Direction,
 };
 use proc_macro2::TokenStream;
@@ -45,7 +45,7 @@ pub struct RendererInput {
     pub pipelines: HashMap<String, Pipeline>,
     pub shader_information: ShaderInformation,
     /// DAG of Passes
-    pub dependency_graph: DiGraph<String, inputs::DependencyType>,
+    pub dependency_graph: StableDiGraph<String, inputs::DependencyType>,
     /// Pass -> (SemaphoreIx, StageIx)
     pub timeline_semaphore_mapping: HashMap<String, (usize, u64)>,
     /// SemaphoreIx -> CycleValue
@@ -286,7 +286,6 @@ pub fn analyze() -> anyhow::Result<()> {
         data.resources = ResourceClaimsBuilder::convert(visitor.resource_claims)?;
 
         let dependency_graph = calculate_depencency_graph(&data)?;
-        propagate_resource_conditionals(&mut data);
         let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph, &data.passes, &data.async_passes);
         data.timeline_semaphore_mapping = semaphore_mapping
             .into_iter()
@@ -853,8 +852,8 @@ pub fn transitive_reduction_stable<A, B, Ix: petgraph::adj::IndexType>(g: &mut S
 
 fn calculate_depencency_graph(
     new_data: &RendererInput,
-) -> anyhow::Result<DiGraph<String, inputs::DependencyType, u32>> {
-    let mut dependency_graph = DiGraph::<String, inputs::DependencyType, u32>::new();
+) -> anyhow::Result<StableDiGraph<String, inputs::DependencyType, u32>> {
+    let mut dependency_graph = StableDiGraph::<String, inputs::DependencyType, u32>::new();
 
     for claims in new_data.resources.values() {
         for edge in claims.graph.edge_references() {
@@ -884,7 +883,7 @@ fn calculate_depencency_graph(
         .node_indices()
         .find(|&c| dependency_graph[c] == "PresentationAcquire")
         .unwrap_or_else(|| dependency_graph.add_node("PresentationAcquire".to_string()));
-    for ix in dependency_graph.node_indices() {
+    for ix in dependency_graph.node_indices().collect_vec() {
         if presentation_acquire != ix {
             dependency_graph.update_edge(presentation_acquire, ix, inputs::DependencyType::SameFrame);
         }
@@ -894,17 +893,17 @@ fn calculate_depencency_graph(
     //     &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
     //     &[petgraph::dot::Config::EdgeNoLabel]
     // ));
-    transitive_reduction(&mut dependency_graph);
+    transitive_reduction_stable(&mut dependency_graph);
     // dbg!(petgraph::dot::Dot::with_config(
     //     &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
     //     &[petgraph::dot::Config::EdgeNoLabel]
     // ));
 
-    let connected_components = petgraph::algo::connected_components(&dependency_graph);
-    ensure!(
-        connected_components == 1,
-        "sync graph must have one connected component"
-    );
+    // let connected_components = petgraph::algo::connected_components(&dependency_graph);
+    // ensure!(
+    //     connected_components == 1,
+    //     "sync graph must have one connected component"
+    // );
     ensure!(
         !petgraph::algo::is_cyclic_directed(&dependency_graph),
         "sync graph is cyclic"
@@ -913,25 +912,10 @@ fn calculate_depencency_graph(
     Ok(dependency_graph)
 }
 
-/// Copies conditionals from passes to resource claims they appear in
-fn propagate_resource_conditionals(data: &mut RendererInput) {
-    for claims in data.resources.values_mut() {
-        for claim in claims.graph.node_weights_mut() {
-            claim.conditional = /*data
-                .passes
-                .get(&claim.pass_name)
-                .map(|p| &p.conditional)
-                .or_else(||  */ data.async_passes.get(&claim.pass_name).map(|p| &p.conditional) // )
-                .cloned()
-                .unwrap_or_default();
-        }
-    }
-}
-
 /// Takes a validated dependency graph and comes up with an assignment of semaphores, returing a
 /// mapping from each node to (semaphore_index, stage_within_semaphore_index)
 pub fn assign_semaphores_to_stages(
-    graph: &DiGraph<String, inputs::DependencyType>,
+    graph: &StableDiGraph<String, inputs::DependencyType>,
     passes: &HashMap<String, Pass>,
     async_passes: &HashMap<String, AsyncPass>,
 ) -> HashMap<NodeIndex, (usize, u64)> {

@@ -54,6 +54,7 @@ pub(crate) fn consolidate_mesh_buffers(
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     mut consolidated_mesh_buffers: ResMut<ConsolidatedMeshBuffers>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     query: Query<&GltfMesh>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
@@ -168,6 +169,7 @@ pub(crate) fn consolidate_mesh_buffers(
         &renderer,
         frame_graph::ConsolidateMeshBuffers::INDEX,
         Some(*command_buffer),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

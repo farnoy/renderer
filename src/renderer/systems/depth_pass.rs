@@ -2,6 +2,7 @@ use std::mem::{replace, size_of};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
+use petgraph::graph::NodeIndex;
 use profiling::scope;
 
 #[cfg(feature = "crash_debugging")]
@@ -10,7 +11,7 @@ use crate::{
     ecs::systems::RuntimeConfiguration,
     renderer::{
         binding_size, camera_set, device::Device, frame_graph, helpers::command_util::CommandUtil, model_set,
-        systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
+        systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData, Image,
         ImageIndex, MainAttachments, ModelData, RenderFrame, Resized, SmartPipeline, SmartPipelineLayout, Submissions,
         Swapchain,
     },
@@ -29,6 +30,9 @@ renderer_macros::define_pipe! {
         depth compare op LESS_OR_EQUAL
     }
 }
+
+renderer_macros::define_resource! { DepthRT = Image }
+
 pub(crate) struct DepthPassData {
     depth_pipeline: SmartPipeline<depth_pipe::Pipeline>,
     depth_pipeline_layout: SmartPipelineLayout<depth_pipe::PipelineLayout>,
@@ -99,10 +103,18 @@ pub(crate) fn depth_only_pass(
     runtime_config: Res<CopiedResource<RuntimeConfiguration>>,
     camera_matrices: Res<CameraMatrices>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     resized: Res<Resized>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("rendering::depth_only_pass");
+
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::DepthOnly::INDEX))
+    {
+        return;
+    }
 
     let DepthPassData {
         ref renderpass,
@@ -133,10 +145,11 @@ pub(crate) fn depth_only_pass(
 
     let guard = renderer_macros::barrier!(
         *command_buffer,
-        IndirectCommandsBuffer.draw_depth r in DepthOnly indirect buffer after [compact, copy_frozen],
-        IndirectCommandsCount.draw_depth r in DepthOnly indirect buffer after [compute, copy_frozen],
-        ConsolidatedPositionBuffer.in_depth r in DepthOnly vertex buffer after [in_cull],
-        CulledIndexBuffer.in_depth r in DepthOnly index buffer after [copy_frozen, cull]
+        IndirectCommandsBuffer.draw_depth r in DepthOnly indirect buffer after [compact, copy_frozen] if [!DEBUG_AABB],
+        IndirectCommandsCount.draw_depth r in DepthOnly indirect buffer after [compute, copy_frozen] if [!DEBUG_AABB],
+        ConsolidatedPositionBuffer.in_depth r in DepthOnly vertex buffer after [in_cull] if [!DEBUG_AABB],
+        CulledIndexBuffer.in_depth r in DepthOnly index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
+        DepthRT.draw_depth w in DepthOnly attachment
     );
 
     renderpass.begin(
@@ -219,6 +232,7 @@ pub(crate) fn depth_only_pass(
         &renderer,
         frame_graph::DepthOnly::INDEX,
         Some(*command_buffer),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

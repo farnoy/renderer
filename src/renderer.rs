@@ -27,7 +27,7 @@ use petgraph::{
     stable_graph::{NodeIndex, StableDiGraph},
 };
 use profiling::scope;
-use renderer_macro_lib::{inputs::DependencyType, QueueFamily};
+use renderer_macro_lib::{inputs::DependencyType, resource_claims::ResourceClaims, Conditional, QueueFamily};
 #[cfg(feature = "shader_reload")]
 use smallvec::smallvec;
 use smallvec::SmallVec;
@@ -1403,8 +1403,8 @@ pub(crate) fn render_frame(
     (main_renderpass, main_attachments): (Res<MainRenderpass>, Res<MainAttachments>),
     (image_index, model_data): (Res<ImageIndex>, Res<ModelData>),
     mut runtime_config: ResMut<RuntimeConfiguration>,
-    camera_matrices: Res<CameraMatrices>,
-    swapchain: Res<Swapchain>,
+    (camera_matrices, swapchain): (Res<CameraMatrices>, Res<Swapchain>),
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
     (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
@@ -1463,12 +1463,13 @@ pub(crate) fn render_frame(
         *command_buffer,
         IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
         IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
-        TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build],
-        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps after [prepare],
+        TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB],
+        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps after [prepare] if [!DEBUG_AABB],
         Color.render rw in Main attachment,
-        ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth],
-        ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate],
-        CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull]
+        ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth] if [!DEBUG_AABB],
+        ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate] if [!DEBUG_AABB],
+        CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
+        DepthRT.in_main r in Main attachment after [draw_depth],
     );
     unsafe {
         renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
@@ -1623,6 +1624,7 @@ pub(crate) fn render_frame(
         &renderer,
         frame_graph::Main::INDEX,
         Some(command_buffer),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
@@ -2249,6 +2251,7 @@ pub(crate) fn graphics_stage() -> SystemStage {
 
 pub(crate) struct Submissions {
     pub(crate) active_graph: StableDiGraph<String, DependencyType>,
+    pub(crate) active_resources: HashMap<String, ResourceClaims>,
     pub(crate) remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
     /// When the graph is simplified according to conditionals, we pick up inactive nodes and signal
     /// them at the next downstream opportunity. This allows us to increment all the semaphores
@@ -2265,6 +2268,7 @@ impl Submissions {
     pub(crate) fn new() -> Submissions {
         Submissions {
             active_graph: Default::default(),
+            active_resources: Default::default(),
             remaining: Mutex::default(),
             extra_signals: Default::default(),
             compute_virtual_queue_indices: Default::default(),
@@ -2276,6 +2280,7 @@ impl Submissions {
         renderer: &RenderFrame,
         node_ix: u32,
         cb: Option<vk::CommandBuffer>,
+        input: &renderer_macro_lib::RendererInput,
         #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
     ) {
         scope!("rendering::submit_command_buffer");
@@ -2289,59 +2294,121 @@ impl Submissions {
             renderer,
             self,
             g,
+            input,
             #[cfg(feature = "crash_debugging")]
             crash_buffer,
         );
     }
 }
 
-fn setup_submissions(mut submissions: ResMut<Submissions>, runtime_config: Res<RuntimeConfiguration>) {
+fn setup_submissions(
+    mut submissions: ResMut<Submissions>,
+    runtime_config: Res<RuntimeConfiguration>,
+    input: Res<renderer_macro_lib::RendererInput>,
+) {
     scope!("rendering::setup_submissions");
-    let input: renderer_macro_lib::RendererInput = {
-        scope!("deserialize crossbar");
-        bincode::deserialize(frame_graph::CROSSBAR).unwrap()
-    };
 
-    let mut graph2 = petgraph::stable_graph::StableDiGraph::from(input.dependency_graph.clone());
+    let mut graph2 = input.dependency_graph.clone();
     use petgraph::visit::IntoNodeReferences;
 
-    let switches: HashMap<String, bool> = [("FREEZE_CULLING".to_string(), runtime_config.freeze_culling)]
-        .into_iter()
-        .collect();
+    let switches: HashMap<String, bool> = [
+        ("FREEZE_CULLING".to_string(), runtime_config.freeze_culling),
+        ("DEBUG_AABB".to_string(), runtime_config.debug_aabbs),
+    ]
+    .into_iter()
+    .collect();
 
     submissions.extra_signals.clear();
+    submissions.active_resources = input.resources.clone();
 
-    for (pass_name, async_pass) in input.async_passes.iter() {
-        for cond in async_pass.conditional.conditions.iter() {
+    let eval_cond = |c: &Conditional| {
+        c.conditions.iter().all(|cond| {
             let mut eval = switches.get(&cond.switch_name).cloned().unwrap_or(false);
             if cond.neg {
                 eval = !eval;
             }
-            if !eval {
-                let to_remove = graph2
-                    .node_references()
-                    .find(|(_, name)| *name == pass_name)
-                    .map(|(ix, _)| ix)
-                    .unwrap();
-                debug_assert!(
-                    !submissions.extra_signals.contains_key(&to_remove),
-                    "Does not implement copying extra signals forward for chained conditionals"
-                );
-                debug_assert!(graph2.remove_node(to_remove).is_some());
+            eval
+        })
+    };
+
+    // Stage 1: Cull resource graphs by evaluating conditionals
+    for claims in submissions.active_resources.values_mut() {
+        claims
+            .map
+            // Drain inactive resource steps
+            .drain_filter(|_step_name, &mut step_ix| {
+                let step = &claims.graph[step_ix];
+
+                !eval_cond(&step.conditional) || !graph2.node_references().any(|(_, name)| **name == step.pass_name)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .for_each(|(_step_name, step_ix)| {
+                claims.graph.remove_node(step_ix).unwrap();
+            });
+    }
+
+    // Stage 2: Remove resource claims in removed passes, or those disconnected from the graph externals
+    for (resource_name, claims) in submissions.active_resources.iter_mut() {
+        let original_externals = input
+            .resources
+            .get(resource_name)
+            .unwrap()
+            .graph
+            .externals(petgraph::EdgeDirection::Outgoing)
+            .collect::<Vec<_>>();
+        for u in claims.graph.node_indices().collect::<Vec<_>>() {
+            for external in original_externals.iter() {
+                let step = &claims.graph[u];
+                if !graph2.node_references().any(|(_, name)| **name == step.pass_name)
+                    || !has_path_connecting(&claims.graph, u, *external, None)
+                {
+                    claims.graph.remove_node(u);
+                    break;
+                }
             }
         }
     }
+    // Stage 3: Remove passes that don't modify (by writing) any active resource
+    for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
+        if pass_name != "PresentationAcquire"
+            && !submissions.active_resources.values().any(|resource| {
+                resource
+                    .graph
+                    .node_weights()
+                    .any(|claim| claim.pass_name == *pass_name && claim.writes)
+            })
+        {
+            // dbg!(pass_name);
+            let to_remove = graph2
+                .node_references()
+                .find(|(_, name)| *name == pass_name)
+                .map(|(ix, _)| ix)
+                .unwrap();
+            debug_assert!(graph2.remove_node(to_remove).is_some());
+        }
+    }
 
-    renderer_macro_lib::transitive_reduction_stable(&mut graph2);
-
-    // Cull the active graph to everything that leads to Main
-    // TODO: cull the resource graphs as well
+    // Stage 4: Cull the active graph from stuff that does not lead to Main
     let main_node = NodeIndex::from(frame_graph::Main::INDEX);
+    let presentation_acquire = NodeIndex::from(frame_graph::PresentationAcquire::INDEX);
     for u in graph2.node_indices().collect::<Vec<_>>() {
-        if !has_path_connecting(&graph2, u, main_node, None) {
+        if u != presentation_acquire && !has_path_connecting(&graph2, u, main_node, None) {
             graph2.remove_node(u);
         }
     }
+    // Stage 5: Remove resource claims again now that even more passes have been disabled
+    for claims in submissions.active_resources.values_mut() {
+        for u in claims.graph.node_indices().collect::<Vec<_>>() {
+            let step = &claims.graph[u];
+            if !graph2.node_references().any(|(_, name)| **name == step.pass_name) {
+                claims.graph.remove_node(u);
+                break;
+            }
+        }
+    }
+    // Stage 6: make up for the missing semaphore signals by pushing them to the next submission after
+    // the original one (that is inactive)
     for node in input.dependency_graph.node_indices() {
         // If the node is missing from the active graph, find the first active downstream node to pick up
         // extra_signals
@@ -2357,12 +2424,16 @@ fn setup_submissions(mut submissions: ResMut<Submissions>, runtime_config: Res<R
         }
     }
 
-    // dbg!(petgraph::dot::Dot::with_config(
-    //     &graph2.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
-    //     &[petgraph::dot::Config::EdgeNoLabel]
-    // ));
+    // Stage 7: Fix up the entire graph so it remains ordered to happen after PresentationAcquire
+    for node_ix in graph2.node_indices().collect::<Vec<_>>() {
+        if node_ix != presentation_acquire {
+            graph2.update_edge(presentation_acquire, node_ix, DependencyType::SameFrame);
+        }
+    }
 
-    // dbg!(&submissions.extra_signals);
+    // Stage 8: Perform a transitive reduction to minimize the number of semaphores that passes need to
+    // wait on
+    renderer_macro_lib::transitive_reduction_stable(&mut graph2);
 
     let graph = submissions.remaining.get_mut();
     assert_eq!(graph.node_count(), 0);
@@ -2415,6 +2486,7 @@ fn update_submissions(
     renderer: &RenderFrame,
     submissions: &Submissions,
     mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
+    input: &renderer_macro_lib::RendererInput,
     #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
     scope!("rendering::update_submissions");
@@ -2442,10 +2514,6 @@ fn update_submissions(
                     // leave None behind so that others won't try to submit this, but will
                     // continue to see it as a blocking dependency
                     MutexGuard::unlocked_fair(&mut graph, || {
-                        let input: renderer_macro_lib::RendererInput = {
-                            scope!("deserialize crossbar");
-                            bincode::deserialize(frame_graph::CROSSBAR).unwrap()
-                        };
                         let queue_family = input
                             .passes
                             .get(pass_name)
@@ -2503,11 +2571,6 @@ fn update_submissions(
                             };
                             // Signal extra submissions that are inactive in the current configuration
                             for &extra in extra_signals.get(&node).unwrap_or(&vec![]) {
-                                let input: renderer_macro_lib::RendererInput = {
-                                    scope!("deserialize crossbar");
-                                    bincode::deserialize(frame_graph::CROSSBAR).unwrap()
-                                };
-
                                 let extra_pass_name = &input.dependency_graph[extra];
                                 let &(semaphore_ix, stage_ix) =
                                     input.timeline_semaphore_mapping.get(extra_pass_name).unwrap();

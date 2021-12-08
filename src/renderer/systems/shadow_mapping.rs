@@ -2,6 +2,7 @@ use std::{convert::TryInto, mem::size_of};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
+use petgraph::graph::NodeIndex;
 use profiling::scope;
 use static_assertions::const_assert_eq;
 
@@ -357,11 +358,19 @@ pub(crate) fn prepare_shadow_maps(
     mut shadow_mapping_internal: ResMut<ShadowMappingDataInternal>,
     model_data: Res<ModelData>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("ecs::shadow_mapping");
+
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::ShadowMapping::INDEX))
+    {
+        return;
+    }
 
     frame_graph::ShadowMapping::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
@@ -486,6 +495,7 @@ pub(crate) fn prepare_shadow_maps(
         &renderer,
         frame_graph::ShadowMapping::INDEX,
         Some(*command_buffer),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

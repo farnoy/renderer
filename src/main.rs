@@ -633,6 +633,9 @@ fn main() {
 
     // load_scene(&mut app.app.world, &renderer, "assets/bistro.gltf");
 
+    app.insert_resource::<renderer_macro_lib::RendererInput>(
+        bincode::deserialize(renderer::frame_graph::CROSSBAR).unwrap(),
+    );
     app.insert_resource(ScenesToLoad {
         scene_paths: vec!["assets/bistro.gltf".to_string()],
         scenes: vec![],

@@ -8,6 +8,7 @@ use ash::vk::{self};
 use bevy_ecs::prelude::*;
 use hashbrown::HashMap;
 use num_traits::ToPrimitive;
+use petgraph::graph::NodeIndex;
 use profiling::scope;
 use renderer_vma::VmaMemoryUsage;
 
@@ -152,6 +153,7 @@ pub(crate) fn build_acceleration_structures(
     acceleration_structures: Res<AccelerationStructures>,
     mut acceleration_structures_internal: ResMut<AccelerationStructuresInternal>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     queries: QuerySet<(
         Query<&GltfMesh, With<ModelMatrix>>,
         Query<(&GltfMesh, &DrawIndex, &ModelMatrix)>,
@@ -159,6 +161,13 @@ pub(crate) fn build_acceleration_structures(
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("renderer::build_acceleration_structures");
+
+    if !submissions
+        .active_graph
+        .contains_node(NodeIndex::from(frame_graph::BuildAccelerationStructures::INDEX))
+    {
+        return;
+    }
 
     let AccelerationStructuresInternal {
         ref mut command_util,
@@ -574,6 +583,7 @@ pub(crate) fn build_acceleration_structures(
         &renderer,
         frame_graph::BuildAccelerationStructures::INDEX,
         Some(*command_buffer),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

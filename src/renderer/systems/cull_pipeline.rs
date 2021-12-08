@@ -59,8 +59,8 @@ renderer_macros::define_pipe! {
     }
 }
 
-renderer_macros::define_pass!(ComputeCull on compute if [!FREEZE_CULLING]);
-renderer_macros::define_pass!(TransferCull on transfer if [FREEZE_CULLING]);
+renderer_macros::define_pass!(ComputeCull on compute);
+renderer_macros::define_pass!(TransferCull on transfer);
 
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
@@ -335,6 +335,7 @@ pub(crate) fn cull_pass_bypass(
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<CopiedResource<SwapchainIndexToFrameNumber>>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("ecs::cull_pass_bypass");
@@ -351,6 +352,7 @@ pub(crate) fn cull_pass_bypass(
             &renderer,
             frame_graph::TransferCull::INDEX,
             None,
+            &renderer_input,
             #[cfg(feature = "crash_debugging")]
             &crash_buffer,
         );
@@ -368,9 +370,9 @@ pub(crate) fn cull_pass_bypass(
 
         let _guard = renderer_macros::barrier!(
             *cull_cb,
-            IndirectCommandsBuffer.copy_frozen rw in TransferCull transfer copy,
-            IndirectCommandsCount.copy_frozen rw in TransferCull transfer copy,
-            CulledIndexBuffer.copy_frozen rw in TransferCull transfer copy
+            IndirectCommandsBuffer.copy_frozen rw in TransferCull transfer copy if [FREEZE_CULLING],
+            IndirectCommandsCount.copy_frozen rw in TransferCull transfer copy if [FREEZE_CULLING],
+            CulledIndexBuffer.copy_frozen rw in TransferCull transfer copy if [FREEZE_CULLING]
         );
         renderer.device.cmd_copy_buffer(
             *cull_cb,
@@ -409,6 +411,7 @@ pub(crate) fn cull_pass_bypass(
         &renderer,
         frame_graph::TransferCull::INDEX,
         Some(*cull_cb),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
@@ -426,6 +429,7 @@ pub(crate) fn cull_pass(
     model_data: Res<ModelData>,
     camera_matrices: Res<CameraMatrices>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     query: Query<(&DrawIndex, &Position, &GltfMesh, &CoarseCulled)>,
     #[cfg(feature = "shader_reload")] reloaded_shaders: Res<ReloadedShaders>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
@@ -444,6 +448,7 @@ pub(crate) fn cull_pass(
             &renderer,
             frame_graph::ComputeCull::INDEX,
             None,
+            &renderer_input,
             #[cfg(feature = "crash_debugging")]
             &crash_buffer,
         );
@@ -517,7 +522,7 @@ pub(crate) fn cull_pass(
             IndirectCommandsBuffer.cull rw in ComputeCull descriptor generate_work.cull_set.indirect_commands after [reset]; indirect_commands_buffer,
             ConsolidatedPositionBuffer.in_cull r in ComputeCull descriptor generate_work.cull_set.indirect_commands after [consolidate],
             ConsolidatedIndexBuffer.cull_from r in ComputeCull descriptor generate_work.cull_set.index_buffer after [consolidate],
-            CulledIndexBuffer.cull w in ComputeCull descriptor generate_work.cull_set.out_index_buffer
+            CulledIndexBuffer.cull w in ComputeCull descriptor generate_work.cull_set.out_index_buffer if [!FREEZE_CULLING]
         );
 
         let mut index_offset_in_output = 0;
@@ -571,8 +576,8 @@ pub(crate) fn cull_pass(
         let _compact_marker = cull_cb.debug_marker_around("compact draw stream", [0.0, 1.0, 1.0, 1.0]);
         let _guard = renderer_macros::barrier!(
             *cull_cb, [FREEZE_CULLING => false],
-            IndirectCommandsBuffer.compact rw in ComputeCull descriptor compact_draw_stream.cull_set.indirect_commands after [cull]; indirect_commands_buffer,
-            IndirectCommandsCount.compute rw in ComputeCull descriptor compact_draw_stream.cull_commands_count_set.indirect_commands_count after [reset]; indirect_commands_count,
+            IndirectCommandsBuffer.compact rw in ComputeCull descriptor compact_draw_stream.cull_set.indirect_commands after [cull] if [!FREEZE_CULLING]; indirect_commands_buffer,
+            IndirectCommandsCount.compute rw in ComputeCull descriptor compact_draw_stream.cull_commands_count_set.indirect_commands_count after [reset] if [!FREEZE_CULLING]; indirect_commands_count,
         );
 
         renderer.device.cmd_bind_pipeline(
@@ -599,6 +604,7 @@ pub(crate) fn cull_pass(
         &renderer,
         frame_graph::ComputeCull::INDEX,
         Some(*cull_cb),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

@@ -2,7 +2,7 @@ use anyhow::ensure;
 use derive_syn_parse::Parse;
 use hashbrown::HashMap;
 use petgraph::{
-    graph::{DiGraph, NodeIndex},
+    stable_graph::{NodeIndex, StableDiGraph},
     visit::IntoNodeReferences,
 };
 use quote::ToTokens;
@@ -15,10 +15,10 @@ use crate::{
     Conditional,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResourceClaims {
     pub map: HashMap<String, NodeIndex>,
-    pub graph: DiGraph<ResourceClaim, ()>,
+    pub graph: StableDiGraph<ResourceClaim, ()>,
     pub ty: ResourceDefinitionType,
 }
 
@@ -26,7 +26,7 @@ pub struct ResourceClaims {
 #[derive(Default, Debug)]
 pub(crate) struct ResourceClaimsBuilder {
     pub map: HashMap<String, NodeIndex>,
-    pub graph: DiGraph<Option<ResourceClaim>, ()>,
+    pub graph: StableDiGraph<Option<ResourceClaim>, ()>,
     pub ty: Option<ResourceDefinitionType>,
 }
 
@@ -109,6 +109,7 @@ pub struct ResourceClaimInput {
     pub reads: bool,
     pub writes: bool,
     pub after: Vec<String>,
+    pub conditional: Conditional,
     pub resource_ident: Option<Expr>,
 }
 
@@ -134,7 +135,7 @@ impl ResourceClaimInput {
             usage: self.usage,
             reads: self.reads,
             writes: self.writes,
-            conditional: Conditional::default(),
+            conditional: self.conditional,
         }
     }
 }
@@ -184,6 +185,7 @@ impl Parse for ResourceClaimInput {
             _after: Option<kw::after>,
             #[parse_if(_after.is_some())]
             after: Option<Unbracket<UnArray<Ident>>>,
+            conditional: UnOption<Sequence<Token![if], inputs::Conditional>>,
             sep: Option<Token![;]>,
             #[parse_if(sep.is_some())]
             resource_expr: Option<Expr>,
@@ -204,6 +206,11 @@ impl Parse for ResourceClaimInput {
             resource_ident: s.resource_expr,
             reads,
             writes,
+            conditional: s
+                .conditional
+                .0
+                .map(|Sequence((_kw, x))| Conditional::from(&x))
+                .unwrap_or_default(),
         })
     }
 }

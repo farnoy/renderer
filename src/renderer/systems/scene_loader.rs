@@ -148,6 +148,7 @@ pub(crate) fn upload_loaded_meshes(
     image_index: Res<ImageIndex>,
     swapchain_indices: Res<SwapchainIndexToFrameNumber>,
     submissions: Res<Submissions>,
+    renderer_input: Res<renderer_macro_lib::RendererInput>,
     mut upload_data: ResMut<UploadMeshesData>,
     mut query: Query<(Entity, &mut Task<LoadedMesh>)>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
@@ -607,6 +608,7 @@ pub(crate) fn upload_loaded_meshes(
         &renderer,
         frame_graph::UploadMeshes::INDEX,
         Some(*command_buffer),
+        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
