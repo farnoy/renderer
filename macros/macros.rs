@@ -1351,7 +1351,6 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
         specialization_constants,
         descriptor_sets: descriptors,
         specific,
-        varying_subgroup_stages,
         ..
     } = pipe;
     let specialization = {
@@ -1511,32 +1510,6 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
         }
     };
 
-    let mut spirv_code = quote!();
-    for shader_stage in pipe.specific.stages() {
-        let shader_path = std::path::Path::new(&env::var("OUT_DIR").unwrap()).join(format!(
-            "{}.{}.spv",
-            pipe.name.to_string(),
-            shader_stage_to_file_extension(&shader_stage),
-        ));
-        let shader_path = shader_path.to_str().unwrap();
-        let shader_src_path = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap())
-            .join("src")
-            .join("shaders")
-            .join(format!(
-                "{}.{}",
-                pipe.name.to_string(),
-                shader_stage_to_file_extension(&shader_stage),
-            ));
-        let shader_src_path = shader_src_path.to_str().unwrap();
-        let shader_stage_path = format_ident!("{}_PATH", &shader_stage);
-        let shader_stage = syn::parse_str::<Ident>(&shader_stage).unwrap();
-        spirv_code.extend_one(quote! {
-            pub(crate) static #shader_stage: &'static [u8] = crate::renderer::include_bytes_align_as!(u32, #shader_path);
-            #[cfg(feature = "shader_reload")]
-            pub(crate) static #shader_stage_path: &'static str = #shader_src_path;
-        });
-    }
-
     let pipe_arguments_new_types = match specific {
         SpecificPipe::Graphics(specific) => {
             let dynamic_samples =
@@ -1560,23 +1533,6 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
         }
         SpecificPipe::Compute => vec![],
     };
-    let shader_stage = specific.stages();
-    let shader_stage_path = shader_stage
-        .iter()
-        .map(|shader_stage| format_ident!("{}_PATH", &shader_stage))
-        .collect_vec();
-    let allow_varying_snippet = quote!(true);
-    let forbid_varying_snippet = quote!(false);
-    let varying_subgroup_stages = shader_stage
-        .iter()
-        .map(|stage| {
-            if varying_subgroup_stages.iter().any(|candidate| candidate == stage) {
-                &allow_varying_snippet
-            } else {
-                &forbid_varying_snippet
-            }
-        })
-        .collect_vec();
 
     let pipeline_definition_inner = match specific {
         SpecificPipe::Graphics(specific) => {
@@ -1749,10 +1705,6 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
     };
 
     let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
-    let shader_stage = shader_stage
-        .iter()
-        .map(|x| syn::parse_str::<Ident>(x).unwrap())
-        .collect_vec();
     let pipeline_definition2 = quote! {
         pub(crate) struct Pipeline {
             pub(crate) pipeline: crate::renderer::device::Pipeline,
@@ -1763,26 +1715,7 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
             type Layout = PipelineLayout;
             type Specialization = Specialization;
 
-            fn default_shader_stages() -> smallvec::SmallVec<[&'static [u8]; 4]> {
-                smallvec::smallvec![#(#shader_stage),*]
-            }
-
-            fn shader_stages() -> smallvec::SmallVec<[vk::ShaderStageFlags; 4]> {
-                smallvec::smallvec![#(vk::ShaderStageFlags::#shader_stage),*]
-            }
-
-            #[cfg(feature = "shader_reload")]
-            fn shader_stage_paths() -> smallvec::SmallVec<[&'static str; 4]> {
-                smallvec::smallvec![#(#shader_stage_path),*]
-            }
-
-            fn varying_subgroup_stages() -> smallvec::SmallVec<[bool; 4]> {
-                smallvec::smallvec![#(#varying_subgroup_stages),*]
-            }
-
-            fn vk(&self) -> vk::Pipeline {
-                *self.pipeline
-            }
+            const NAME: &'static str = #name;
 
             fn new_raw(
                 device: &Device,
@@ -1791,18 +1724,12 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
                 flags: vk::PipelineCreateFlags,
                 base_pipeline_handle: vk::Pipeline,
                 (#(#pipe_argument_short,)*): Self::DynamicArguments,
-            ) -> Self {
+            ) -> crate::renderer::device::Pipeline {
                 #pipeline_definition_inner
 
                 device.set_object_name(*pipeline, #pipe_debug_name);
 
-                Pipeline {
-                    pipeline,
-                }
-            }
-
-            fn destroy(self, device: &Device) {
-                self.pipeline.destroy(device);
+                pipeline
             }
         }
     };
@@ -1818,7 +1745,7 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
     let name = syn::parse_str::<Ident>(&name).unwrap();
     let descriptor_path = descriptors
         .iter()
-        .map(|x| syn::parse_str::<Path>(x).unwrap())
+        .map(|(x, _)| syn::parse_str::<Path>(x).unwrap())
         .collect_vec();
     let descriptor_ident = descriptor_path
         .iter()
@@ -1893,8 +1820,6 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
             #specialization
 
             #vertex_definitions
-
-            #spirv_code
         }
     }
 }
@@ -1905,16 +1830,4 @@ pub fn define_pass(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // let pass = AsyncPass::from(&input);
 
     quote!().into()
-}
-
-fn shader_stage_to_file_extension(id: &str) -> &'static str {
-    if id == "VERTEX" {
-        "vert"
-    } else if id == "COMPUTE" {
-        "comp"
-    } else if id == "FRAGMENT" {
-        "frag"
-    } else {
-        unimplemented!("Unknown shader stage")
-    }
 }

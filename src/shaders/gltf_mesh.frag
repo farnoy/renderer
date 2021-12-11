@@ -26,10 +26,12 @@ layout(set = 2, binding = 0, scalar) readonly buffer LightMatrices {
 layout(set = 2, binding = 1) uniform sampler2DShadow shadow_maps;
 layout(set = 3, binding = 0) uniform sampler2D base_color[];
 layout(set = 3, binding = 1) uniform sampler2D normal_map[];
+#ifdef RT
 layout(set = 4, binding = 0) uniform accelerationStructureEXT accelerationStructure;
 layout(set = 4, binding = 1) uniform RandomSeed {
     uint seed;
 } random;
+#endif
 
 layout (location = 0) in vec3 normal;
 layout (location = 1) in vec2 uv;
@@ -96,8 +98,10 @@ void main() {
     vec3 final_normal = (TBN_inverse * sampled_normal);
     final_normal = normalize(final_normal);
 
+    #ifdef RT
     uvec2 rngSeed = uvec2(vec2(2000, 2000) * gl_FragCoord.xy);
     uint rngState = rngSeed.x ^ rngSeed.y ^ random.seed;
+    #endif
 
     for (uint ix = 0; ix < 2; ix++) {
         // NOTE: Order of these next few operations around light_pos is critical
@@ -108,9 +112,6 @@ void main() {
         light_pos.xy *= .5;
         light_pos.xy += .5;
 
-        // check frustum intersection while in NDC
-        // bool use_shadow = light_pos == clamp(light_pos, vec3(0.0), vec3(1.0));
-
         // slice the shadow map atlas
         // columns first, then rows of a square SHADOW_MAP_DIM x SHADOW_MAP_DIM texture
         light_pos.x += float(ix % SHADOW_MAP_DIM);
@@ -120,7 +121,6 @@ void main() {
         vec3 light_dir = normalize(light_data[ix].position.xyz - world_position);
         float diff = max(dot(light_dir, final_normal), 0.5) * 1.25;
         // o_color.rgb *= diff;
-        // float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z));
         // o_color.rgb *= use_shadow && depth < 1.0 ? 0.6 : 1.0;
 
         float light_distance = sqrt(dot(light_data[ix].position.xyz - world_position, light_data[ix].position.xyz - world_position));
@@ -133,6 +133,7 @@ void main() {
         // o_color.rgb += texture(base_color[entity_id], uv).rgb * color_light * NdotL;
 
         float shadow_multiplier = 1.0;
+        #ifdef RT
         for (uint samples = 0; samples < 8; samples++) {
             vec3 rayTarget = light_data[ix].position.xyz;
 
@@ -157,8 +158,12 @@ void main() {
             if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
                 shadow_multiplier *= 0.8;
         }
+        #else
+        bool use_shadow = light_pos == clamp(light_pos, vec3(0.0), vec3(1.0));
+        float depth = texture(shadow_maps, vec3(light_pos.xy, light_pos.z));
+        shadow_multiplier *= use_shadow && depth < 1.0 ? 0.2 : 1.0;
+        #endif
 
-        // color_light *= use_shadow && depth < 1.0 ? 0.2 : 1.0;
         color_light *= shadow_multiplier;
 
         vec3 eye_dir = normalize(camera.position.xyz - world_position);

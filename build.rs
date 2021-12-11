@@ -1,5 +1,6 @@
-use std::{env, fs, path::Path, process::Command};
+use std::{env, path::Path, process::Command};
 
+use itertools::Itertools;
 use rayon::prelude::*;
 
 fn main() {
@@ -8,75 +9,74 @@ fn main() {
     let src = Path::new(&src);
     let dest = env::var("OUT_DIR").unwrap();
     let dest = Path::new(&dest);
-    let shaders = &[
-        "debug_aabb.frag",
-        "debug_aabb.vert",
-        "depth_pipe.vert",
-        "generate_work.comp",
-        "compact_draw_stream.comp",
-        "gltf_mesh.frag",
-        "gltf_mesh.vert",
-        "imgui_pipe.frag",
-        "imgui_pipe.vert",
-    ];
 
-    let latest_helper = fs::read_dir(src.join("src/shaders/helpers"))
-        .unwrap()
-        .map(|f| {
-            let f = f.unwrap();
-            println!(
-                "cargo:rerun-if-changed=src/shaders/helpers/{}",
-                f.file_name().to_str().unwrap()
-            );
-            fs::metadata(f.path()).unwrap().modified().unwrap()
-        })
-        .max()
-        .unwrap();
-
-    let stale_shaders = shaders
-        .iter()
-        .filter(|shader| {
-            println!("cargo:rerun-if-changed=src/shaders/{}", shader);
-
-            let src_path = src.join(format!("src/shaders/{}", shader));
-            let output_path = dest.join(format!("{}.spv", shader));
-            let src_mtime = fs::metadata(&src_path)
-                .unwrap_or_else(|_| panic!("Shader missing {}", shader))
-                .modified()
-                .unwrap();
-
-            fs::metadata(&output_path)
-                .map(|m| m.modified().unwrap())
-                .map(|dest_mtime| latest_helper > dest_mtime || src_mtime > dest_mtime)
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-
-    stale_shaders.par_iter().for_each(|shader| {
-        let _job_slot = jobserver.acquire().expect("failed to acquire job slot");
-
-        let src_path = src.join(format!("src/shaders/{}", shader));
-        let output_path = dest.join(format!("{}.spv", shader));
-
-        let result = Command::new("glslc")
-            .args(&[
-                "-g",
-                "--target-env=vulkan1.2",
-                "-o",
-                output_path.to_str().unwrap(),
-                src_path.to_str().unwrap(),
-            ])
-            .spawn()
-            .unwrap()
-            .wait()
-            .unwrap()
-            .success();
-
-        assert!(result, "failed to compile shader {:?}", &src_path);
-    });
-
-    if let Err(errs) = renderer_macro_lib::analyze() {
-        println!("cargo:warning=Analysis failed: {}", errs);
-    }
     println!("cargo:rerun-if-changed=src");
+
+    let mut input = match renderer_macro_lib::analyze() {
+        Err(errs) => {
+            println!("cargo:warning=Analysis failed: {}", errs);
+            return;
+        }
+        Ok(data) => data,
+    };
+
+    // Compile pipelines
+    input
+        .pipelines
+        .values()
+        .flat_map(|pipe| pipe.permutations())
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .for_each(|(pipe, stage, conditionals)| {
+            let _job_slot = jobserver.acquire().expect("failed to acquire job slot");
+
+            let file_extension = match stage.as_str() {
+                "VERTEX" => "vert",
+                "COMPUTE" => "comp",
+                "FRAGMENT" => "frag",
+                _ => unimplemented!("Unknown shader stage"),
+            };
+            let src_path = src.join(format!("src/shaders/{}.{}", pipe.name, file_extension));
+            let conditionals = conditionals.into_iter().collect_vec();
+            let output_path = dest.join(format!(
+                "{}.{}.[{}].spv",
+                pipe.name,
+                file_extension,
+                conditionals.join(",")
+            ));
+
+            let mut args = vec!["-g", "--target-env=vulkan1.2"];
+            let mut dyn_args = vec![];
+
+            for cond in conditionals {
+                dyn_args.push(format!("-D{}", cond));
+            }
+            for dyn_arg in dyn_args.iter() {
+                args.push(dyn_arg);
+            }
+
+            args.extend_from_slice(&["-o", output_path.to_str().unwrap(), src_path.to_str().unwrap()]);
+
+            let result = Command::new("glslc")
+                .args(&args)
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success();
+
+            assert!(result, "failed to compile shader {:?}", &src_path);
+        });
+
+    // Analyze shader interfaces
+    match renderer_macro_lib::analyze_shader_types(&input.descriptor_sets, &input.pipelines) {
+        Ok(shader_information) => {
+            input.shader_information = shader_information;
+        }
+        Err(errs) => println!("cargo:warning=Shader type validation errors:\n{}", errs.join("\n")),
+    };
+
+    if let Err(err) = renderer_macro_lib::persist(&input) {
+        println!("cargo:warning={}", err);
+    }
 }

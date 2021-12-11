@@ -101,6 +101,10 @@ impl Pipeline {
         }
     }
 
+    pub(crate) fn vk(&self) -> vk::Pipeline {
+        self.handle
+    }
+
     pub(crate) fn destroy(mut self, device: &Device) {
         unsafe { device.destroy_pipeline(self.handle, None) }
         self.handle = vk::Pipeline::null();

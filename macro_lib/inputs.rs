@@ -435,14 +435,12 @@ pub struct AsyncPass {
     #[allow(dead_code)]
     on: kw::on,
     pub family: QueueFamily,
-    #[allow(dead_code)]
-    if_cond: Option<Token![if]>,
-    #[parse_if(if_cond.is_some())]
-    pub conditional: Option<Conditional>,
+    pub conditional: UnOption<Conditional>,
 }
 
 #[derive(Parse)]
 pub struct Conditional {
+    _if_cond: Token![if],
     #[bracket]
     #[allow(dead_code)]
     bracket: Bracket,
@@ -479,7 +477,7 @@ pub struct Pipe {
     brace: Brace,
     #[prefix(kw::descriptors in brace)]
     #[inside(brace)]
-    pub descriptors: Unbracket<UnArray<Path>>,
+    pub descriptors: Unbracket<UnArray<Sequence<Path, UnOption<Conditional>>>>,
     #[inside(brace)]
     pub spec_const_tok: Option<kw::specialization_constants>,
     #[parse_if(spec_const_tok.is_some())]

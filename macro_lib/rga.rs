@@ -120,7 +120,7 @@ pub(crate) fn dump_rga(sets: &HashMap<String, DescriptorSet>, pipe: &Pipeline, p
         version: 3,
     };
 
-    for set_id in pipe.descriptor_sets.iter() {
+    for (set_id, _conditionals) in pipe.descriptor_sets.iter() {
         rga_pipe
             .pipeline_layout_create_info
             .set_layouts

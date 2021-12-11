@@ -185,7 +185,7 @@ impl Parse for ResourceClaimInput {
             _after: Option<kw::after>,
             #[parse_if(_after.is_some())]
             after: Option<Unbracket<UnArray<Ident>>>,
-            conditional: UnOption<Sequence<Token![if], inputs::Conditional>>,
+            conditional: UnOption<inputs::Conditional>,
             sep: Option<Token![;]>,
             #[parse_if(sep.is_some())]
             resource_expr: Option<Expr>,
@@ -206,11 +206,7 @@ impl Parse for ResourceClaimInput {
             resource_ident: s.resource_expr,
             reads,
             writes,
-            conditional: s
-                .conditional
-                .0
-                .map(|Sequence((_kw, x))| Conditional::from(&x))
-                .unwrap_or_default(),
+            conditional: s.conditional.0.as_ref().map(Conditional::from).unwrap_or_default(),
         })
     }
 }

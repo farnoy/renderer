@@ -12,14 +12,17 @@ mod systems;
 use std::time::Instant;
 use std::{
     cmp::max,
+    env,
     marker::PhantomData,
     mem::{replace, size_of, take},
+    path::Path,
     sync::Arc,
 };
 
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
 use hashbrown::HashMap;
+use itertools::Itertools;
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::{
@@ -164,28 +167,28 @@ const_assert_eq!(
 );
 
 // https://users.rust-lang.org/t/can-i-conveniently-compile-bytes-into-a-rust-program-with-a-specific-alignment/24049/2
-#[repr(C)] // guarantee 'bytes' comes after '_align'
-struct AlignedAs<Align, Bytes: ?Sized> {
-    _align: [Align; 0],
-    bytes: Bytes,
-}
+// #[repr(C)] // guarantee 'bytes' comes after '_align'
+// struct AlignedAs<Align, Bytes: ?Sized> {
+//     _align: [Align; 0],
+//     bytes: Bytes,
+// }
 
-macro_rules! include_bytes_align_as {
-    ($align_ty:ty, $path:literal) => {{
-        // const block expression to encapsulate the static
-        use crate::renderer::AlignedAs;
+// macro_rules! include_bytes_align_as {
+//     ($align_ty:ty, $path:literal) => {{
+//         // const block expression to encapsulate the static
+//         use crate::renderer::AlignedAs;
 
-        // this assignment is made possible by CoerceUnsized
-        static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
-            _align: [],
-            bytes: *include_bytes!($path),
-        };
+//         // this assignment is made possible by CoerceUnsized
+//         static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
+//             _align: [],
+//             bytes: *include_bytes!($path),
+//         };
 
-        &ALIGNED.bytes
-    }};
-}
+//         &ALIGNED.bytes
+//     }};
+// }
 
-pub(crate) use include_bytes_align_as;
+// pub(crate) use include_bytes_align_as;
 
 renderer_macros::define_timelines! {}
 
@@ -294,7 +297,7 @@ renderer_macros::define_set! {
 
 renderer_macros::define_pipe!(
     gltf_mesh {
-        descriptors [model_set, camera_set, shadow_map_set, textures_set, acceleration_set]
+        descriptors [model_set, camera_set, shadow_map_set, textures_set, acceleration_set if [RT]]
         specialization_constants [
             10 => shadow_map_dim: u32,
             11 => shadow_map_dim_squared: u32,
@@ -394,13 +397,78 @@ pub(crate) trait Pipeline: Sized {
     type DynamicArguments;
     type Specialization: PipelineSpecialization;
 
-    fn default_shader_stages() -> SmallVec<[&'static [u8]; 4]>;
-    fn shader_stages() -> SmallVec<[vk::ShaderStageFlags; 4]>;
-    #[cfg(feature = "shader_reload")]
-    fn shader_stage_paths() -> SmallVec<[&'static str; 4]>;
-    fn varying_subgroup_stages() -> SmallVec<[bool; 4]>;
+    const NAME: &'static str;
 
-    fn vk(&self) -> vk::Pipeline;
+    fn default_shader_stages(switches: &HashMap<String, bool>) -> SmallVec<[Vec<u8>; 4]> {
+        let input: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+
+        let pipe = input.pipelines.get(Self::NAME).unwrap();
+
+        let mut output = SmallVec::new();
+
+        let conditionals = pipe
+            .unique_conditionals()
+            .into_iter()
+            .filter(|&d| switches.get(d).cloned().unwrap_or(false))
+            .collect_vec()
+            .join(",");
+
+        for shader_stage in pipe.specific.stages() {
+            use std::io::Read;
+
+            let file_extension = match shader_stage.as_str() {
+                "VERTEX" => "vert",
+                "COMPUTE" => "comp",
+                "FRAGMENT" => "frag",
+                _ => unimplemented!("Unknown shader stage"),
+            };
+
+            let shader_path =
+                Path::new(&env!("OUT_DIR")).join(format!("{}.{}.[{}].spv", Self::NAME, file_extension, conditionals));
+            let mut f = std::fs::OpenOptions::new()
+                .read(true)
+                .open(&shader_path)
+                .expect("Failed to find shader file");
+            let mut buf = vec![];
+            f.read_to_end(&mut buf).unwrap();
+            output.push(buf);
+        }
+
+        output
+    }
+
+    fn shader_stages() -> SmallVec<[vk::ShaderStageFlags; 4]> {
+        let input: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+
+        let pipe = input.pipelines.get(Self::NAME).unwrap();
+
+        pipe.specific
+            .stages()
+            .into_iter()
+            .map(|shader_stage| match shader_stage.as_str() {
+                "VERTEX" => vk::ShaderStageFlags::VERTEX,
+                "COMPUTE" => vk::ShaderStageFlags::COMPUTE,
+                "FRAGMENT" => vk::ShaderStageFlags::FRAGMENT,
+                _ => unimplemented!("Unknown shader stage"),
+            })
+            .collect()
+    }
+
+    fn varying_subgroup_stages() -> SmallVec<[bool; 4]> {
+        let input: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+
+        let pipe = input.pipelines.get(Self::NAME).unwrap();
+
+        pipe.specific
+            .stages()
+            .iter()
+            .map(|shader_stage| {
+                pipe.varying_subgroup_stages
+                    .iter()
+                    .any(|candidate| candidate == shader_stage)
+            })
+            .collect()
+    }
 
     fn new_raw(
         device: &Device,
@@ -409,9 +477,7 @@ pub(crate) trait Pipeline: Sized {
         flags: vk::PipelineCreateFlags,
         base_handle: vk::Pipeline,
         dynamic_arguments: Self::DynamicArguments,
-    ) -> Self;
-
-    fn destroy(self, device: &Device);
+    ) -> device::Pipeline;
 }
 
 fn new_pipe_generic<P: Pipeline>(
@@ -421,11 +487,12 @@ fn new_pipe_generic<P: Pipeline>(
     base_pipeline_handle: Option<vk::Pipeline>,
     shaders: Option<SmallVec<[Shader; 4]>>,
     dynamic_arguments: P::DynamicArguments,
-) -> (SmallVec<[Shader; 4]>, P) {
+    switches: &HashMap<String, bool>,
+) -> (SmallVec<[Shader; 4]>, device::Pipeline) {
     use std::ffi::CStr;
     let shader_entry_name = CStr::from_bytes_with_nul(b"main\0").unwrap();
     let shaders: SmallVec<[Shader; 4]> = shaders.unwrap_or_else(|| {
-        P::default_shader_stages()
+        P::default_shader_stages(switches)
             .iter()
             .map(|x| device.new_shader(x))
             .collect()
@@ -530,9 +597,10 @@ impl<L: PipelineLayout> SmartPipelineLayout<L> {
 /// Pipeline wrapper that caches the shader modules to allow for fast re-specialization or shader
 /// reloading in development
 pub(crate) struct SmartPipeline<P: Pipeline> {
-    inner: P,
+    inner: device::Pipeline,
     specialization: P::Specialization,
     shaders: SmallVec<[Shader; 4]>,
+    switches: HashMap<String, bool>,
     #[cfg(feature = "shader_reload")]
     last_updates: SmallVec<[Instant; 4]>,
 }
@@ -549,7 +617,18 @@ impl<P: Pipeline> SmartPipeline<P> {
         dynamic_arguments: P::DynamicArguments,
     ) -> Self {
         scope!("pipelines::new");
-        Self::new_internal(device, layout, specialization, None, dynamic_arguments)
+        Self::new_internal(device, layout, specialization, None, dynamic_arguments, &HashMap::new())
+    }
+
+    pub(crate) fn new_switched(
+        device: &Device,
+        layout: &SmartPipelineLayout<P::Layout>,
+        specialization: P::Specialization,
+        dynamic_arguments: P::DynamicArguments,
+        switches: &HashMap<String, bool>,
+    ) -> Self {
+        scope!("pipelines::new");
+        Self::new_internal(device, layout, specialization, None, dynamic_arguments, switches)
     }
 
     fn new_internal(
@@ -558,6 +637,7 @@ impl<P: Pipeline> SmartPipeline<P> {
         specialization: P::Specialization,
         mut base_pipeline: Option<&mut Self>,
         dynamic_arguments: P::DynamicArguments,
+        switches: &HashMap<String, bool>,
     ) -> Self {
         #[allow(clippy::needless_option_as_deref)]
         let base_pipeline_handle = base_pipeline.as_ref().map(|pipe| pipe.inner.vk());
@@ -567,13 +647,14 @@ impl<P: Pipeline> SmartPipeline<P> {
         #[allow(clippy::needless_option_as_deref)]
         let base_last_updates = base_pipeline.as_deref_mut().map(|p| take(&mut p.last_updates));
 
-        let (shaders, pipe) = new_pipe_generic(
+        let (shaders, pipe) = new_pipe_generic::<P>(
             device,
             layout,
             &specialization,
             base_pipeline_handle,
             shaders,
             dynamic_arguments,
+            switches,
         );
 
         #[cfg(feature = "shader_reload")]
@@ -583,7 +664,7 @@ impl<P: Pipeline> SmartPipeline<P> {
         if let Some(base_last_updates) = base_last_updates {
             last_updates = base_last_updates
         } else {
-            let stage_count = P::default_shader_stages().len();
+            let stage_count = P::default_shader_stages(switches).len();
             last_updates = smallvec![Instant::now(); stage_count];
         }
 
@@ -591,6 +672,7 @@ impl<P: Pipeline> SmartPipeline<P> {
             inner: pipe,
             specialization,
             shaders,
+            switches: switches.clone(),
             #[cfg(feature = "shader_reload")]
             last_updates,
         }
@@ -605,6 +687,27 @@ impl<P: Pipeline> SmartPipeline<P> {
         dynamic_arguments: P::DynamicArguments,
         #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
     ) -> Option<Self> {
+        self.specialize_switched(
+            device,
+            layout,
+            new_spec,
+            dynamic_arguments,
+            &HashMap::new(),
+            #[cfg(feature = "shader_reload")]
+            reloaded_shaders,
+        )
+    }
+
+    /// Re-specializes the pipeline if needed and returns the old one that might still be in use.
+    pub(crate) fn specialize_switched(
+        &mut self,
+        device: &Device,
+        layout: &SmartPipelineLayout<P::Layout>,
+        new_spec: &P::Specialization,
+        dynamic_arguments: P::DynamicArguments,
+        switches: &HashMap<String, bool>,
+        #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
+    ) -> Option<Self> {
         scope!("pipelines::specialize");
         use std::mem::swap;
 
@@ -612,12 +715,16 @@ impl<P: Pipeline> SmartPipeline<P> {
         let new_shaders: SmallVec<[(Instant, Option<Shader>); 4]> = self
             .shaders
             .iter()
-            .zip(P::shader_stage_paths().iter().zip(P::default_shader_stages().iter()))
+            .zip(
+                P::shader_stage_paths()
+                    .iter()
+                    .zip(P::default_shader_stages(switches).iter()),
+            )
             .enumerate()
             .map(
-                |(stage_ix, (_shader, (&path, &default_code)))| match reloaded_shaders.0.get(path) {
+                |(stage_ix, (_shader, (&path, default_code)))| match reloaded_shaders.0.get(path) {
                     Some((ts, code)) if *ts > self.last_updates[stage_ix] => {
-                        let static_spv = spirq::SpirvBinary::from(default_code);
+                        let static_spv = spirq::SpirvBinary::from(default_code.as_slice());
                         let static_entry = static_spv
                             .reflect_vec()
                             .unwrap()
@@ -678,7 +785,9 @@ impl<P: Pipeline> SmartPipeline<P> {
         #[cfg(not(feature = "shader_reload"))]
         let any_new_shaders: bool = false;
 
-        if self.specialization != *new_spec || any_new_shaders {
+        let different_switches = self.switches != *switches;
+
+        if self.specialization != *new_spec || any_new_shaders || different_switches {
             #[cfg(feature = "shader_reload")]
             for ((shader, last_update), (t, new)) in self
                 .shaders
@@ -691,7 +800,14 @@ impl<P: Pipeline> SmartPipeline<P> {
                     *last_update = t;
                 }
             }
-            let mut replacement = Self::new_internal(device, layout, new_spec.clone(), Some(self), dynamic_arguments);
+            let mut replacement = Self::new_internal(
+                device,
+                layout,
+                new_spec.clone(),
+                if different_switches { None } else { Some(self) },
+                dynamic_arguments,
+                switches,
+            );
             swap(&mut *self, &mut replacement);
             Some(replacement)
         } else {
@@ -1209,7 +1325,6 @@ pub(crate) struct Resized(pub(crate) bool);
 
 pub(crate) struct GltfPassData {
     pub(crate) gltf_pipeline: SmartPipeline<gltf_mesh::Pipeline>,
-    #[cfg(feature = "shader_reload")]
     pub(crate) previous_gltf_pipeline: DoubleBuffered<Option<SmartPipeline<gltf_mesh::Pipeline>>>,
     pub(crate) gltf_pipeline_layout: SmartPipelineLayout<gltf_mesh::PipelineLayout>,
     command_util: CommandUtil,
@@ -1380,7 +1495,6 @@ impl GltfPassData {
 
         GltfPassData {
             gltf_pipeline,
-            #[cfg(feature = "shader_reload")]
             previous_gltf_pipeline: renderer.new_buffered(|_| None),
             gltf_pipeline_layout,
             command_util,
@@ -1389,7 +1503,6 @@ impl GltfPassData {
 
     pub(crate) fn destroy(self, device: &Device) {
         self.gltf_pipeline.destroy(device);
-        #[cfg(feature = "shader_reload")]
         self.previous_gltf_pipeline
             .into_iter()
             .for_each(|p| p.into_iter().for_each(|p| p.destroy(device)));
@@ -1427,7 +1540,6 @@ pub(crate) fn render_frame(
     let GltfPassData {
         ref mut gltf_pipeline,
         ref gltf_pipeline_layout,
-        #[cfg(feature = "shader_reload")]
         ref mut previous_gltf_pipeline,
         ref mut command_util,
     } = &mut *gltf_pass;
@@ -1436,7 +1548,6 @@ pub(crate) fn render_frame(
     let total = binding_size::<cull_set::bindings::indirect_commands>() as u32
         / size_of::<frame_graph::VkDrawIndexedIndirectCommand>() as u32;
 
-    #[cfg(feature = "shader_reload")]
     {
         // clean up the old pipeline that was used N frames ago
         if let Some(previous) = previous_gltf_pipeline.current_mut(image_index.0).take() {
@@ -1444,7 +1555,7 @@ pub(crate) fn render_frame(
         }
 
         use systems::shadow_mapping::DIM as SHADOW_MAP_DIM;
-        *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize(
+        *previous_gltf_pipeline.current_mut(image_index.0) = gltf_pipeline.specialize_switched(
             &renderer.device,
             gltf_pipeline_layout,
             &gltf_mesh::Specialization {
@@ -1452,6 +1563,10 @@ pub(crate) fn render_frame(
                 shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
             },
             (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
+            &[runtime_config.rt]
+                .into_iter()
+                .map(|rt| ("RT".to_owned(), rt))
+                .collect(),
             #[cfg(feature = "shader_reload")]
             &reloaded_shaders,
         );
@@ -1544,17 +1659,34 @@ pub(crate) fn render_frame(
             renderer
                 .device
                 .cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, gltf_pipeline.vk());
-            gltf_pipeline_layout.bind_descriptor_sets(
-                &renderer.device,
+
+            // TODO: make this variable binding nicer
+            renderer.device.cmd_bind_descriptor_sets(
                 *command_buffer,
-                (
-                    model_data.model_set.current(image_index.0),
-                    camera_matrices.set.current(image_index.0),
-                    shadow_mapping_data.user_set.current(image_index.0),
-                    base_color_descriptor_set.set.current(image_index.0),
-                    acceleration_structures.set.current(image_index.0),
-                ),
+                vk::PipelineBindPoint::GRAPHICS,
+                gltf_pipeline_layout.vk(),
+                0,
+                &[
+                    model_data.model_set.current(image_index.0).vk_handle(),
+                    camera_matrices.set.current(image_index.0).vk_handle(),
+                    shadow_mapping_data.user_set.current(image_index.0).vk_handle(),
+                    base_color_descriptor_set.set.current(image_index.0).vk_handle(),
+                    acceleration_structures.set.current(image_index.0).vk_handle(),
+                ][..(if runtime_config.rt { 5 } else { 4 })],
+                &[],
             );
+
+            // gltf_pipeline_layout.bind_descriptor_sets(
+            //     &renderer.device,
+            //     *command_buffer,
+            //     (
+            //         model_data.model_set.current(image_index.0),
+            //         camera_matrices.set.current(image_index.0),
+            //         shadow_mapping_data.user_set.current(image_index.0),
+            //         base_color_descriptor_set.set.current(image_index.0),
+            //         acceleration_structures.set.current(image_index.0),
+            //     ),
+            // );
             renderer.device.cmd_bind_index_buffer(
                 *command_buffer,
                 cull_pass_data.culled_index_buffer.buffer.handle,

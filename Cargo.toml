@@ -39,7 +39,9 @@ humansize = "1.1.0"
 image = "0.23"
 imgui = "0.8.0"
 imgui-winit-support = { version = "0.8.0", default-features = false, features = ["winit-25"] }
+indexmap = "1.7.0"
 intel_tex = { version = "0.1.4", optional = true }
+itertools = "0.10"
 meshopt = "0.1.9"
 nalgebra = "0.29.0"
 nalgebra-glm = "0.15.0"
@@ -61,6 +63,8 @@ winit = "0.25.0"
 renderer-macro-lib = { path = "macro_lib" }
 bindgen = "0.59.1"
 cc = "1.0"
+indexmap = "1.7.0"
+itertools = "0.10"
 jobserver = "0.1.21"
 rayon = "1.1.0"
 serde = { version = "1.0", features = ["derive"] } 

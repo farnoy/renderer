@@ -6,9 +6,10 @@ use std::{
     path::Path,
 };
 
-use anyhow::{bail, ensure};
+use anyhow::{ensure};
 use convert_case::{Case, Casing};
 use hashbrown::HashMap;
+use indexmap::IndexSet;
 use itertools::Itertools;
 use petgraph::{
     algo::has_path_connecting,
@@ -183,10 +184,38 @@ pub struct NamedField {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pipeline {
     pub name: String,
-    pub descriptor_sets: Vec<String>,
+    pub descriptor_sets: Vec<(String, Conditional)>,
     pub specialization_constants: Vec<(u32, NamedField)>,
     pub varying_subgroup_stages: Vec<String>,
     pub specific: SpecificPipe,
+}
+
+impl Pipeline {
+    pub fn unique_conditionals(&self) -> IndexSet<&str> {
+        self.descriptor_sets
+            .iter()
+            .flat_map(|(_, c)| c.conditions.iter().map(|c| c.switch_name.as_str()))
+            .collect()
+    }
+
+    pub fn permutations(&self) -> impl Iterator<Item = (&Pipeline, String, IndexSet<&str>)> {
+        let mut combinations: Vec<IndexSet<&str>> = vec![IndexSet::new()];
+        for conditional in self.unique_conditionals() {
+            combinations = combinations
+                .into_iter()
+                .cartesian_product(std::iter::once(conditional))
+                .flat_map(|(d, b)| {
+                    let mut clone = d.clone();
+                    clone.insert(b);
+                    [clone, d]
+                })
+                .collect();
+        }
+        combinations
+            .into_iter()
+            .cartesian_product(self.specific.stages())
+            .map(move |(conditionals, stage)| (self, stage, conditionals))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -242,11 +271,11 @@ impl<T> StaticOrDyn<T> {
     }
 }
 
-pub fn persist(data: RendererInput) -> anyhow::Result<()> {
+pub fn persist(data: &RendererInput) -> anyhow::Result<()> {
     let src = env::var("OUT_DIR")?;
     let src = Path::new(&src).join("crossbar.bincode");
     let crossbar = File::create(src)?;
-    bincode::serialize_into(crossbar, &data)?;
+    bincode::serialize_into(crossbar, data)?;
     Ok(())
 }
 
@@ -262,7 +291,7 @@ pub fn parse_frame_input(tokens: TokenStream) -> anyhow::Result<RendererInput> {
     Ok(RendererInput::from(input))
 }
 
-pub fn analyze() -> anyhow::Result<()> {
+pub fn analyze() -> anyhow::Result<RendererInput> {
     let src = env::var("CARGO_MANIFEST_DIR")?;
     let src = Path::new(&src);
 
@@ -281,7 +310,7 @@ pub fn analyze() -> anyhow::Result<()> {
 
     if visitor.had_errors {
         println!("cargo:warning=Build had errors, analysis data is stale!");
-        Ok(())
+        fetch()
     } else {
         data.resources = ResourceClaimsBuilder::convert(visitor.resource_claims)?;
 
@@ -313,14 +342,7 @@ pub fn analyze() -> anyhow::Result<()> {
 
         dump_resource_graphs(&data)?;
 
-        match analyze_shader_types(&data.descriptor_sets, &data.pipelines) {
-            Ok(shader_information) => {
-                data.shader_information = shader_information;
-            }
-            Err(errs) => bail!("Shader type validation errors:\n{}", errs.join("\n")),
-        };
-
-        persist(data)
+        Ok(data)
     }
 }
 
@@ -449,7 +471,7 @@ fn dump_resource_graphs(data: &RendererInput) -> Result<(), anyhow::Error> {
 
 /// Returns Rust type definitions corresponding shader types and a map of `(set_name, binding_name)
 /// -> type_name`
-fn analyze_shader_types(
+pub fn analyze_shader_types(
     sets: &HashMap<String, DescriptorSet>,
     pipelines: &HashMap<String, Pipeline>,
 ) -> Result<ShaderInformation, Vec<String>> {
@@ -463,11 +485,13 @@ fn analyze_shader_types(
         let mut push_constant_type: Option<String> = None;
         let mut push_constant_spir_type = None;
 
-        for shader_stage in pipe.specific.stages() {
+        for (pipe, shader_stage, conditionals) in pipe.permutations() {
+            let conditionals = conditionals.into_iter().collect_vec();
             let shader_path = std::path::Path::new(&env::var("OUT_DIR").unwrap()).join(format!(
-                "{}.{}.spv",
+                "{}.{}.[{}].spv",
                 pipe.name.to_string(),
                 shader_stage_to_file_extension(&shader_stage),
+                conditionals.join(",")
             ));
             let shader_file = File::open(&shader_path).unwrap();
             let bytes: Vec<u8> = shader_file.bytes().filter_map(std::result::Result::ok).collect();
@@ -520,7 +544,7 @@ fn analyze_shader_types(
 
             for desc in entry.descs() {
                 let set_name =
-                    syn::parse_str::<syn::Path>(&pipe.descriptor_sets[desc.desc_bind.set() as usize]).unwrap();
+                    syn::parse_str::<syn::Path>(&pipe.descriptor_sets[desc.desc_bind.set() as usize].0).unwrap();
                 let set_name = set_name.segments.last().unwrap();
                 let rusty = sets
                     .get(&set_name.ident.to_string())
@@ -1013,7 +1037,12 @@ impl From<inputs::Pipe> for Pipeline {
                 .0
                  .0
                 .iter()
-                .map(|x| x.to_token_stream().to_string())
+                .map(|inputs::Sequence((x, conditional))| {
+                    (
+                        x.to_token_stream().to_string(),
+                        conditional.0.as_ref().map(Conditional::from).unwrap_or_default(),
+                    )
+                })
                 .collect(),
             specialization_constants: input
                 .specialization_constants
@@ -1087,6 +1116,7 @@ impl From<&inputs::AsyncPass> for AsyncPass {
             queue: QueueFamily::from(&i.family),
             conditional: i
                 .conditional
+                .0
                 .as_ref()
                 .map(Conditional::from)
                 .unwrap_or(Default::default()),
