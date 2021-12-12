@@ -308,6 +308,7 @@ fn main() {
         imgui_platform,
     };
 
+        #[cfg(not(feature = "nort"))]
     let acceleration_structures = AccelerationStructures::new(&renderer, &main_descriptor_pool);
 
     let gltf_pass = GltfPassData::new(
@@ -317,6 +318,7 @@ fn main() {
         &base_color_descriptor_set,
         &shadow_mapping_data,
         &camera_matrices,
+        #[cfg(not(feature = "nort"))]
         &acceleration_structures,
     );
 
@@ -637,7 +639,7 @@ fn main() {
         bincode::deserialize(renderer::frame_graph::CROSSBAR).unwrap(),
     );
     app.insert_resource(ScenesToLoad {
-        scene_paths: vec!["assets/bistro.gltf".to_string()],
+        scene_paths: vec![],
         scenes: vec![],
     });
     app.insert_resource(Submissions::new());
@@ -668,6 +670,7 @@ fn main() {
     app.insert_resource(main_renderpass);
     app.insert_resource(main_attachments);
     app.insert_resource(acceleration_structures);
+        #[cfg(not(feature = "nort"))]
     app.init_resource::<AccelerationStructuresInternal>();
     app.insert_resource(gltf_pass);
     app.init_resource::<SwapchainIndexToFrameNumber>();
@@ -943,11 +946,14 @@ fn main() {
         .unwrap()
         .destroy(&render_frame.device);
     let main_descriptor_pool = app.app.world.remove_resource::<MainDescriptorPool>().unwrap();
+        #[cfg(not(feature = "nort"))]
+    {
     app.app
         .world
         .remove_resource::<AccelerationStructures>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
+    }
     app.app
         .world
         .remove_resource::<UploadMeshesData>()
@@ -973,11 +979,14 @@ fn main() {
         .remove_resource::<ShadowMappingDataInternal>()
         .unwrap()
         .destroy(&render_frame.device);
+        #[cfg(not(feature = "nort"))]
+    {
     app.app
         .world
         .remove_resource::<AccelerationStructuresInternal>()
         .unwrap()
         .destroy(&render_frame.device);
+    }
     app.app
         .world
         .remove_resource::<GuiRenderData>()

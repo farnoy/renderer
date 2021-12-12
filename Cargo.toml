@@ -88,6 +88,7 @@ sync_validation = ["standard_validation"]
 uncapped = []
 profiling_bevy = ["bevy_ecs/trace", "bevy_log/tracing-chrome"]
 shader_reload = ["notify", "spirq"]
+nort = []
 
 [profile.dev.package.image]
 opt-level = 3

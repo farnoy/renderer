@@ -175,8 +175,11 @@ impl Device {
                 vk::ExtExtendedDynamicStateFn::name().as_ptr(),
                 vk::KhrSynchronization2Fn::name().as_ptr(),
                 vk::ExtSubgroupSizeControlFn::name().as_ptr(),
+                #[cfg(not(feature = "nort"))]
                 vk::KhrDeferredHostOperationsFn::name().as_ptr(),
+                #[cfg(not(feature = "nort"))]
                 vk::KhrAccelerationStructureFn::name().as_ptr(),
+                #[cfg(not(feature = "nort"))]
                 vk::KhrRayQueryFn::name().as_ptr(),
             ];
             let features = vk::PhysicalDeviceFeatures {
@@ -235,17 +238,22 @@ impl Device {
                 })
                 .collect::<Vec<_>>();
 
-            let device_create_info = vk::DeviceCreateInfo::builder()
+            let mut device_create_info = vk::DeviceCreateInfo::builder()
                 .queue_create_infos(&queue_infos)
                 .enabled_extension_names(&device_extension_names_raw)
                 .push_next(&mut features_dynamic_state)
                 .push_next(&mut features2)
                 .push_next(&mut features12)
                 .push_next(&mut features_subgroup_size)
-                .push_next(&mut features_acceleration_structure)
-                .push_next(&mut features_ray_query)
                 .push_next(&mut features_robustness)
                 .push_next(&mut features_synchronization);
+
+            #[cfg(not(feature = "nort"))]
+            {
+                device_create_info = device_create_info
+                    .push_next(&mut features_acceleration_structure)
+                    .push_next(&mut features_ray_query);
+            }
 
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };

@@ -1338,6 +1338,7 @@ impl GltfPassData {
         base_color: &BaseColorDescriptorSet,
         shadow_mapping: &ShadowMappingData,
         camera_matrices: &CameraMatrices,
+        #[cfg(not(feature = "nort"))]
         acceleration_structures: &AccelerationStructures,
     ) -> GltfPassData {
         /*
@@ -1477,6 +1478,7 @@ impl GltfPassData {
                 &camera_matrices.set_layout,
                 &shadow_mapping.user_set_layout,
                 &base_color.layout,
+                #[cfg(not(feature = "nort"))]
                 &acceleration_structures.set_layout,
             ),
         );
@@ -1522,7 +1524,7 @@ pub(crate) fn render_frame(
     (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
-    (main_framebuffer, acceleration_structures): (Res<MainFramebuffer>, Res<AccelerationStructures>),
+    (main_framebuffer, acceleration_structures): (Res<MainFramebuffer>, Option<Res<AccelerationStructures>>),
     (submissions, mut gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
         Res<Submissions>,
         ResMut<GltfPassData>,
@@ -1563,7 +1565,7 @@ pub(crate) fn render_frame(
                 shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
             },
             (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
-            &[runtime_config.rt]
+            &[runtime_config.rt()]
                 .into_iter()
                 .map(|rt| ("RT".to_owned(), rt))
                 .collect(),
@@ -1666,13 +1668,21 @@ pub(crate) fn render_frame(
                 vk::PipelineBindPoint::GRAPHICS,
                 gltf_pipeline_layout.vk(),
                 0,
+                #[cfg(feature = "nort")]
                 &[
                     model_data.model_set.current(image_index.0).vk_handle(),
                     camera_matrices.set.current(image_index.0).vk_handle(),
                     shadow_mapping_data.user_set.current(image_index.0).vk_handle(),
                     base_color_descriptor_set.set.current(image_index.0).vk_handle(),
-                    acceleration_structures.set.current(image_index.0).vk_handle(),
-                ][..(if runtime_config.rt { 5 } else { 4 })],
+                ],
+        #[cfg(not(feature = "nort"))]
+                &[
+                    model_data.model_set.current(image_index.0).vk_handle(),
+                    camera_matrices.set.current(image_index.0).vk_handle(),
+                    shadow_mapping_data.user_set.current(image_index.0).vk_handle(),
+                    base_color_descriptor_set.set.current(image_index.0).vk_handle(),
+                    acceleration_structures.unwrap().set.current(image_index.0).vk_handle(),
+                ][..(if runtime_config.rt() { 5 } else { 4 })],
                 &[],
             );
 
@@ -2446,7 +2456,7 @@ fn setup_submissions(
     let switches: HashMap<String, bool> = [
         ("FREEZE_CULLING".to_string(), runtime_config.freeze_culling),
         ("DEBUG_AABB".to_string(), runtime_config.debug_aabbs),
-        ("RT".to_string(), runtime_config.rt),
+        ("RT".to_string(), runtime_config.rt()),
     ]
     .into_iter()
     .collect();

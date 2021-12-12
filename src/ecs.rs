@@ -242,6 +242,7 @@ pub(crate) mod systems {
         pub(crate) debug_aabbs: bool,
         pub(crate) fly_mode: bool,
         pub(crate) freeze_culling: bool,
+        #[cfg(not(feature = "nort"))]
         pub(crate) rt: bool,
         pub(crate) compute_cull_workgroup_size: u32,
     }
@@ -252,9 +253,19 @@ pub(crate) mod systems {
                 debug_aabbs: false,
                 fly_mode: false,
                 freeze_culling: false,
+                #[cfg(not(feature = "nort"))]
                 rt: true,
                 compute_cull_workgroup_size: INITIAL_WORKGROUP_SIZE,
             }
+        }
+    }
+
+    impl RuntimeConfiguration {
+        pub(crate) fn rt(&self) -> bool {
+            #[cfg(feature = "nort")]
+            return false;
+            #[cfg(not(feature = "nort"))]
+            return self.rt;
         }
     }
 
@@ -333,6 +344,7 @@ pub(crate) mod systems {
                 {
                     ui.checkbox("Debug collision AABBs", &mut runtime_config.debug_aabbs);
                     ui.checkbox("Freeze culling data", &mut runtime_config.freeze_culling);
+                    #[cfg(not(feature = "nort"))]
                     ui.checkbox("Use Raytracing", &mut runtime_config.rt);
                 }
 
