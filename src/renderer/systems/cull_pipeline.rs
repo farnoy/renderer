@@ -361,6 +361,8 @@ pub(crate) fn cull_pass_bypass(
 
     frame_graph::TransferCull::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
+    debug_assert!(runtime_config.freeze_culling, "freeze_culling must be on in cull_pass_bypass");
+
     let cull_cb = transfer_cull_private
         .transfer_command_util
         .reset_and_record(&renderer, &image_index);
@@ -458,6 +460,8 @@ pub(crate) fn cull_pass(
 
     frame_graph::ComputeCull::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
+    debug_assert!(!runtime_config.freeze_culling, "freeze_culling must be off in cull_pass");
+
     CullPassData::configure_pipeline(
         &renderer,
         &mut cull_pass_data_private,
@@ -486,8 +490,8 @@ pub(crate) fn cull_pass(
         // Clear the command buffer before using
         let guard = renderer_macros::barrier!(
             *cull_cb, [FREEZE_CULLING => false],
-            IndirectCommandsBuffer.reset w in ComputeCull transfer clear,
-            IndirectCommandsCount.reset w in ComputeCull transfer clear
+            IndirectCommandsBuffer.reset w in ComputeCull transfer clear if [!FREEZE_CULLING],
+            IndirectCommandsCount.reset w in ComputeCull transfer clear if [!FREEZE_CULLING]
         );
         renderer.device.cmd_fill_buffer(
             *cull_cb,
@@ -519,9 +523,9 @@ pub(crate) fn cull_pass(
 
         let guard = renderer_macros::barrier!(
             *cull_cb, [FREEZE_CULLING => false],
-            IndirectCommandsBuffer.cull rw in ComputeCull descriptor generate_work.cull_set.indirect_commands after [reset]; indirect_commands_buffer,
-            ConsolidatedPositionBuffer.in_cull r in ComputeCull descriptor generate_work.cull_set.indirect_commands after [consolidate],
-            ConsolidatedIndexBuffer.cull_from r in ComputeCull descriptor generate_work.cull_set.index_buffer after [consolidate],
+            IndirectCommandsBuffer.cull rw in ComputeCull descriptor generate_work.cull_set.indirect_commands after [reset] if [!FREEZE_CULLING]; indirect_commands_buffer,
+            ConsolidatedPositionBuffer.in_cull r in ComputeCull descriptor generate_work.cull_set.indirect_commands after [consolidate] if [!FREEZE_CULLING],
+            ConsolidatedIndexBuffer.cull_from r in ComputeCull descriptor generate_work.cull_set.index_buffer after [consolidate] if [!FREEZE_CULLING],
             CulledIndexBuffer.cull w in ComputeCull descriptor generate_work.cull_set.out_index_buffer if [!FREEZE_CULLING]
         );
 
