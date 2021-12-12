@@ -1578,7 +1578,7 @@ pub(crate) fn render_frame(
         *command_buffer,
         IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
         IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
-        TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB],
+        TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB, RT],
         ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps after [prepare] if [!DEBUG_AABB],
         Color.render rw in Main attachment,
         ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth] if [!DEBUG_AABB],
@@ -2446,6 +2446,7 @@ fn setup_submissions(
     let switches: HashMap<String, bool> = [
         ("FREEZE_CULLING".to_string(), runtime_config.freeze_culling),
         ("DEBUG_AABB".to_string(), runtime_config.debug_aabbs),
+        ("RT".to_string(), runtime_config.rt),
     ]
     .into_iter()
     .collect();
