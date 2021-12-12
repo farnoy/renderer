@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::{ensure};
+use anyhow::ensure;
 use convert_case::{Case, Casing};
 use hashbrown::HashMap;
 use indexmap::IndexSet;
