@@ -1106,15 +1106,7 @@ fn main() {
         .iter(&app.app.world)
         .collect::<Vec<_>>();
     for entity in entities {
-        futures_lite::future::block_on(async {
-            app.app
-                .world
-                .entity_mut(entity)
-                .remove::<Task<SceneLoaderLoadedMesh>>()
-                .unwrap()
-                .cancel()
-                .await;
-        });
+        app.app.world.entity_mut(entity).remove::<Task<SceneLoaderLoadedMesh>>();
     }
 
     #[cfg(feature = "crash_debugging")]
