@@ -1,6 +1,7 @@
 #![feature(extend_one)]
 use std::{
     env,
+    fmt::Debug,
     fs::File,
     io::{Read, Write},
     path::Path,
@@ -8,9 +9,11 @@ use std::{
 
 use anyhow::ensure;
 use convert_case::{Case, Casing};
+use derive_syn_parse::Parse;
 use hashbrown::HashMap;
 use indexmap::IndexSet;
 use itertools::Itertools;
+use keywords as kw;
 use petgraph::{
     algo::has_path_connecting,
     graph::DiGraph,
@@ -23,6 +26,7 @@ use quote::{format_ident, quote, ToTokens};
 use resource_claims::{ResourceClaims, ResourceClaimsBuilder};
 use serde::{Deserialize, Serialize};
 use syn::{
+    parse::Parse,
     parse2, parse_quote,
     visit::{self, Visit},
     Expr, Ident, ItemMacro,
@@ -68,22 +72,29 @@ pub enum LoadOp {
     DontCare,
 }
 
+impl Parse for LoadOp {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse::<kw::load>()
+            .and(Ok(Self::Load))
+            .or_else(|_| input.parse::<kw::clear>().and(Ok(Self::Clear)))
+            .or_else(|_| input.parse::<kw::dont_care>().and(Ok(Self::DontCare)))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StoreOp {
     Store,
     Discard,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ResourceUsageKind {
-    Attachment,
-    VertexBuffer,
-    IndexBuffer,
-    IndirectBuffer,
-    TransferCopy,
-    TransferClear,
-    /// (set, binding, pipeline_name)
-    Descriptor(String, String, String),
+impl Parse for StoreOp {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse::<kw::store>()
+            .and(Ok(Self::Store))
+            .or_else(|_| input.parse::<kw::discard>().and(Ok(Self::Discard)))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,7 +106,60 @@ pub struct Pass {
     pub dependencies: Vec<SubpassDependency>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Parse for Pass {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            pub name: Ident,
+            #[brace]
+            #[allow(dead_code)]
+            brace: syn::token::Brace,
+            #[prefix(kw::attachments in brace)]
+            #[inside(brace)]
+            pub attachments: inputs::Unbracket<inputs::UnArray<Ident>>,
+            #[prefix(kw::layouts in brace)]
+            #[brace]
+            #[inside(brace)]
+            #[allow(dead_code)]
+            layouts_brace: syn::token::Brace,
+            #[inside(layouts_brace)]
+            pub layouts: inputs::UnArray<inputs::Sequence<Ident, PassLayout>>,
+            #[inside(brace)]
+            #[allow(dead_code)]
+            subpasses_kw: kw::subpasses,
+            #[inside(brace)]
+            pub subpasses: inputs::Unbrace<inputs::UnArray<Subpass>>,
+            #[inside(brace)]
+            #[allow(dead_code)]
+            dependencies_kw: Option<kw::dependencies>,
+            #[parse_if(dependencies_kw.is_some())]
+            #[inside(brace)]
+            pub dependencies: Option<inputs::Unbrace<inputs::UnArray<SubpassDependency>>>,
+        }
+
+        let p = Inner::parse(input)?;
+
+        Ok(Pass {
+            name: p.name.to_string(),
+            attachments: p.attachments.0 .0.iter().map(|x| x.to_string()).collect(),
+            layouts: HashMap::from_iter(
+                p.layouts
+                    .0
+                    .iter()
+                    .map(|inputs::Sequence((name, layout))| (name.to_string(), layout.clone())),
+            ),
+            subpasses: p.subpasses.0 .0.clone(),
+            dependencies: p
+                .dependencies
+                .as_ref()
+                .cloned()
+                .map(|inputs::Unbrace(inputs::UnArray(x))| x)
+                .unwrap_or(vec![]),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassLayout {
     pub load_op: LoadOp,
     pub initial_layout: String,
@@ -103,7 +167,23 @@ pub struct PassLayout {
     pub final_layout: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Parse for PassLayout {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let inputs::ArrowPair((
+            inputs::Sequence((load_op, initial_layout)),
+            inputs::Sequence((store_op, final_layout)),
+        )) = inputs::ArrowPair::<inputs::Sequence<LoadOp, Expr>, inputs::Sequence<StoreOp, Expr>>::parse(input)?;
+
+        Ok(PassLayout {
+            load_op,
+            initial_layout: initial_layout.to_token_stream().to_string(),
+            store_op,
+            final_layout: final_layout.to_token_stream().to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subpass {
     pub name: String,
     pub color_attachments: Vec<(String, String)>,
@@ -111,7 +191,72 @@ pub struct Subpass {
     pub resolve_attachments: Vec<(String, String)>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Parse for Subpass {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            pub name: Ident,
+            #[brace]
+            #[allow(dead_code)]
+            brace: syn::token::Brace,
+            #[inside(brace)]
+            #[allow(dead_code)]
+            color_kw: Option<kw::color>,
+            #[inside(brace)]
+            #[parse_if(color_kw.is_some())]
+            pub color: Option<inputs::Unbracket<inputs::UnArray<inputs::ArrowPair<Ident, Ident>>>>,
+            #[inside(brace)]
+            #[allow(dead_code)]
+            depth_stencil_kw: Option<kw::depth_stencil>,
+            #[inside(brace)]
+            #[parse_if(depth_stencil_kw.is_some())]
+            pub depth_stencil: Option<inputs::Unbrace<inputs::ArrowPair<Ident, Ident>>>,
+            #[inside(brace)]
+            #[allow(dead_code)]
+            resolve_kw: Option<kw::resolve>,
+            #[inside(brace)]
+            #[parse_if(resolve_kw.is_some())]
+            pub resolve: Option<inputs::Unbracket<inputs::UnArray<inputs::ArrowPair<Ident, Ident>>>>,
+        }
+        let Inner {
+            name,
+            color,
+            depth_stencil,
+            resolve,
+            ..
+        } = Inner::parse(input)?;
+
+        Ok(Subpass {
+            name: name.to_string(),
+            color_attachments: color
+                .as_ref()
+                .cloned()
+                .map(|b| {
+                    b.0 .0
+                        .into_iter()
+                        .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
+                        .collect()
+                })
+                .unwrap_or(vec![]),
+            depth_stencil_attachments: depth_stencil
+                .as_ref()
+                .cloned()
+                .map(|x| (x.0 .0 .0.to_string(), x.0 .0 .1.to_string())),
+            resolve_attachments: resolve
+                .as_ref()
+                .cloned()
+                .map(|b| {
+                    b.0 .0
+                        .into_iter()
+                        .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
+                        .collect()
+                })
+                .unwrap_or(vec![]),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubpassDependency {
     pub src: String,
     pub dst: String,
@@ -121,11 +266,50 @@ pub struct SubpassDependency {
     pub dst_access: String,
 }
 
+impl Parse for SubpassDependency {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            pub from: Ident,
+            #[allow(dead_code)]
+            arrow_1: syn::Token![=>],
+            pub to: Ident,
+            pub src_stage: Expr,
+            #[allow(dead_code)]
+            arrow_2: syn::Token![=>],
+            pub dst_stage: Expr,
+            pub src_access: Expr,
+            #[allow(dead_code)]
+            arrow_3: syn::Token![=>],
+            pub dst_access: Expr,
+        }
+        let d = Inner::parse(input)?;
+        Ok(SubpassDependency {
+            src: d.from.to_string(),
+            dst: d.to.to_string(),
+            src_stage: d.src_stage.to_token_stream().to_string(),
+            dst_stage: d.dst_stage.to_token_stream().to_string(),
+            src_access: d.src_access.to_token_stream().to_string(),
+            dst_access: d.dst_access.to_token_stream().to_string(),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub enum QueueFamily {
     Graphics,
     Compute,
     Transfer,
+}
+
+impl Parse for QueueFamily {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse::<kw::graphics>()
+            .and(Ok(QueueFamily::Graphics))
+            .or(input.parse::<kw::compute>().and(Ok(QueueFamily::Compute)))
+            .or(input.parse::<kw::transfer>().and(Ok(QueueFamily::Transfer)))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -135,9 +319,51 @@ pub struct AsyncPass {
     pub conditional: Conditional,
 }
 
+impl Parse for AsyncPass {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            pub name: Ident,
+            #[allow(dead_code)]
+            on: kw::on,
+            pub family: QueueFamily,
+            pub conditional: Conditional,
+        }
+
+        let i = Inner::parse(input)?;
+
+        Ok(AsyncPass {
+            name: i.name.to_token_stream().to_string(),
+            queue: i.family,
+            conditional: i.conditional,
+        })
+    }
+}
+
 #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Conditional {
     pub conditions: Vec<Condition>,
+}
+
+impl Parse for Conditional {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            _if_cond: syn::Token![if],
+            #[bracket]
+            #[allow(dead_code)]
+            bracket: syn::token::Bracket,
+            #[inside(bracket)]
+            pub conditions: inputs::UnArray<Condition>,
+        }
+        let i = inputs::UnOption::<Inner>::parse(input)?;
+        let c =
+            i.0.map(|c| Conditional {
+                conditions: c.conditions.0,
+            })
+            .unwrap_or_default();
+        Ok(c)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -146,10 +372,42 @@ pub struct Condition {
     pub switch_name: String,
 }
 
+impl Parse for Condition {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let inputs::Sequence((neg, switch_name)) =
+            inputs::Sequence::<inputs::UnOption<syn::Token![!]>, Ident>::parse(input)?;
+
+        Ok(Condition {
+            neg: neg.0.is_some(),
+            switch_name: switch_name.to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DescriptorSet {
     pub name: String,
     pub bindings: Vec<Binding>,
+}
+
+impl Parse for DescriptorSet {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            pub name: Ident,
+            #[brace]
+            #[allow(dead_code)]
+            brace: syn::token::Brace,
+            #[inside(brace)]
+            pub bindings: inputs::UnArray<Binding>,
+        }
+        let p = Inner::parse(input)?;
+
+        Ok(DescriptorSet {
+            name: p.name.to_string(),
+            bindings: p.bindings.0,
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -162,6 +420,38 @@ pub struct Binding {
     pub shader_stages: Vec<String>,
 }
 
+impl Parse for Binding {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            pub name: Ident,
+            pub count: inputs::UnOption<inputs::Sequence<syn::LitInt, kw::of>>,
+            pub descriptor_type: Ident,
+            pub partially_bound: inputs::UnOption<inputs::Sequence<kw::partially, kw::bound>>,
+            pub update_after_bind:
+                inputs::UnOption<inputs::Sequence<kw::update, inputs::Sequence<kw::after, kw::bind>>>,
+            #[prefix(kw::from)]
+            pub stages: inputs::Unbracket<inputs::UnArray<Ident>>,
+        }
+        let b = Inner::parse(input)?;
+        Ok(Binding {
+            name: b.name.to_string(),
+            count: b
+                .count
+                .0
+                .as_ref()
+                .map(|inputs::Sequence((a, _))| a.clone())
+                .unwrap_or(parse_quote!(1))
+                .base10_parse::<u32>()
+                .unwrap(),
+            descriptor_type: b.descriptor_type.to_string(),
+            partially_bound: b.partially_bound.0.is_some(),
+            update_after_bind: b.update_after_bind.0.is_some(),
+            shader_stages: b.stages.0 .0.iter().map(|x| x.to_string()).collect(),
+        })
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
@@ -170,15 +460,19 @@ pub struct Attachment {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum StaticOrDyn<T> {
-    Static(T),
-    Dyn,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NamedField {
     pub name: String,
     pub ty: String,
+}
+
+impl Parse for NamedField {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let f = syn::Field::parse_named(input)?;
+        Ok(NamedField {
+            name: f.ident.as_ref().unwrap().to_string(),
+            ty: f.ty.to_token_stream().to_string(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -219,6 +513,68 @@ impl Pipeline {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum StaticOrDyn<T> {
+    Static(T),
+    Dyn,
+}
+
+impl<T: Parse> Parse for StaticOrDyn<T> {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse::<syn::Token![dyn]>()
+            .map(|_| StaticOrDyn::Dyn)
+            .or_else(|_| input.parse::<T>().map(StaticOrDyn::Static))
+    }
+}
+
+impl<T> StaticOrDyn<T> {
+    pub fn map<F: FnOnce(T) -> U, U>(self, f: F) -> StaticOrDyn<U> {
+        match self {
+            StaticOrDyn::Static(a) => StaticOrDyn::Static(f(a)),
+            StaticOrDyn::Dyn => StaticOrDyn::Dyn,
+        }
+    }
+
+    pub fn is_dyn(&self) -> bool {
+        match self {
+            StaticOrDyn::Static(_) => false,
+            StaticOrDyn::Dyn => true,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn unwrap_or(self, default: T) -> T {
+        match self {
+            StaticOrDyn::Static(s) => s,
+            StaticOrDyn::Dyn => default,
+        }
+    }
+
+    pub fn as_ref(&self) -> StaticOrDyn<&T> {
+        match self {
+            StaticOrDyn::Static(s) => StaticOrDyn::Static(&s),
+            StaticOrDyn::Dyn => StaticOrDyn::Dyn,
+        }
+    }
+}
+
+impl<T: PartialEq + Debug> StaticOrDyn<T> {
+    pub fn unwrap_or_default(self, default: T) -> T {
+        match self {
+            StaticOrDyn::Static(s) => s,
+            StaticOrDyn::Dyn => default,
+        }
+    }
+}
+
+pub fn extract_optional_dyn<T, R>(a: &StaticOrDyn<T>, when_dyn: R) -> Option<R> {
+    match a {
+        StaticOrDyn::Dyn => Some(when_dyn),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphicsPipe {
     pub samples: StaticOrDyn<u8>,
     pub vertex_inputs: Vec<NamedField>,
@@ -248,29 +604,6 @@ impl SpecificPipe {
     }
 }
 
-impl<T> StaticOrDyn<T> {
-    pub fn as_ref(&self) -> StaticOrDyn<&T> {
-        match self {
-            StaticOrDyn::Static(a) => StaticOrDyn::Static(&a),
-            StaticOrDyn::Dyn => StaticOrDyn::Dyn,
-        }
-    }
-
-    pub fn map<F: FnOnce(T) -> U, U>(self, f: F) -> StaticOrDyn<U> {
-        match self {
-            StaticOrDyn::Static(a) => StaticOrDyn::Static(f(a)),
-            StaticOrDyn::Dyn => StaticOrDyn::Dyn,
-        }
-    }
-
-    pub fn is_dyn(&self) -> bool {
-        match self {
-            StaticOrDyn::Static(_) => false,
-            StaticOrDyn::Dyn => true,
-        }
-    }
-}
-
 pub fn persist(data: &RendererInput) -> anyhow::Result<()> {
     let src = env::var("OUT_DIR")?;
     let src = Path::new(&src).join("crossbar.bincode");
@@ -284,11 +617,6 @@ pub fn fetch() -> anyhow::Result<RendererInput> {
     let src = Path::new(&src).join("crossbar.bincode");
     let crossbar = File::open(src)?;
     Ok(bincode::deserialize_from(crossbar)?)
-}
-
-pub fn parse_frame_input(tokens: TokenStream) -> anyhow::Result<RendererInput> {
-    let input = syn::parse2::<inputs::FrameInput>(tokens)?;
-    Ok(RendererInput::from(input))
 }
 
 pub fn analyze() -> anyhow::Result<RendererInput> {
@@ -765,7 +1093,7 @@ struct AnalysisVisitor {
 impl<'ast> Visit<'ast> for AnalysisVisitor {
     fn visit_item_macro(&mut self, node: &'ast ItemMacro) {
         if node.mac.path == parse_quote!(renderer_macros::define_frame) {
-            if let Ok(parsed) = parse_frame_input(node.mac.tokens.clone()) {
+            if let Ok(parsed) = parse2::<RendererInput>(node.mac.tokens.clone()) {
                 self.data.name = parsed.name;
                 self.data.passes.extend(parsed.passes);
                 self.data.async_passes.extend(parsed.async_passes);
@@ -783,8 +1111,7 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
                 self.had_errors = true;
             }
         } else if node.mac.path == parse_quote!(renderer_macros::define_set) {
-            if let Ok(parsed) = parse2::<inputs::DescriptorSet>(node.mac.tokens.clone()) {
-                let set = DescriptorSet::from(&parsed);
+            if let Ok(set) = parse2::<DescriptorSet>(node.mac.tokens.clone()) {
                 self.data
                     .descriptor_sets
                     .entry(set.name.clone())
@@ -797,8 +1124,7 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
                 self.had_errors = true;
             }
         } else if node.mac.path == parse_quote!(renderer_macros::define_pipe) {
-            if let Ok(parsed) = parse2::<inputs::Pipe>(node.mac.tokens.clone()) {
-                let pipe = Pipeline::from(parsed);
+            if let Ok(pipe) = parse2::<Pipeline>(node.mac.tokens.clone()) {
                 self.data
                     .pipelines
                     .entry(pipe.name.clone())
@@ -811,8 +1137,7 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
                 self.had_errors = true;
             }
         } else if node.mac.path == parse_quote!(renderer_macros::define_pass) {
-            if let Ok(parsed) = parse2::<inputs::AsyncPass>(node.mac.tokens.clone()) {
-                let pass = AsyncPass::from(&parsed);
+            if let Ok(pass) = parse2::<AsyncPass>(node.mac.tokens.clone()) {
                 self.data
                     .async_passes
                     .entry(pass.name.clone())
@@ -982,78 +1307,147 @@ pub fn assign_semaphores_to_stages(
     mapping
 }
 
-impl From<inputs::Pipe> for Pipeline {
-    fn from(input: inputs::Pipe) -> Self {
+impl Parse for Pipeline {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        struct InnerPipe {
+            pub name: Ident,
+            #[brace]
+            #[allow(dead_code)]
+            brace: syn::token::Brace,
+            #[prefix(kw::descriptors in brace)]
+            #[inside(brace)]
+            pub descriptors: inputs::Unbracket<inputs::UnArray<inputs::Sequence<syn::Path, Conditional>>>,
+            #[inside(brace)]
+            #[allow(unused)]
+            pub spec_const_tok: Option<kw::specialization_constants>,
+            #[parse_if(spec_const_tok.is_some())]
+            #[inside(brace)]
+            pub specialization_constants:
+                Option<inputs::Unbracket<inputs::UnArray<inputs::ArrowPair<syn::LitInt, NamedField>>>>,
+            #[inside(brace)]
+            #[allow(unused)]
+            pub subgroup_sizes_kw:
+                inputs::UnOption<inputs::Sequence<inputs::Sequence<kw::varying, kw::subgroup>, kw::size>>,
+            #[parse_if(subgroup_sizes_kw.0.is_some())]
+            #[inside(brace)]
+            pub varying_subgroup_stages: Option<inputs::UnOption<inputs::Unbracket<inputs::UnArray<Ident>>>>,
+            #[inside(brace)]
+            pub specific: InnerSpecificPipe,
+        }
+        #[derive(Parse)]
+        #[allow(unused)]
+        struct InnerGraphicsPipe {
+            samples_kw: Option<kw::samples>,
+            #[parse_if(samples_kw.is_some())]
+            pub samples: Option<StaticOrDyn<syn::LitInt>>,
+            vertex_inputs_kw: Option<kw::vertex_inputs>,
+            #[parse_if(vertex_inputs_kw.is_some())]
+            pub vertex_inputs: Option<inputs::Unbracket<inputs::UnArray<NamedField>>>,
+            #[prefix(kw::stages)]
+            pub stages: inputs::Unbracket<inputs::UnArray<Ident>>,
+            polygon_mode_kw: inputs::UnOption<inputs::Sequence<kw::polygon, kw::mode>>,
+            #[parse_if(polygon_mode_kw.0.is_some())]
+            pub polygon_mode: Option<StaticOrDyn<Ident>>,
+            topology_kw: Option<kw::topology>,
+            #[parse_if(topology_kw.is_some())]
+            pub topology_mode: Option<StaticOrDyn<Ident>>,
+            front_face_kw: inputs::UnOption<inputs::Sequence<kw::front, kw::face>>,
+            #[parse_if(front_face_kw.0.is_some())]
+            pub front_face_mode: Option<StaticOrDyn<Ident>>,
+            cull_mode_kw: inputs::UnOption<inputs::Sequence<kw::cull, kw::mode>>,
+            #[parse_if(cull_mode_kw.0.is_some())]
+            pub cull_mode: Option<StaticOrDyn<Ident>>,
+            depth_test_enable_kw: inputs::UnOption<inputs::Sequence<kw::depth, kw::test>>,
+            #[parse_if(depth_test_enable_kw.0.is_some())]
+            pub depth_test_enable: Option<StaticOrDyn<syn::LitBool>>,
+            depth_write_enable_kw: inputs::UnOption<inputs::Sequence<kw::depth, kw::write>>,
+            #[parse_if(depth_write_enable_kw.0.is_some())]
+            pub depth_write_enable: Option<StaticOrDyn<syn::LitBool>>,
+            depth_compare_op_kw: inputs::UnOption<inputs::Sequence<kw::depth, inputs::Sequence<kw::compare, kw::op>>>,
+            #[parse_if(depth_compare_op_kw.0.is_some())]
+            pub depth_compare_op: Option<StaticOrDyn<Ident>>,
+            depth_bounds_enable_kw: inputs::UnOption<inputs::Sequence<kw::depth, kw::bounds>>,
+            #[parse_if(depth_bounds_enable_kw.0.is_some())]
+            pub depth_bounds_enable: Option<StaticOrDyn<syn::LitBool>>,
+        }
+        #[derive(Parse)]
+        struct InnerComputePipe {}
+        enum InnerSpecificPipe {
+            Graphics(InnerGraphicsPipe),
+            Compute(InnerComputePipe),
+        }
+        impl Parse for InnerSpecificPipe {
+            fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+                input
+                    .parse::<kw::compute>()
+                    .and_then(|_| input.parse().map(InnerSpecificPipe::Compute))
+                    .or_else(|_| {
+                        input
+                            .parse::<kw::graphics>()
+                            .and_then(|_| input.parse().map(InnerSpecificPipe::Graphics))
+                    })
+            }
+        }
+        let input = InnerPipe::parse(input)?;
         let specific = match input.specific {
-            inputs::SpecificPipe::Graphics(g) => SpecificPipe::Graphics(GraphicsPipe {
+            InnerSpecificPipe::Graphics(g) => SpecificPipe::Graphics(GraphicsPipe {
                 samples: g
                     .samples
-                    .map(|x| StaticOrDyn::from(&x).map(|d| d.base10_parse().unwrap()))
+                    .map(|x| x.map(|d| d.base10_parse().unwrap()))
                     .unwrap_or(StaticOrDyn::Static(1)),
-                vertex_inputs: g
-                    .vertex_inputs
-                    .map(|x| x.0 .0.into_iter().map(|x| NamedField::from(&x)).collect())
-                    .unwrap_or(vec![]),
+                vertex_inputs: g.vertex_inputs.map(|x| x.0 .0).unwrap_or(vec![]),
                 stages: g.stages.0 .0.into_iter().map(|x| x.to_string()).collect(),
                 polygon_mode: g
                     .polygon_mode
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.to_string()))
+                    .map(|x| x.map(|x| x.to_string()))
                     .unwrap_or(StaticOrDyn::Static("FILL".to_string())),
                 topology_mode: g
                     .topology_mode
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.to_string()))
+                    .map(|x| x.map(|x| x.to_string()))
                     .unwrap_or(StaticOrDyn::Static("TRIANGLE_LIST".to_string())),
                 front_face_mode: g
                     .front_face_mode
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.to_string()))
+                    .map(|x| x.map(|x| x.to_string()))
                     .unwrap_or(StaticOrDyn::Static("CLOCKWISE".to_string())),
                 cull_mode: g
                     .cull_mode
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.to_string()))
+                    .map(|x| x.map(|x| x.to_string()))
                     .unwrap_or(StaticOrDyn::Static("NONE".to_string())),
                 depth_test_enable: g
                     .depth_test_enable
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.value))
+                    .map(|x| x.map(|x| x.value))
                     .unwrap_or(StaticOrDyn::Static(false)),
                 depth_write_enable: g
                     .depth_write_enable
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.value))
+                    .map(|x| x.map(|x| x.value))
                     .unwrap_or(StaticOrDyn::Static(false)),
                 depth_compare_op: g
                     .depth_compare_op
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.to_string()))
+                    .map(|x| x.map(|x| x.to_string()))
                     .unwrap_or(StaticOrDyn::Static("NEVER".to_string())),
                 depth_bounds_enable: g
                     .depth_bounds_enable
-                    .map(|x| StaticOrDyn::from(&x).map(|x| x.value))
+                    .map(|x| x.map(|x| x.value))
                     .unwrap_or(StaticOrDyn::Static(false)),
             }),
-            inputs::SpecificPipe::Compute(_) => SpecificPipe::Compute,
+            InnerSpecificPipe::Compute(_) => SpecificPipe::Compute,
         };
-        Pipeline {
+        Ok(Pipeline {
             name: input.name.to_string(),
             descriptor_sets: input
                 .descriptors
                 .0
                  .0
-                .iter()
-                .map(|inputs::Sequence((x, conditional))| {
-                    (
-                        x.to_token_stream().to_string(),
-                        conditional.0.as_ref().map(Conditional::from).unwrap_or_default(),
-                    )
-                })
+                .into_iter()
+                .map(|inputs::Sequence((x, conditional))| (x.to_token_stream().to_string(), conditional))
                 .collect(),
             specialization_constants: input
                 .specialization_constants
                 .into_iter()
                 .flat_map(|inputs::Unbracket(inputs::UnArray(x))| {
-                    x.into_iter().map(|inputs::ArrowPair((a, b))| {
-                        (a.base10_parse().unwrap(), NamedField {
-                            name: b.0.ident.unwrap().to_string(),
-                            ty: b.0.ty.to_token_stream().to_string(),
-                        })
-                    })
+                    x.into_iter()
+                        .map(|inputs::ArrowPair((a, b))| (a.base10_parse().unwrap(), b))
                 })
                 .collect(),
             varying_subgroup_stages: match input.varying_subgroup_stages {
@@ -1064,275 +1458,72 @@ impl From<inputs::Pipe> for Pipeline {
                 None => vec![],
             },
             specific,
-        }
+        })
     }
 }
 
-impl From<inputs::FrameInput> for RendererInput {
-    fn from(input: inputs::FrameInput) -> Self {
-        let passes = input.passes.0.iter().map(Pass::from);
+impl Parse for RendererInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+#[derive(Parse)]
+pub struct Inner {
+    #[allow(dead_code)]
+    pub(crate) name: Ident,
+    #[brace]
+    #[allow(dead_code)]
+    brace: syn::token::Brace,
+    #[prefix(kw::attachments in brace)]
+    #[brace]
+    #[inside(brace)]
+    #[allow(dead_code)]
+    attachments_brace: syn::token::Brace,
+    #[inside(attachments_brace)]
+    pub(crate) attachments: inputs::UnArray<Ident>,
+    #[prefix(kw::formats in brace)]
+    #[brace]
+    #[inside(brace)]
+    #[allow(dead_code)]
+    formats_brace: syn::token::Brace,
+    #[inside(formats_brace)]
+    pub(crate) formats: inputs::UnArray<StaticOrDyn<Expr>>,
+    #[prefix(kw::samples in brace)]
+    #[brace]
+    #[inside(brace)]
+    #[allow(dead_code)]
+    samples_brace: syn::token::Brace,
+    #[inside(samples_brace)]
+    pub(crate) samples: inputs::UnArray<syn::LitInt>,
+    #[prefix(kw::passes in brace)]
+    #[brace]
+    #[inside(brace)]
+    #[allow(dead_code)]
+    passes_brace: syn::token::Brace,
+    #[inside(passes_brace)]
+    pub(crate) passes: inputs::UnArray<Pass>,
+}
+        let input = Inner::parse(input)?;
+        let passes = input.passes.0;
         let attachments = input
             .attachments
             .0
-            .iter()
-            .zip(input.samples.0.iter())
-            .zip(input.formats.0.iter())
+            .into_iter()
+            .zip(input.samples.0.into_iter())
+            .zip(input.formats.0.into_iter())
             .map(|((name, samples), format)| {
                 (name.to_string(), Attachment {
                     name: name.to_string(),
-                    format: StaticOrDyn::from(format).map(|x| x.to_token_stream().to_string()),
+                    format: format.map(|x| x.to_token_stream().to_string()),
                     samples: samples.base10_parse().unwrap(),
                 })
             })
             .collect();
+            Ok(
         RendererInput {
             name: input.name.to_string(),
-            passes: HashMap::from_iter(passes.map(|pass| (pass.name.to_string(), pass.into()))),
+            passes: HashMap::from_iter(passes.into_iter().map(|pass| (pass.name.to_string(), pass))),
             attachments,
             ..Default::default()
         }
-    }
-}
-
-impl From<&inputs::Sequence<Ident, inputs::UnOption<inputs::Sequence<keywords::on, inputs::QueueFamily>>>>
-    for AsyncPass
-{
-    fn from(
-        i: &inputs::Sequence<Ident, inputs::UnOption<inputs::Sequence<keywords::on, inputs::QueueFamily>>>,
-    ) -> Self {
-        let inputs::Sequence((name, queue)) = i;
-        AsyncPass {
-            name: name.to_string(),
-            queue: QueueFamily::from(queue),
-            conditional: Default::default(),
-        }
-    }
-}
-
-impl From<&inputs::AsyncPass> for AsyncPass {
-    fn from(i: &inputs::AsyncPass) -> Self {
-        AsyncPass {
-            name: i.name.to_string(),
-            queue: QueueFamily::from(&i.family),
-            conditional: i
-                .conditional
-                .0
-                .as_ref()
-                .map(Conditional::from)
-                .unwrap_or(Default::default()),
-        }
-    }
-}
-
-impl From<&inputs::Conditional> for Conditional {
-    fn from(i: &inputs::Conditional) -> Self {
-        Conditional {
-            conditions: i
-                .conditions
-                .0
-                .iter()
-                .map(|c| {
-                    let (ref bang, ref x) = c.0;
-                    Condition {
-                        neg: bang.0.is_some(),
-                        switch_name: x.to_string(),
-                    }
-                })
-                .collect(),
-        }
-    }
-}
-
-impl From<&inputs::Pass> for Pass {
-    fn from(p: &inputs::Pass) -> Self {
-        Pass {
-            name: p.name.to_string(),
-            attachments: p.attachments.0 .0.iter().map(|x| x.to_string()).collect(),
-            layouts: HashMap::from_iter(
-                p.layouts
-                    .0
-                    .iter()
-                    .map(|inputs::Sequence((name, layout))| (name.to_string(), PassLayout::from(layout))),
-            ),
-            subpasses: p.subpasses.0 .0.iter().map(Subpass::from).collect(),
-            dependencies: p
-                .dependencies
-                .as_ref()
-                .map(|inputs::Unbrace(inputs::UnArray(x))| x.iter().map(SubpassDependency::from).collect())
-                .unwrap_or(vec![]),
-        }
-    }
-}
-
-impl From<&inputs::SubpassDependency> for SubpassDependency {
-    fn from(d: &inputs::SubpassDependency) -> Self {
-        let d = d.clone();
-        SubpassDependency {
-            src: d.from.to_string(),
-            dst: d.to.to_string(),
-            src_stage: d.src_stage.to_token_stream().to_string(),
-            dst_stage: d.dst_stage.to_token_stream().to_string(),
-            src_access: d.src_access.to_token_stream().to_string(),
-            dst_access: d.dst_access.to_token_stream().to_string(),
-        }
-    }
-}
-
-impl From<&inputs::Subpass> for Subpass {
-    fn from(s: &inputs::Subpass) -> Self {
-        let inputs::Subpass {
-            name,
-            color,
-            depth_stencil,
-            resolve,
-            ..
-        } = s;
-
-        Subpass {
-            name: name.to_string(),
-            color_attachments: color
-                .as_ref()
-                .cloned()
-                .map(|b| {
-                    b.0 .0
-                        .into_iter()
-                        .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
-                        .collect()
-                })
-                .unwrap_or(vec![]),
-            depth_stencil_attachments: depth_stencil
-                .as_ref()
-                .cloned()
-                .map(|x| (x.0 .0 .0.to_string(), x.0 .0 .1.to_string())),
-            resolve_attachments: resolve
-                .as_ref()
-                .cloned()
-                .map(|b| {
-                    b.0 .0
-                        .into_iter()
-                        .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
-                        .collect()
-                })
-                .unwrap_or(vec![]),
-        }
-    }
-}
-
-impl From<&inputs::ArrowPair<inputs::Sequence<inputs::LoadOp, Expr>, inputs::Sequence<inputs::StoreOp, Expr>>>
-    for PassLayout
-{
-    fn from(
-        p: &inputs::ArrowPair<inputs::Sequence<inputs::LoadOp, Expr>, inputs::Sequence<inputs::StoreOp, Expr>>,
-    ) -> Self {
-        let inputs::ArrowPair((
-            inputs::Sequence((load_op, initial_layout)),
-            inputs::Sequence((store_op, final_layout)),
-        )) = p.clone();
-
-        PassLayout {
-            load_op: load_op.into(),
-            initial_layout: initial_layout.to_token_stream().to_string(),
-            store_op: store_op.into(),
-            final_layout: final_layout.to_token_stream().to_string(),
-        }
-    }
-}
-
-impl From<inputs::StoreOp> for StoreOp {
-    fn from(input: inputs::StoreOp) -> Self {
-        match input {
-            inputs::StoreOp::Store => StoreOp::Store,
-            inputs::StoreOp::Discard => StoreOp::Discard,
-        }
-    }
-}
-impl From<inputs::LoadOp> for LoadOp {
-    fn from(input: inputs::LoadOp) -> Self {
-        match input {
-            inputs::LoadOp::Load => LoadOp::Load,
-            inputs::LoadOp::Clear => LoadOp::Clear,
-            inputs::LoadOp::DontCare => LoadOp::DontCare,
-        }
-    }
-}
-
-impl From<inputs::ResourceUsage> for ResourceUsageKind {
-    fn from(u: inputs::ResourceUsage) -> Self {
-        match u {
-            inputs::ResourceUsage::Attachment => Self::Attachment,
-            inputs::ResourceUsage::VertexBuffer => Self::VertexBuffer,
-            inputs::ResourceUsage::IndexBuffer => Self::IndexBuffer,
-            inputs::ResourceUsage::IndirectBuffer => Self::IndirectBuffer,
-            inputs::ResourceUsage::TransferCopy => Self::TransferCopy,
-            inputs::ResourceUsage::TransferClear => Self::TransferClear,
-            inputs::ResourceUsage::Descriptor(set, binding, pipeline) => {
-                Self::Descriptor(set.to_string(), binding.to_string(), pipeline.to_string())
-            }
-        }
-    }
-}
-
-impl From<&inputs::UnOption<inputs::Sequence<keywords::on, inputs::QueueFamily>>> for QueueFamily {
-    fn from(i: &inputs::UnOption<inputs::Sequence<keywords::on, inputs::QueueFamily>>) -> Self {
-        i.0.as_ref()
-            .map(|inputs::Sequence((_kw, queue))| QueueFamily::from(queue))
-            .unwrap_or(Self::Graphics)
-    }
-}
-
-impl From<&inputs::QueueFamily> for QueueFamily {
-    fn from(i: &inputs::QueueFamily) -> Self {
-        match i {
-            inputs::QueueFamily::Graphics => Self::Graphics,
-            inputs::QueueFamily::Compute => Self::Compute,
-            inputs::QueueFamily::Transfer => Self::Transfer,
-        }
-    }
-}
-
-impl From<&inputs::DescriptorSet> for DescriptorSet {
-    fn from(p: &inputs::DescriptorSet) -> Self {
-        DescriptorSet {
-            name: p.name.to_string(),
-            bindings: p
-                .bindings
-                .0
-                .iter()
-                .map(|b| Binding {
-                    name: b.name.to_string(),
-                    count: b
-                        .count
-                        .0
-                        .as_ref()
-                        .map(|inputs::Sequence((a, _))| a.clone())
-                        .unwrap_or(parse_quote!(1))
-                        .base10_parse::<u32>()
-                        .unwrap(),
-                    descriptor_type: b.descriptor_type.to_string(),
-                    partially_bound: b.partially_bound.0.is_some(),
-                    update_after_bind: b.update_after_bind.0.is_some(),
-                    shader_stages: b.stages.0 .0.iter().map(|x| x.to_string()).collect(),
-                })
-                .collect(),
-        }
-    }
-}
-
-impl<T: Clone> From<&inputs::StaticOrDyn<T>> for StaticOrDyn<T> {
-    fn from(input: &inputs::StaticOrDyn<T>) -> Self {
-        match input {
-            inputs::StaticOrDyn::Static(x) => StaticOrDyn::Static(x.clone()),
-            inputs::StaticOrDyn::Dyn => StaticOrDyn::Dyn,
-        }
-    }
-}
-
-impl From<&inputs::NamedField> for NamedField {
-    fn from(input: &inputs::NamedField) -> Self {
-        NamedField {
-            name: input.0.ident.as_ref().unwrap().to_string(),
-            ty: input.0.ty.to_token_stream().to_string(),
-        }
+    )
     }
 }
 

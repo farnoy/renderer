@@ -361,7 +361,10 @@ pub(crate) fn cull_pass_bypass(
 
     frame_graph::TransferCull::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
-    debug_assert!(runtime_config.freeze_culling, "freeze_culling must be on in cull_pass_bypass");
+    debug_assert!(
+        runtime_config.freeze_culling,
+        "freeze_culling must be on in cull_pass_bypass"
+    );
 
     let cull_cb = transfer_cull_private
         .transfer_command_util
@@ -460,7 +463,10 @@ pub(crate) fn cull_pass(
 
     frame_graph::ComputeCull::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
-    debug_assert!(!runtime_config.freeze_culling, "freeze_culling must be off in cull_pass");
+    debug_assert!(
+        !runtime_config.freeze_culling,
+        "freeze_culling must be off in cull_pass"
+    );
 
     CullPassData::configure_pipeline(
         &renderer,

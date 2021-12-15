@@ -87,7 +87,7 @@ pub struct ResourceClaim {
     pub resource_name: String,
     pub step_name: String,
     pub pass_name: String,
-    pub usage: super::ResourceUsageKind,
+    pub usage: ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
     pub conditional: Conditional,
@@ -100,12 +100,70 @@ pub struct ResourceBarrierInput {
     pub conditional_context: HashMap<String, Expr>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ResourceUsageKind {
+    Attachment,
+    VertexBuffer,
+    IndexBuffer,
+    IndirectBuffer,
+    TransferCopy,
+    TransferClear,
+    /// (set, binding, pipeline_name)
+    Descriptor(String, String, String),
+}
+
+impl Parse for ResourceUsageKind {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse::<Sequence<kw::indirect, kw::buffer>>()
+            .and(Ok(Self::IndirectBuffer))
+            .or_else(|_x| input.parse::<kw::attachment>().and(Ok(Self::Attachment)))
+            .or_else(|_| {
+                input
+                    .parse::<Sequence<kw::vertex, kw::buffer>>()
+                    .and(Ok(Self::VertexBuffer))
+            })
+            .or_else(|_| {
+                input
+                    .parse::<Sequence<kw::index, kw::buffer>>()
+                    .and(Ok(Self::IndexBuffer))
+            })
+            .or_else(|_x| {
+                input
+                    .parse::<Sequence<kw::transfer, kw::copy>>()
+                    .and(Ok(Self::TransferCopy))
+            })
+            .or_else(|_x| {
+                input
+                    .parse::<Sequence<kw::transfer, kw::clear>>()
+                    .and(Ok(Self::TransferClear))
+            })
+            .or_else(|_x| {
+                input
+                    .parse::<kw::descriptor>()
+                    .and(input.parse::<Ident>().and_then(|pipe_name| {
+                        input.parse::<Token![.]>().and(input.parse::<Ident>().and_then(|set| {
+                            input
+                                .parse::<Token![.]>()
+                                .and(input.parse::<Ident>().and_then(|binding| {
+                                    Ok(Self::Descriptor(
+                                        set.to_string(),
+                                        binding.to_string(),
+                                        pipe_name.to_string(),
+                                    ))
+                                }))
+                        }))
+                    }))
+            })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResourceClaimInput {
     pub resource_name: String,
     pub step_name: String,
     pub pass_name: String,
-    pub usage: super::ResourceUsageKind,
+    pub usage: ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
     pub after: Vec<String>,
@@ -181,11 +239,11 @@ impl Parse for ResourceClaimInput {
             rw: Option<kw::rw>,
             _in: Token![in],
             pass_name: Ident,
-            usage: inputs::ResourceUsage,
+            usage: ResourceUsageKind,
             _after: Option<kw::after>,
             #[parse_if(_after.is_some())]
             after: Option<Unbracket<UnArray<Ident>>>,
-            conditional: UnOption<inputs::Conditional>,
+            conditional: Conditional,
             sep: Option<Token![;]>,
             #[parse_if(sep.is_some())]
             resource_expr: Option<Expr>,
@@ -198,7 +256,7 @@ impl Parse for ResourceClaimInput {
             resource_name: s.resource_name.to_string(),
             step_name: s.step_name.to_string(),
             pass_name: s.pass_name.to_string(),
-            usage: super::ResourceUsageKind::from(s.usage),
+            usage: s.usage,
             after: s
                 .after
                 .map(|Unbracket(UnArray(idents))| idents.into_iter().map(|i| i.to_string()).collect())
@@ -206,7 +264,7 @@ impl Parse for ResourceClaimInput {
             resource_ident: s.resource_expr,
             reads,
             writes,
-            conditional: s.conditional.0.as_ref().map(Conditional::from).unwrap_or_default(),
+            conditional: s.conditional,
         })
     }
 }

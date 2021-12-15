@@ -9,11 +9,13 @@ use proc_macro2::TokenStream;
 use proc_macro_error::proc_macro_error;
 use quote::{format_ident, quote, ToTokens};
 use renderer_macro_lib::{
-    fetch,
-    inputs::{self, extract_optional_dyn, to_rust_type, to_vk_format, FrameInput},
-    resource_claims::{ResourceBarrierInput, ResourceClaim, ResourceDefinitionInput, ResourceDefinitionType},
+    extract_optional_dyn, fetch,
+    inputs::{to_rust_type, to_vk_format},
+    resource_claims::{
+        ResourceBarrierInput, ResourceClaim, ResourceDefinitionInput, ResourceDefinitionType, ResourceUsageKind,
+    },
     Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RendererInput,
-    ResourceUsageKind, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
+    SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
 };
 use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
 
@@ -536,8 +538,6 @@ pub fn define_timelines(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 #[proc_macro]
 pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let _frame_input = parse_macro_input!(input as FrameInput);
-
     define_frame2().into()
 }
 
@@ -1190,11 +1190,10 @@ make_split!(split7, [A, B, C, D, E, F, G] [0, 1, 2, 3, 4, 5, 6]);
 
 #[proc_macro]
 pub fn define_set(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let inputs::DescriptorSet { name, .. } = parse_macro_input!(input as inputs::DescriptorSet);
+    let set = parse_macro_input!(input as DescriptorSet);
     let data = fetch().unwrap();
-    let set = data.descriptor_sets.get(&name.to_string()).unwrap();
 
-    define_set_old(&data.name, set, &data.shader_information.set_binding_type_names).into()
+    define_set_old(&data.name, &set, &data.shader_information.set_binding_type_names).into()
 }
 
 fn define_set_old(
@@ -1334,8 +1333,7 @@ fn define_set_old(
 
 #[proc_macro]
 pub fn define_pipe(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(input as inputs::Pipe);
-    let pipe = Pipeline::from(input);
+    let pipe = parse_macro_input!(input as Pipeline);
     let data = fetch().unwrap();
 
     define_pipe_old(
