@@ -6,6 +6,7 @@ pub(crate) mod cull_pipeline;
 pub(crate) mod debug_aabb_renderer;
 pub(crate) mod depth_pass;
 pub(crate) mod present;
+pub(crate) mod reference_raytracer;
 pub(crate) mod scene_loader;
 #[cfg(feature = "shader_reload")]
 pub(crate) mod shader_reload;

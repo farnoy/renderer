@@ -92,21 +92,21 @@ pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
         }
         ResourceDefinitionType::Image => quote! {
             #[allow(non_camel_case_types)]
-            pub(crate) struct #name(pub(crate) Image);
+            pub(crate) struct #name(pub(crate) crate::renderer::device::Image);
 
             impl #name {
-                pub(crate) fn import(device: &Device, image: Image) -> Self {
+                pub(crate) fn import(device: &crate::renderer::Device, image: crate::renderer::device::Image) -> Self {
                     device.set_object_name(image.handle, #resource_debug_name);
                     Self(image)
                 }
 
-                pub(crate) fn destroy(self, device: &Device) {
+                pub(crate) fn destroy(self, device: &crate::renderer::device::Device) {
                     self.0.destroy(device);
                 }
             }
 
             impl std::ops::Deref for #name {
-                type Target = Image;
+                type Target = crate::renderer::device::Image;
 
                 fn deref(&self) -> &Self::Target {
                     &self.0
@@ -128,10 +128,12 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut validation_errors = quote!();
     let mut acquire_buffer_barriers: Vec<TokenStream> = vec![];
     let mut acquire_memory_barriers: Vec<TokenStream> = vec![];
+    let mut acquire_image_barriers: Vec<TokenStream> = vec![];
     #[allow(unused_mut)]
     let mut release_buffer_barriers: Vec<TokenStream> = vec![];
     #[allow(unused_mut)]
     let mut release_memory_barriers: Vec<TokenStream> = vec![];
+    let mut release_image_barriers: Vec<TokenStream> = vec![];
     let command_buffer_expr = input.command_buffer_ident;
 
     for claim in input.claims {
@@ -146,7 +148,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
                 .expect("pass not found")
         };
-        let _get_runtime_queue_family = |ty: QueueFamily| match ty {
+        let get_runtime_queue_family = |ty: QueueFamily| match ty {
             QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
             QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
             QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
@@ -197,6 +199,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         };
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
+        let this_queue_runtime = get_runtime_queue_family(this_queue);
         let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
             let (access_prefixes, stages) = match &step.usage {
                 ResourceUsageKind::VertexBuffer => (vec![quote!(VERTEX_ATTRIBUTE)], vec![quote!(VERTEX_INPUT)]),
@@ -291,6 +294,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         for dep in incoming {
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
+            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
 
             if prev_step.pass_name == this.pass_name
                 && prev_step.usage != ResourceUsageKind::Attachment
@@ -362,13 +366,70 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
 
             match claims.ty {
-                ResourceDefinitionType::StaticBuffer { .. } => {
-                    // buffers are never exclusive, so we skip this
+                ResourceDefinitionType::StaticBuffer { .. } => {}
+                ResourceDefinitionType::AccelerationStructure => {}
+                ResourceDefinitionType::Image => {
+                    assert!(
+                        claim.resource_ident.is_some(),
+                        "Expected barrier call to provide resource expr {:?}",
+                        &claim
+                    );
+                    let resource_ident = &claim.resource_ident;
+                    let this_layout = claim.layout.as_ref().expect(&format!(
+                        "did not specify desired image layout {}.{}",
+                        &this.pass_name, &this.step_name
+                    ));
+                    let prev_layout = prev_step.layout.as_ref().expect(&format!(
+                        "did not specify desired image layout {}.{}",
+                        &prev_step.pass_name, &prev_step.step_name
+                    ));
+                    let this_layout = format_ident!("{}", this_layout);
+                    let prev_layout = format_ident!("{}", prev_layout);
+                    emitted_barriers += 1;
+                    // TODO: need robust tracking of resources/archetypes
+                    acquire_image_barriers.push(quote! {
+                        if renderer.frame_number == 1 {
+                            acquire_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
+                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                .new_layout(vk::ImageLayout::#this_layout)
+                                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
+                                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
+                                .subresource_range(vk::ImageSubresourceRange::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .level_count(1)
+                                    .layer_count(1)
+                                    .build())
+                                .image(#resource_ident.handle)
+                                .build());
+                        } else {
+                            acquire_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
+                                .src_queue_family_index(#prev_queue_runtime)
+                                .dst_queue_family_index(#this_queue_runtime)
+                                .old_layout(vk::ImageLayout::#prev_layout)
+                                .new_layout(vk::ImageLayout::#this_layout)
+                                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
+                                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
+                                .subresource_range(vk::ImageSubresourceRange::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .level_count(1)
+                                    .layer_count(1)
+                                    .build())
+                                .image(#resource_ident.handle)
+                                .build()
+                            );
+                        }
+                    });
                 }
-                ResourceDefinitionType::AccelerationStructure => {
-                    // ASes have no sharing mode and therefore no exclusive ownership
-                }
-                _ => todo!("same queue buffer unknown resource"),
             }
         }
         assert!(
@@ -381,6 +442,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         for dep in outgoing {
             let next_step = &claims.graph[dep];
             let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
+            let next_queue_runtime = get_runtime_queue_family(next_queue);
 
             if this_queue == next_queue {
                 continue;
@@ -393,7 +455,45 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 ResourceDefinitionType::AccelerationStructure => {
                     // ASes have no sharing mode and therefore no exclusive ownership
                 }
-                _ => todo!("release unknown resource"),
+                ResourceDefinitionType::Image => {
+                    assert!(
+                        claim.resource_ident.is_some(),
+                        "Expected barrier call to provide resource expr {:?}",
+                        &claim
+                    );
+                    let resource_ident = &claim.resource_ident;
+                    let this_layout = claim.layout.as_ref().expect(&format!(
+                        "did not specify desired image layout {}.{}",
+                        &this.pass_name, &this.step_name
+                    ));
+                    let next_layout = next_step.layout.as_ref().expect(&format!(
+                        "did not specify desired image layout {}.{}",
+                        &next_step.pass_name, &next_step.step_name
+                    ));
+                    let this_layout = format_ident!("{}", this_layout);
+                    let next_layout = format_ident!("{}", next_layout);
+                    emitted_barriers += 1;
+                    release_image_barriers.push(quote! {
+                        release_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
+                            .src_queue_family_index(#this_queue_runtime)
+                            .dst_queue_family_index(#next_queue_runtime)
+                            .old_layout(vk::ImageLayout::#this_layout)
+                            .new_layout(vk::ImageLayout::#next_layout)
+                            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                             vk::AccessFlags2KHR::MEMORY_WRITE)
+                            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
+                                             vk::AccessFlags2KHR::MEMORY_WRITE)
+                            .subresource_range(vk::ImageSubresourceRange::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .level_count(1)
+                                .layer_count(1)
+                                .build())
+                            .image(#resource_ident.handle)
+                            .build())
+                    });
+                }
             }
         }
         assert!(
@@ -406,6 +506,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let acquire_buffer_barriers_len = acquire_buffer_barriers.len();
     let acquire_memory_barriers_len = acquire_memory_barriers.len();
+    let acquire_image_barriers_len = acquire_image_barriers.len();
     let acquire_block = quote! {
         let mut acquire_buffer_barriers: smallvec::SmallVec<[vk::BufferMemoryBarrier2KHR; #acquire_buffer_barriers_len]> = smallvec::SmallVec::new_const();
         {
@@ -417,17 +518,24 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #(#acquire_memory_barriers;)*
         }
         let acquire_memory_barriers = acquire_memory_barriers;
-        if !acquire_buffer_barriers.is_empty() || !acquire_memory_barriers.is_empty() {
+        let mut acquire_image_barriers: smallvec::SmallVec<[vk::ImageMemoryBarrier2KHR; #acquire_image_barriers_len]> = smallvec::SmallVec::new_const();
+        {
+            #(#acquire_image_barriers;)*
+        }
+        let acquire_image_barriers = acquire_image_barriers;
+        if !acquire_buffer_barriers.is_empty() || !acquire_memory_barriers.is_empty() || !acquire_image_barriers.is_empty() {
             renderer.device.synchronization2.cmd_pipeline_barrier2(
                 #command_buffer_expr,
                 &vk::DependencyInfoKHR::builder()
                     .buffer_memory_barriers(&acquire_buffer_barriers)
-                    .memory_barriers(&acquire_memory_barriers),
+                    .memory_barriers(&acquire_memory_barriers)
+                    .image_memory_barriers(&acquire_image_barriers),
             );
         }
     };
     let release_buffer_barriers_len = release_buffer_barriers.len();
     let release_memory_barriers_len = release_memory_barriers.len();
+    let release_image_barriers_len = release_image_barriers.len();
     let release_block = quote! {
         let mut release_buffer_barriers: smallvec::SmallVec<[vk::BufferMemoryBarrier2KHR; #release_buffer_barriers_len]> = smallvec::SmallVec::new_const();
         {
@@ -439,12 +547,18 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #(#release_memory_barriers;)*
         }
         let release_memory_barriers = release_memory_barriers;
-        if !release_buffer_barriers.is_empty() || !release_memory_barriers.is_empty() {
+        let mut release_image_barriers: smallvec::SmallVec<[vk::ImageMemoryBarrier2KHR; #release_image_barriers_len]> = smallvec::SmallVec::new_const();
+        {
+            #(#release_image_barriers;)*
+        }
+        let release_image_barriers = release_image_barriers;
+        if !release_buffer_barriers.is_empty() || !release_memory_barriers.is_empty() || !release_image_barriers.is_empty() {
             renderer.device.synchronization2.cmd_pipeline_barrier2(
                 #command_buffer_expr,
                 &vk::DependencyInfoKHR::builder()
                     .buffer_memory_barriers(&release_buffer_barriers)
-                    .memory_barriers(&release_memory_barriers),
+                    .memory_barriers(&release_memory_barriers)
+                    .image_memory_barriers(&release_image_barriers),
             );
         }
     };

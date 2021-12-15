@@ -46,7 +46,10 @@ use self::{
         StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, VmaMemoryUsage,
     },
     helpers::command_util::CommandUtil,
-    systems::{cull_pipeline::cull_set, depth_pass::depth_only_pass, shadow_mapping::shadow_map_set},
+    systems::{
+        cull_pipeline::cull_set, depth_pass::depth_only_pass, reference_raytracer::reference_raytrace,
+        shadow_mapping::shadow_map_set,
+    },
 };
 pub(crate) use self::{
     gltf_mesh_io::{load as load_gltf, LoadedMesh},
@@ -65,6 +68,7 @@ pub(crate) use self::{
         debug_aabb_renderer::DebugAABBPassData,
         depth_pass::DepthPassData,
         present::{acquire_framebuffer, ImageIndex, PresentData, PresentFramebuffer},
+        reference_raytracer::{ReferenceRTData, ReferenceRTDataPrivate},
         scene_loader::{
             initiate_scene_loader, traverse_and_decode_scenes, upload_loaded_meshes,
             LoadedMesh as SceneLoaderLoadedMesh, ScenesToLoad, UploadMeshesData,
@@ -1522,7 +1526,11 @@ pub(crate) fn render_frame(
     (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
-    (main_framebuffer, acceleration_structures): (Res<MainFramebuffer>, Res<AccelerationStructures>),
+    (main_framebuffer, acceleration_structures, reference_rt_data): (
+        Res<MainFramebuffer>,
+        Res<AccelerationStructures>,
+        Res<ReferenceRTData>,
+    ),
     (submissions, mut gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
         Res<Submissions>,
         ResMut<GltfPassData>,
@@ -1585,6 +1593,7 @@ pub(crate) fn render_frame(
         ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate] if [!DEBUG_AABB],
         CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
         DepthRT.in_main r in Main attachment after [draw_depth],
+        ReferenceRaytraceOutput.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as layout READ_ONLY_OPTIMAL_KHR after [generate] if [!DEBUG_AABB, RT]; {&reference_rt_data.output_image}
     );
     unsafe {
         renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
@@ -2351,21 +2360,21 @@ pub(crate) fn graphics_stage() -> SystemStage {
         setup_submissions.fork((consolidate_mesh_buffers.system(), upload_loaded_meshes.system()));
 
     let initial = (copy_runtime_config, copy_camera, copy_indices, consolidate_mesh_buffers);
-    let (recreate_main_framebuffer, recreate_base_color, cull, cull_bypass, build_as, shadow_mapping) = initial
-        .join_all((
+    let (recreate_main_framebuffer, recreate_base_color, cull, cull_bypass, build_as, shadow_mapping, reference_rt) =
+        initial.join_all((
             recreate_main_framebuffer.system(),
             recreate_base_color_descriptor_set.system(),
             cull_pass.system(),
             cull_pass_bypass.system(),
             build_acceleration_structures.system(),
             prepare_shadow_maps.system(),
+            reference_raytrace.system(),
         ));
 
     let depth = recreate_main_framebuffer.then(depth_only_pass.system());
 
     let update_base_color = recreate_base_color.then(update_base_color_descriptors);
 
-    // TODO: this only needs to wait before submission, could record in parallel
     let main_pass = (recreate_main_framebuffer, update_base_color, build_as).join(render_frame);
 
     (
@@ -2375,6 +2384,7 @@ pub(crate) fn graphics_stage() -> SystemStage {
         depth,
         shadow_mapping,
         upload_loaded_meshes,
+        reference_rt,
     )
         .join(PresentFramebuffer::exec);
 

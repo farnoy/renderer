@@ -1464,42 +1464,42 @@ impl Parse for Pipeline {
 
 impl Parse for RendererInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-#[derive(Parse)]
-pub struct Inner {
-    #[allow(dead_code)]
-    pub(crate) name: Ident,
-    #[brace]
-    #[allow(dead_code)]
-    brace: syn::token::Brace,
-    #[prefix(kw::attachments in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    attachments_brace: syn::token::Brace,
-    #[inside(attachments_brace)]
-    pub(crate) attachments: inputs::UnArray<Ident>,
-    #[prefix(kw::formats in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    formats_brace: syn::token::Brace,
-    #[inside(formats_brace)]
-    pub(crate) formats: inputs::UnArray<StaticOrDyn<Expr>>,
-    #[prefix(kw::samples in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    samples_brace: syn::token::Brace,
-    #[inside(samples_brace)]
-    pub(crate) samples: inputs::UnArray<syn::LitInt>,
-    #[prefix(kw::passes in brace)]
-    #[brace]
-    #[inside(brace)]
-    #[allow(dead_code)]
-    passes_brace: syn::token::Brace,
-    #[inside(passes_brace)]
-    pub(crate) passes: inputs::UnArray<Pass>,
-}
+        #[derive(Parse)]
+        pub struct Inner {
+            #[allow(dead_code)]
+            pub(crate) name: Ident,
+            #[brace]
+            #[allow(dead_code)]
+            brace: syn::token::Brace,
+            #[prefix(kw::attachments in brace)]
+            #[brace]
+            #[inside(brace)]
+            #[allow(dead_code)]
+            attachments_brace: syn::token::Brace,
+            #[inside(attachments_brace)]
+            pub(crate) attachments: inputs::UnArray<Ident>,
+            #[prefix(kw::formats in brace)]
+            #[brace]
+            #[inside(brace)]
+            #[allow(dead_code)]
+            formats_brace: syn::token::Brace,
+            #[inside(formats_brace)]
+            pub(crate) formats: inputs::UnArray<StaticOrDyn<Expr>>,
+            #[prefix(kw::samples in brace)]
+            #[brace]
+            #[inside(brace)]
+            #[allow(dead_code)]
+            samples_brace: syn::token::Brace,
+            #[inside(samples_brace)]
+            pub(crate) samples: inputs::UnArray<syn::LitInt>,
+            #[prefix(kw::passes in brace)]
+            #[brace]
+            #[inside(brace)]
+            #[allow(dead_code)]
+            passes_brace: syn::token::Brace,
+            #[inside(passes_brace)]
+            pub(crate) passes: inputs::UnArray<Pass>,
+        }
         let input = Inner::parse(input)?;
         let passes = input.passes.0;
         let attachments = input
@@ -1516,14 +1516,12 @@ pub struct Inner {
                 })
             })
             .collect();
-            Ok(
-        RendererInput {
+        Ok(RendererInput {
             name: input.name.to_string(),
             passes: HashMap::from_iter(passes.into_iter().map(|pass| (pass.name.to_string(), pass))),
             attachments,
             ..Default::default()
-        }
-    )
+        })
     }
 }
 

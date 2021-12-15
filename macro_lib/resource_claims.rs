@@ -90,6 +90,7 @@ pub struct ResourceClaim {
     pub usage: ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
+    pub layout: Option<String>,
     pub conditional: Conditional,
 }
 
@@ -166,6 +167,7 @@ pub struct ResourceClaimInput {
     pub usage: ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
+    pub layout: Option<String>,
     pub after: Vec<String>,
     pub conditional: Conditional,
     pub resource_ident: Option<Expr>,
@@ -193,6 +195,7 @@ impl ResourceClaimInput {
             usage: self.usage,
             reads: self.reads,
             writes: self.writes,
+            layout: self.layout,
             conditional: self.conditional,
         }
     }
@@ -240,6 +243,9 @@ impl Parse for ResourceClaimInput {
             _in: Token![in],
             pass_name: Ident,
             usage: ResourceUsageKind,
+            _layout: Option<kw::layout>,
+            #[parse_if(_layout.is_some())]
+            layout: Option<Ident>,
             _after: Option<kw::after>,
             #[parse_if(_after.is_some())]
             after: Option<Unbracket<UnArray<Ident>>>,
@@ -261,6 +267,7 @@ impl Parse for ResourceClaimInput {
                 .after
                 .map(|Unbracket(UnArray(idents))| idents.into_iter().map(|i| i.to_string()).collect())
                 .unwrap_or(vec![]),
+            layout: s.layout.map(|i| i.to_string()),
             resource_ident: s.resource_expr,
             reads,
             writes,

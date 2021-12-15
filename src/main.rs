@@ -53,7 +53,8 @@ use renderer::{
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
 
 use crate::renderer::{
-    initiate_scene_loader, traverse_and_decode_scenes, ScenesToLoad, TransferCullPrivate, UploadMeshesData,
+    initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate, ScenesToLoad,
+    TransferCullPrivate, UploadMeshesData,
 };
 
 fn main() {
@@ -674,6 +675,8 @@ fn main() {
     app.init_resource::<CopiedResource<SwapchainIndexToFrameNumber>>();
     app.init_resource::<DebugAABBPassData>();
     app.init_resource::<MainFramebuffer>();
+    app.init_resource::<ReferenceRTDataPrivate>();
+    app.init_resource::<ReferenceRTData>();
     app.insert_non_send_resource(input_handler);
     app.insert_non_send_resource(gui);
     app.init_resource::<GuiRenderData>();
@@ -996,6 +999,16 @@ fn main() {
     app.app
         .world
         .remove_resource::<MeshLibrary>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<ReferenceRTData>()
+        .unwrap()
+        .destroy(&render_frame.device);
+    app.app
+        .world
+        .remove_resource::<ReferenceRTDataPrivate>()
         .unwrap()
         .destroy(&render_frame.device);
     app.app

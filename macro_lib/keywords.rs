@@ -72,6 +72,7 @@ custom_keyword!(partially);
 custom_keyword!(bound);
 custom_keyword!(update);
 custom_keyword!(after);
+custom_keyword!(layout);
 custom_keyword!(bind);
 custom_keyword!(pipelines);
 custom_keyword!(sets);
