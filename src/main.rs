@@ -675,8 +675,8 @@ fn main() {
     app.init_resource::<CopiedResource<SwapchainIndexToFrameNumber>>();
     app.init_resource::<DebugAABBPassData>();
     app.init_resource::<MainFramebuffer>();
-    app.init_resource::<ReferenceRTDataPrivate>();
     app.init_resource::<ReferenceRTData>();
+    app.init_resource::<ReferenceRTDataPrivate>();
     app.insert_non_send_resource(input_handler);
     app.insert_non_send_resource(gui);
     app.init_resource::<GuiRenderData>();
@@ -1010,7 +1010,7 @@ fn main() {
         .world
         .remove_resource::<ReferenceRTDataPrivate>()
         .unwrap()
-        .destroy(&render_frame.device);
+        .destroy(&render_frame.device, &main_descriptor_pool);
     app.app
         .world
         .remove_resource::<MainFramebuffer>()

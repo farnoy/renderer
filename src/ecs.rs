@@ -243,6 +243,7 @@ pub(crate) mod systems {
         pub(crate) fly_mode: bool,
         pub(crate) freeze_culling: bool,
         pub(crate) rt: bool,
+        pub(crate) reference_rt: bool,
         pub(crate) compute_cull_workgroup_size: u32,
     }
 
@@ -253,6 +254,7 @@ pub(crate) mod systems {
                 fly_mode: false,
                 freeze_culling: false,
                 rt: true,
+                reference_rt: true,
                 compute_cull_workgroup_size: INITIAL_WORKGROUP_SIZE,
             }
         }
@@ -334,6 +336,7 @@ pub(crate) mod systems {
                     ui.checkbox("Debug collision AABBs", &mut runtime_config.debug_aabbs);
                     ui.checkbox("Freeze culling data", &mut runtime_config.freeze_culling);
                     ui.checkbox("Use Raytracing", &mut runtime_config.rt);
+                    ui.checkbox("* Show reference", &mut runtime_config.reference_rt);
                 }
 
                 #[cfg(feature = "shader_reload")]

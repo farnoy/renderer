@@ -292,6 +292,10 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         // }
 
         for dep in incoming {
+            let this_external = !claims
+                .graph
+                .neighbors_directed(this_node, Direction::Incoming)
+                .any(|_| true);
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
             let prev_queue_runtime = get_runtime_queue_family(prev_queue);
@@ -388,7 +392,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     emitted_barriers += 1;
                     // TODO: need robust tracking of resources/archetypes
                     acquire_image_barriers.push(quote! {
-                        if renderer.frame_number == 1 {
+                        if #this_external && renderer.frame_number == 1 {
                             acquire_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
                                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -651,7 +655,7 @@ pub fn define_timelines(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 #[proc_macro]
-pub fn define_frame(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn define_frame(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
     define_frame2().into()
 }
 

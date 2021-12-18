@@ -231,18 +231,14 @@ where
 }
 
 fn str_to_descriptor_type(id: &str) -> vk::DescriptorType {
-    if id == "UNIFORM_BUFFER" {
-        vk::DescriptorType::UNIFORM_BUFFER
-    } else if id == "STORAGE_BUFFER" {
-        vk::DescriptorType::STORAGE_BUFFER
-    } else if id == "STORAGE_BUFFER_DYNAMIC" {
-        vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
-    } else if id == "COMBINED_IMAGE_SAMPLER" {
-        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
-    } else if id == "ACCELERATION_STRUCTURE_KHR" {
-        vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
-    } else {
-        unimplemented!("ident_to_descriptor_type {}", id)
+    match id {
+        "UNIFORM_BUFFER" => vk::DescriptorType::UNIFORM_BUFFER,
+        "STORAGE_BUFFER" => vk::DescriptorType::STORAGE_BUFFER,
+        "STORAGE_BUFFER_DYNAMIC" => vk::DescriptorType::STORAGE_BUFFER_DYNAMIC,
+        "COMBINED_IMAGE_SAMPLER" => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        "ACCELERATION_STRUCTURE_KHR" => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+        "STORAGE_IMAGE" => vk::DescriptorType::STORAGE_IMAGE,
+        _ => unimplemented!("ident_to_descriptor_type {}", id),
     }
 }
 

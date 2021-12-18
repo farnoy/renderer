@@ -1,0 +1,15 @@
+#version 450
+
+#extension GL_KHR_shader_subgroup_basic: require
+#extension GL_KHR_shader_subgroup_ballot: require
+#extension GL_KHR_shader_subgroup_shuffle: require
+#extension GL_EXT_scalar_block_layout: require
+#extension GL_KHR_shader_subgroup_vote : require
+
+layout (local_size_x = 4, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2D rt_output;
+
+void main() {
+    imageStore(rt_output, ivec2(gl_GlobalInvocationID.xy), vec4(0.9, 0.3, 0.3, 1.0));
+}

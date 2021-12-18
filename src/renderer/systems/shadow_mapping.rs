@@ -13,8 +13,8 @@ use crate::{
     renderer::{
         camera_set, device::VmaMemoryUsage, frame_graph, frame_graph::LightMatrices, pick_lod,
         systems::depth_pass::depth_pipe, update_whole_buffer, BufferType, CameraMatrices, Device, DoubleBuffered,
-        DrawIndex, GltfMesh, Image, ImageIndex, ImageView, MainDescriptorPool, ModelData, RenderFrame, RenderStage,
-        Sampler, SmartPipeline, SmartPipelineLayout, SmartSet, SmartSetLayout, StrictCommandPool, Submissions,
+        DrawIndex, GltfMesh, ImageIndex, ImageView, MainDescriptorPool, ModelData, RenderFrame, RenderStage, Sampler,
+        SmartPipeline, SmartPipelineLayout, SmartSet, SmartSetLayout, StrictCommandPool, Submissions,
         SwapchainIndexToFrameNumber,
     },
 };

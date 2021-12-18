@@ -245,7 +245,7 @@ renderer_macros::define_frame! {
                 layouts {
                     Depth load DEPTH_STENCIL_READ_ONLY_OPTIMAL => discard DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                     Color clear UNDEFINED => discard COLOR_ATTACHMENT_OPTIMAL,
-                    PresentSurface clear UNDEFINED => store PRESENT_SRC_KHR
+                    PresentSurface clear UNDEFINED => store TRANSFER_DST_OPTIMAL // TODO: connect this to the rendergraph & resource claims
                 }
                 subpasses {
                     GltfPass {
@@ -836,6 +836,14 @@ pub(crate) trait RefTuple {
         Self: 'a;
 }
 
+impl RefTuple for () {
+    #[allow(single_use_lifetimes)]
+    type Ref<'a>
+    where
+        Self: 'a,
+    = ();
+}
+
 impl<A> RefTuple for (A,) {
     type Ref<'a>
     where
@@ -1223,7 +1231,7 @@ impl MainFramebuffer {
             &[
                 vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
             ],
             (
                 swapchain.surface.surface_format.format,
@@ -1593,8 +1601,8 @@ pub(crate) fn render_frame(
         ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate] if [!DEBUG_AABB],
         CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
         DepthRT.in_main r in Main attachment after [draw_depth],
-        ReferenceRaytraceOutput.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as layout READ_ONLY_OPTIMAL_KHR after [generate] if [!DEBUG_AABB, RT]; {&reference_rt_data.output_image}
     );
+    let reference_rt = runtime_config.reference_rt;
     unsafe {
         renderer.device.cmd_set_viewport(*command_buffer, 0, &[vk::Viewport {
             x: 0.0,
@@ -1758,6 +1766,95 @@ pub(crate) fn render_frame(
     }
     drop(guard);
     drop(main_renderpass_marker);
+
+    if reference_rt {
+        unsafe {
+            let _rt_copy_marker = command_buffer.debug_marker_around("copy reference RT output", [0.0, 1.0, 1.0, 1.0]);
+            let swapchain_images = swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap();
+            let barriers = [vk::ImageMemoryBarrier2KHR::builder()
+                .image(swapchain_images[image_index.0 as usize])
+                .subresource_range(
+                    vk::ImageSubresourceRange::builder()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1)
+                        .build(),
+                )
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_GRAPHICS)
+                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_TRANSFER)
+                .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+                .build()];
+            renderer.device.synchronization2.cmd_pipeline_barrier2(
+                *command_buffer,
+                &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
+            );
+            let _guard = renderer_macros::barrier!(
+                *command_buffer,
+                Color.show_reference_rt w in Main transfer copy layout TRANSFER_DST_OPTIMAL after [render] if [!DEBUG_AABB, RT, REFERENCE_RT],
+                ReferenceRaytraceOutput.in_main r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [generate] if [!DEBUG_AABB, RT, REFERENCE_RT]; {&reference_rt_data.output_image}
+            );
+            renderer.device.cmd_blit_image(
+                *command_buffer,
+                reference_rt_data.output_image.handle,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                swapchain_images[image_index.0 as usize],
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::ImageBlit::builder()
+                    .src_subresource(
+                        vk::ImageSubresourceLayers::builder()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1)
+                            .build(),
+                    )
+                    .src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D {
+                        x: swapchain.width as i32,
+                        y: swapchain.height as i32,
+                        z: 1,
+                    }])
+                    .dst_subresource(
+                        vk::ImageSubresourceLayers::builder()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1)
+                            .build(),
+                    )
+                    .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D {
+                        x: swapchain.width as i32,
+                        y: swapchain.height as i32,
+                        z: 1,
+                    }])
+                    .build()],
+                vk::Filter::LINEAR,
+            );
+
+            let barriers = [vk::ImageMemoryBarrier2KHR::builder()
+                .image(swapchain_images[image_index.0 as usize])
+                .subresource_range(
+                    vk::ImageSubresourceRange::builder()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1)
+                        .build(),
+                )
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_stage_mask(vk::PipelineStageFlags2KHR::BLIT)
+                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags2KHR::NONE)
+                .build()];
+            renderer.device.synchronization2.cmd_pipeline_barrier2(
+                *command_buffer,
+                &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
+            );
+        }
+    }
 
     let command_buffer = *command_buffer.end();
 
@@ -2457,6 +2554,7 @@ fn setup_submissions(
         ("FREEZE_CULLING".to_string(), runtime_config.freeze_culling),
         ("DEBUG_AABB".to_string(), runtime_config.debug_aabbs),
         ("RT".to_string(), runtime_config.rt),
+        ("REFERENCE_RT".to_string(), runtime_config.reference_rt),
     ]
     .into_iter()
     .collect();

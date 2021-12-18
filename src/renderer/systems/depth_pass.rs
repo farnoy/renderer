@@ -11,7 +11,7 @@ use crate::{
     ecs::systems::RuntimeConfiguration,
     renderer::{
         binding_size, camera_set, device::Device, frame_graph, helpers::command_util::CommandUtil, model_set,
-        systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData, Image,
+        systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
         ImageIndex, MainAttachments, ModelData, RenderFrame, Resized, SmartPipeline, SmartPipelineLayout, Submissions,
         Swapchain,
     },
