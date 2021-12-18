@@ -23,7 +23,7 @@ pub(crate) const MAP_SIZE: u32 = 4096;
 // dimensions of the square texture, 4x4 slots = 16 in total
 pub(crate) const DIM: u32 = 4;
 
-renderer_macros::define_resource! { ShadowMapAtlas = Image }
+renderer_macros::define_resource! { ShadowMapAtlas = Image DEPTH }
 
 renderer_macros::define_set! {
     shadow_map_set {
@@ -32,13 +32,18 @@ renderer_macros::define_set! {
     }
 }
 
+renderer_macros::define_pass! { ShadowMapping on graphics }
+renderer_macros::define_renderpass! {
+    ShadowMappingRP {
+        depth_stencil { ShadowMapAtlas DEPTH_STENCIL_ATTACHMENT_OPTIMAL load => store }
+    }
+}
+
 pub(crate) struct ShadowMappingData {
     depth_pipeline_layout: SmartPipelineLayout<depth_pipe::PipelineLayout>,
     depth_pipeline: SmartPipeline<depth_pipe::Pipeline>,
-    renderpass: frame_graph::ShadowMapping::RenderPass,
-    depth_image: ShadowMapAtlas,
+    pub(crate) depth_image: ShadowMapAtlas,
     depth_image_view: ImageView,
-    framebuffer: frame_graph::ShadowMapping::Framebuffer,
     pub(crate) user_set_layout: SmartSetLayout<shadow_map_set::Layout>,
     pub(crate) user_set: DoubleBuffered<SmartSet<shadow_map_set::Set>>,
     user_sampler: Sampler,
@@ -56,8 +61,6 @@ impl ShadowMappingData {
         camera_matrices: &CameraMatrices,
         main_descriptor_pool: &mut MainDescriptorPool,
     ) -> ShadowMappingData {
-        let renderpass = frame_graph::ShadowMapping::RenderPass::new(renderer, ());
-
         let depth_pipeline_layout = SmartPipelineLayout::new(
             &renderer.device,
             (&model_data.model_set_layout, &camera_matrices.set_layout),
@@ -66,7 +69,7 @@ impl ShadowMappingData {
             &renderer.device,
             &depth_pipeline_layout,
             depth_pipe::Specialization {},
-            (renderpass.renderpass.handle, 0, vk::SampleCountFlags::TYPE_1),
+            (0, vk::SampleCountFlags::TYPE_1),
         );
 
         let depth_image = ShadowMapAtlas::import(
@@ -158,14 +161,6 @@ impl ShadowMappingData {
         }
         command_pool.destroy(&renderer.device);
 
-        let framebuffer = frame_graph::ShadowMapping::Framebuffer::new(
-            renderer,
-            &renderpass,
-            &[vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED],
-            (),
-            (MAP_SIZE * DIM, MAP_SIZE * DIM),
-        );
-
         let user_set_layout = SmartSetLayout::new(&renderer.device);
 
         let user_sampler = renderer.device.new_sampler(
@@ -207,12 +202,10 @@ impl ShadowMappingData {
         });
 
         ShadowMappingData {
-            renderpass,
             depth_image,
             depth_image_view,
             depth_pipeline_layout,
             depth_pipeline,
-            framebuffer,
             user_set_layout,
             user_set,
             user_sampler,
@@ -222,7 +215,6 @@ impl ShadowMappingData {
     pub(crate) fn destroy(self, device: &Device, main_descriptor_pool: &MainDescriptorPool) {
         self.depth_pipeline.destroy(device);
         self.depth_pipeline_layout.destroy(device);
-        self.renderpass.destroy(device);
         self.user_sampler.destroy(device);
         self.depth_image_view.destroy(device);
         self.depth_image.destroy(device);
@@ -230,7 +222,6 @@ impl ShadowMappingData {
             .into_iter()
             .for_each(|s| s.destroy(&main_descriptor_pool.0, device));
         self.user_set_layout.destroy(device);
-        self.framebuffer.destroy(device);
     }
 }
 
@@ -389,12 +380,11 @@ pub(crate) fn prepare_shadow_maps(
         let _shadow_mapping_marker = command_buffer.debug_marker_around("shadow mapping", [0.8, 0.1, 0.1, 1.0]);
         let _guard = renderer_macros::barrier!(
             *command_buffer,
-            ShadowMapAtlas.prepare rw in ShadowMapping attachment
+            ShadowMapAtlas.prepare rw in ShadowMapping attachment in ShadowMappingRP; {&shadow_mapping.depth_image}
         );
 
-        shadow_mapping.renderpass.begin(
+        ShadowMappingRP::begin(
             &renderer,
-            &shadow_mapping.framebuffer,
             *command_buffer,
             vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
@@ -487,7 +477,7 @@ pub(crate) fn prepare_shadow_maps(
             }
         }
 
-        renderer.device.cmd_end_render_pass(*command_buffer);
+        renderer.device.dynamic_rendering.cmd_end_rendering(*command_buffer);
     }
     let command_buffer = command_buffer.end();
 

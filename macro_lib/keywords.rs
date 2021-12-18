@@ -80,3 +80,5 @@ custom_keyword!(data_types);
 custom_keyword!(r);
 custom_keyword!(w);
 custom_keyword!(rw);
+custom_keyword!(dynamic);
+custom_keyword!(renderpass);

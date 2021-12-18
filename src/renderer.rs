@@ -217,29 +217,6 @@ renderer_macros::define_frame! {
             1
         }
         passes {
-            ShadowMapping {
-                attachments [ShadowMapAtlas]
-                layouts {
-                    ShadowMapAtlas load DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
-                                => store DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
-                }
-                subpasses {
-                    ShadowMappingMain {
-                        depth_stencil { ShadowMapAtlas => DEPTH_STENCIL_ATTACHMENT_OPTIMAL }
-                    }
-                }
-            },
-            DepthOnly {
-                attachments [Depth]
-                layouts {
-                    Depth clear UNDEFINED => store DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                }
-                subpasses {
-                    Main {
-                        depth_stencil { Depth => DEPTH_STENCIL_ATTACHMENT_OPTIMAL }
-                    }
-                }
-            },
             Main {
                 attachments [Color, Depth, PresentSurface]
                 layouts {
@@ -266,6 +243,13 @@ renderer_macros::define_frame! {
         }
     }
 }
+
+// renderer_macros::define_renderpass! {
+//     MainRP {
+//         color [Color COLOR_ATTACHMENT_OPTIMAL clear => store]
+//         depth_stencil { Depth DEPTH_STENCIL_READ_ONLY_OPTIMAL load => discard }
+//     }
+// }
 
 // purely virtual, just to have a synchronization point at the start of the frame
 renderer_macros::define_pass!(PresentationAcquire on graphics);
@@ -999,7 +983,7 @@ impl MainRenderpass {
 
 impl RenderFrame {
     pub(crate) fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
-        let (instance, events_loop) = Instance::new().expect("Failed to create instance");
+        let (instance, events_loop) = Instance::new();
         let instance = Arc::new(instance);
         let surface = Surface::new(&instance);
         let device = Device::new(&instance, &surface).expect("Failed to create device");
@@ -1068,7 +1052,7 @@ impl MainDescriptorPool {
     }
 }
 
-renderer_macros::define_resource!(Color = Image);
+renderer_macros::define_resource!(Color = Image COLOR);
 pub(crate) struct MainAttachments {
     #[allow(unused)]
     swapchain_image_views: Vec<ImageView>,
@@ -1595,12 +1579,12 @@ pub(crate) fn render_frame(
         IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
         IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
         TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB, RT],
-        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps after [prepare] if [!DEBUG_AABB],
-        Color.render rw in Main attachment,
+        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps layout DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL after [prepare] if [!DEBUG_AABB]; {&shadow_mapping_data.depth_image},
+        Color.render rw in Main attachment in Main layout COLOR_ATTACHMENT_OPTIMAL; {&main_attachments.color_image},
         ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth] if [!DEBUG_AABB],
         ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate] if [!DEBUG_AABB],
         CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
-        DepthRT.in_main r in Main attachment after [draw_depth],
+        DepthRT.in_main r in Main attachment in Main layout DEPTH_STENCIL_READ_ONLY_OPTIMAL after [draw_depth]; {&main_attachments.depth_image},
     );
     let reference_rt = runtime_config.reference_rt;
     unsafe {
@@ -1795,7 +1779,6 @@ pub(crate) fn render_frame(
             );
             let _guard = renderer_macros::barrier!(
                 *command_buffer,
-                Color.show_reference_rt w in Main transfer copy layout TRANSFER_DST_OPTIMAL after [render] if [!DEBUG_AABB, RT, REFERENCE_RT],
                 ReferenceRaytraceOutput.in_main r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [generate] if [!DEBUG_AABB, RT, REFERENCE_RT]; {&reference_rt_data.output_image}
             );
             renderer.device.cmd_blit_image(

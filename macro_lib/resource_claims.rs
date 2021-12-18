@@ -103,7 +103,8 @@ pub struct ResourceBarrierInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ResourceUsageKind {
-    Attachment,
+    /// RenderPass name
+    Attachment(String),
     VertexBuffer,
     IndexBuffer,
     IndirectBuffer,
@@ -118,7 +119,11 @@ impl Parse for ResourceUsageKind {
         input
             .parse::<Sequence<kw::indirect, kw::buffer>>()
             .and(Ok(Self::IndirectBuffer))
-            .or_else(|_x| input.parse::<kw::attachment>().and(Ok(Self::Attachment)))
+            .or_else(|_x| {
+                input
+                    .parse::<Sequence<kw::attachment, Sequence<Token![in], Ident>>>()
+                    .map(|x| Self::Attachment(x.0 .1 .0 .1.to_string()))
+            })
             .or_else(|_| {
                 input
                     .parse::<Sequence<kw::vertex, kw::buffer>>()
@@ -182,7 +187,7 @@ pub struct ResourceDefinitionInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceDefinitionType {
     StaticBuffer { type_name: String },
-    Image,
+    Image { aspect: String },
     AccelerationStructure,
 }
 
@@ -278,28 +283,60 @@ impl Parse for ResourceClaimInput {
 
 impl Parse for ResourceDefinitionInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        enum InnerEnum {
+            StaticBuffer(StaticBufferResource),
+            Image(ImageResource),
+            AccelerationStructure,
+        }
+
+        impl Parse for InnerEnum {
+            fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+                input
+                    .parse::<ImageResource>()
+                    .map(Self::Image)
+                    .or_else(|_| {
+                        input
+                            .parse::<kw::AccelerationStructure>()
+                            .and(Ok(Self::AccelerationStructure))
+                    })
+                    .or_else(|_| input.parse::<StaticBufferResource>().map(Self::StaticBuffer))
+            }
+        }
+
+        #[derive(Parse)]
+        struct StaticBufferResource {
+            _static_buffer_kw: kw::StaticBuffer,
+            _br_start: Token![<],
+            type_name: syn::Type,
+            _br_end: Token![>],
+        }
+        #[derive(Parse)]
+        struct ImageResource {
+            _static_buffer_kw: kw::Image,
+            aspect: syn::Ident,
+        }
         #[derive(Parse)]
         struct Inner {
             resource_name: Ident,
             _dot: Token![=],
-            kind: inputs::ResourceKind,
+            kind: InnerEnum,
         }
 
         let s = Inner::parse(input)?;
         match s.kind {
-            inputs::ResourceKind::StaticBuffer(inputs::StaticBufferResource { type_name, .. }) => {
-                Ok(ResourceDefinitionInput {
-                    resource_name: s.resource_name.to_string(),
-                    ty: ResourceDefinitionType::StaticBuffer {
-                        type_name: type_name.to_token_stream().to_string(),
-                    },
-                })
-            }
-            inputs::ResourceKind::Image => Ok(ResourceDefinitionInput {
+            InnerEnum::StaticBuffer(StaticBufferResource { type_name, .. }) => Ok(ResourceDefinitionInput {
                 resource_name: s.resource_name.to_string(),
-                ty: ResourceDefinitionType::Image,
+                ty: ResourceDefinitionType::StaticBuffer {
+                    type_name: type_name.to_token_stream().to_string(),
+                },
             }),
-            inputs::ResourceKind::AccelerationStructure => Ok(ResourceDefinitionInput {
+            InnerEnum::Image(ImageResource { aspect, .. }) => Ok(ResourceDefinitionInput {
+                resource_name: s.resource_name.to_string(),
+                ty: ResourceDefinitionType::Image {
+                    aspect: aspect.to_string(),
+                },
+            }),
+            InnerEnum::AccelerationStructure => Ok(ResourceDefinitionInput {
                 resource_name: s.resource_name.to_string(),
                 ty: ResourceDefinitionType::AccelerationStructure,
             }),

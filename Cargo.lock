@@ -126,11 +126,8 @@ checksum = "be4dc07131ffa69b8072d35f5007352af944213cde02545e2103680baed38fcd"
 
 [[package]]
 name = "ash"
-version = "0.32.0"
-source = "git+https://github.com/MaikKlein/ash?rev=ed351996e57006f3984f634cc8a10988a3220041#ed351996e57006f3984f634cc8a10988a3220041"
-dependencies = [
- "libloading 0.7.1",
-]
+version = "0.33.3+1.2.191"
+source = "git+https://github.com/MaikKlein/ash?rev=428830ad4ffac5ebe0b7d7b6cd7da6d03308a711#428830ad4ffac5ebe0b7d7b6cd7da6d03308a711"
 
 [[package]]
 name = "async-channel"

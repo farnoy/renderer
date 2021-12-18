@@ -14,8 +14,8 @@ use renderer_macro_lib::{
     resource_claims::{
         ResourceBarrierInput, ResourceClaim, ResourceDefinitionInput, ResourceDefinitionType, ResourceUsageKind,
     },
-    Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RendererInput,
-    SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
+    Attachment, Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily,
+    RenderPass, RenderPassAttachment, RendererInput, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
 };
 use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
 
@@ -35,7 +35,7 @@ pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 .flat_map(|claim| match &claim.usage {
                     ResourceUsageKind::VertexBuffer => vec![quote!(VERTEX_BUFFER)],
                     ResourceUsageKind::IndexBuffer => vec![quote!(INDEX_BUFFER)],
-                    ResourceUsageKind::Attachment => todo!(),
+                    ResourceUsageKind::Attachment(ref _renderpass) => todo!(),
                     ResourceUsageKind::IndirectBuffer => vec![quote!(INDIRECT_BUFFER)],
                     ResourceUsageKind::TransferCopy | ResourceUsageKind::TransferClear => {
                         let mut acu = vec![];
@@ -90,7 +90,7 @@ pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 }
             }
         }
-        ResourceDefinitionType::Image => quote! {
+        ResourceDefinitionType::Image { .. } => quote! {
             #[allow(non_camel_case_types)]
             pub(crate) struct #name(pub(crate) crate::renderer::device::Image);
 
@@ -153,6 +153,14 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
             QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
         };
+        let get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
+            ResourceUsageKind::Attachment(ref renderpass) => data
+                .renderpasses
+                .get(renderpass)
+                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
+                .flatten(),
+            _ => None,
+        };
 
         // let connected_components = petgraph::algo::connected_components(&claims.graph);
         // if connected_components != 1 {
@@ -200,11 +208,12 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
         let this_queue_runtime = get_runtime_queue_family(this_queue);
+        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
         let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
             let (access_prefixes, stages) = match &step.usage {
                 ResourceUsageKind::VertexBuffer => (vec![quote!(VERTEX_ATTRIBUTE)], vec![quote!(VERTEX_INPUT)]),
                 ResourceUsageKind::IndexBuffer => (vec![quote!(INDEX)], vec![quote!(INDEX_INPUT)]),
-                ResourceUsageKind::Attachment => {
+                ResourceUsageKind::Attachment(ref _renderpass) => {
                     // TODO: imprecise
                     (vec![quote!(MEMORY)], vec![
                         quote!(EARLY_FRAGMENT_TESTS),
@@ -299,10 +308,11 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
             let prev_queue_runtime = get_runtime_queue_family(prev_queue);
+            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
 
             if prev_step.pass_name == this.pass_name
-                && prev_step.usage != ResourceUsageKind::Attachment
-                && this.usage != ResourceUsageKind::Attachment
+            // && prev_step.usage != ResourceUsageKind::Attachment
+            // && this.usage != ResourceUsageKind::Attachment
             {
                 match claims.ty {
                     ResourceDefinitionType::StaticBuffer { .. } => {
@@ -361,34 +371,42 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 .build())
                         });
                     }
-                    _ => todo!("acquire unknown resource"),
+                    ResourceDefinitionType::Image { .. } => {} // handled below
                 }
-            }
-
-            if prev_queue == this_queue {
-                continue;
             }
 
             match claims.ty {
                 ResourceDefinitionType::StaticBuffer { .. } => {}
                 ResourceDefinitionType::AccelerationStructure => {}
-                ResourceDefinitionType::Image => {
+                ResourceDefinitionType::Image { ref aspect } => {
                     assert!(
                         claim.resource_ident.is_some(),
                         "Expected barrier call to provide resource expr {:?}",
                         &claim
                     );
                     let resource_ident = &claim.resource_ident;
-                    let this_layout = claim.layout.as_ref().expect(&format!(
+                    let this_layout = claim.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
                         "did not specify desired image layout {}.{}",
                         &this.pass_name, &this.step_name
                     ));
-                    let prev_layout = prev_step.layout.as_ref().expect(&format!(
+                    let prev_layout = prev_step.layout.as_ref().or(prev_layout_in_renderpass).expect(&format!(
                         "did not specify desired image layout {}.{}",
                         &prev_step.pass_name, &prev_step.step_name
                     ));
                     let this_layout = format_ident!("{}", this_layout);
                     let prev_layout = format_ident!("{}", prev_layout);
+                    let transition = (prev_queue != this_queue)
+                        .then(|| {
+                            quote! {
+                                .src_queue_family_index(#prev_queue_runtime)
+                                .dst_queue_family_index(#this_queue_runtime)
+                            }
+                        })
+                        .unwrap_or(quote! {
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        });
+                    let aspect = format_ident!("{}", aspect);
                     emitted_barriers += 1;
                     // TODO: need robust tracking of resources/archetypes
                     acquire_image_barriers.push(quote! {
@@ -405,7 +423,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
                                                  vk::AccessFlags2KHR::MEMORY_WRITE)
                                 .subresource_range(vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .aspect_mask(vk::ImageAspectFlags::#aspect)
                                     .level_count(1)
                                     .layer_count(1)
                                     .build())
@@ -413,8 +431,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 .build());
                         } else {
                             acquire_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
-                                .src_queue_family_index(#prev_queue_runtime)
-                                .dst_queue_family_index(#this_queue_runtime)
+                                #transition
                                 .old_layout(vk::ImageLayout::#prev_layout)
                                 .new_layout(vk::ImageLayout::#this_layout)
                                 .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
@@ -424,7 +441,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
                                                  vk::AccessFlags2KHR::MEMORY_WRITE)
                                 .subresource_range(vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .aspect_mask(vk::ImageAspectFlags::#aspect)
                                     .level_count(1)
                                     .layer_count(1)
                                     .build())
@@ -447,6 +464,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let next_step = &claims.graph[dep];
             let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
             let next_queue_runtime = get_runtime_queue_family(next_queue);
+            let next_layout_in_renderpass = get_layout_from_renderpass(&next_step);
 
             if this_queue == next_queue {
                 continue;
@@ -459,23 +477,24 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 ResourceDefinitionType::AccelerationStructure => {
                     // ASes have no sharing mode and therefore no exclusive ownership
                 }
-                ResourceDefinitionType::Image => {
+                ResourceDefinitionType::Image { ref aspect } => {
                     assert!(
                         claim.resource_ident.is_some(),
                         "Expected barrier call to provide resource expr {:?}",
                         &claim
                     );
                     let resource_ident = &claim.resource_ident;
-                    let this_layout = claim.layout.as_ref().expect(&format!(
+                    let this_layout = claim.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
                         "did not specify desired image layout {}.{}",
                         &this.pass_name, &this.step_name
                     ));
-                    let next_layout = next_step.layout.as_ref().expect(&format!(
+                    let next_layout = next_step.layout.as_ref().or(next_layout_in_renderpass).expect(&format!(
                         "did not specify desired image layout {}.{}",
                         &next_step.pass_name, &next_step.step_name
                     ));
                     let this_layout = format_ident!("{}", this_layout);
                     let next_layout = format_ident!("{}", next_layout);
+                    let aspect = format_ident!("{}", aspect);
                     emitted_barriers += 1;
                     release_image_barriers.push(quote! {
                         release_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
@@ -490,7 +509,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                             .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
                                              vk::AccessFlags2KHR::MEMORY_WRITE)
                             .subresource_range(vk::ImageSubresourceRange::builder()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .aspect_mask(vk::ImageAspectFlags::#aspect)
                                 .level_count(1)
                                 .layer_count(1)
                                 .build())
@@ -759,7 +778,7 @@ fn define_frame2() -> TokenStream {
                 .collect_vec();
 
             let attachment_count = attachment_desc.len();
-            let renderpass_definition = define_renderpass(&new_data, pass);
+            let renderpass_definition = define_renderpass_old(&new_data, pass);
             let framebuffer_definition = define_framebuffer(&new_data, pass);
             let graph_ix = dependency_graph
                 .node_references()
@@ -864,7 +883,7 @@ fn define_frame2() -> TokenStream {
     expanded
 }
 
-fn define_renderpass(new_data: &RendererInput, pass: &Pass) -> TokenStream {
+fn define_renderpass_old(new_data: &RendererInput, pass: &Pass) -> TokenStream {
     let passes_that_need_clearing = pass.attachments.iter().enumerate().map(|(ix, attachment)| {
         let PassLayout { load_op, .. } = pass
             .layouts
@@ -1456,12 +1475,19 @@ pub fn define_pipe(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     define_pipe_old(
         &pipe,
+        &data.attachments,
+        &data.renderpasses,
         data.shader_information.push_constant_type_definitions.get(&pipe.name),
     )
     .into()
 }
 
-fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> TokenStream {
+fn define_pipe_old(
+    pipe: &Pipeline,
+    attachments: &HashMap<String, Attachment>,
+    renderpasses: &HashMap<String, RenderPass>,
+    push_constant_type: Option<&String>,
+) -> TokenStream {
     let Pipeline {
         name,
         specialization_constants,
@@ -1628,17 +1654,33 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
 
     let pipe_arguments_new_types = match specific {
         SpecificPipe::Graphics(specific) => {
-            let dynamic_samples =
-                extract_optional_dyn(&specific.samples, quote!(vk::SampleCountFlags)).unwrap_or_default();
+            let mut types = vec![];
+            match specific.dynamic_renderpass {
+                Some(_) => {}
+                None => {
+                    types.push(quote!(vk::RenderPass));
+                }
+            }
+            types.push(quote!(u32)); // subpass ix
+            if specific.samples.is_dyn() {
+                types.push(quote!(vk::SampleCountFlags));
+            }
             quote! {
-                (vk::RenderPass, u32, #dynamic_samples)
+                (#(#types),*)
             }
         }
         SpecificPipe::Compute => quote!(()),
     };
     let pipe_argument_short = match specific {
         SpecificPipe::Graphics(specific) => {
-            let mut args = vec![quote!(renderpass), quote!(subpass)];
+            let mut args = vec![];
+            match specific.dynamic_renderpass {
+                Some(_) => {}
+                None => {
+                    args.push(quote!(renderpass));
+                }
+            }
+            args.push(quote!(subpass));
             match extract_optional_dyn(&specific.samples, quote!(dynamic_samples)) {
                 Some(arg) => {
                     args.push(arg);
@@ -1732,8 +1774,46 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
                 }
                 StaticOrDyn::Dyn => quote!(dynamic_samples),
             };
+            let dynamic_renderpass_setup = match specific.dynamic_renderpass {
+                Some(ref renderpass) => {
+                    let renderpass = renderpasses.get(renderpass).expect("Dynamic renderpass not found");
+                    let depth_stencil_format = renderpass
+                        .depth_stencil
+                        .as_ref()
+                        .map(|x| {
+                            let format = attachments
+                                .get(&x.resource_name)
+                                .expect("Attachment not found")
+                                .format
+                                .as_ref()
+                                .expect("dynamic formats unsupported");
+                            let format = format_ident!("{}", format);
+                            quote!(.depth_attachment_format(vk::Format::#format))
+                        })
+                        .unwrap_or(quote!());
+                    quote! {
+                        let mut pipeline_rendering = vk::PipelineRenderingCreateInfoKHR::builder()
+                            #depth_stencil_format
+                        ;
+                    }
+                }
+                None => quote!(),
+            };
+
+            let renderpass_options = match specific.dynamic_renderpass {
+                Some(_) => {
+                    quote! {
+                        .push_next(&mut pipeline_rendering)
+                    }
+                }
+                None => quote! {
+                    .render_pass(renderpass)
+                    .subpass(subpass)
+                },
+            };
 
             quote! {
+                #dynamic_renderpass_setup;
                 let pipeline = device.new_graphics_pipeline(
                     vk::GraphicsPipelineCreateInfo::builder()
                         .vertex_input_state(&vertex_input_state())
@@ -1793,13 +1873,12 @@ fn define_pipe_old(pipe: &Pipeline, push_constant_type: Option<&String>) -> Toke
                                     .src_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
                                     .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
                                     .alpha_blend_op(vk::BlendOp::ADD)
-                                    .color_write_mask(vk::ColorComponentFlags::all())
+                                    .color_write_mask(vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B | vk::ColorComponentFlags::A)
                                     .build()])
                                 .build(),
                         )
                         .layout(layout)
-                        .render_pass(renderpass)
-                        .subpass(subpass)
+                        #renderpass_options
                         .base_pipeline_handle(base_pipeline_handle)
                         .base_pipeline_index(-1)
                         .build(),
@@ -1946,4 +2025,89 @@ pub fn define_pass(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // let pass = AsyncPass::from(&input);
 
     quote!().into()
+}
+
+#[proc_macro]
+pub fn define_renderpass(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let pass = parse_macro_input!(input as RenderPass);
+    let data = fetch().unwrap();
+
+    let passes_that_need_clearing: usize = pass
+        .depth_stencil
+        .iter()
+        .flat_map(|attachment| {
+            let RenderPassAttachment { load_op, .. } = attachment;
+            (load_op == &LoadOp::Clear).then(|| 1)
+        })
+        .sum();
+    let name = syn::parse_str::<Ident>(&pass.name).unwrap();
+    let renderpass_begin = format!("{}::{}::begin", data.name, pass.name);
+    let attachment_count: usize = pass.depth_stencil.as_ref().map(|_| 1).unwrap_or(0);
+    let (depth_attachment, depth_attachment_apply) = pass
+        .depth_stencil
+        .as_ref()
+        .map(|depth| {
+            let load_op = match depth.load_op {
+                LoadOp::Clear => quote!(CLEAR),
+                LoadOp::Load => quote!(LOAD),
+                LoadOp::DontCare => quote!(DONT_CARE),
+            };
+            let store_op = match depth.store_op {
+                StoreOp::Store => quote!(STORE),
+                StoreOp::Discard => quote!(DONT_CARE),
+            };
+            let clear_value = match depth.load_op {
+                LoadOp::Clear => quote!(.clear_value(clear_values[0])), // TODO: dynamic index
+                _ => quote!(),
+            };
+            let layout = format_ident!("{}", depth.layout);
+            (
+                quote! {
+                    let depth_attachment = vk::RenderingAttachmentInfoKHR::builder()
+                        .image_view(attachments[0])
+                        .image_layout(vk::ImageLayout::#layout)
+                        .load_op(vk::AttachmentLoadOp::#load_op)
+                        .store_op(vk::AttachmentStoreOp::#store_op)
+                        #clear_value
+                        ;
+                },
+                quote!(.depth_attachment(&depth_attachment)),
+            )
+        })
+        .unwrap_or((quote!(), quote!()));
+
+    quote! {
+        pub(crate) struct #name;
+
+        impl #name {
+            pub(crate) fn begin(
+                renderer: &RenderFrame,
+                command_buffer: vk::CommandBuffer,
+                render_area: vk::Rect2D,
+                attachments: &[vk::ImageView; #attachment_count],
+                clear_values: &[vk::ClearValue; #passes_that_need_clearing],
+            ) {
+                use profiling::scope;
+                scope!(#renderpass_begin);
+
+                #depth_attachment
+
+                let rendering_info = vk::RenderingInfoKHR::builder()
+                    .render_area(render_area)
+                    .layer_count(1)
+                    #depth_attachment_apply
+                ;
+
+                unsafe {
+                    scope!("vk::CmdBeginRendering");
+
+                    renderer.device.dynamic_rendering.cmd_begin_rendering(
+                        command_buffer,
+                        &rendering_info
+                    );
+                }
+            }
+        }
+    }
+    .into()
 }

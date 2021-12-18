@@ -6,7 +6,7 @@ edition =  "2018"
 resolver = "2"
 
 [dependencies]
-ash = { git = "https://github.com/MaikKlein/ash", rev = "ed351996e57006f3984f634cc8a10988a3220041" } # version = "0.32.0"
+ash = { git = "https://github.com/MaikKlein/ash", rev = "428830ad4ffac5ebe0b7d7b6cd7da6d03308a711" } # version = "0.32.0"
 
 [build-dependencies]
 bindgen = "0.59.1"

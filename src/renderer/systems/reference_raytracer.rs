@@ -15,7 +15,7 @@ use crate::renderer::{
 };
 
 renderer_macros::define_pass!(ReferenceRaytrace on compute);
-renderer_macros::define_resource!(ReferenceRaytraceOutput = Image);
+renderer_macros::define_resource!(ReferenceRaytraceOutput = Image COLOR);
 
 renderer_macros::define_set! {
     rt_output_set {

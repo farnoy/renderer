@@ -15,34 +15,6 @@ use syn::{
 
 use super::keywords as kw;
 
-pub enum ResourceKind {
-    StaticBuffer(StaticBufferResource),
-    Image,
-    AccelerationStructure,
-}
-
-impl Parse for ResourceKind {
-    fn parse(input: ParseStream) -> Result<Self> {
-        input
-            .parse::<kw::Image>()
-            .and(Ok(Self::Image))
-            .or_else(|_| {
-                input
-                    .parse::<kw::AccelerationStructure>()
-                    .and(Ok(Self::AccelerationStructure))
-            })
-            .or_else(|_| input.parse::<StaticBufferResource>().map(Self::StaticBuffer))
-    }
-}
-
-#[derive(Parse)]
-pub struct StaticBufferResource {
-    _static_buffer_kw: kw::StaticBuffer,
-    _br_start: Token![<],
-    pub type_name: Type,
-    _br_end: Token![>],
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum DependencyType {
     SameFrame,

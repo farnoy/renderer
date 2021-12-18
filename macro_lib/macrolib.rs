@@ -44,6 +44,7 @@ pub struct RendererInput {
     pub name: String,
     pub passes: HashMap<String, Pass>,
     pub async_passes: HashMap<String, AsyncPass>,
+    pub renderpasses: HashMap<String, RenderPass>,
     pub resources: HashMap<String, ResourceClaims>,
     pub descriptor_sets: HashMap<String, DescriptorSet>,
     pub attachments: HashMap<String, Attachment>,
@@ -94,6 +95,64 @@ impl Parse for StoreOp {
             .parse::<kw::store>()
             .and(Ok(Self::Store))
             .or_else(|_| input.parse::<kw::discard>().and(Ok(Self::Discard)))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenderPass {
+    pub name: String,
+    pub depth_stencil: Option<RenderPassAttachment>,
+}
+
+impl Parse for RenderPass {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            name: Ident,
+            #[brace]
+            #[allow(dead_code)]
+            brace: syn::token::Brace,
+            #[inside(brace)]
+            depth_stencil: inputs::UnOption<inputs::Sequence<kw::depth_stencil, inputs::Unbrace<RenderPassAttachment>>>,
+        }
+
+        let p = Inner::parse(input)?;
+
+        Ok(RenderPass {
+            name: p.name.to_string(),
+            depth_stencil: p.depth_stencil.0.map(|x| x.0 .1 .0),
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenderPassAttachment {
+    pub resource_name: String,
+    pub layout: String,
+    pub load_op: LoadOp,
+    pub store_op: StoreOp,
+}
+
+impl Parse for RenderPassAttachment {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        #[derive(Parse)]
+        pub struct Inner {
+            resource_name: Ident,
+            layout: Ident,
+            load_op: LoadOp,
+            #[allow(dead_code)]
+            arrow: syn::Token![=>],
+            store_op: StoreOp,
+        }
+
+        let p = Inner::parse(input)?;
+
+        Ok(RenderPassAttachment {
+            resource_name: p.resource_name.to_string(),
+            layout: p.layout.to_string(),
+            load_op: p.load_op,
+            store_op: p.store_op,
+        })
     }
 }
 
@@ -550,6 +609,14 @@ impl<T> StaticOrDyn<T> {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn expect(self, msg: &str) -> T {
+        match self {
+            StaticOrDyn::Static(s) => s,
+            StaticOrDyn::Dyn => panic!("{}", msg),
+        }
+    }
+
     pub fn as_ref(&self) -> StaticOrDyn<&T> {
         match self {
             StaticOrDyn::Static(s) => StaticOrDyn::Static(&s),
@@ -576,6 +643,7 @@ pub fn extract_optional_dyn<T, R>(a: &StaticOrDyn<T>, when_dyn: R) -> Option<R> 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphicsPipe {
+    pub dynamic_renderpass: Option<String>,
     pub samples: StaticOrDyn<u8>,
     pub vertex_inputs: Vec<NamedField>,
     pub stages: Vec<String>,
@@ -1149,6 +1217,19 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
             } else {
                 self.had_errors = true;
             }
+        } else if node.mac.path == parse_quote!(renderer_macros::define_renderpass) {
+            if let Ok(renderpass) = parse2::<RenderPass>(node.mac.tokens.clone()) {
+                self.data
+                    .renderpasses
+                    .entry(renderpass.name.clone())
+                    .and_modify(|_| {
+                        println!("cargo:warning=Duplicate RenderPass definition: {}", &renderpass.name);
+                        self.had_errors = true;
+                    })
+                    .or_insert(renderpass);
+            } else {
+                self.had_errors = true;
+            }
         }
 
         visit::visit_item_macro(self, node);
@@ -1338,6 +1419,8 @@ impl Parse for Pipeline {
         #[derive(Parse)]
         #[allow(unused)]
         struct InnerGraphicsPipe {
+            dynamic_renderpass:
+                inputs::UnOption<inputs::Sequence<kw::dynamic, inputs::Sequence<kw::renderpass, Ident>>>,
             samples_kw: Option<kw::samples>,
             #[parse_if(samples_kw.is_some())]
             pub samples: Option<StaticOrDyn<syn::LitInt>>,
@@ -1392,6 +1475,7 @@ impl Parse for Pipeline {
         let input = InnerPipe::parse(input)?;
         let specific = match input.specific {
             InnerSpecificPipe::Graphics(g) => SpecificPipe::Graphics(GraphicsPipe {
+                dynamic_renderpass: g.dynamic_renderpass.0.map(|x| x.0 .1 .0 .1.to_string()),
                 samples: g
                     .samples
                     .map(|x| x.map(|d| d.base10_parse().unwrap()))

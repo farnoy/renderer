@@ -445,8 +445,8 @@ pub(crate) fn build_acceleration_structures(
 
             mapped[ix] = vk::AccelerationStructureInstanceKHR {
                 transform: vk::TransformMatrixKHR { matrix: matrix_data },
-                instance_custom_index_and_mask: pack(draw_index.0, 0xFF),
-                instance_shader_binding_table_record_offset_and_flags: pack(
+                instance_custom_index_and_mask: vk::Packed24_8::new(draw_index.0, 0xFF),
+                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                     0,
                     vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE
                         .as_raw()

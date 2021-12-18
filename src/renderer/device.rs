@@ -4,7 +4,7 @@ use ash::{
     self,
     extensions::{
         self,
-        khr::{AccelerationStructure, Synchronization2},
+        khr::{AccelerationStructure, DynamicRendering, Synchronization2},
     },
     vk,
 };
@@ -65,6 +65,7 @@ pub(crate) struct Device {
     #[allow(dead_code)]
     pub(crate) extended_dynamic_state_fn: vk::ExtExtendedDynamicStateFn,
     pub(crate) synchronization2: Synchronization2,
+    pub(crate) dynamic_rendering: DynamicRendering,
     pub(crate) acceleration_structure: AccelerationStructure,
     pub(crate) min_acceleration_structure_scratch_offset_alignment: u32,
 }
@@ -178,6 +179,7 @@ impl Device {
                 vk::KhrDeferredHostOperationsFn::name().as_ptr(),
                 vk::KhrAccelerationStructureFn::name().as_ptr(),
                 vk::KhrRayQueryFn::name().as_ptr(),
+                DynamicRendering::name().as_ptr(),
             ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
@@ -222,6 +224,8 @@ impl Device {
                 .null_descriptor(true);
             let mut features_synchronization =
                 vk::PhysicalDeviceSynchronization2FeaturesKHR::builder().synchronization2(true);
+            let mut features_dynamic_rendering =
+                vk::PhysicalDeviceDynamicRenderingFeaturesKHR::builder().dynamic_rendering(true);
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()
@@ -245,7 +249,8 @@ impl Device {
                 .push_next(&mut features_acceleration_structure)
                 .push_next(&mut features_ray_query)
                 .push_next(&mut features_robustness)
-                .push_next(&mut features_synchronization);
+                .push_next(&mut features_synchronization)
+                .push_next(&mut features_dynamic_rendering);
 
             unsafe { instance.create_device(physical_device, &device_create_info, None)? }
         };
@@ -271,6 +276,7 @@ impl Device {
 
         let extended_dynamic_state_fn = vk::ExtExtendedDynamicStateFn::load(fn_ptr_loader);
         let synchronization2 = Synchronization2::new(instance, &device);
+        let dynamic_rendering = DynamicRendering::new(instance, &device);
         let acceleration_structure = AccelerationStructure::new(instance, &device);
 
         let device = Device {
@@ -293,6 +299,7 @@ impl Device {
             buffer_marker_fn,
             extended_dynamic_state_fn,
             synchronization2,
+            dynamic_rendering,
             acceleration_structure,
             min_acceleration_structure_scratch_offset_alignment: acceleration_structure_properties
                 .min_acceleration_structure_scratch_offset_alignment,

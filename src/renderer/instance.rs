@@ -30,14 +30,14 @@ struct Debug {
 struct Debug;
 
 impl Instance {
-    pub(crate) fn new() -> Result<(Instance, winit::event_loop::EventLoop<()>), ash::InstanceError> {
+    pub(crate) fn new() -> (Instance, winit::event_loop::EventLoop<()>) {
         let events_loop = winit::event_loop::EventLoop::new();
         let window = winit::window::WindowBuilder::new()
             .with_title("Renderer v3")
             .build(&events_loop)
             .expect("Failed to create window");
 
-        let entry = Entry::new().expect("Failed to create entry");
+        let entry = Entry::new();
 
         let layer_names = if cfg!(feature = "standard_validation",) {
             vec![CString::new("VK_LAYER_KHRONOS_validation").unwrap()]
@@ -102,6 +102,9 @@ impl Instance {
                 let message_id = (*data).p_message_id_name;
                 if !message_id.is_null() {
                     let s = CStr::from_ptr(message_id).to_string_lossy();
+                    if s == "VUID-vkCmdClearAttachments-pRects-00016" {
+                        return 0;
+                    }
                     print!("[ {} ] ", s);
                 };
 
@@ -132,7 +135,6 @@ impl Instance {
                     );
                 }
                 if severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
-                    && !message.contains("VUID-VkPipelineShaderStageCreateInfo-module-parameter")
                     && !message.contains("VUID-VkPresentInfoKHR-pImageIndices-01296")
                 {
                     panic!();
@@ -141,7 +143,9 @@ impl Instance {
             }
 
             let message_type = if cfg!(feature = "standard_validation") {
-                vk::DebugUtilsMessageTypeFlagsEXT::all()
+                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                    | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
+                    | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
             } else {
                 vk::DebugUtilsMessageTypeFlagsEXT::empty()
             };
@@ -165,7 +169,7 @@ impl Instance {
                     .expect("failed to create debug utils messenger")
             };
 
-            Ok((
+            (
                 Instance {
                     handle: instance,
                     window,
@@ -176,12 +180,12 @@ impl Instance {
                     },
                 },
                 events_loop,
-            ))
+            )
         }
 
         #[cfg(not(feature = "vk_names"))]
         {
-            Ok((
+            (
                 Instance {
                     handle: instance,
                     window,
@@ -189,7 +193,7 @@ impl Instance {
                     debug: Debug,
                 },
                 events_loop,
-            ))
+            )
         }
     }
 

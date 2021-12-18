@@ -8,7 +8,7 @@ path = "macrolib.rs"
 
 [dependencies]
 anyhow = "1.0.44"
-ash = { git = "https://github.com/MaikKlein/ash", rev = "ed351996e57006f3984f634cc8a10988a3220041" } # version = "0.32.0"
+ash = { git = "https://github.com/MaikKlein/ash", rev = "428830ad4ffac5ebe0b7d7b6cd7da6d03308a711" } # version = "0.32.0"
 bincode = "1.3.3"
 convert_case = "0.4.0"
 derive_more = "0.99.13"

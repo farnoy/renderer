@@ -7,10 +7,10 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
-    pub(crate) fn new() -> Result<Entry, ash::LoadingError> {
-        let entry = unsafe { AshEntry::new()? };
+    pub(crate) fn new() -> Entry {
+        let entry = unsafe { AshEntry::new() };
 
-        Ok(Entry { handle: entry })
+        Entry { handle: entry }
     }
 
     pub(crate) fn vk(&self) -> &AshEntry {
