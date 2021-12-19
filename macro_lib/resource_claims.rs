@@ -11,7 +11,7 @@ use syn::{parse::Parse, Expr, Ident, Token};
 
 use super::keywords as kw;
 use crate::{
-    inputs::{self, ArrowPair, Sequence, UnArray, UnOption, Unbracket},
+    inputs::{ArrowPair, Sequence, UnArray, UnOption, Unbracket},
     Conditional,
 };
 

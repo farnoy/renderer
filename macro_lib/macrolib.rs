@@ -101,6 +101,7 @@ impl Parse for StoreOp {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RenderPass {
     pub name: String,
+    pub color: Vec<RenderPassAttachment>,
     pub depth_stencil: Option<RenderPassAttachment>,
 }
 
@@ -113,6 +114,9 @@ impl Parse for RenderPass {
             #[allow(dead_code)]
             brace: syn::token::Brace,
             #[inside(brace)]
+            color:
+                inputs::UnOption<inputs::Sequence<kw::color, inputs::Unbracket<inputs::UnArray<RenderPassAttachment>>>>,
+            #[inside(brace)]
             depth_stencil: inputs::UnOption<inputs::Sequence<kw::depth_stencil, inputs::Unbrace<RenderPassAttachment>>>,
         }
 
@@ -120,6 +124,7 @@ impl Parse for RenderPass {
 
         Ok(RenderPass {
             name: p.name.to_string(),
+            color: p.color.0.map(|x| x.0 .1 .0 .0).unwrap_or(vec![]),
             depth_stencil: p.depth_stencil.0.map(|x| x.0 .1 .0),
         })
     }
@@ -1323,7 +1328,7 @@ fn calculate_depencency_graph(
     //     &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
     //     &[petgraph::dot::Config::EdgeNoLabel]
     // ));
-    transitive_reduction_stable(&mut dependency_graph);
+    // transitive_reduction_stable(&mut dependency_graph);
     // dbg!(petgraph::dot::Dot::with_config(
     //     &dependency_graph.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
     //     &[petgraph::dot::Config::EdgeNoLabel]

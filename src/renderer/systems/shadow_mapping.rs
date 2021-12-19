@@ -69,7 +69,7 @@ impl ShadowMappingData {
             &renderer.device,
             &depth_pipeline_layout,
             depth_pipe::Specialization {},
-            (0, vk::SampleCountFlags::TYPE_1),
+            vk::SampleCountFlags::TYPE_1,
         );
 
         let depth_image = ShadowMapAtlas::import(

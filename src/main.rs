@@ -291,7 +291,7 @@ fn main() {
     let model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
-    let main_renderpass = MainRenderpass::new(&renderer, &main_attachments);
+    let main_renderpass = MainRenderpass::new(&renderer);
     let shadow_mapping_data =
         ShadowMappingData::new(&renderer, &model_data, &camera_matrices, &mut main_descriptor_pool);
 

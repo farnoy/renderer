@@ -1,4 +1,4 @@
-use std::mem::{replace, size_of};
+use std::mem::size_of;
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -12,7 +12,7 @@ use crate::{
     renderer::{
         binding_size, camera_set, device::Device, frame_graph, helpers::command_util::CommandUtil, model_set,
         systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
-        ImageIndex, MainAttachments, ModelData, RenderFrame, Resized, SmartPipeline, SmartPipelineLayout, Submissions,
+        ImageIndex, MainAttachments, ModelData, RenderFrame, SmartPipeline, SmartPipelineLayout, Submissions,
         Swapchain,
     },
 };
@@ -51,7 +51,6 @@ impl FromWorld for DepthPassData {
         let renderer = world.get_resource::<RenderFrame>().unwrap();
         let model_data = world.get_resource::<ModelData>().unwrap();
         let camera_matrices = world.get_resource::<CameraMatrices>().unwrap();
-        let swapchain = world.get_resource::<Swapchain>().unwrap();
         let device = &renderer.device;
 
         let depth_pipeline_layout =
@@ -60,7 +59,7 @@ impl FromWorld for DepthPassData {
             device,
             &depth_pipeline_layout,
             depth_pipe::Specialization {},
-            (0, vk::SampleCountFlags::TYPE_4),
+            vk::SampleCountFlags::TYPE_4,
         );
 
         let command_util = CommandUtil::new(renderer, renderer.device.graphics_queue_family);
@@ -94,7 +93,6 @@ pub(crate) fn depth_only_pass(
     camera_matrices: Res<CameraMatrices>,
     submissions: Res<Submissions>,
     renderer_input: Res<renderer_macro_lib::RendererInput>,
-    resized: Res<Resized>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("rendering::depth_only_pass");

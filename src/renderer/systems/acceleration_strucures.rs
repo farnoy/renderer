@@ -401,16 +401,6 @@ pub(crate) fn build_acceleration_structures(
             TLAS.build rw in BuildAccelerationStructures descriptor gltf_mesh.acceleration_set.top_level_as
         );
 
-        fn pack(a: u32, b: u8) -> u32 {
-            (a & ((1 << 24) - 1)) | (u32::from(b) << 24)
-        }
-
-        // println!("{:#010x}", (1 << 24) - 1);
-        // println!("{:#010x}", pack(0xABABAB, 0xFF));
-        // panic!();
-
-        // println!("{}", model_matrix.0.rows(0, 3));
-
         let instances_addr = unsafe {
             renderer.device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::builder().buffer(instances_buffer.current(image_index.0).buffer.handle),
@@ -429,8 +419,6 @@ pub(crate) fn build_acceleration_structures(
 
             let mut matrix_data = [0f32; 12];
 
-            // println!("Matrix\n {}", model_matrix.0.rows(0, 3));
-            // println!("slice data {:?}", model_matrix.0.rows(0, 3).transpose().as_slice());
             debug_assert_eq!(model_matrix.0.rows(0, 3).transpose().as_slice().len(), 12);
             matrix_data.copy_from_slice(model_matrix.0.rows(0, 3).transpose().as_slice());
 

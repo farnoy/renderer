@@ -200,44 +200,28 @@ renderer_macros::define_frame! {
     frame_graph {
         attachments {
             Color,
-            PresentSurface,
             Depth,
-            ShadowMapAtlas
         }
         formats {
-            dyn,
-            dyn,
+            R8G8B8A8_UNORM,
             D16_UNORM,
-            D16_UNORM
         }
         samples {
             4,
-            1,
             4,
-            1
         }
         passes {
             Main {
-                attachments [Color, Depth, PresentSurface]
+                attachments [Color, Depth]
                 layouts {
                     Depth load DEPTH_STENCIL_READ_ONLY_OPTIMAL => discard DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-                    Color clear UNDEFINED => discard COLOR_ATTACHMENT_OPTIMAL,
-                    PresentSurface clear UNDEFINED => store TRANSFER_DST_OPTIMAL // TODO: connect this to the rendergraph & resource claims
+                    Color clear UNDEFINED => store COLOR_ATTACHMENT_OPTIMAL,
                 }
                 subpasses {
                     GltfPass {
                         color [Color => COLOR_ATTACHMENT_OPTIMAL]
                         depth_stencil { Depth => DEPTH_STENCIL_READ_ONLY_OPTIMAL }
                     },
-                    GuiPass {
-                        color [Color => COLOR_ATTACHMENT_OPTIMAL]
-                        resolve [PresentSurface => COLOR_ATTACHMENT_OPTIMAL]
-                    }
-                }
-                dependencies {
-                    GltfPass => GuiPass
-                        COLOR_ATTACHMENT_OUTPUT => COLOR_ATTACHMENT_OUTPUT
-                        COLOR_ATTACHMENT_WRITE => COLOR_ATTACHMENT_READ
                 }
             }
         }
@@ -309,10 +293,17 @@ renderer_macros::define_pipe! {
     }
 }
 
+renderer_macros::define_renderpass! {
+    ImguiRP {
+        color [ Color COLOR_ATTACHMENT_OPTIMAL load => store ]
+    }
+}
+
 renderer_macros::define_pipe! {
     imgui_pipe {
         descriptors [imgui_set]
         graphics
+        dynamic renderpass ImguiRP
         samples 4
         vertex_inputs [pos: vec2, uv: vec2, col: vec4]
         stages [VERTEX, FRAGMENT]
@@ -967,12 +958,9 @@ pub(crate) struct MainRenderpass {
 }
 
 impl MainRenderpass {
-    pub(crate) fn new(renderer: &RenderFrame, attachments: &MainAttachments) -> Self {
+    pub(crate) fn new(renderer: &RenderFrame) -> Self {
         MainRenderpass {
-            renderpass: frame_graph::Main::RenderPass::new(
-                renderer,
-                (attachments.swapchain_format, attachments.swapchain_format),
-            ),
+            renderpass: frame_graph::Main::RenderPass::new(renderer, ()),
         }
     }
 
@@ -1089,7 +1077,7 @@ impl MainAttachments {
         };
         let color_image = {
             let im = renderer.device.new_image_exclusive(
-                swapchain.surface.surface_format.format,
+                vk::Format::R8G8B8A8_UNORM,
                 vk::Extent3D {
                     width: swapchain.width,
                     height: swapchain.height,
@@ -1098,7 +1086,7 @@ impl MainAttachments {
                 vk::SampleCountFlags::TYPE_4,
                 vk::ImageTiling::OPTIMAL,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             Color::import(&renderer.device, im)
@@ -1213,14 +1201,10 @@ impl MainFramebuffer {
             renderer,
             &main_renderpass.renderpass,
             &[
-                vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
                 vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
             ],
-            (
-                swapchain.surface.surface_format.format,
-                swapchain.surface.surface_format.format,
-            ),
+            (),
             (swapchain.width, swapchain.height),
         );
 
@@ -1617,16 +1601,10 @@ pub(crate) fn render_frame(
             &[
                 main_attachments.color_image_view.handle,
                 main_attachments.depth_image_view.handle,
-                main_attachments.swapchain_image_views[image_index.0 as usize].handle,
             ],
-            &[
-                vk::ClearValue {
-                    color: vk::ClearColorValue { float32: [0.0; 4] },
-                },
-                vk::ClearValue {
-                    color: vk::ClearColorValue { float32: [0.0; 4] },
-                },
-            ],
+            &[vk::ClearValue {
+                color: vk::ClearColorValue { float32: [0.0; 4] },
+            }],
         );
         if runtime_config.debug_aabbs {
             scope!("ecs::debug_aabb_pass");
@@ -1731,52 +1709,126 @@ pub(crate) fn render_frame(
                 1,
             );
         }
-        renderer
-            .device
-            .cmd_next_subpass(*command_buffer, vk::SubpassContents::INLINE);
-        render_gui(
-            &renderer,
-            &mut gui_render_data,
-            &mut runtime_config,
-            &swapchain,
-            &mut camera,
-            &mut input_handler,
-            &mut gui,
-            &command_buffer,
-            #[cfg(feature = "shader_reload")]
-            &reloaded_shaders,
-        );
         renderer.device.cmd_end_render_pass(*command_buffer);
     }
     drop(guard);
     drop(main_renderpass_marker);
 
-    if reference_rt {
-        unsafe {
-            let _rt_copy_marker = command_buffer.debug_marker_around("copy reference RT output", [0.0, 1.0, 1.0, 1.0]);
-            let swapchain_images = swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap();
-            let barriers = [vk::ImageMemoryBarrier2KHR::builder()
-                .image(swapchain_images[image_index.0 as usize])
-                .subresource_range(
-                    vk::ImageSubresourceRange::builder()
+    ImguiRP::begin(
+        &renderer,
+        *command_buffer,
+        vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D {
+                width: swapchain.width,
+                height: swapchain.height,
+            },
+        },
+        &[main_attachments.color_image_view.handle],
+        &[],
+    );
+
+    render_gui(
+        &renderer,
+        &mut gui_render_data,
+        &mut runtime_config,
+        &swapchain,
+        &mut camera,
+        &mut input_handler,
+        &mut gui,
+        &command_buffer,
+        #[cfg(feature = "shader_reload")]
+        &reloaded_shaders,
+    );
+    unsafe {
+        renderer.device.dynamic_rendering.cmd_end_rendering(*command_buffer);
+    }
+
+    let swapchain_images = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap() };
+
+    unsafe {
+        let _guard = renderer_macros::barrier!(
+            *command_buffer,
+            Color.resolve r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [render] if [!DEBUG_AABB, !REFERENCE_RT]; {&main_attachments.color_image}
+        );
+        let barriers = [vk::ImageMemoryBarrier2KHR::builder()
+            .image(swapchain_images[image_index.0 as usize])
+            .subresource_range(
+                vk::ImageSubresourceRange::builder()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .level_count(1)
+                    .layer_count(1)
+                    .build(),
+            )
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+            .build()];
+        renderer.device.synchronization2.cmd_pipeline_barrier2(
+            *command_buffer,
+            &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
+        );
+
+        renderer.device.cmd_resolve_image(
+            *command_buffer,
+            main_attachments.color_image.handle,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            swapchain_images[image_index.0 as usize],
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[vk::ImageResolve::builder()
+                .src_subresource(
+                    vk::ImageSubresourceLayers::builder()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .level_count(1)
                         .layer_count(1)
                         .build(),
                 )
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_GRAPHICS)
-                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_TRANSFER)
-                .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
-                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
-                .build()];
-            renderer.device.synchronization2.cmd_pipeline_barrier2(
-                *command_buffer,
-                &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
-            );
+                .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .dst_subresource(
+                    vk::ImageSubresourceLayers::builder()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .layer_count(1)
+                        .build(),
+                )
+                .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .extent(vk::Extent3D {
+                    width: swapchain.width,
+                    height: swapchain.height,
+                    depth: 1,
+                })
+                .build()],
+        );
+        let barriers = [vk::ImageMemoryBarrier2KHR::builder()
+            .image(swapchain_images[image_index.0 as usize])
+            .subresource_range(
+                vk::ImageSubresourceRange::builder()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .level_count(1)
+                    .layer_count(1)
+                    .build(),
+            )
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+            .build()];
+        renderer.device.synchronization2.cmd_pipeline_barrier2(
+            *command_buffer,
+            &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
+        );
+    }
+
+    if reference_rt {
+        unsafe {
+            let _rt_copy_marker = command_buffer.debug_marker_around("copy reference RT output", [0.0, 1.0, 1.0, 1.0]);
             let _guard = renderer_macros::barrier!(
                 *command_buffer,
                 ReferenceRaytraceOutput.in_main r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [generate] if [!DEBUG_AABB, RT, REFERENCE_RT]; {&reference_rt_data.output_image}
@@ -1813,30 +1865,32 @@ pub(crate) fn render_frame(
                     .build()],
                 vk::Filter::LINEAR,
             );
-
-            let barriers = [vk::ImageMemoryBarrier2KHR::builder()
-                .image(swapchain_images[image_index.0 as usize])
-                .subresource_range(
-                    vk::ImageSubresourceRange::builder()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .level_count(1)
-                        .layer_count(1)
-                        .build(),
-                )
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .src_stage_mask(vk::PipelineStageFlags2KHR::BLIT)
-                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
-                .dst_access_mask(vk::AccessFlags2KHR::NONE)
-                .build()];
-            renderer.device.synchronization2.cmd_pipeline_barrier2(
-                *command_buffer,
-                &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
-            );
         }
+    }
+
+    unsafe {
+        let barriers = [vk::ImageMemoryBarrier2KHR::builder()
+            .image(swapchain_images[image_index.0 as usize])
+            .subresource_range(
+                vk::ImageSubresourceRange::builder()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .level_count(1)
+                    .layer_count(1)
+                    .build(),
+            )
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2KHR::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2KHR::NONE)
+            .build()];
+        renderer.device.synchronization2.cmd_pipeline_barrier2(
+            *command_buffer,
+            &vk::DependencyInfoKHR::builder().image_memory_barriers(&barriers),
+        );
     }
 
     let command_buffer = *command_buffer.end();
@@ -1977,12 +2031,7 @@ impl GuiRenderData {
 
         let pipeline_layout = SmartPipelineLayout::new(&renderer.device, (&descriptor_set_layout,));
 
-        let pipeline = SmartPipeline::new(
-            &renderer.device,
-            &pipeline_layout,
-            imgui_pipe::Specialization {},
-            (main_renderpass.renderpass.renderpass.handle, 1),
-        );
+        let pipeline = SmartPipeline::new(&renderer.device, &pipeline_layout, imgui_pipe::Specialization {}, ());
 
         let texture_view = renderer.device.new_image_view(
             &vk::ImageViewCreateInfo::builder()
@@ -2658,6 +2707,11 @@ fn setup_submissions(
     // Stage 8: Perform a transitive reduction to minimize the number of semaphores that passes need to
     // wait on
     renderer_macro_lib::transitive_reduction_stable(&mut graph2);
+
+    // dbg!(petgraph::dot::Dot::with_config(
+    //     &graph2.map(|_, node_ident| node_ident.to_string(), |_, _| ""),
+    //     &[petgraph::dot::Config::EdgeNoLabel]
+    // ));
 
     let graph = submissions.remaining.get_mut();
     assert_eq!(graph.node_count(), 0);

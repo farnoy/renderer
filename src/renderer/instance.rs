@@ -102,7 +102,10 @@ impl Instance {
                 let message_id = (*data).p_message_id_name;
                 if !message_id.is_null() {
                     let s = CStr::from_ptr(message_id).to_string_lossy();
-                    if s == "VUID-vkCmdClearAttachments-pRects-00016" {
+                    if s == "VUID-vkCmdClearAttachments-pRects-00016"
+                        || s == "VUID-vkDestroyAccelerationStructureKHR-accelerationStructure-02442"
+                        || s == "VUID-vkResetCommandPool-commandPool-00040"
+                    {
                         return 0;
                     }
                     print!("[ {} ] ", s);

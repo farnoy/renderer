@@ -1659,9 +1659,9 @@ fn define_pipe_old(
                 Some(_) => {}
                 None => {
                     types.push(quote!(vk::RenderPass));
+                    types.push(quote!(u32)); // subpass ix
                 }
             }
-            types.push(quote!(u32)); // subpass ix
             if specific.samples.is_dyn() {
                 types.push(quote!(vk::SampleCountFlags));
             }
@@ -1678,9 +1678,9 @@ fn define_pipe_old(
                 Some(_) => {}
                 None => {
                     args.push(quote!(renderpass));
+                    args.push(quote!(subpass));
                 }
             }
-            args.push(quote!(subpass));
             match extract_optional_dyn(&specific.samples, quote!(dynamic_samples)) {
                 Some(arg) => {
                     args.push(arg);
@@ -1777,6 +1777,19 @@ fn define_pipe_old(
             let dynamic_renderpass_setup = match specific.dynamic_renderpass {
                 Some(ref renderpass) => {
                     let renderpass = renderpasses.get(renderpass).expect("Dynamic renderpass not found");
+                    let color_attachment_formats = renderpass
+                        .color
+                        .iter()
+                        .map(|x| {
+                            let format = attachments
+                                .get(&x.resource_name)
+                                .expect("Attachment not found")
+                                .format
+                                .as_ref()
+                                .expect("dynamic formats unsupported");
+                            let format = format_ident!("{}", format);
+                            quote!(vk::Format::#format)
+                        });
                     let depth_stencil_format = renderpass
                         .depth_stencil
                         .as_ref()
@@ -1792,7 +1805,9 @@ fn define_pipe_old(
                         })
                         .unwrap_or(quote!());
                     quote! {
+                        let color_attachment_formats = [#(#color_attachment_formats),*];
                         let mut pipeline_rendering = vk::PipelineRenderingCreateInfoKHR::builder()
+                            .color_attachment_formats(&color_attachment_formats)
                             #depth_stencil_format
                         ;
                     }
@@ -1918,7 +1933,7 @@ fn define_pipe_old(
                 stages: &[vk::PipelineShaderStageCreateInfo],
                 flags: vk::PipelineCreateFlags,
                 base_pipeline_handle: vk::Pipeline,
-                (#(#pipe_argument_short,)*): Self::DynamicArguments,
+                (#(#pipe_argument_short),*): Self::DynamicArguments,
             ) -> crate::renderer::device::Pipeline {
                 #pipeline_definition_inner
 
@@ -2033,8 +2048,9 @@ pub fn define_renderpass(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     let data = fetch().unwrap();
 
     let passes_that_need_clearing: usize = pass
-        .depth_stencil
+        .color
         .iter()
+        .chain(pass.depth_stencil.iter())
         .flat_map(|attachment| {
             let RenderPassAttachment { load_op, .. } = attachment;
             (load_op == &LoadOp::Clear).then(|| 1)
@@ -2042,7 +2058,44 @@ pub fn define_renderpass(input: proc_macro::TokenStream) -> proc_macro::TokenStr
         .sum();
     let name = syn::parse_str::<Ident>(&pass.name).unwrap();
     let renderpass_begin = format!("{}::{}::begin", data.name, pass.name);
-    let attachment_count: usize = pass.depth_stencil.as_ref().map(|_| 1).unwrap_or(0);
+    let attachment_count: usize = pass.color.len() + pass.depth_stencil.as_ref().map(|_| 1).unwrap_or(0);
+    let color_attachments = pass
+        .color
+        .iter()
+        .enumerate()
+        .map(|(ix, color)| {
+            let load_op = match color.load_op {
+                LoadOp::Clear => quote!(CLEAR),
+                LoadOp::Load => quote!(LOAD),
+                LoadOp::DontCare => quote!(DONT_CARE),
+            };
+            let store_op = match color.store_op {
+                StoreOp::Store => quote!(STORE),
+                StoreOp::Discard => quote!(DONT_CARE),
+            };
+            let color_attachment_clear_count = pass
+                .color
+                .iter()
+                .take(ix)
+                .filter(|color| color.load_op == LoadOp::Clear)
+                .count();
+            let clear_value = match color.load_op {
+                LoadOp::Clear => quote!(.clear_value(clear_values[#color_attachment_clear_count])),
+                _ => quote!(),
+            };
+            let layout = format_ident!("{}", color.layout);
+            quote! {
+                vk::RenderingAttachmentInfoKHR::builder()
+                    .image_view(attachments[#ix])
+                    .image_layout(vk::ImageLayout::#layout)
+                    .load_op(vk::AttachmentLoadOp::#load_op)
+                    .store_op(vk::AttachmentStoreOp::#store_op)
+                    #clear_value
+                    .build()
+            }
+        })
+        .collect_vec();
+
     let (depth_attachment, depth_attachment_apply) = pass
         .depth_stencil
         .as_ref()
@@ -2056,15 +2109,17 @@ pub fn define_renderpass(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                 StoreOp::Store => quote!(STORE),
                 StoreOp::Discard => quote!(DONT_CARE),
             };
+            let color_attachment_clear_count = pass.color.iter().filter(|color| color.load_op == LoadOp::Clear).count();
             let clear_value = match depth.load_op {
-                LoadOp::Clear => quote!(.clear_value(clear_values[0])), // TODO: dynamic index
+                LoadOp::Clear => quote!(.clear_value(clear_values[#color_attachment_clear_count])),
                 _ => quote!(),
             };
             let layout = format_ident!("{}", depth.layout);
+            let color_attachment_count = pass.color.len();
             (
                 quote! {
                     let depth_attachment = vk::RenderingAttachmentInfoKHR::builder()
-                        .image_view(attachments[0])
+                        .image_view(attachments[#color_attachment_count])
                         .image_layout(vk::ImageLayout::#layout)
                         .load_op(vk::AttachmentLoadOp::#load_op)
                         .store_op(vk::AttachmentStoreOp::#store_op)
@@ -2090,11 +2145,13 @@ pub fn define_renderpass(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                 use profiling::scope;
                 scope!(#renderpass_begin);
 
+                let color_attachments = [#(#color_attachments),*];
                 #depth_attachment
 
                 let rendering_info = vk::RenderingInfoKHR::builder()
                     .render_area(render_area)
                     .layer_count(1)
+                    .color_attachments(&color_attachments)
                     #depth_attachment_apply
                 ;
 
