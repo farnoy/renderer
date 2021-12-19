@@ -8,12 +8,16 @@ use super::super::{device::Semaphore, RenderFrame, Swapchain};
 #[cfg(feature = "crash_debugging")]
 use crate::renderer::CrashBuffer;
 use crate::renderer::{
-    as_of, as_of_last, frame_graph, Device, RenderStage, Resized, Submissions, SwapchainIndexToFrameNumber,
+    as_of, as_of_last, frame_graph, helpers::command_util::CommandUtil, Device, RenderStage, Resized, Submissions,
+    SwapchainIndexToFrameNumber,
 };
+
+renderer_macros::define_pass!(Present on compute);
 
 pub(crate) struct PresentData {
     framebuffer_acquire_semaphore: Semaphore,
     render_complete_semaphore: Semaphore,
+    command_util: CommandUtil,
 }
 
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -38,12 +42,14 @@ impl PresentData {
         PresentData {
             framebuffer_acquire_semaphore,
             render_complete_semaphore,
+            command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
         }
     }
 
     pub(crate) fn destroy(self, device: &Device) {
         self.framebuffer_acquire_semaphore.destroy(device);
         self.render_complete_semaphore.destroy(device);
+        self.command_util.destroy(device);
     }
 }
 
@@ -159,7 +165,7 @@ impl AcquireFramebuffer {
 impl PresentFramebuffer {
     pub(crate) fn exec(
         renderer: Res<RenderFrame>,
-        present_data: Res<PresentData>,
+        mut present_data: ResMut<PresentData>,
         mut swapchain: ResMut<Swapchain>,
         image_index: Res<ImageIndex>,
         mut resized: ResMut<Resized>,
@@ -175,11 +181,32 @@ impl PresentFramebuffer {
             debug_assert_eq!(graph.edge_count(), 0);
         }
 
+        assert!(
+            swapchain.supports_present_from_compute,
+            "frame_graph is currently hardcoded to run present from compute and transition the images"
+        );
+
         let queue = if swapchain.supports_present_from_compute {
             renderer.device.compute_queue_balanced()
         } else {
             renderer.device.graphics_queue().lock()
         };
+
+        let swapchain_images = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap() };
+
+        struct SwapchainImageWrapper {
+            handle: vk::Image,
+        }
+        let swapchain_image = SwapchainImageWrapper {
+            handle: swapchain_images[image_index.0 as usize],
+        };
+
+        let command_buffer = present_data.command_util.reset_and_record(&renderer, &image_index);
+        renderer_macros::barrier!(
+            command_buffer,
+            PresentSurface.prepare_present rw in Present transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; {&swapchain_image}
+        );
+        let command_buffer = command_buffer.end();
 
         {
             scope!("present::first_submit");
@@ -194,9 +221,13 @@ impl PresentFramebuffer {
                 .semaphore(present_data.render_complete_semaphore.handle)
                 .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
                 .build()];
+            let command_buffers = [vk::CommandBufferSubmitInfoKHR::builder()
+                .command_buffer(*command_buffer)
+                .build()];
             let submit = vk::SubmitInfo2KHR::builder()
                 .wait_semaphore_infos(wait_semaphores)
                 .signal_semaphore_infos(signal_semaphores)
+                .command_buffer_infos(&command_buffers)
                 .build();
 
             unsafe {
