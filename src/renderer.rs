@@ -1559,7 +1559,7 @@ pub(crate) fn render_frame(
     let command_buffer = command_util.reset_and_record(&renderer, &image_index);
     let main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
     let guard = renderer_macros::barrier!(
-        *command_buffer,
+        command_buffer,
         IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
         IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
         TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB, RT],
@@ -1748,7 +1748,7 @@ pub(crate) fn render_frame(
 
     unsafe {
         let _guard = renderer_macros::barrier!(
-            *command_buffer,
+            command_buffer,
             Color.resolve r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [render] if [!DEBUG_AABB, !REFERENCE_RT]; {&main_attachments.color_image}
         );
         let barriers = [vk::ImageMemoryBarrier2KHR::builder()
@@ -1830,7 +1830,7 @@ pub(crate) fn render_frame(
         unsafe {
             let _rt_copy_marker = command_buffer.debug_marker_around("copy reference RT output", [0.0, 1.0, 1.0, 1.0]);
             let _guard = renderer_macros::barrier!(
-                *command_buffer,
+                command_buffer,
                 ReferenceRaytraceOutput.in_main r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [generate] if [!DEBUG_AABB, RT, REFERENCE_RT]; {&reference_rt_data.output_image}
             );
             renderer.device.cmd_blit_image(
@@ -1926,19 +1926,13 @@ impl FromWorld for GuiRenderData {
     fn from_world(world: &mut World) -> Self {
         let renderer = world.get_resource::<RenderFrame>().unwrap();
         let main_descriptor_pool = world.get_resource::<MainDescriptorPool>().unwrap();
-        let main_renderpass = world.get_resource::<MainRenderpass>().unwrap();
         let mut gui = unsafe { world.get_non_send_resource_unchecked_mut::<Gui>().unwrap() };
-        Self::new(renderer, main_descriptor_pool, &mut gui, main_renderpass)
+        Self::new(renderer, main_descriptor_pool, &mut gui)
     }
 }
 
 impl GuiRenderData {
-    fn new(
-        renderer: &RenderFrame,
-        main_descriptor_pool: &MainDescriptorPool,
-        gui: &mut Gui,
-        main_renderpass: &MainRenderpass,
-    ) -> GuiRenderData {
+    fn new(renderer: &RenderFrame, main_descriptor_pool: &MainDescriptorPool, gui: &mut Gui) -> GuiRenderData {
         let imgui = &mut gui.imgui;
         imgui
             .io_mut()

@@ -188,7 +188,7 @@ pub(crate) fn upload_loaded_meshes(
     let marker = command_buffer.debug_marker_around("upload meshes", [0.0, 1.0, 0.0, 1.0]);
 
     let guard = renderer_macros::barrier!(
-        *command_buffer,
+        command_buffer,
         IndividualGltfMeshBuffer.upload w in UploadMeshes transfer copy,
     );
 

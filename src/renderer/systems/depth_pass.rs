@@ -116,7 +116,7 @@ pub(crate) fn depth_only_pass(
     let marker = command_buffer.debug_marker_around("depth prepass", [0.3, 0.3, 0.3, 1.0]);
 
     let guard = renderer_macros::barrier!(
-        *command_buffer,
+        command_buffer,
         IndirectCommandsBuffer.draw_depth r in DepthOnly indirect buffer after [compact, copy_frozen] if [!DEBUG_AABB],
         IndirectCommandsCount.draw_depth r in DepthOnly indirect buffer after [compute, copy_frozen] if [!DEBUG_AABB],
         ConsolidatedPositionBuffer.in_depth r in DepthOnly vertex buffer after [in_cull] if [!DEBUG_AABB],

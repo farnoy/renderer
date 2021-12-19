@@ -397,7 +397,7 @@ pub(crate) fn build_acceleration_structures(
     {
         let _tlas_marker = command_buffer.debug_marker_around("TLAS", [0.8, 0.1, 0.1, 1.0]);
         let _guard = renderer_macros::barrier!(
-            *command_buffer,
+            command_buffer,
             TLAS.build rw in BuildAccelerationStructures descriptor gltf_mesh.acceleration_set.top_level_as
         );
 

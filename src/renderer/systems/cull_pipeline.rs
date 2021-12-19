@@ -374,7 +374,7 @@ pub(crate) fn cull_pass_bypass(
         let _copy_over_marker = cull_cb.debug_marker_around("copy over cull data", [0.0, 1.0, 0.0, 1.0]);
 
         let _guard = renderer_macros::barrier!(
-            *cull_cb,
+            cull_cb,
             IndirectCommandsBuffer.copy_frozen rw in TransferCull transfer copy if [FREEZE_CULLING],
             IndirectCommandsCount.copy_frozen rw in TransferCull transfer copy if [FREEZE_CULLING],
             CulledIndexBuffer.copy_frozen rw in TransferCull transfer copy if [FREEZE_CULLING]
@@ -495,7 +495,7 @@ pub(crate) fn cull_pass(
         let cull_pass_marker = cull_cb.debug_marker_around("cull pass", [0.0, 1.0, 0.0, 1.0]);
         // Clear the command buffer before using
         let guard = renderer_macros::barrier!(
-            *cull_cb, [FREEZE_CULLING => false],
+            cull_cb, [FREEZE_CULLING => false],
             IndirectCommandsBuffer.reset w in ComputeCull transfer clear if [!FREEZE_CULLING],
             IndirectCommandsCount.reset w in ComputeCull transfer clear if [!FREEZE_CULLING]
         );
@@ -528,7 +528,7 @@ pub(crate) fn cull_pass(
         );
 
         let guard = renderer_macros::barrier!(
-            *cull_cb, [FREEZE_CULLING => false],
+            cull_cb, [FREEZE_CULLING => false],
             IndirectCommandsBuffer.cull rw in ComputeCull descriptor generate_work.cull_set.indirect_commands after [reset] if [!FREEZE_CULLING]; indirect_commands_buffer,
             ConsolidatedPositionBuffer.in_cull r in ComputeCull descriptor generate_work.cull_set.indirect_commands after [consolidate] if [!FREEZE_CULLING],
             ConsolidatedIndexBuffer.cull_from r in ComputeCull descriptor generate_work.cull_set.index_buffer after [consolidate] if [!FREEZE_CULLING],
@@ -585,7 +585,7 @@ pub(crate) fn cull_pass(
 
         let _compact_marker = cull_cb.debug_marker_around("compact draw stream", [0.0, 1.0, 1.0, 1.0]);
         let _guard = renderer_macros::barrier!(
-            *cull_cb, [FREEZE_CULLING => false],
+            cull_cb, [FREEZE_CULLING => false],
             IndirectCommandsBuffer.compact rw in ComputeCull descriptor compact_draw_stream.cull_set.indirect_commands after [cull] if [!FREEZE_CULLING]; indirect_commands_buffer,
             IndirectCommandsCount.compute rw in ComputeCull descriptor compact_draw_stream.cull_commands_count_set.indirect_commands_count after [reset] if [!FREEZE_CULLING]; indirect_commands_count,
         );

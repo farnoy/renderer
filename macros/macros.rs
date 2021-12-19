@@ -17,7 +17,7 @@ use renderer_macro_lib::{
     Attachment, Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily,
     RenderPass, RenderPassAttachment, RendererInput, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
 };
-use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
+use syn::{parse_macro_input, parse_quote, parse_str, spanned::Spanned, Ident, LitBool, Path, Type};
 
 #[proc_macro]
 pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -548,7 +548,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let acquire_image_barriers = acquire_image_barriers;
         if !acquire_buffer_barriers.is_empty() || !acquire_memory_barriers.is_empty() || !acquire_image_barriers.is_empty() {
             renderer.device.synchronization2.cmd_pipeline_barrier2(
-                #command_buffer_expr,
+                *#command_buffer_expr,
                 &vk::DependencyInfoKHR::builder()
                     .buffer_memory_barriers(&acquire_buffer_barriers)
                     .memory_barriers(&acquire_memory_barriers)
@@ -577,7 +577,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let release_image_barriers = release_image_barriers;
         if !release_buffer_barriers.is_empty() || !release_memory_barriers.is_empty() || !release_image_barriers.is_empty() {
             renderer.device.synchronization2.cmd_pipeline_barrier2(
-                #command_buffer_expr,
+                *#command_buffer_expr,
                 &vk::DependencyInfoKHR::builder()
                     .buffer_memory_barriers(&release_buffer_barriers)
                     .memory_barriers(&release_memory_barriers)
@@ -589,9 +589,11 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         unsafe {
             #validation_errors
             {
+                let marker = #command_buffer_expr.debug_marker_around("barrier![acquire]", [1.0, 0.0, 0.0, 1.0]);
                 #acquire_block
             }
             scopeguard::guard((), |()| {
+                let marker = #command_buffer_expr.debug_marker_around("barrier![release]", [1.0, 1.0, 0.0, 1.0]);
                 #release_block
             })
         }
@@ -1777,19 +1779,16 @@ fn define_pipe_old(
             let dynamic_renderpass_setup = match specific.dynamic_renderpass {
                 Some(ref renderpass) => {
                     let renderpass = renderpasses.get(renderpass).expect("Dynamic renderpass not found");
-                    let color_attachment_formats = renderpass
-                        .color
-                        .iter()
-                        .map(|x| {
-                            let format = attachments
-                                .get(&x.resource_name)
-                                .expect("Attachment not found")
-                                .format
-                                .as_ref()
-                                .expect("dynamic formats unsupported");
-                            let format = format_ident!("{}", format);
-                            quote!(vk::Format::#format)
-                        });
+                    let color_attachment_formats = renderpass.color.iter().map(|x| {
+                        let format = attachments
+                            .get(&x.resource_name)
+                            .expect("Attachment not found")
+                            .format
+                            .as_ref()
+                            .expect("dynamic formats unsupported");
+                        let format = format_ident!("{}", format);
+                        quote!(vk::Format::#format)
+                    });
                     let depth_stencil_format = renderpass
                         .depth_stencil
                         .as_ref()

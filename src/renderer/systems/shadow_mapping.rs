@@ -379,7 +379,7 @@ pub(crate) fn prepare_shadow_maps(
     unsafe {
         let _shadow_mapping_marker = command_buffer.debug_marker_around("shadow mapping", [0.8, 0.1, 0.1, 1.0]);
         let _guard = renderer_macros::barrier!(
-            *command_buffer,
+            command_buffer,
             ShadowMapAtlas.prepare rw in ShadowMapping attachment in ShadowMappingRP; {&shadow_mapping.depth_image}
         );
 

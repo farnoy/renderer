@@ -91,7 +91,7 @@ pub(crate) fn consolidate_mesh_buffers(
 
     let marker = command_buffer.debug_marker_around("consolidate mesh buffers", [0.0, 1.0, 0.0, 1.0]);
     let guard = renderer_macros::barrier!(
-        *command_buffer,
+        command_buffer,
         IndividualGltfMeshBuffer.consolidate r in ConsolidateMeshBuffers transfer copy after [upload],
         ConsolidatedPositionBuffer.consolidate w in ConsolidateMeshBuffers transfer copy,
         ConsolidatedNormalBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_normal_buffer,

@@ -63,7 +63,7 @@ pub(crate) fn reference_raytrace(
     let marker = cb.debug_marker_around("reference RT", [1.0, 0.0, 0.0, 1.0]);
 
     let barrier = renderer_macros::barrier!(
-        *cb,
+        cb,
         TLAS.in_reference r in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as after [build],
         ReferenceRaytraceOutput.generate w in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as layout GENERAL; {output_image}
     );
