@@ -177,7 +177,12 @@ impl PresentFramebuffer {
         #[cfg(debug_assertions)]
         {
             let graph = submissions.remaining.get_mut();
-            debug_assert_eq!(graph.node_count(), 0);
+            debug_assert_eq!(graph.node_count(), 1);
+            debug_assert_eq!(
+                graph.node_indices().next().unwrap().index() as u32,
+                frame_graph::Present::INDEX,
+                "The only remaining node must be Present"
+            );
             debug_assert_eq!(graph.edge_count(), 0);
         }
 
@@ -272,6 +277,7 @@ impl PresentFramebuffer {
             _ => panic!("unknown condition in PresentFramebuffer"),
         }
 
+        submissions.remaining.get_mut().clear();
         swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;
     }
 }

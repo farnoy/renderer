@@ -12,7 +12,8 @@ use renderer_macro_lib::{
     extract_optional_dyn, fetch,
     inputs::{to_rust_type, to_vk_format},
     resource_claims::{
-        ResourceBarrierInput, ResourceClaim, ResourceDefinitionInput, ResourceDefinitionType, ResourceUsageKind,
+        ResourceBarrierInput, ResourceClaim, ResourceClaimInput, ResourceDefinitionInput, ResourceDefinitionType,
+        ResourceUsageKind,
     },
     Attachment, Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily,
     RenderPass, RenderPassAttachment, RendererInput, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
@@ -126,17 +127,15 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let data = fetch().unwrap();
 
     let mut validation_errors = quote!();
-    let mut acquire_buffer_barriers: Vec<TokenStream> = vec![];
-    let mut acquire_memory_barriers: Vec<TokenStream> = vec![];
-    let mut acquire_image_barriers: Vec<TokenStream> = vec![];
-    #[allow(unused_mut)]
-    let mut release_buffer_barriers: Vec<TokenStream> = vec![];
-    #[allow(unused_mut)]
-    let mut release_memory_barriers: Vec<TokenStream> = vec![];
-    let mut release_image_barriers: Vec<TokenStream> = vec![];
+    let mut barrier_calls = quote!();
     let command_buffer_expr = input.command_buffer_ident;
 
     for claim in input.claims {
+        let ResourceClaimInput {
+            ref resource_name,
+            ref step_name,
+            ..
+        } = claim;
         let claims = data.resources.get(&claim.resource_name).unwrap();
 
         let this_node = *claims.map.get(&claim.step_name).unwrap();
@@ -171,430 +170,95 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let msg = "resource claims graph is cyclic".to_string();
             validation_errors.extend(quote!(compile_error!(#msg);));
         }
-        if claim.resource_name == "IndirectCommandsCount" {
-            // dbg!(
-            //     &claim.resource_name,
-            //     petgraph::dot::Dot::with_config(
-            //         &claims.graph.map(|_, node_ident| &node_ident.step_name, |_, _| ""),
-            //         &[petgraph::dot::Config::EdgeNoLabel]
-            //     )
-            // );
-        }
-
-        // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
-        // iterations of the graph
-        let mut incoming = claims
-            .graph
-            .neighbors_directed(this_node, Direction::Incoming)
-            .peekable();
-        let incoming = if let None = incoming.peek() {
-            incoming
-                .chain(claims.graph.externals(Direction::Outgoing))
-                .collect_vec()
-        } else {
-            incoming.collect_vec()
-        };
-        let mut outgoing = claims
-            .graph
-            .neighbors_directed(this_node, Direction::Outgoing)
-            .peekable();
-        let outgoing = if let None = outgoing.peek() {
-            outgoing
-                .chain(claims.graph.externals(Direction::Incoming))
-                .collect_vec()
-        } else {
-            outgoing.collect_vec()
-        };
-
-        let this_queue = get_queue_family_index_for_pass(&this.pass_name);
-        let this_queue_runtime = get_runtime_queue_family(this_queue);
-        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
-        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
-            let (access_prefixes, stages) = match &step.usage {
-                ResourceUsageKind::VertexBuffer => (vec![quote!(VERTEX_ATTRIBUTE)], vec![quote!(VERTEX_INPUT)]),
-                ResourceUsageKind::IndexBuffer => (vec![quote!(INDEX)], vec![quote!(INDEX_INPUT)]),
-                ResourceUsageKind::Attachment(ref _renderpass) => {
-                    // TODO: imprecise
-                    (vec![quote!(MEMORY)], vec![
-                        quote!(EARLY_FRAGMENT_TESTS),
-                        quote!(LATE_FRAGMENT_TESTS),
-                        quote!(COLOR_ATTACHMENT_OUTPUT),
-                    ])
-                }
-                ResourceUsageKind::IndirectBuffer => (vec![quote!(INDIRECT_COMMAND)], vec![quote!(DRAW_INDIRECT)]),
-                ResourceUsageKind::TransferCopy => (vec![quote!(TRANSFER)], vec![quote!(COPY)]),
-                // TODO: sync validation is picky when just CLEAR from sync2 is used
-                ResourceUsageKind::TransferClear => (vec![quote!(TRANSFER)], vec![quote!(ALL_TRANSFER)]),
-                ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
-                    let pipeline = data
-                        .pipelines
-                        .get(pipeline_name)
-                        .expect("pipeline not found in barrier");
-                    let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
-                    let binding = set
-                        .bindings
-                        .iter()
-                        .find(|candidate| candidate.name == *binding_name)
-                        .expect("binding not found in barrier");
-                    let pipeline_stages = pipeline.specific.stages();
-
-                    let mut access_prefixes = vec![];
-                    let mut stages = vec![];
-
-                    binding
-                        .shader_stages
-                        .iter()
-                        .filter(|x| pipeline_stages.contains(*x))
-                        .map(|stage| match stage.as_str() {
-                            "COMPUTE" => (quote!(SHADER), quote!(COMPUTE_SHADER)),
-                            _ => unimplemented!("barrier! descriptor stage {}", stage),
-                        })
-                        .for_each(|(x, y)| {
-                            access_prefixes.push(x);
-                            stages.push(y);
-                        });
-                    (access_prefixes, stages)
-                }
-            };
-
-            let access_prefixes = access_prefixes
-                .into_iter()
-                .flat_map(|prefix| {
-                    let mut output = vec![];
-                    if step.reads && include_reads {
-                        output.push(format_ident!("{}_READ", prefix.to_string()).to_token_stream());
-                    }
-                    if step.writes && include_writes {
-                        output.push(format_ident!("{}_WRITE", prefix.to_string()).to_token_stream());
-                    }
-                    output
-                })
-                .collect_vec();
-
-            (access_prefixes, stages)
-        };
-        let mut emitted_barriers = 0;
-
-        // {
-        //     // TODO: enhance these validations with proper boolean expressions & evaluation engine likely
-        //     // solution: each incoming resource usage branch must add something to the simplified boolean
-        //     // expression. For example, 1 A and 1 !A end in a truism, but 2 A branches end in the same
-        //     // simplified expression as 1 A, so the second branch didn't change anything
-        //     //
-        //     // Right now, we're only checking for the exact same Conditional object we've seen already,
-        // which     // is not a nuanced analysis.
-        //     let mut seen_conditionals: Vec<&Conditional> = vec![];
-        //     for &dep in incoming.iter() {
-        //         let prev_step = &claims.graph[dep];
-        //         if prev_step.conditional == Conditional::default() {
-        //             continue;
-        //         }
-        //         if seen_conditionals.iter().any(|&c| *c == prev_step.conditional) {
-        //             let msg = format!(
-        //                 "Duplicate conditional while evaluating resource claim {}.{}, offending
-        // conditional: {:?}",                 claim.resource_name, this.step_name,
-        // prev_step.conditional             );
-        //             validation_errors.extend(quote!(compile_error!(#msg);));
-        //         }
-        //         seen_conditionals.push(&prev_step.conditional);
-        //     }
-        // }
-
-        for dep in incoming {
-            let this_external = !claims
-                .graph
-                .neighbors_directed(this_node, Direction::Incoming)
-                .any(|_| true);
-            let prev_step = &claims.graph[dep];
-            let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
-            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
-            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
-
-            if prev_step.pass_name == this.pass_name
-            // && prev_step.usage != ResourceUsageKind::Attachment
-            // && this.usage != ResourceUsageKind::Attachment
-            {
-                match claims.ty {
-                    ResourceDefinitionType::StaticBuffer { .. } => {
-                        let (src_access, src_stage) = stage_flags(&prev_step, false, true);
-                        let (dst_access, dst_stage) = stage_flags(&this, true, true);
-                        assert!(
-                            claim.resource_ident.is_some(),
-                            "Expected barrier call to provide resource expr {:?}",
-                            &claim
-                        );
-                        let resource_ident = &claim.resource_ident;
-
-                        let conditions =
-                            prev_step
-                                .conditional
-                                .conditions
-                                .iter()
-                                .map(|Condition { switch_name, neg }| {
-                                    match input.conditional_context.get(switch_name) {
-                                        Some(expr) => {
-                                            let neg = if *neg { quote!(!) } else { quote!() };
-                                            quote!(#neg {#expr})
-                                        }
-                                        None => {
-                                            let msg = format!("Missing conditional expression for {}", switch_name);
-                                            validation_errors.extend(quote!(compile_error!(#msg);));
-                                            quote!(false)
-                                        }
-                                    }
-                                });
-
-                        emitted_barriers += 1;
-                        acquire_buffer_barriers.push(quote! {
-                            if true #(&& #conditions)* {
-                                acquire_buffer_barriers.push(vk::BufferMemoryBarrier2KHR::builder()
-                                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                    .src_stage_mask(#(vk::PipelineStageFlags2KHR::#src_stage)|*)
-                                    .dst_stage_mask(#(vk::PipelineStageFlags2KHR::#dst_stage)|*)
-                                    .src_access_mask(#(vk::AccessFlags2KHR::#src_access)|*)
-                                    .dst_access_mask(#(vk::AccessFlags2KHR::#dst_access)|*)
-                                    .buffer({#resource_ident}.buffer.handle)
-                                    .size(vk::WHOLE_SIZE)
-                                    .build());
-                            }
-                        });
-                    }
-                    ResourceDefinitionType::AccelerationStructure => {
-                        emitted_barriers += 1;
-                        acquire_memory_barriers.push(quote! {
-                            acquire_memory_barriers.push(vk::MemoryBarrier2KHR::builder()
-                                .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
-                                .src_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_WRITE)
-                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .dst_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_READ)
-                                .build())
-                        });
-                    }
-                    ResourceDefinitionType::Image { .. } => {} // handled below
-                }
-            }
-
-            match claims.ty {
-                ResourceDefinitionType::StaticBuffer { .. } => {}
-                ResourceDefinitionType::AccelerationStructure => {}
-                ResourceDefinitionType::Image { ref aspect } => {
-                    assert!(
-                        claim.resource_ident.is_some(),
-                        "Expected barrier call to provide resource expr {:?}",
-                        &claim
+        match claims.ty {
+            ResourceDefinitionType::StaticBuffer { .. } => {
+                let resource_expr = claim
+                    .resource_ident
+                    .map(|x| quote!({#x}.buffer.handle))
+                    .unwrap_or(quote!(vk::Buffer::null()));
+                barrier_calls.extend_one(quote! {
+                    submissions.barrier_buffer(
+                        &renderer,
+                        &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
+                        *#command_buffer_expr,
+                        #resource_name,
+                        #step_name,
+                        #resource_expr,
+                        &mut acquire_buffer_barriers,
+                        &mut release_buffer_barriers,
                     );
-                    let resource_ident = &claim.resource_ident;
-                    let this_layout = claim.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
-                        "did not specify desired image layout {}.{}",
-                        &this.pass_name, &this.step_name
-                    ));
-                    let prev_layout = prev_step.layout.as_ref().or(prev_layout_in_renderpass).expect(&format!(
-                        "did not specify desired image layout {}.{}",
-                        &prev_step.pass_name, &prev_step.step_name
-                    ));
-                    let this_layout = format_ident!("{}", this_layout);
-                    let prev_layout = format_ident!("{}", prev_layout);
-                    let transition = (prev_queue != this_queue)
-                        .then(|| {
-                            quote! {
-                                .src_queue_family_index(#prev_queue_runtime)
-                                .dst_queue_family_index(#this_queue_runtime)
-                            }
-                        })
-                        .unwrap_or(quote! {
-                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        });
-                    let aspect = format_ident!("{}", aspect);
-                    emitted_barriers += 1;
-                    // TODO: need robust tracking of resources/archetypes
-                    acquire_image_barriers.push(quote! {
-                        if #this_external && renderer.frame_number == 1 {
-                            acquire_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
-                                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                                .old_layout(vk::ImageLayout::UNDEFINED)
-                                .new_layout(vk::ImageLayout::#this_layout)
-                                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
-                                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
-                                .subresource_range(vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::#aspect)
-                                    .level_count(1)
-                                    .layer_count(1)
-                                    .build())
-                                .image(#resource_ident.handle)
-                                .build());
-                        } else {
-                            acquire_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
-                                #transition
-                                .old_layout(vk::ImageLayout::#prev_layout)
-                                .new_layout(vk::ImageLayout::#this_layout)
-                                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
-                                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                                 vk::AccessFlags2KHR::MEMORY_WRITE)
-                                .subresource_range(vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::#aspect)
-                                    .level_count(1)
-                                    .layer_count(1)
-                                    .build())
-                                .image(#resource_ident.handle)
-                                .build()
-                            );
-                        }
-                    });
-                }
+                });
             }
-        }
-        assert!(
-            emitted_barriers <= 1,
-            "Resource claim {}.{} generated more than one acquire barrier, please disambiguate edges at runtime",
-            claim.resource_name,
-            claim.step_name
-        );
-        emitted_barriers = 0;
-        for dep in outgoing {
-            let next_step = &claims.graph[dep];
-            let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
-            let next_queue_runtime = get_runtime_queue_family(next_queue);
-            let next_layout_in_renderpass = get_layout_from_renderpass(&next_step);
-
-            if this_queue == next_queue {
-                continue;
-            }
-
-            match claims.ty {
-                ResourceDefinitionType::StaticBuffer { .. } => {
-                    // buffers are never exclusive, so we skip this
-                }
-                ResourceDefinitionType::AccelerationStructure => {
-                    // ASes have no sharing mode and therefore no exclusive ownership
-                }
-                ResourceDefinitionType::Image { ref aspect } => {
-                    assert!(
-                        claim.resource_ident.is_some(),
-                        "Expected barrier call to provide resource expr {:?}",
-                        &claim
+            ResourceDefinitionType::AccelerationStructure => {
+                barrier_calls.extend_one(quote! {
+                    submissions.barrier_acceleration_structure(
+                        &renderer,
+                        &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
+                        *#command_buffer_expr,
+                        #resource_name,
+                        #step_name,
+                        &mut acquire_memory_barriers,
+                        &mut release_memory_barriers,
                     );
-                    let resource_ident = &claim.resource_ident;
-                    let this_layout = claim.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
-                        "did not specify desired image layout {}.{}",
-                        &this.pass_name, &this.step_name
-                    ));
-                    let next_layout = next_step.layout.as_ref().or(next_layout_in_renderpass).expect(&format!(
-                        "did not specify desired image layout {}.{}",
-                        &next_step.pass_name, &next_step.step_name
-                    ));
-                    let this_layout = format_ident!("{}", this_layout);
-                    let next_layout = format_ident!("{}", next_layout);
-                    let aspect = format_ident!("{}", aspect);
-                    emitted_barriers += 1;
-                    release_image_barriers.push(quote! {
-                        release_image_barriers.push(vk::ImageMemoryBarrier2KHR::builder()
-                            .src_queue_family_index(#this_queue_runtime)
-                            .dst_queue_family_index(#next_queue_runtime)
-                            .old_layout(vk::ImageLayout::#this_layout)
-                            .new_layout(vk::ImageLayout::#next_layout)
-                            .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                            .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                            .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                             vk::AccessFlags2KHR::MEMORY_WRITE)
-                            .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ |
-                                             vk::AccessFlags2KHR::MEMORY_WRITE)
-                            .subresource_range(vk::ImageSubresourceRange::builder()
-                                .aspect_mask(vk::ImageAspectFlags::#aspect)
-                                .level_count(1)
-                                .layer_count(1)
-                                .build())
-                            .image(#resource_ident.handle)
-                            .build())
-                    });
-                }
+                });
+            }
+            ResourceDefinitionType::Image { .. } => {
+                let resource_expr = claim
+                    .resource_ident
+                    .map(|x| quote!({#x}.handle))
+                    .unwrap_or(quote!(vk::Image::null()));
+                barrier_calls.extend_one(quote! {
+                    submissions.barrier_image(
+                        &renderer,
+                        &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
+                        *#command_buffer_expr,
+                        #resource_name,
+                        #step_name,
+                        #resource_expr,
+                        &mut acquire_image_barriers,
+                        &mut release_image_barriers,
+                    );
+                });
             }
         }
-        assert!(
-            emitted_barriers <= 1,
-            "Resource claim {}.{} generated more than one release barrier, please disambiguate edges at runtime",
-            claim.resource_name,
-            claim.step_name
-        );
     }
 
-    let acquire_buffer_barriers_len = acquire_buffer_barriers.len();
-    let acquire_memory_barriers_len = acquire_memory_barriers.len();
-    let acquire_image_barriers_len = acquire_image_barriers.len();
-    let acquire_block = quote! {
-        let mut acquire_buffer_barriers: smallvec::SmallVec<[vk::BufferMemoryBarrier2KHR; #acquire_buffer_barriers_len]> = smallvec::SmallVec::new_const();
-        {
-            #(#acquire_buffer_barriers;)*
-        }
-        let acquire_buffer_barriers = acquire_buffer_barriers;
-        let mut acquire_memory_barriers: smallvec::SmallVec<[vk::MemoryBarrier2KHR; #acquire_memory_barriers_len]> = smallvec::SmallVec::new_const();
-        {
-            #(#acquire_memory_barriers;)*
-        }
-        let acquire_memory_barriers = acquire_memory_barriers;
-        let mut acquire_image_barriers: smallvec::SmallVec<[vk::ImageMemoryBarrier2KHR; #acquire_image_barriers_len]> = smallvec::SmallVec::new_const();
-        {
-            #(#acquire_image_barriers;)*
-        }
-        let acquire_image_barriers = acquire_image_barriers;
-        if !acquire_buffer_barriers.is_empty() || !acquire_memory_barriers.is_empty() || !acquire_image_barriers.is_empty() {
-            renderer.device.synchronization2.cmd_pipeline_barrier2(
-                *#command_buffer_expr,
-                &vk::DependencyInfoKHR::builder()
-                    .buffer_memory_barriers(&acquire_buffer_barriers)
-                    .memory_barriers(&acquire_memory_barriers)
-                    .image_memory_barriers(&acquire_image_barriers),
-            );
-        }
-    };
-    let release_buffer_barriers_len = release_buffer_barriers.len();
-    let release_memory_barriers_len = release_memory_barriers.len();
-    let release_image_barriers_len = release_image_barriers.len();
-    let release_block = quote! {
-        let mut release_buffer_barriers: smallvec::SmallVec<[vk::BufferMemoryBarrier2KHR; #release_buffer_barriers_len]> = smallvec::SmallVec::new_const();
-        {
-            #(#release_buffer_barriers;)*
-        }
-        let release_buffer_barriers = release_buffer_barriers;
-        let mut release_memory_barriers: smallvec::SmallVec<[vk::MemoryBarrier2KHR; #release_memory_barriers_len]> = smallvec::SmallVec::new_const();
-        {
-            #(#release_memory_barriers;)*
-        }
-        let release_memory_barriers = release_memory_barriers;
-        let mut release_image_barriers: smallvec::SmallVec<[vk::ImageMemoryBarrier2KHR; #release_image_barriers_len]> = smallvec::SmallVec::new_const();
-        {
-            #(#release_image_barriers;)*
-        }
-        let release_image_barriers = release_image_barriers;
-        if !release_buffer_barriers.is_empty() || !release_memory_barriers.is_empty() || !release_image_barriers.is_empty() {
-            renderer.device.synchronization2.cmd_pipeline_barrier2(
-                *#command_buffer_expr,
-                &vk::DependencyInfoKHR::builder()
-                    .buffer_memory_barriers(&release_buffer_barriers)
-                    .memory_barriers(&release_memory_barriers)
-                    .image_memory_barriers(&release_image_barriers),
-            );
-        }
-    };
     quote! {
         unsafe {
             #validation_errors
+            let mut acquire_buffer_barriers = vec![];
+            let mut acquire_memory_barriers = vec![];
+            let mut acquire_image_barriers = vec![];
+            let mut release_buffer_barriers = vec![];
+            let mut release_memory_barriers = vec![];
+            let mut release_image_barriers = vec![];
+            #barrier_calls;
             {
                 let marker = #command_buffer_expr.debug_marker_around("barrier![acquire]", [1.0, 0.0, 0.0, 1.0]);
-                #acquire_block
+                if !acquire_buffer_barriers.is_empty() || !acquire_memory_barriers.is_empty() || !acquire_image_barriers.is_empty() {
+                    renderer.device.synchronization2.cmd_pipeline_barrier2(
+                        *#command_buffer_expr,
+                        &vk::DependencyInfoKHR::builder()
+                            .buffer_memory_barriers(&acquire_buffer_barriers)
+                            .memory_barriers(&acquire_memory_barriers)
+                            .image_memory_barriers(&acquire_image_barriers),
+                    );
+                }
             }
             scopeguard::guard((), |()| {
+                let release_buffer_barriers = release_buffer_barriers;
+                let release_memory_barriers = release_memory_barriers;
+                let release_image_barriers = release_image_barriers;
                 let marker = #command_buffer_expr.debug_marker_around("barrier![release]", [1.0, 1.0, 0.0, 1.0]);
-                #release_block
+                if !release_buffer_barriers.is_empty() || !release_memory_barriers.is_empty() || !release_image_barriers.is_empty() {
+                    renderer.device.synchronization2.cmd_pipeline_barrier2(
+                        *#command_buffer_expr,
+                        &vk::DependencyInfoKHR::builder()
+                            .buffer_memory_barriers(&release_buffer_barriers)
+                            .memory_barriers(&release_memory_barriers)
+                            .image_memory_barriers(&release_image_barriers),
+                    );
+                }
             })
         }
     }

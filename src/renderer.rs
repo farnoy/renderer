@@ -13,12 +13,15 @@ use std::time::Instant;
 use std::{
     cmp::max,
     env,
+    fs::{read_dir, remove_file, File},
+    io::Write,
     marker::PhantomData,
     mem::{replace, size_of, take},
     path::Path,
     sync::Arc,
 };
 
+use anyhow::bail;
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
 use hashbrown::HashMap;
@@ -27,10 +30,16 @@ use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::{
     algo::has_path_connecting,
+    prelude::*,
     stable_graph::{NodeIndex, StableDiGraph},
+    visit::{IntoEdgeReferences, IntoNodeReferences},
 };
 use profiling::scope;
-use renderer_macro_lib::{inputs::DependencyType, resource_claims::ResourceClaims, Conditional, QueueFamily};
+use renderer_macro_lib::{
+    inputs::DependencyType,
+    resource_claims::{ResourceClaim, ResourceClaims, ResourceDefinitionType, ResourceUsageKind},
+    Conditional, QueueFamily,
+};
 #[cfg(feature = "shader_reload")]
 use smallvec::smallvec;
 use smallvec::SmallVec;
@@ -1738,6 +1747,7 @@ pub(crate) fn render_frame(
         &mut input_handler,
         &mut gui,
         &command_buffer,
+        &submissions,
         #[cfg(feature = "shader_reload")]
         &reloaded_shaders,
     );
@@ -2214,6 +2224,7 @@ fn render_gui(
     input_handler: &mut InputHandler,
     gui: &mut Gui,
     command_buffer: &StrictRecordingCommandBuffer,
+    submissions: &Submissions,
     #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
 ) {
     scope!("rendering::render_gui");
@@ -2234,6 +2245,7 @@ fn render_gui(
         swapchain,
         camera,
         runtime_config,
+        submissions,
         #[cfg(feature = "shader_reload")]
         reloaded_shaders,
     );
@@ -2505,6 +2517,837 @@ impl Submissions {
             crash_buffer,
         );
     }
+
+    pub(crate) fn dump_live_graphs(&self) -> Result<(), anyhow::Error> {
+        let root_dir = env!("CARGO_MANIFEST_DIR");
+        let src = Path::new(&root_dir).join("live-diagnostics");
+        for x in read_dir(&src)? {
+            remove_file(x?.path())?;
+        }
+        let data: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+        for (res_name, claim) in self.active_resources.iter() {
+            let src = src.join(&format!("{}.dot", res_name));
+            let mut file = File::create(src)?;
+
+            writeln!(file, "digraph {{")?;
+            for (ix, claim) in claim.graph.node_references() {
+                writeln!(file, "{} [ label = \"{}\" ]", ix.index(), &claim.step_name,)?;
+            }
+            for edge in claim.graph.edge_references() {
+                let source = &claim.graph[edge.source()];
+                let target = &claim.graph[edge.target()];
+                let source_queue = data
+                    .passes
+                    .get(&source.pass_name)
+                    .map(|_| QueueFamily::Graphics)
+                    .or_else(|| data.async_passes.get(&source.pass_name).map(|p| p.queue))
+                    .unwrap();
+                let target_queue = data
+                    .passes
+                    .get(&target.pass_name)
+                    .map(|_| QueueFamily::Graphics)
+                    .or_else(|| data.async_passes.get(&target.pass_name).map(|p| p.queue))
+                    .unwrap();
+                let color = if source.pass_name == target.pass_name {
+                    "green"
+                } else if source_queue == target_queue {
+                    "blue"
+                } else {
+                    "red"
+                };
+                writeln!(
+                    file,
+                    "{} -> {} [ color = {} ]",
+                    edge.source().index(),
+                    edge.target().index(),
+                    color
+                )?;
+            }
+            writeln!(file, "}}")?;
+        }
+
+        let src = src.join("dependency_graph.dot");
+        let mut file = File::create(src)?;
+
+        let graph = &self.active_graph;
+
+        writeln!(file, "digraph {{")?;
+        for (ix, pass) in graph.node_references() {
+            let (sem_ix, step_ix) = data.timeline_semaphore_mapping.get(pass).unwrap();
+            writeln!(
+                file,
+                "{} [ label = \"{}\n({}, {})\", shape = \"rectangle\" ]",
+                ix.index(),
+                pass,
+                sem_ix,
+                step_ix,
+            )?;
+        }
+        for edge in graph.edge_references() {
+            let source = graph[edge.source()].as_str();
+            let target = graph[edge.target()].as_str();
+            let source_queue = data
+                .passes
+                .get(source)
+                .map(|_| QueueFamily::Graphics)
+                .or_else(|| data.async_passes.get(source).map(|p| p.queue))
+                .unwrap();
+            let target_queue = data
+                .passes
+                .get(target)
+                .map(|_| QueueFamily::Graphics)
+                .or_else(|| data.async_passes.get(target).map(|p| p.queue))
+                .unwrap();
+            let color = if source_queue == target_queue { "blue" } else { "red" };
+            writeln!(
+                file,
+                "{} -> {} [ color = {} ]",
+                edge.source().index(),
+                edge.target().index(),
+                color
+            )?;
+        }
+        writeln!(file, "}}")?;
+
+        Ok(())
+    }
+
+    pub(crate) fn barrier_buffer(
+        &self,
+        renderer: &RenderFrame,
+        data: &renderer_macro_lib::RendererInput,
+        command_buffer: vk::CommandBuffer,
+        resource_name: &str,
+        step_name: &str,
+        buffer: vk::Buffer,
+        acquire_buffer_barriers: &mut Vec<vk::BufferMemoryBarrier2KHR>,
+        #[allow(unused)] release_buffer_barriers: &mut Vec<vk::BufferMemoryBarrier2KHR>,
+    ) {
+        let claims = self.active_resources.get(resource_name).unwrap();
+
+        debug_assert!(matches!(claims.ty, ResourceDefinitionType::StaticBuffer { .. }));
+
+        let this_node = match claims.map.get(step_name) {
+            Some(&node) => node,
+            None => {
+                return;
+            }
+        };
+        let this = match claims.graph.node_weight(this_node) {
+            Some(node) => node,
+            None => {
+                return;
+            }
+        };
+        let get_queue_family_index_for_pass = |pass: &str| {
+            data.passes
+                .get(pass)
+                .and(Some(QueueFamily::Graphics))
+                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .expect("pass not found")
+        };
+        let get_runtime_queue_family = |ty: QueueFamily| match ty {
+            QueueFamily::Graphics => renderer.device.graphics_queue_family,
+            QueueFamily::Compute => renderer.device.compute_queue_family,
+            QueueFamily::Transfer => renderer.device.transfer_queue_family,
+        };
+        let get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
+            ResourceUsageKind::Attachment(ref renderpass) => data
+                .renderpasses
+                .get(renderpass)
+                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
+                .flatten(),
+            _ => None,
+        };
+
+        // let connected_components = petgraph::algo::connected_components(&claims.graph);
+        // if connected_components != 1 {
+        //     let msg = "resource claims graph must have one connected component".to_string();
+        //     validation_errors.extend(quote!(compile_error!(#msg);));
+        // }
+        if petgraph::algo::is_cyclic_directed(&claims.graph) {
+            panic!("resource claims graph is cyclic");
+        }
+
+        // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
+        // iterations of the graph
+        let mut incoming = claims.graph.neighbors_directed(this_node, Incoming).peekable();
+        let incoming = if let None = incoming.peek() {
+            incoming.chain(claims.graph.externals(Outgoing)).collect_vec()
+        } else {
+            incoming.collect_vec()
+        };
+        let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
+        let outgoing = if let None = outgoing.peek() {
+            outgoing.chain(claims.graph.externals(Incoming)).collect_vec()
+        } else {
+            outgoing.collect_vec()
+        };
+
+        let this_queue = get_queue_family_index_for_pass(&this.pass_name);
+        let this_queue_runtime = get_runtime_queue_family(this_queue);
+        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
+        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+            use vk::{AccessFlags2KHR as A, PipelineStageFlags2KHR as S};
+            let mut accesses = A::empty();
+            let mut stages = S::empty();
+            if step.reads && include_reads {
+                let (local_accesses, local_stages) = match &step.usage {
+                    ResourceUsageKind::VertexBuffer => (A::VERTEX_ATTRIBUTE_READ, S::VERTEX_ATTRIBUTE_INPUT),
+                    ResourceUsageKind::IndexBuffer => (A::INDEX_READ, S::INDEX_INPUT),
+                    ResourceUsageKind::Attachment(ref _renderpass) => {
+                        // TODO: imprecise
+                        (A::MEMORY_READ, S::EARLY_FRAGMENT_TESTS | S::LATE_FRAGMENT_TESTS)
+                    }
+                    ResourceUsageKind::IndirectBuffer => (A::INDIRECT_COMMAND_READ, S::DRAW_INDIRECT),
+                    ResourceUsageKind::TransferCopy => (A::TRANSFER_READ, S::COPY),
+                    // TODO: sync validation is picky when just CLEAR from sync2 is used
+                    ResourceUsageKind::TransferClear => (A::TRANSFER_READ, S::ALL_TRANSFER),
+                    ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                        let pipeline = data
+                            .pipelines
+                            .get(pipeline_name)
+                            .expect("pipeline not found in barrier");
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
+                        let pipeline_stages = pipeline.specific.stages();
+
+                        let mut accesses = A::empty();
+                        let mut stages = S::empty();
+
+                        binding
+                            .shader_stages
+                            .iter()
+                            .filter(|x| pipeline_stages.contains(*x))
+                            .map(|stage| match stage.as_str() {
+                                "COMPUTE" => (A::SHADER_READ, S::COMPUTE_SHADER),
+                                _ => unimplemented!("barrier! descriptor stage {}", stage),
+                            })
+                            .for_each(|(x, y)| {
+                                accesses |= x;
+                                stages |= y;
+                            });
+                        (accesses, stages)
+                    }
+                };
+                accesses |= local_accesses;
+                stages |= local_stages;
+            }
+            if step.writes && include_writes {
+                let (local_accesses, local_stages) = match &step.usage {
+                    ResourceUsageKind::VertexBuffer => panic!("can't have a write access to VertexBuffer"),
+                    ResourceUsageKind::IndexBuffer => panic!("can't have a write access to IndexBuffer"),
+                    ResourceUsageKind::Attachment(ref _renderpass) => {
+                        // TODO: imprecise
+                        (A::MEMORY_WRITE, S::COLOR_ATTACHMENT_OUTPUT)
+                    }
+                    ResourceUsageKind::IndirectBuffer => panic!("can't have a write access to IndirectBuffer"),
+                    ResourceUsageKind::TransferCopy => (A::TRANSFER_WRITE, S::COPY),
+                    // TODO: sync validation is picky when just CLEAR from sync2 is used
+                    ResourceUsageKind::TransferClear => (A::TRANSFER_WRITE, S::ALL_TRANSFER),
+                    ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                        let pipeline = data
+                            .pipelines
+                            .get(pipeline_name)
+                            .expect("pipeline not found in barrier");
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
+                        let pipeline_stages = pipeline.specific.stages();
+
+                        let mut accesses = A::empty();
+                        let mut stages = S::empty();
+
+                        binding
+                            .shader_stages
+                            .iter()
+                            .filter(|x| pipeline_stages.contains(*x))
+                            .map(|stage| match stage.as_str() {
+                                "COMPUTE" => (A::SHADER_WRITE, S::COMPUTE_SHADER),
+                                _ => unimplemented!("barrier! descriptor stage {}", stage),
+                            })
+                            .for_each(|(x, y)| {
+                                accesses |= x;
+                                stages |= y;
+                            });
+                        (accesses, stages)
+                    }
+                };
+                accesses |= local_accesses;
+                stages |= local_stages;
+            }
+            (accesses, stages)
+        };
+        let mut emitted_barriers = 0;
+
+        for dep in incoming {
+            let this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
+            let prev_step = &claims.graph[dep];
+            let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
+            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
+            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
+
+            if prev_step.step_name != this.step_name && prev_step.pass_name == this.pass_name {
+                let (src_access, src_stage) = stage_flags(&prev_step, false, true);
+                let (dst_access, dst_stage) = stage_flags(&this, true, true);
+
+                assert!(
+                    buffer != vk::Buffer::null(),
+                    "Expected barrier call to provide resource expr {} {} {} {}",
+                    resource_name,
+                    step_name,
+                    prev_step.pass_name,
+                    this.pass_name
+                );
+                emitted_barriers += 1;
+                acquire_buffer_barriers.push(
+                    vk::BufferMemoryBarrier2KHR::builder()
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .src_stage_mask(src_stage)
+                        .dst_stage_mask(dst_stage)
+                        .src_access_mask(src_access)
+                        .dst_access_mask(dst_access)
+                        .buffer(buffer)
+                        .size(vk::WHOLE_SIZE)
+                        .build(),
+                );
+            }
+        }
+        assert!(
+            emitted_barriers <= 1,
+            "Resource claim {}.{} generated more than one acquire barrier, please disambiguate edges at runtime",
+            resource_name,
+            step_name
+        );
+    }
+
+    pub(crate) fn barrier_acceleration_structure(
+        &self,
+        renderer: &RenderFrame,
+        data: &renderer_macro_lib::RendererInput,
+        command_buffer: vk::CommandBuffer,
+        resource_name: &str,
+        step_name: &str,
+        acquire_memory_barriers: &mut Vec<vk::MemoryBarrier2KHR>,
+        #[allow(unused)] release_memory_barriers: &mut Vec<vk::MemoryBarrier2KHR>,
+    ) {
+        let claims = self.active_resources.get(resource_name).unwrap();
+
+        debug_assert!(matches!(claims.ty, ResourceDefinitionType::AccelerationStructure));
+
+        let this_node = match claims.map.get(step_name) {
+            Some(&node) => node,
+            None => {
+                return;
+            }
+        };
+        let this = match claims.graph.node_weight(this_node) {
+            Some(node) => node,
+            None => {
+                return;
+            }
+        };
+        let get_queue_family_index_for_pass = |pass: &str| {
+            data.passes
+                .get(pass)
+                .and(Some(QueueFamily::Graphics))
+                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .expect("pass not found")
+        };
+        let get_runtime_queue_family = |ty: QueueFamily| match ty {
+            QueueFamily::Graphics => renderer.device.graphics_queue_family,
+            QueueFamily::Compute => renderer.device.compute_queue_family,
+            QueueFamily::Transfer => renderer.device.transfer_queue_family,
+        };
+        let get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
+            ResourceUsageKind::Attachment(ref renderpass) => data
+                .renderpasses
+                .get(renderpass)
+                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
+                .flatten(),
+            _ => None,
+        };
+
+        // let connected_components = petgraph::algo::connected_components(&claims.graph);
+        // if connected_components != 1 {
+        //     let msg = "resource claims graph must have one connected component".to_string();
+        //     validation_errors.extend(quote!(compile_error!(#msg);));
+        // }
+        if petgraph::algo::is_cyclic_directed(&claims.graph) {
+            panic!("resource claims graph is cyclic");
+        }
+
+        // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
+        // iterations of the graph
+        let mut incoming = claims.graph.neighbors_directed(this_node, Incoming).peekable();
+        let incoming = if let None = incoming.peek() {
+            incoming.chain(claims.graph.externals(Outgoing)).collect_vec()
+        } else {
+            incoming.collect_vec()
+        };
+        let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
+        let outgoing = if let None = outgoing.peek() {
+            outgoing.chain(claims.graph.externals(Incoming)).collect_vec()
+        } else {
+            outgoing.collect_vec()
+        };
+
+        let this_queue = get_queue_family_index_for_pass(&this.pass_name);
+        let this_queue_runtime = get_runtime_queue_family(this_queue);
+        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
+        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+            use vk::{AccessFlags2KHR as A, PipelineStageFlags2KHR as S};
+            let mut accesses = A::empty();
+            let mut stages = S::empty();
+            if step.reads && include_reads {
+                let (local_accesses, local_stages) = match &step.usage {
+                    ResourceUsageKind::VertexBuffer => (A::VERTEX_ATTRIBUTE_READ, S::VERTEX_ATTRIBUTE_INPUT),
+                    ResourceUsageKind::IndexBuffer => (A::INDEX_READ, S::INDEX_INPUT),
+                    ResourceUsageKind::Attachment(ref _renderpass) => {
+                        // TODO: imprecise
+                        (A::MEMORY_READ, S::EARLY_FRAGMENT_TESTS | S::LATE_FRAGMENT_TESTS)
+                    }
+                    ResourceUsageKind::IndirectBuffer => (A::INDIRECT_COMMAND_READ, S::DRAW_INDIRECT),
+                    ResourceUsageKind::TransferCopy => (A::TRANSFER_READ, S::COPY),
+                    // TODO: sync validation is picky when just CLEAR from sync2 is used
+                    ResourceUsageKind::TransferClear => (A::TRANSFER_READ, S::ALL_TRANSFER),
+                    ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                        let pipeline = data
+                            .pipelines
+                            .get(pipeline_name)
+                            .expect("pipeline not found in barrier");
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
+                        let pipeline_stages = pipeline.specific.stages();
+
+                        let mut accesses = A::empty();
+                        let mut stages = S::empty();
+
+                        binding
+                            .shader_stages
+                            .iter()
+                            .filter(|x| pipeline_stages.contains(*x))
+                            .map(|stage| match stage.as_str() {
+                                "COMPUTE" => (A::SHADER_READ, S::COMPUTE_SHADER),
+                                _ => unimplemented!("barrier! descriptor stage {}", stage),
+                            })
+                            .for_each(|(x, y)| {
+                                accesses |= x;
+                                stages |= y;
+                            });
+                        (accesses, stages)
+                    }
+                };
+                accesses |= local_accesses;
+                stages |= local_stages;
+            }
+            if step.writes && include_writes {
+                let (local_accesses, local_stages) = match &step.usage {
+                    ResourceUsageKind::VertexBuffer => panic!("can't have a write access to VertexBuffer"),
+                    ResourceUsageKind::IndexBuffer => panic!("can't have a write access to IndexBuffer"),
+                    ResourceUsageKind::Attachment(ref _renderpass) => {
+                        // TODO: imprecise
+                        (A::MEMORY_WRITE, S::COLOR_ATTACHMENT_OUTPUT)
+                    }
+                    ResourceUsageKind::IndirectBuffer => panic!("can't have a write access to IndirectBuffer"),
+                    ResourceUsageKind::TransferCopy => (A::TRANSFER_WRITE, S::COPY),
+                    // TODO: sync validation is picky when just CLEAR from sync2 is used
+                    ResourceUsageKind::TransferClear => (A::TRANSFER_WRITE, S::ALL_TRANSFER),
+                    ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                        let pipeline = data
+                            .pipelines
+                            .get(pipeline_name)
+                            .expect("pipeline not found in barrier");
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
+                        let pipeline_stages = pipeline.specific.stages();
+
+                        let mut accesses = A::empty();
+                        let mut stages = S::empty();
+
+                        binding
+                            .shader_stages
+                            .iter()
+                            .filter(|x| pipeline_stages.contains(*x))
+                            .map(|stage| match stage.as_str() {
+                                "COMPUTE" => (A::SHADER_WRITE, S::COMPUTE_SHADER),
+                                _ => unimplemented!("barrier! descriptor stage {}", stage),
+                            })
+                            .for_each(|(x, y)| {
+                                accesses |= x;
+                                stages |= y;
+                            });
+                        (accesses, stages)
+                    }
+                };
+                accesses |= local_accesses;
+                stages |= local_stages;
+            }
+            (accesses, stages)
+        };
+        let mut emitted_barriers = 0;
+
+        for dep in incoming {
+            let this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
+            let prev_step = &claims.graph[dep];
+            let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
+            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
+            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
+
+            if prev_step.pass_name == this.pass_name {
+                emitted_barriers += 1;
+                acquire_memory_barriers.push(
+                    vk::MemoryBarrier2KHR::builder()
+                        .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
+                        .src_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_WRITE)
+                        .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                        .dst_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_READ)
+                        .build(),
+                );
+            }
+        }
+        assert!(
+            emitted_barriers <= 1,
+            "Resource claim {}.{} generated more than one acquire barrier, please disambiguate edges at runtime",
+            resource_name,
+            step_name
+        );
+    }
+
+    pub(crate) fn barrier_image(
+        &self,
+        renderer: &RenderFrame,
+        data: &renderer_macro_lib::RendererInput,
+        command_buffer: vk::CommandBuffer,
+        resource_name: &str,
+        step_name: &str,
+        image: vk::Image,
+        acquire_image_barriers: &mut Vec<vk::ImageMemoryBarrier2KHR>,
+        release_image_barriers: &mut Vec<vk::ImageMemoryBarrier2KHR>,
+    ) {
+        let claims = self.active_resources.get(resource_name).unwrap();
+        let aspect = match claims.ty {
+            ResourceDefinitionType::Image { ref aspect } => aspect,
+            _ => panic!(),
+        };
+
+        let this_node = match claims.map.get(step_name) {
+            Some(&node) => node,
+            None => {
+                return;
+            }
+        };
+        let this = match claims.graph.node_weight(this_node) {
+            Some(node) => node,
+            None => {
+                return;
+            }
+        };
+        let get_queue_family_index_for_pass = |pass: &str| {
+            data.passes
+                .get(pass)
+                .and(Some(QueueFamily::Graphics))
+                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .expect("pass not found")
+        };
+        let get_runtime_queue_family = |ty: QueueFamily| match ty {
+            QueueFamily::Graphics => renderer.device.graphics_queue_family,
+            QueueFamily::Compute => renderer.device.compute_queue_family,
+            QueueFamily::Transfer => renderer.device.transfer_queue_family,
+        };
+        let get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
+            ResourceUsageKind::Attachment(ref renderpass) => data
+                .renderpasses
+                .get(renderpass)
+                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
+                .flatten(),
+            _ => None,
+        };
+
+        // let connected_components = petgraph::algo::connected_components(&claims.graph);
+        // if connected_components != 1 {
+        //     let msg = "resource claims graph must have one connected component".to_string();
+        //     validation_errors.extend(quote!(compile_error!(#msg);));
+        // }
+        if petgraph::algo::is_cyclic_directed(&claims.graph) {
+            panic!("resource claims graph is cyclic");
+        }
+
+        // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
+        // iterations of the graph
+        let mut incoming = claims.graph.neighbors_directed(this_node, Incoming).peekable();
+        let incoming = if let None = incoming.peek() {
+            incoming.chain(claims.graph.externals(Outgoing)).collect_vec()
+        } else {
+            incoming.collect_vec()
+        };
+        let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
+        let outgoing = if let None = outgoing.peek() {
+            outgoing.chain(claims.graph.externals(Incoming)).collect_vec()
+        } else {
+            outgoing.collect_vec()
+        };
+
+        let this_queue = get_queue_family_index_for_pass(&this.pass_name);
+        let this_queue_runtime = get_runtime_queue_family(this_queue);
+        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
+        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+            use vk::{AccessFlags2KHR as A, PipelineStageFlags2KHR as S};
+            let mut accesses = A::empty();
+            let mut stages = S::empty();
+            if step.reads && include_reads {
+                let (local_accesses, local_stages) = match &step.usage {
+                    ResourceUsageKind::VertexBuffer => (A::VERTEX_ATTRIBUTE_READ, S::VERTEX_ATTRIBUTE_INPUT),
+                    ResourceUsageKind::IndexBuffer => (A::INDEX_READ, S::INDEX_INPUT),
+                    ResourceUsageKind::Attachment(ref _renderpass) => {
+                        // TODO: imprecise
+                        (A::MEMORY_READ, S::EARLY_FRAGMENT_TESTS | S::LATE_FRAGMENT_TESTS)
+                    }
+                    ResourceUsageKind::IndirectBuffer => (A::INDIRECT_COMMAND_READ, S::DRAW_INDIRECT),
+                    ResourceUsageKind::TransferCopy => (A::TRANSFER_READ, S::COPY),
+                    // TODO: sync validation is picky when just CLEAR from sync2 is used
+                    ResourceUsageKind::TransferClear => (A::TRANSFER_READ, S::ALL_TRANSFER),
+                    ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                        let pipeline = data
+                            .pipelines
+                            .get(pipeline_name)
+                            .expect("pipeline not found in barrier");
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
+                        let pipeline_stages = pipeline.specific.stages();
+
+                        let mut accesses = A::empty();
+                        let mut stages = S::empty();
+
+                        binding
+                            .shader_stages
+                            .iter()
+                            .filter(|x| pipeline_stages.contains(*x))
+                            .map(|stage| match stage.as_str() {
+                                "COMPUTE" => (A::SHADER_READ, S::COMPUTE_SHADER),
+                                _ => unimplemented!("barrier! descriptor stage {}", stage),
+                            })
+                            .for_each(|(x, y)| {
+                                accesses |= x;
+                                stages |= y;
+                            });
+                        (accesses, stages)
+                    }
+                };
+                accesses |= local_accesses;
+                stages |= local_stages;
+            }
+            if step.writes && include_writes {
+                let (local_accesses, local_stages) = match &step.usage {
+                    ResourceUsageKind::VertexBuffer => panic!("can't have a write access to VertexBuffer"),
+                    ResourceUsageKind::IndexBuffer => panic!("can't have a write access to IndexBuffer"),
+                    ResourceUsageKind::Attachment(ref _renderpass) => {
+                        // TODO: imprecise
+                        (A::MEMORY_WRITE, S::COLOR_ATTACHMENT_OUTPUT)
+                    }
+                    ResourceUsageKind::IndirectBuffer => panic!("can't have a write access to IndirectBuffer"),
+                    ResourceUsageKind::TransferCopy => (A::TRANSFER_WRITE, S::COPY),
+                    // TODO: sync validation is picky when just CLEAR from sync2 is used
+                    ResourceUsageKind::TransferClear => (A::TRANSFER_WRITE, S::ALL_TRANSFER),
+                    ResourceUsageKind::Descriptor(set_name, binding_name, pipeline_name) => {
+                        let pipeline = data
+                            .pipelines
+                            .get(pipeline_name)
+                            .expect("pipeline not found in barrier");
+                        let set = data.descriptor_sets.get(set_name).expect("set not found in barrier");
+                        let binding = set
+                            .bindings
+                            .iter()
+                            .find(|candidate| candidate.name == *binding_name)
+                            .expect("binding not found in barrier");
+                        let pipeline_stages = pipeline.specific.stages();
+
+                        let mut accesses = A::empty();
+                        let mut stages = S::empty();
+
+                        binding
+                            .shader_stages
+                            .iter()
+                            .filter(|x| pipeline_stages.contains(*x))
+                            .map(|stage| match stage.as_str() {
+                                "COMPUTE" => (A::SHADER_WRITE, S::COMPUTE_SHADER),
+                                _ => unimplemented!("barrier! descriptor stage {}", stage),
+                            })
+                            .for_each(|(x, y)| {
+                                accesses |= x;
+                                stages |= y;
+                            });
+                        (accesses, stages)
+                    }
+                };
+                accesses |= local_accesses;
+                stages |= local_stages;
+            }
+            (accesses, stages)
+        };
+        let convert_layout = |layout: &str| {
+            use vk::ImageLayout as L;
+            match layout {
+                "COLOR_ATTACHMENT_OPTIMAL" => L::COLOR_ATTACHMENT_OPTIMAL,
+                "DEPTH_STENCIL_ATTACHMENT_OPTIMAL" => L::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                "DEPTH_STENCIL_READ_ONLY_OPTIMAL" => L::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                "DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL" => L::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+                "GENERAL" => L::GENERAL,
+                "TRANSFER_SRC_OPTIMAL" => L::TRANSFER_SRC_OPTIMAL,
+                "TRANSFER_DST_OPTIMAL" => L::TRANSFER_DST_OPTIMAL,
+                "PRESENT_SRC_KHR" => L::PRESENT_SRC_KHR,
+                _ => todo!("unknown layout {}", layout),
+            }
+        };
+        let mut emitted_barriers = 0;
+
+        for dep in incoming {
+            let this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
+            let prev_step = &claims.graph[dep];
+            let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
+            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
+            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
+
+            let same_pass = prev_step.pass_name == this.pass_name;
+
+            assert!(
+                image != vk::Image::null(),
+                "Expected barrier call to provide resource expr"
+            );
+            let this_layout = this.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
+                "did not specify desired image layout {}.{}",
+                &this.pass_name, &this.step_name
+            ));
+            let prev_layout = prev_step.layout.as_ref().or(prev_layout_in_renderpass).expect(&format!(
+                "did not specify desired image layout {}.{}",
+                &prev_step.pass_name, &prev_step.step_name
+            ));
+            let this_layout = convert_layout(this_layout);
+            let prev_layout = convert_layout(prev_layout);
+            let aspect = match aspect.as_str() {
+                "COLOR" => vk::ImageAspectFlags::COLOR,
+                "DEPTH" => vk::ImageAspectFlags::DEPTH,
+                _ => todo!("unimplemented Image aspect"),
+            };
+            let mut barrier = vk::ImageMemoryBarrier2KHR::builder()
+                .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                .subresource_range(
+                    vk::ImageSubresourceRange::builder()
+                        .aspect_mask(aspect)
+                        .level_count(1)
+                        .layer_count(1)
+                        .build(),
+                )
+                .image(image);
+            if this_external && renderer.frame_number == 1 {
+                barrier = barrier
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(this_layout);
+            } else {
+                barrier = barrier
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .old_layout(prev_layout)
+                    .new_layout(this_layout);
+                if prev_queue != this_queue {
+                    barrier = barrier
+                        .src_queue_family_index(prev_queue_runtime)
+                        .dst_queue_family_index(this_queue_runtime)
+                }
+            }
+            emitted_barriers += 1;
+            acquire_image_barriers.push(barrier.build());
+        }
+        assert!(
+            emitted_barriers <= 1,
+            "Resource claim {}.{} generated more than one acquire barrier, please disambiguate edges at runtime",
+            resource_name,
+            step_name
+        );
+        emitted_barriers = 0;
+        for dep in outgoing {
+            let next_step = &claims.graph[dep];
+            let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
+            let next_queue_runtime = get_runtime_queue_family(next_queue);
+            let next_layout_in_renderpass = get_layout_from_renderpass(&next_step);
+
+            if this_queue == next_queue {
+                continue;
+            }
+
+            assert!(
+                image != vk::Image::null(),
+                "Expected barrier call to provide resource expr"
+            );
+            let this_layout = this.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
+                "did not specify desired image layout {}.{}",
+                &this.pass_name, &this.step_name
+            ));
+            let next_layout = next_step.layout.as_ref().or(next_layout_in_renderpass).expect(&format!(
+                "did not specify desired image layout {}.{}",
+                &next_step.pass_name, &next_step.step_name
+            ));
+            let this_layout = convert_layout(this_layout);
+            let next_layout = convert_layout(next_layout);
+            let aspect = match aspect.as_str() {
+                "COLOR" => vk::ImageAspectFlags::COLOR,
+                "DEPTH" => vk::ImageAspectFlags::DEPTH,
+                _ => todo!("unimplemented Image aspect"),
+            };
+            emitted_barriers += 1;
+            release_image_barriers.push(
+                vk::ImageMemoryBarrier2KHR::builder()
+                    .src_queue_family_index(this_queue_runtime)
+                    .dst_queue_family_index(next_queue_runtime)
+                    .old_layout(this_layout)
+                    .new_layout(next_layout)
+                    .src_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                    .src_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags2KHR::MEMORY_READ | vk::AccessFlags2KHR::MEMORY_WRITE)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::builder()
+                            .aspect_mask(aspect)
+                            .level_count(1)
+                            .layer_count(1)
+                            .build(),
+                    )
+                    .image(image)
+                    .build(),
+            );
+        }
+        assert!(
+            emitted_barriers <= 1,
+            "Resource claim {}.{} generated more than one release barrier, please disambiguate edges at runtime",
+            resource_name,
+            step_name
+        );
+    }
 }
 
 fn setup_submissions(
@@ -2515,7 +3358,6 @@ fn setup_submissions(
     scope!("rendering::setup_submissions");
 
     let mut graph2 = input.dependency_graph.clone();
-    use petgraph::visit::IntoNodeReferences;
 
     let switches: HashMap<String, bool> = [
         ("FREEZE_CULLING".to_string(), runtime_config.freeze_culling),
@@ -2551,7 +3393,8 @@ fn setup_submissions(
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .for_each(|(_step_name, step_ix)| {
+            .for_each(|(step_name, step_ix)| {
+                // dbg!(step_name);
                 claims.graph.remove_node(step_ix).unwrap();
             });
     }
@@ -2563,14 +3406,15 @@ fn setup_submissions(
             .get(resource_name)
             .unwrap()
             .graph
-            .externals(petgraph::EdgeDirection::Outgoing)
+            .externals(Outgoing)
             .collect::<Vec<_>>();
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             for external in original_externals.iter() {
                 let step = &claims.graph[u];
                 if !graph2.node_references().any(|(_, name)| **name == step.pass_name)
-                    || !has_path_connecting(&claims.graph, u, *external, None)
+                // || !has_path_connecting(&claims.graph, u, *external, None)
                 {
+                    // dbg!(&step.step_name);
                     claims.graph.remove_node(u);
                     break;
                 }
@@ -2587,7 +3431,7 @@ fn setup_submissions(
                     .any(|claim| claim.pass_name == *pass_name && claim.writes)
             })
         {
-            // dbg!(pass_name);
+            dbg!(pass_name);
             let to_remove = graph2
                 .node_references()
                 .find(|(_, name)| *name == pass_name)
@@ -2597,11 +3441,12 @@ fn setup_submissions(
         }
     }
 
-    // Stage 4: Cull the active graph from stuff that does not lead to Main
-    let main_node = NodeIndex::from(frame_graph::Main::INDEX);
+    // Stage 4: Cull the active graph from stuff that does not lead to Present
+    let main_node = NodeIndex::from(frame_graph::Present::INDEX);
     let presentation_acquire = NodeIndex::from(frame_graph::PresentationAcquire::INDEX);
     for u in graph2.node_indices().collect::<Vec<_>>() {
-        if u != presentation_acquire && !has_path_connecting(&graph2, u, main_node, None) {
+        if !has_path_connecting(&graph2, u, main_node, None) {
+            // dbg!(&graph2[u]);
             graph2.remove_node(u);
         }
     }
@@ -2629,13 +3474,6 @@ fn setup_submissions(
                     break;
                 }
             }
-        }
-    }
-
-    // Stage 7: Fix up the entire graph so it remains ordered to happen after PresentationAcquire
-    for node_ix in graph2.node_indices().collect::<Vec<_>>() {
-        if node_ix != presentation_acquire {
-            graph2.update_edge(presentation_acquire, node_ix, DependencyType::SameFrame);
         }
     }
 
@@ -2703,7 +3541,6 @@ fn update_submissions(
     #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
     scope!("rendering::update_submissions");
-    use petgraph::{visit::EdgeRef, Direction};
 
     let Submissions {
         ref extra_signals,
@@ -2715,7 +3552,7 @@ fn update_submissions(
     let mut should_continue = true;
     while graph.node_count() > 0 && should_continue {
         should_continue = false;
-        let roots = graph.externals(Direction::Incoming).collect::<Vec<_>>();
+        let roots = graph.externals(Incoming).collect::<Vec<_>>();
         'inner: for node in roots {
             match (active_graph.node_weight(node), graph.node_weight_mut(node)) {
                 (_, None) => break 'inner, // someone else changed it up while we were unlocked
@@ -2752,7 +3589,7 @@ fn update_submissions(
                         };
                         let submit_result = {
                             let wait_semaphores = active_graph
-                                .edges_directed(node, Direction::Incoming)
+                                .edges_directed(node, Incoming)
                                 .map(|edge| {
                                     let incoming_pass_name = &active_graph[edge.source()];
                                     let &(semaphore_ix, stage_ix) =

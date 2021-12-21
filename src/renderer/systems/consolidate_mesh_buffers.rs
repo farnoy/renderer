@@ -94,8 +94,8 @@ pub(crate) fn consolidate_mesh_buffers(
         command_buffer,
         IndividualGltfMeshBuffer.consolidate r in ConsolidateMeshBuffers transfer copy after [upload],
         ConsolidatedPositionBuffer.consolidate w in ConsolidateMeshBuffers transfer copy,
-        ConsolidatedNormalBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_normal_buffer,
-        ConsolidatedIndexBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; consolidated_index_buffer
+        ConsolidatedNormalBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; normal_buffer,
+        ConsolidatedIndexBuffer.consolidate w in ConsolidateMeshBuffers transfer copy; index_buffer
     );
     for mesh in &mut query.iter() {
         if let Entry::Vacant(v) = vertex_offsets.entry(mesh.vertex_buffer.handle.as_raw()) {

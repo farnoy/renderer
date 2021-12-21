@@ -21,6 +21,7 @@ bench = false
 renderer-macro-lib = { path = "macro_lib" }
 renderer-macros = { path = "macros" }
 renderer-vma = { path = "vma" }
+anyhow = "1.0.44"
 arrayvec = "0.7.1"
 ash = { git = "https://github.com/MaikKlein/ash", rev = "428830ad4ffac5ebe0b7d7b6cd7da6d03308a711" } # version = "0.32.0"
 bincode = "1.3.3"

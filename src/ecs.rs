@@ -45,7 +45,7 @@ pub(crate) mod systems {
         },
         renderer::{
             forward_vector, up_vector, CoarseCulled, DrawIndex, GltfMesh, GltfMeshBaseColorTexture,
-            GltfMeshNormalTexture, ImageIndex, RenderFrame, Swapchain, INITIAL_WORKGROUP_SIZE,
+            GltfMeshNormalTexture, ImageIndex, RenderFrame, Submissions, Swapchain, INITIAL_WORKGROUP_SIZE,
         },
     };
 
@@ -281,6 +281,7 @@ pub(crate) mod systems {
             swapchain: &Swapchain,
             camera: &mut Camera,
             runtime_config: &mut RuntimeConfiguration,
+            submissions: &Submissions,
             #[cfg(feature = "shader_reload")] reloaded_shaders: &ReloadedShaders,
         ) -> &'a imgui::DrawData {
             scope!("gui::update");
@@ -297,7 +298,8 @@ pub(crate) mod systems {
             let mut position = [camera.position[0], camera.position[1], camera.position[2]];
             let (x, y, z) = camera.rotation.euler_angles();
             let mut rotation = [x * 180.0 / f32::pi(), y * 180.0 / f32::pi(), z * 180.0 / f32::pi()];
-            imgui::Window::new("Debug").always_auto_resize(true).build(&ui, || {
+            let dump_graphs = imgui::Window::new("Debug").always_auto_resize(true).build(&ui, || {
+                let mut dump_graphs = false;
                 ui.text("Allocation stats:");
                 ui.bullet_text(&format!("block count: {}", alloc_stats.total.blockCount));
                 ui.bullet_text(&format!("alloc count: {}", alloc_stats.total.allocationCount));
@@ -337,6 +339,7 @@ pub(crate) mod systems {
                     ui.checkbox("Freeze culling data", &mut runtime_config.freeze_culling);
                     ui.checkbox("Use Raytracing", &mut runtime_config.rt);
                     ui.checkbox("* Show reference", &mut runtime_config.reference_rt);
+                    dump_graphs = ui.button("Dump graphs");
                 }
 
                 #[cfg(feature = "shader_reload")]
@@ -358,7 +361,15 @@ pub(crate) mod systems {
                         )
                     }
                 }
+
+                dump_graphs
             });
+
+            if dump_graphs.unwrap_or(false) {
+                if let Err(e) = submissions.dump_live_graphs() {
+                    eprintln!("dump_live_graphs() ERROR: {}", e);
+                }
+            }
 
             camera.position = position.into();
             camera.rotation = na::UnitQuaternion::from_euler_angles(
