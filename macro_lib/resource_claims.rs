@@ -20,6 +20,7 @@ pub struct ResourceClaims {
     pub map: HashMap<String, NodeIndex>,
     pub graph: StableDiGraph<ResourceClaim, ()>,
     pub ty: ResourceDefinitionType,
+    pub double_buffered: bool,
 }
 
 /// This is the struct used during static analysis
@@ -28,6 +29,7 @@ pub(crate) struct ResourceClaimsBuilder {
     pub map: HashMap<String, NodeIndex>,
     pub graph: StableDiGraph<Option<ResourceClaim>, ()>,
     pub ty: Option<ResourceDefinitionType>,
+    pub double_buffered: bool,
 }
 
 impl ResourceClaimsBuilder {
@@ -74,6 +76,7 @@ impl ResourceClaimsBuilder {
                     map: builder.map,
                     graph: builder.graph.map(|_, node| node.clone().unwrap(), |_, _| ()),
                     ty: builder.ty.unwrap(),
+                    double_buffered: builder.double_buffered,
                 })
             })
             .collect::<HashMap<_, _>>();
@@ -90,6 +93,7 @@ pub struct ResourceClaim {
     pub usage: ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
+    pub clobber: bool,
     pub layout: Option<String>,
     pub conditional: Conditional,
 }
@@ -172,6 +176,7 @@ pub struct ResourceClaimInput {
     pub usage: ResourceUsageKind,
     pub reads: bool,
     pub writes: bool,
+    pub clobber: bool,
     pub layout: Option<String>,
     pub after: Vec<String>,
     pub conditional: Conditional,
@@ -181,6 +186,7 @@ pub struct ResourceClaimInput {
 #[derive(Clone)]
 pub struct ResourceDefinitionInput {
     pub resource_name: String,
+    pub double_buffered: bool, // TODO: differentiate singleton vs double buffered vs something else?
     pub ty: ResourceDefinitionType,
 }
 
@@ -200,6 +206,7 @@ impl ResourceClaimInput {
             usage: self.usage,
             reads: self.reads,
             writes: self.writes,
+            clobber: self.clobber,
             layout: self.layout,
             conditional: self.conditional,
         }
@@ -245,6 +252,7 @@ impl Parse for ResourceClaimInput {
             r: Option<kw::r>,
             w: Option<kw::w>,
             rw: Option<kw::rw>,
+            clobber: Option<kw::clobber>,
             _in: Token![in],
             pass_name: Ident,
             usage: ResourceUsageKind,
@@ -276,6 +284,7 @@ impl Parse for ResourceClaimInput {
             resource_ident: s.resource_expr,
             reads,
             writes,
+            clobber: s.clobber.is_some(),
             conditional: s.conditional,
         })
     }
@@ -318,26 +327,31 @@ impl Parse for ResourceDefinitionInput {
         #[derive(Parse)]
         struct Inner {
             resource_name: Ident,
+            double_buffered: Option<kw::DoubleBuffered>,
             _dot: Token![=],
             kind: InnerEnum,
         }
 
         let s = Inner::parse(input)?;
+        let double_buffered = s.double_buffered.is_some();
         match s.kind {
             InnerEnum::StaticBuffer(StaticBufferResource { type_name, .. }) => Ok(ResourceDefinitionInput {
                 resource_name: s.resource_name.to_string(),
+                double_buffered,
                 ty: ResourceDefinitionType::StaticBuffer {
                     type_name: type_name.to_token_stream().to_string(),
                 },
             }),
             InnerEnum::Image(ImageResource { aspect, .. }) => Ok(ResourceDefinitionInput {
                 resource_name: s.resource_name.to_string(),
+                double_buffered,
                 ty: ResourceDefinitionType::Image {
                     aspect: aspect.to_string(),
                 },
             }),
             InnerEnum::AccelerationStructure => Ok(ResourceDefinitionInput {
                 resource_name: s.resource_name.to_string(),
+                double_buffered,
                 ty: ResourceDefinitionType::AccelerationStructure,
             }),
         }

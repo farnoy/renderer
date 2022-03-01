@@ -60,8 +60,6 @@ use crate::renderer::{
 fn main() {
     profiling::register_thread!("main");
 
-    env_logger::init();
-
     let (renderer, swapchain, events_loop) = RenderFrame::new();
 
     /*
@@ -267,16 +265,7 @@ fn main() {
     return;
     */
 
-    let mut app = App::build();
-
-    app.register_component(ComponentDescriptor::new::<BaseColorVisitedMarker>(
-        StorageType::SparseSet,
-    ));
-    app.register_component(ComponentDescriptor::new::<NormalMapVisitedMarker>(
-        StorageType::SparseSet,
-    ));
-
-    app.register_component(ComponentDescriptor::new::<Deleting>(StorageType::SparseSet));
+    let mut app = App::new();
 
     let quit_handle = Arc::new(Mutex::new(false));
 
@@ -349,7 +338,7 @@ fn main() {
     debug_assert!(max_entities > 7); // 7 static ones
 
     // lights
-    app.app.world.spawn_batch(vec![
+    app.world.spawn_batch(vec![
         (
             Light { strength: 1.0 },
             Position(na::Point3::new(30.0, 20.0, -40.1)),
@@ -456,7 +445,7 @@ fn main() {
     };
 
     // objects
-    // app.app.world.spawn_batch(vec![
+    // app.world.spawn_batch(vec![
     //     (
     //         Position(na::Point3::new(0.0, -25.0, 0.0)),
     //         Rotation(na::UnitQuaternion::identity()),
@@ -561,7 +550,7 @@ fn main() {
     // drop(box_index_buffers);
     // drop(box_base_color);
 
-    // app.app.world.spawn_batch((7..max_entities).map(|ix| {
+    // app.world.spawn_batch((7..max_entities).map(|ix| {
     //     let angle = f32::pi() * (ix as f32 * 20.0) / 180.0;
     //     let rot = na::Rotation3::from_axis_angle(&na::Unit::new_normalize(na::Vector3::y()), angle);
     //     let pos = rot.transform_point(&na::Point3::new(0.0, (ix as f32 * -0.01) + 2.0, 5.0 + (ix /
@@ -632,13 +621,16 @@ fn main() {
     // drop(dmgh_base_color);
     // drop(dmgh_normal_map);
 
-    // load_scene(&mut app.app.world, &renderer, "assets/bistro.gltf");
+    // load_scene(&mut app.world, &renderer, "assets/bistro.gltf");
 
     app.insert_resource::<renderer_macro_lib::RendererInput>(
         bincode::deserialize(renderer::frame_graph::CROSSBAR).unwrap(),
     );
     app.insert_resource(ScenesToLoad {
-        scene_paths: vec!["assets/bistro.gltf".to_string()],
+        scene_paths: vec![
+            "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf".to_string(),
+            // "assets/bistro.gltf".to_string(),
+        ],
         scenes: vec![],
     });
     app.insert_resource(Submissions::new());
@@ -688,6 +680,10 @@ fn main() {
         app.init_resource::<ReloadedShaders>();
     }
 
+    app.insert_resource(bevy_log::LogSettings {
+        level: bevy_log::Level::WARN,
+        filter: "warn".to_string(),
+    });
     app.add_plugin(bevy_log::LogPlugin);
 
     #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
@@ -883,14 +879,13 @@ fn main() {
     'frame: loop {
         scope!("game-loop");
 
-        app.app.update();
+        app.update();
 
         profiling::finish_frame!();
 
         if *quit_handle.lock() {
             unsafe {
-                app.app
-                    .world
+                app.world
                     .get_resource::<RenderFrame>()
                     .unwrap()
                     .device
@@ -901,163 +896,127 @@ fn main() {
         }
     }
 
-    let render_frame = app.app.world.remove_resource::<RenderFrame>().unwrap();
+    let render_frame = app.world.remove_resource::<RenderFrame>().unwrap();
 
-    app.app
-        .world
+    app.world
         .remove_resource::<DepthPassData>()
         .unwrap()
         .destroy(&render_frame.device);
 
-    app.app
-        .world
+    app.world
         .remove_resource::<GltfPassData>()
         .unwrap()
         .destroy(&render_frame.device);
 
-    app.app
-        .world
+    app.world
         .remove_resource::<CullPassDataPrivate>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<TransferCullPrivate>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<ConsolidatedMeshBuffers>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<DebugAABBPassData>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<MainRenderpass>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<MainAttachments>()
         .unwrap()
         .destroy(&render_frame.device);
-    let main_descriptor_pool = app.app.world.remove_resource::<MainDescriptorPool>().unwrap();
-    app.app
-        .world
+    let main_descriptor_pool = app.world.remove_resource::<MainDescriptorPool>().unwrap();
+    app.world
         .remove_resource::<AccelerationStructures>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<UploadMeshesData>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<CullPassData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<BaseColorDescriptorSet>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<ShadowMappingData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<ShadowMappingDataInternal>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<AccelerationStructuresInternal>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<GuiRenderData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<CameraMatrices>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<ModelData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<MeshLibrary>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<ReferenceRTData>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<ReferenceRTDataPrivate>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.app
-        .world
+    app.world
         .remove_resource::<MainFramebuffer>()
         .unwrap()
         .destroy(&render_frame.device);
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<BaseColorVisitedMarker>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
-        let marker = app
-            .app
-            .world
-            .entity_mut(entity)
-            .remove::<BaseColorVisitedMarker>()
-            .unwrap();
+        let marker = app.world.entity_mut(entity).remove::<BaseColorVisitedMarker>().unwrap();
         marker.destroy(&render_frame.device);
     }
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<NormalMapVisitedMarker>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
-        let marker = app
-            .app
-            .world
-            .entity_mut(entity)
-            .remove::<NormalMapVisitedMarker>()
-            .unwrap();
+        let marker = app.world.entity_mut(entity).remove::<NormalMapVisitedMarker>().unwrap();
         marker.destroy(&render_frame.device);
     }
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<GltfMeshBaseColorTexture>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
         let marker = app
-            .app
             .world
             .entity_mut(entity)
             .remove::<GltfMeshBaseColorTexture>()
@@ -1066,30 +1025,22 @@ fn main() {
     }
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<GltfMeshNormalTexture>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
-        let marker = app
-            .app
-            .world
-            .entity_mut(entity)
-            .remove::<GltfMeshNormalTexture>()
-            .unwrap();
+        let marker = app.world.entity_mut(entity).remove::<GltfMeshNormalTexture>().unwrap();
         drop(Arc::try_unwrap(marker.0).map(|im| im.destroy(&render_frame.device)));
     }
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<ShadowMappingLightMatrices>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
         let light_matrices = app
-            .app
             .world
             .entity_mut(entity)
             .remove::<ShadowMappingLightMatrices>()
@@ -1098,14 +1049,12 @@ fn main() {
     }
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<GltfMesh>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
-        app.app
-            .world
+        app.world
             .entity_mut(entity)
             .remove::<GltfMesh>()
             .unwrap()
@@ -1113,23 +1062,20 @@ fn main() {
     }
 
     let entities = app
-        .app
         .world
         .query_filtered::<Entity, With<Task<SceneLoaderLoadedMesh>>>()
-        .iter(&app.app.world)
+        .iter(&app.world)
         .collect::<Vec<_>>();
     for entity in entities {
-        app.app.world.entity_mut(entity).remove::<Task<SceneLoaderLoadedMesh>>();
+        app.world.entity_mut(entity).remove::<Task<SceneLoaderLoadedMesh>>();
     }
 
     #[cfg(feature = "crash_debugging")]
-    app.app
-        .world
+    app.world
         .remove_resource::<CrashBuffer>()
         .unwrap()
         .destroy(&render_frame.device);
-    app.app
-        .world
+    app.world
         .remove_resource::<PresentData>()
         .unwrap()
         .destroy(&render_frame.device);
@@ -1146,7 +1092,7 @@ fn main() {
     println!("digraph G {{");
     println!("  graph [compound=true];");
     println!("  rankdir=LR;");
-    for (ix, (label, stage)) in app.app.schedule.iter_stages().enumerate() {
+    for (ix, (label, stage)) in app.schedule.iter_stages().enumerate() {
         println!("  subgraph cluster_{} {{", ix);
         println!("    label = {:?};", label);
         let system_stage = match stage.downcast_ref::<SystemStage>() {

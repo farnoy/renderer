@@ -13,7 +13,7 @@ use crate::{
         binding_size, camera_set, device::Device, frame_graph, helpers::command_util::CommandUtil, model_set,
         systems::cull_pipeline::cull_set, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData,
         ImageIndex, MainAttachments, ModelData, RenderFrame, SmartPipeline, SmartPipelineLayout, Submissions,
-        Swapchain,
+        Swapchain, SwapchainIndexToFrameNumber,
     },
 };
 
@@ -83,6 +83,7 @@ impl DepthPassData {
 pub(crate) fn depth_only_pass(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
+    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     mut depth_pass: ResMut<DepthPassData>,
     swapchain: Res<Swapchain>,
     main_attachments: Res<MainAttachments>,

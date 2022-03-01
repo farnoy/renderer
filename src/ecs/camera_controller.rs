@@ -6,7 +6,7 @@ use crate::{
     renderer::{forward_vector, right_vector, up_vector},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Component)]
 pub(crate) struct Camera {
     pub(crate) position: na::Point3<f32>,
     pub(crate) rotation: na::UnitQuaternion<f32>,

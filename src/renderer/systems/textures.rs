@@ -19,21 +19,25 @@ pub(crate) struct BaseColorDescriptorSet {
     sampler: Sampler,
 }
 
+#[derive(Component)]
+#[component(storage = "SparseSet")]
 pub(crate) struct BaseColorVisitedMarker {
     image_view: ImageView,
 }
 
+#[derive(Component)]
+#[component(storage = "SparseSet")]
 pub(crate) struct NormalMapVisitedMarker {
     image_view: ImageView,
 }
 
 // Holds the base color texture that will be mapped into a single,
 // shared Descriptor Set
-#[derive(Clone)]
+#[derive(Clone, Component)]
 pub(crate) struct GltfMeshBaseColorTexture(pub(crate) Arc<Image>);
 
 // Holds the normal map texture
-#[derive(Clone)]
+#[derive(Clone, Component)]
 pub(crate) struct GltfMeshNormalTexture(pub(crate) Arc<Image>);
 
 impl BaseColorDescriptorSet {

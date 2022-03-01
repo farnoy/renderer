@@ -64,6 +64,7 @@ renderer_macros::define_pass!(TransferCull on transfer);
 
 // Should this entity be discarded when rendering
 // Coarse and based on AABB being fully out of the frustum
+#[derive(Component)]
 pub(crate) struct CoarseCulled(pub(crate) bool);
 
 renderer_macros::define_resource! { IndirectCommandsBuffer = StaticBuffer<crate::renderer::frame_graph::IndirectCommands> }

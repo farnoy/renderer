@@ -896,24 +896,32 @@ pub fn analyze_shader_types(
             ));
             let shader_file = File::open(&shader_path).unwrap();
             let bytes: Vec<u8> = shader_file.bytes().filter_map(std::result::Result::ok).collect();
-            let spv = spirq::SpirvBinary::from(bytes);
-            let entry_points = spv.reflect_vec().expect("failed to reflect on spirv");
+            let entry_points = spirq::ReflectConfig::new()
+                .spv(bytes)
+                .reflect()
+                .expect("failed to reflect on spirv");
             let entry = entry_points
                 .iter()
                 .find(|entry| entry.name == "main")
                 .expect("Failed to load entry point");
 
-            for spv in entry.spec.spec_consts() {
-                let rusty = pipe.specialization_constants.iter().find(|p| spv.spec_id == p.0);
+            for (spec_id, push_ty) in entry.vars.iter().filter_map(|x| {
+                if let spirq::Variable::SpecConstant { ty, spec_id, .. } = x {
+                    Some((*spec_id, ty))
+                } else {
+                    None
+                }
+            }) {
+                let rusty = pipe.specialization_constants.iter().find(|p| spec_id == p.0);
 
                 match rusty {
                     Some((_, rusty)) => {
-                        if !compare_types(spv.ty, &rusty.ty) {
+                        if !compare_types(push_ty, &rusty.ty) {
                             let msg = format!(
                                 "shader {} spec constant mismatch for id = {} shader type = {:?}, rusty type = {:?}",
                                 shader_path.to_string_lossy(),
-                                spv.spec_id,
-                                spv.ty,
+                                spec_id,
+                                push_ty,
                                 rusty.ty,
                             );
                             errors.extend_one(msg);
@@ -921,7 +929,7 @@ pub fn analyze_shader_types(
                         }
                     }
                     None => {
-                        let id = spv.spec_id;
+                        let id = spec_id;
                         let msg = format!(
                             "shader {} missing rust side of spec const id = {}",
                             shader_path.to_string_lossy(),
@@ -932,7 +940,18 @@ pub fn analyze_shader_types(
                 }
             }
             for (rusty_id, _field) in pipe.specialization_constants.iter() {
-                if entry.spec.spec_consts().any(|c| c.spec_id == *rusty_id) {
+                if entry
+                    .vars
+                    .iter()
+                    .filter_map(|x| {
+                        if let spirq::Variable::SpecConstant { spec_id, .. } = x {
+                            Some(*spec_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .any(|spec_id| spec_id == *rusty_id)
+                {
                     continue;
                 }
                 let msg = format!(
@@ -943,22 +962,34 @@ pub fn analyze_shader_types(
                 errors.extend_one(msg);
             }
 
-            for desc in entry.descs() {
-                let set_name =
-                    syn::parse_str::<syn::Path>(&pipe.descriptor_sets[desc.desc_bind.set() as usize].0).unwrap();
+            for (desc_bind, desc_type, desc_ty, nbind) in entry.vars.iter().filter_map(|x| {
+                if let spirq::Variable::Descriptor {
+                    desc_bind,
+                    desc_ty,
+                    ty,
+                    nbind,
+                    ..
+                } = x
+                {
+                    Some((desc_bind, desc_ty, ty, nbind))
+                } else {
+                    None
+                }
+            }) {
+                let set_name = syn::parse_str::<syn::Path>(&pipe.descriptor_sets[desc_bind.set() as usize].0).unwrap();
                 let set_name = set_name.segments.last().unwrap();
                 let rusty = sets
                     .get(&set_name.ident.to_string())
                     .expect("failed to find a rust-side descriptor set");
-                let rusty_binding = &rusty.bindings[desc.desc_bind.bind() as usize];
+                let rusty_binding = &rusty.bindings[desc_bind.bind() as usize];
 
-                match desc.desc_ty {
-                    spirq::ty::DescriptorType::StorageBuffer(n, spirq::Type::Struct(s))
-                    | spirq::ty::DescriptorType::UniformBuffer(n, spirq::Type::Struct(s)) => {
-                        match (desc.desc_ty, rusty_binding.descriptor_type.to_string().as_str()) {
-                            (spirq::ty::DescriptorType::StorageBuffer(..), "STORAGE_BUFFER") => {}
-                            (spirq::ty::DescriptorType::UniformBuffer(..), "UNIFORM_BUFFER") => {}
-                            (spirq::ty::DescriptorType::Image(..), "COMBINED_IMAGE_SAMPLER") => {}
+                match (desc_type, desc_ty) {
+                    (spirq::DescriptorType::StorageBuffer(..), spirq::ty::Type::Struct(s))
+                    | (spirq::DescriptorType::UniformBuffer(..), spirq::ty::Type::Struct(s)) => {
+                        match (desc_type, rusty_binding.descriptor_type.to_string().as_str()) {
+                            (spirq::DescriptorType::StorageBuffer(..), "STORAGE_BUFFER") => {}
+                            (spirq::DescriptorType::UniformBuffer(..), "UNIFORM_BUFFER") => {}
+                            (spirq::DescriptorType::CombinedImageSampler(..), "COMBINED_IMAGE_SAMPLER") => {}
                             (spir_ty, rusty_ty) => {
                                 let msg = format!(
                                     "Incorrect shader binding at set {} binding {}\
@@ -971,17 +1002,17 @@ pub fn analyze_shader_types(
                                 errors.extend_one(msg)
                             }
                         }
-                        if *n != rusty_binding.count {
+                        if *nbind != rusty_binding.count {
                             let msg = format!(
                                 "Wrong descriptor count for set {} binding {}, shader needs {}",
                                 rusty.name.to_string(),
                                 rusty_binding.name.to_string(),
-                                n
+                                nbind
                             );
                             errors.extend_one(msg)
                         }
                         let name = s.name().unwrap();
-                        let (prerequisites, _name) = spirq_type_to_rust(&spirq::Type::Struct(s.clone()));
+                        let (prerequisites, _name) = spirq_type_to_rust(&spirq::ty::Type::Struct(s.clone()));
                         for (name, spirq_ty, definition) in prerequisites.into_iter() {
                             defined_types
                                 .entry(name)
@@ -1022,7 +1053,18 @@ pub fn analyze_shader_types(
                 }
             }
 
-            if let Some(push_const) = entry.get_push_const() {
+            if let Some(push_const) = entry
+                .vars
+                .iter()
+                .filter_map(|x| {
+                    if let spirq::Variable::PushConstant { ty, .. } = x {
+                        Some(ty)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+            {
                 let (prereqs, _) = spirq_type_to_rust(push_const);
                 assert!(
                     push_constant_type.is_none(),
@@ -1068,18 +1110,18 @@ fn shader_stage_to_file_extension(id: &str) -> &'static str {
     }
 }
 
-fn compare_types(spv: &spirq::Type, rust: &str) -> bool {
+fn compare_types(spv: &spirq::ty::Type, rust: &str) -> bool {
     match (spv, rust) {
-        (spirq::Type::Scalar(spirq::ty::ScalarType::Signed(4)), "i32") => true,
-        (spirq::Type::Scalar(spirq::ty::ScalarType::Unsigned(4)), "u32") => true,
-        (spirq::Type::Scalar(spirq::ty::ScalarType::Unsigned(2)), "u16") => true,
+        (spirq::ty::Type::Scalar(spirq::ty::ScalarType::Signed(4)), "i32") => true,
+        (spirq::ty::Type::Scalar(spirq::ty::ScalarType::Unsigned(4)), "u32") => true,
+        (spirq::ty::Type::Scalar(spirq::ty::ScalarType::Unsigned(2)), "u16") => true,
         _ => unimplemented!("unimplemented spirq type comparison {:?} and {:?}", spv, rust,),
     }
 }
 
 // returns prerequisite + struct field definition
-fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStream)>, TokenStream) {
-    use spirq::*;
+fn spirq_type_to_rust(spv: &spirq::ty::Type) -> (Vec<(String, spirq::ty::Type, TokenStream)>, TokenStream) {
+    use spirq::ty::{self, *};
     match spv {
         Type::Matrix(ty::MatrixType {
             vec_ty:
@@ -1097,8 +1139,8 @@ fn spirq_type_to_rust(spv: &spirq::Type) -> (Vec<(String, spirq::Type, TokenStre
         Type::Scalar(ty::ScalarType::Unsigned(2)) => (vec![], quote!(u16)),
         Type::Struct(s) => {
             let name = format_ident!("{}", s.name().unwrap());
-            let (field_name, field_offset, field_ty) = split3((0..s.nmember()).map(|ix| {
-                let field = s.get_member(ix).unwrap();
+            let (field_name, field_offset, field_ty) = split3((0..s.members.len()).map(|ix| {
+                let field = &s.members[ix];
                 let field_name = field.name.as_ref().unwrap().to_case(Case::Snake);
                 (
                     format_ident!("{}", field_name),
@@ -1180,6 +1222,7 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
             if let Ok(parsed) = parse2::<ResourceDefinitionInput>(node.mac.tokens.clone()) {
                 let claim = self.resource_claims.entry(parsed.resource_name).or_default();
                 claim.ty = Some(parsed.ty);
+                claim.double_buffered = parsed.double_buffered;
             } else {
                 self.had_errors = true;
             }
@@ -1374,6 +1417,10 @@ pub fn assign_semaphores_to_stages(
     while let Some(this_node) = dfs.next(graph) {
         // TODO: preallocate DfsSpace?
         // TODO: queue_family matching is a workaround for https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
+
+        last_semaphore_ix += 1;
+        assert!(mapping.insert(this_node, (last_semaphore_ix, 1)).is_none());
+        continue;
         let queue_family = passes
             .get(&graph[this_node])
             .map(|_| QueueFamily::Graphics)

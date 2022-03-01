@@ -210,6 +210,8 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 barrier_calls.extend_one(quote! {
                     submissions.barrier_image(
                         &renderer,
+                        &swapchain_index_map,
+                        &image_index,
                         &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
                         *#command_buffer_expr,
                         #resource_name,

@@ -92,7 +92,11 @@ pub(crate) struct RgaDescriptorBinding {
     stage_flags: vk::ShaderStageFlags,
 }
 
-pub(crate) fn dump_rga(sets: &HashMap<String, DescriptorSet>, pipe: &Pipeline, push_const_ty: Option<&spirq::Type>) {
+pub(crate) fn dump_rga(
+    sets: &HashMap<String, DescriptorSet>,
+    pipe: &Pipeline,
+    push_const_ty: Option<&spirq::ty::Type>,
+) {
     let stage_flags = match pipe.specific {
         SpecificPipe::Graphics(_) => vk::ShaderStageFlags::ALL_GRAPHICS,
         SpecificPipe::Compute => vk::ShaderStageFlags::COMPUTE,

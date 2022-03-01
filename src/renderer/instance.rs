@@ -34,6 +34,7 @@ impl Instance {
         let events_loop = winit::event_loop::EventLoop::new();
         let window = winit::window::WindowBuilder::new()
             .with_title("Renderer v3")
+            .with_inner_size(winit::dpi::PhysicalSize::new(2000., 1000.))
             .build(&events_loop)
             .expect("Failed to create window");
 

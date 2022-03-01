@@ -1,0 +1,43 @@
+#version 460
+#pragma use_vulkan_memory_model
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_ARB_gpu_shader_int64 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(push_constant) uniform PushConstants {
+    uint64_t buf_base;
+} push;
+
+layout(buffer_reference, scalar, buffer_reference_align = 8) buffer blockType {
+    uint x;
+    uint y;
+    uint z;
+};
+
+struct StandardBlock {
+    uint x, y, z;
+};
+
+layout(scalar, set = 0, binding = 0) buffer Block0 {
+    StandardBlock block;
+} block0[];
+
+layout (local_size_x = 16, local_size_y = 4, local_size_z = 8) in;
+
+void main()
+{
+    blockType data = blockType(push.buf_base);
+	blockType specific = data[nonuniformEXT(gl_LocalInvocationID.x)];
+    
+    specific.x += 1;
+    specific.y += 1;
+    specific.z += 1;
+
+    block0[nonuniformEXT(gl_LocalInvocationID.x)].block.x += 1;
+    // block0[nonuniformEXT(gl_LocalInvocationID.x)].block.y += 1;
+    // block0[nonuniformEXT(gl_LocalInvocationID.x)].block.z += 1;
+}

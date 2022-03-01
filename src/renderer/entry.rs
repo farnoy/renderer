@@ -8,7 +8,7 @@ pub(crate) struct Entry {
 
 impl Entry {
     pub(crate) fn new() -> Entry {
-        let entry = AshEntry::new();
+        let entry = unsafe { AshEntry::load().unwrap() };
 
         Entry { handle: entry }
     }

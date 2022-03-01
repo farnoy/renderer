@@ -256,6 +256,7 @@ impl ShadowMappingDataInternal {
 }
 
 /// Holds Projection and view matrices for each light.
+#[derive(Component)]
 pub(crate) struct ShadowMappingLightMatrices {
     matrices_set: DoubleBuffered<SmartSet<camera_set::Set>>,
     matrices_buffer: DoubleBuffered<BufferType<camera_set::bindings::matrices>>,

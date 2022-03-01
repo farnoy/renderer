@@ -11,7 +11,7 @@ use crate::renderer::{
     frame_graph,
     helpers::command_util::CommandUtil,
     ImageIndex, MainDescriptorPool, RenderFrame, SmartPipeline, SmartPipelineLayout, SmartSet, SmartSetLayout,
-    Submissions, Swapchain,
+    Submissions, Swapchain, SwapchainIndexToFrameNumber,
 };
 
 renderer_macros::define_pass!(ReferenceRaytrace on compute);
@@ -34,6 +34,7 @@ renderer_macros::define_pipe! {
 pub(crate) fn reference_raytrace(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
+    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     submissions: Res<Submissions>,
     data: Res<ReferenceRTData>,
     mut priv_data: ResMut<ReferenceRTDataPrivate>,
@@ -64,8 +65,8 @@ pub(crate) fn reference_raytrace(
 
     let barrier = renderer_macros::barrier!(
         cb,
-        TLAS.in_reference r in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as after [build],
-        ReferenceRaytraceOutput.generate w in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as layout GENERAL; {output_image}
+        TLAS.in_reference r in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [RT, REFERENCE_RT],
+        ReferenceRaytraceOutput.generate w in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as layout GENERAL if [RT, REFERENCE_RT]; {output_image}
     );
 
     unsafe {

@@ -9,7 +9,7 @@ path = "macros.rs"
 
 [dependencies]
 renderer-macro-lib = { path = "../macro_lib" }
-ash = { git = "https://github.com/MaikKlein/ash", rev = "428830ad4ffac5ebe0b7d7b6cd7da6d03308a711" } # version = "0.32.0"
+ash = "0.36.0"
 bincode = "1.3.3"
 convert_case = "0.4.0"
 derive_more = "0.99.13"

@@ -30,7 +30,7 @@ impl Surface {
         };
         let desired_format = vk::SurfaceFormatKHR {
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            format: vk::Format::R8G8B8A8_UNORM,
+            format: vk::Format::B8G8R8A8_UNORM,
         };
         let surface_format = surface_formats
             .iter()

@@ -73,7 +73,7 @@ fn main() {
         Ok(shader_information) => {
             input.shader_information = shader_information;
         }
-        Err(errs) => println!("cargo:warning=Shader type validation errors:\n{}", errs.join("\n")),
+        Err(errs) => println!("cargo:warning=Shader type validation errors: {}", errs.join(", ")),
     };
 
     if let Err(err) = renderer_macro_lib::persist(&input) {

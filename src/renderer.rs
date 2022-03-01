@@ -24,8 +24,10 @@ use std::{
 use anyhow::bail;
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
+use bevy_system_graph::*;
 use hashbrown::HashMap;
 use itertools::Itertools;
+use log::{debug, log_enabled, Level::Debug};
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::{
@@ -109,7 +111,7 @@ pub(crate) fn right_vector() -> na::Unit<na::Vector3<f32>> {
     na::Unit::new_unchecked(na::Vector3::x())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Component)]
 pub(crate) struct GltfMesh {
     pub(crate) vertex_buffer: Arc<Buffer>,
     pub(crate) normal_buffer: Arc<Buffer>,
@@ -140,7 +142,7 @@ impl GltfMesh {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Component)]
 pub(crate) struct DrawIndex(pub(crate) u32);
 
 // TODO: rename
@@ -152,7 +154,7 @@ pub(crate) struct RenderFrame {
     pub(crate) buffer_count: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Component)]
 pub(crate) struct SwapchainIndexToFrameNumber {
     pub(crate) map: DoubleBuffered<u64>,
 }
@@ -212,7 +214,7 @@ renderer_macros::define_frame! {
             Depth,
         }
         formats {
-            R8G8B8A8_UNORM,
+            B8G8R8A8_UNORM,
             D16_UNORM,
         }
         samples {
@@ -968,9 +970,12 @@ pub(crate) struct MainRenderpass {
 
 impl MainRenderpass {
     pub(crate) fn new(renderer: &RenderFrame) -> Self {
-        MainRenderpass {
-            renderpass: frame_graph::Main::RenderPass::new(renderer, ()),
-        }
+        let renderpass = frame_graph::Main::RenderPass::new(renderer, ());
+        renderer
+            .device
+            .set_object_name(renderpass.renderpass.handle, "MainRenderpass");
+
+        MainRenderpass { renderpass }
     }
 
     pub(crate) fn destroy(self, device: &Device) {
@@ -1050,7 +1055,7 @@ impl MainDescriptorPool {
 }
 
 renderer_macros::define_resource!(Color = Image COLOR);
-renderer_macros::define_resource!(PresentSurface = Image COLOR);
+renderer_macros::define_resource!(PresentSurface DoubleBuffered = Image COLOR);
 pub(crate) struct MainAttachments {
     #[allow(unused)]
     swapchain_image_views: Vec<ImageView>,
@@ -1068,6 +1073,11 @@ impl MainAttachments {
         let images = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap() };
         assert!(images.len().to_u32().unwrap() >= swapchain.desired_image_count);
         println!("swapchain images len {}", images.len());
+        for (ix, swapchain_image) in images.iter().enumerate() {
+            renderer
+                .device
+                .set_object_name(*swapchain_image, &format!("Swapchain Image[{}]", ix));
+        }
         let depth_image = {
             let im = renderer.device.new_image(
                 vk::Format::D16_UNORM,
@@ -1079,7 +1089,9 @@ impl MainAttachments {
                 vk::SampleCountFlags::TYPE_4,
                 vk::ImageTiling::OPTIMAL,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             renderer.device.set_object_name(im.handle, "Depth RT");
@@ -1087,7 +1099,7 @@ impl MainAttachments {
         };
         let color_image = {
             let im = renderer.device.new_image_exclusive(
-                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::B8G8R8A8_UNORM,
                 vk::Extent3D {
                     width: swapchain.width,
                     height: swapchain.height,
@@ -1096,7 +1108,9 @@ impl MainAttachments {
                 vk::SampleCountFlags::TYPE_4,
                 vk::ImageTiling::OPTIMAL,
                 vk::ImageLayout::UNDEFINED,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             Color::import(&renderer.device, im)
@@ -1129,7 +1143,7 @@ impl MainAttachments {
         let color_image_view = {
             let create_view_info = vk::ImageViewCreateInfo::builder()
                 .view_type(vk::ImageViewType::TYPE_2D)
-                .format(swapchain.surface.surface_format.format)
+                .format(vk::Format::B8G8R8A8_UNORM)
                 .components(vk::ComponentMapping {
                     r: vk::ComponentSwizzle::IDENTITY,
                     g: vk::ComponentSwizzle::IDENTITY,
@@ -1210,9 +1224,15 @@ impl MainFramebuffer {
         let framebuffer = frame_graph::Main::Framebuffer::new(
             renderer,
             &main_renderpass.renderpass,
+            // TRANSFER is sometimes added by Nsight Graphics and it would make vkCmdBeginRenderpass not match the
+            // images, so add it manually
             &[
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
             ],
             (),
             (swapchain.width, swapchain.height),
@@ -1333,7 +1353,7 @@ impl GltfPassData {
         /*
         let queue_family_indices = vec![device.graphics_queue_family];
         let image_create_info = vk::ImageCreateInfo::builder()
-            .format(vk::Format::R8G8B8A8_UNORM)
+            .format(vk::Format::B8G8R8A8_UNORM)
             .extent(vk::Extent3D {
                 width: 20 * 16384,
                 height: 20 * 16384,
@@ -1504,7 +1524,7 @@ impl GltfPassData {
 pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
     (main_renderpass, main_attachments): (Res<MainRenderpass>, Res<MainAttachments>),
-    (image_index, model_data): (Res<ImageIndex>, Res<ModelData>),
+    (image_index, model_data, swapchain_index_map): (Res<ImageIndex>, Res<ModelData>, Res<SwapchainIndexToFrameNumber>),
     mut runtime_config: ResMut<RuntimeConfiguration>,
     (camera_matrices, swapchain): (Res<CameraMatrices>, Res<Swapchain>),
     renderer_input: Res<renderer_macro_lib::RendererInput>,
@@ -1570,15 +1590,15 @@ pub(crate) fn render_frame(
     let main_renderpass_marker = command_buffer.debug_marker_around("main renderpass", [0.0, 0.0, 1.0, 1.0]);
     let guard = renderer_macros::barrier!(
         command_buffer,
-        IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen],
-        IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth],
+        IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen] if [!DEBUG_AABB],
+        IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth] if [!DEBUG_AABB],
         TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB, RT],
         ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps layout DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL after [prepare] if [!DEBUG_AABB]; {&shadow_mapping_data.depth_image},
         Color.render rw in Main attachment in Main layout COLOR_ATTACHMENT_OPTIMAL; {&main_attachments.color_image},
         ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth] if [!DEBUG_AABB],
         ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate] if [!DEBUG_AABB],
         CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
-        DepthRT.in_main r in Main attachment in Main layout DEPTH_STENCIL_READ_ONLY_OPTIMAL after [draw_depth]; {&main_attachments.depth_image},
+        DepthRT.in_main r in Main attachment in Main layout DEPTH_STENCIL_READ_ONLY_OPTIMAL after [draw_depth] if [!DEBUG_AABB]; {&main_attachments.depth_image},
     );
     let reference_rt = runtime_config.rt && runtime_config.reference_rt;
     unsafe {
@@ -1768,7 +1788,7 @@ pub(crate) fn render_frame(
         let _guard = renderer_macros::barrier!(
             command_buffer,
             Color.resolve r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [render]; {&main_attachments.color_image},
-            PresentSurface.resolve_color w in Main transfer copy layout TRANSFER_DST_OPTIMAL; {&swapchain_image}
+            PresentSurface.resolve_color w clobber in Main transfer copy layout TRANSFER_DST_OPTIMAL; {&swapchain_image}
         );
 
         renderer.device.cmd_resolve_image(
@@ -2464,7 +2484,7 @@ pub(crate) fn graphics_stage() -> SystemStage {
     )
         .join(PresentFramebuffer::exec);
 
-    stage.with_system_set(test)
+    stage.with_system_set(test.into())
 }
 
 pub(crate) struct Submissions {
@@ -3014,10 +3034,10 @@ impl Submissions {
                 emitted_barriers += 1;
                 acquire_memory_barriers.push(
                     vk::MemoryBarrier2KHR::builder()
-                        .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
-                        .src_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_WRITE)
-                        .dst_stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                        .dst_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_READ)
+                        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+                        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+                        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
                         .build(),
                 );
             }
@@ -3033,6 +3053,8 @@ impl Submissions {
     pub(crate) fn barrier_image(
         &self,
         renderer: &RenderFrame,
+        swapchain_index_map: &SwapchainIndexToFrameNumber,
+        image_index: &ImageIndex,
         data: &renderer_macro_lib::RendererInput,
         command_buffer: vk::CommandBuffer,
         resource_name: &str,
@@ -3216,6 +3238,7 @@ impl Submissions {
                 "TRANSFER_SRC_OPTIMAL" => L::TRANSFER_SRC_OPTIMAL,
                 "TRANSFER_DST_OPTIMAL" => L::TRANSFER_DST_OPTIMAL,
                 "PRESENT_SRC_KHR" => L::PRESENT_SRC_KHR,
+                "UNDEFINED" => L::UNDEFINED,
                 _ => todo!("unknown layout {}", layout),
             }
         };
@@ -3243,7 +3266,11 @@ impl Submissions {
                 &prev_step.pass_name, &prev_step.step_name
             ));
             let this_layout = convert_layout(this_layout);
-            let prev_layout = convert_layout(prev_layout);
+            let prev_layout = if this.clobber {
+                vk::ImageLayout::UNDEFINED
+            } else {
+                convert_layout(prev_layout)
+            };
             let aspect = match aspect.as_str() {
                 "COLOR" => vk::ImageAspectFlags::COLOR,
                 "DEPTH" => vk::ImageAspectFlags::DEPTH,
@@ -3262,7 +3289,11 @@ impl Submissions {
                         .build(),
                 )
                 .image(image);
-            if this_external && renderer.frame_number == 1 {
+            if this_external
+                && (renderer.frame_number == 1
+                    || claims.double_buffered && swapchain_index_map.map[image_index.0 as usize] == 0)
+            {
+                // TODO: improve this with explicit clobber?
                 barrier = barrier
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -3399,31 +3430,29 @@ fn setup_submissions(
             });
     }
 
-    // Stage 2: Remove resource claims in removed passes, or those disconnected from the graph externals
+    // Stage 2: Remove resource claims whose results are not read later
     for (resource_name, claims) in submissions.active_resources.iter_mut() {
-        let original_externals = input
-            .resources
-            .get(resource_name)
-            .unwrap()
-            .graph
-            .externals(Outgoing)
-            .collect::<Vec<_>>();
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
-            for external in original_externals.iter() {
-                let step = &claims.graph[u];
-                if !graph2.node_references().any(|(_, name)| **name == step.pass_name)
-                // || !has_path_connecting(&claims.graph, u, *external, None)
-                {
-                    // dbg!(&step.step_name);
-                    claims.graph.remove_node(u);
+            let mut dfs = petgraph::visit::Dfs::new(&claims.graph, u);
+            // dfs.next(&claims.graph); // skip self
+            let mut read_back = false;
+            while let Some(candidate) = dfs.next(&claims.graph) {
+                if claims.graph[candidate].reads & !claims.graph[candidate].writes {
+                    read_back = true;
                     break;
                 }
+            }
+
+            if !read_back {
+                println!("not read back: {}.{}", resource_name, &claims.graph[u].step_name);
+                claims.graph.remove_node(u);
             }
         }
     }
     // Stage 3: Remove passes that don't modify (by writing) any active resource
     for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
         if pass_name != "PresentationAcquire"
+            && pass_name != "Present"
             && !submissions.active_resources.values().any(|resource| {
                 resource
                     .graph
@@ -3431,13 +3460,48 @@ fn setup_submissions(
                     .any(|claim| claim.pass_name == *pass_name && claim.writes)
             })
         {
-            dbg!(pass_name);
             let to_remove = graph2
                 .node_references()
                 .find(|(_, name)| *name == pass_name)
                 .map(|(ix, _)| ix)
                 .unwrap();
             debug_assert!(graph2.remove_node(to_remove).is_some());
+        }
+    }
+    for (resource_name, claims) in submissions.active_resources.iter_mut() {
+        for u in claims.graph.node_indices().collect::<Vec<_>>() {
+            let mut dfs = petgraph::visit::Dfs::new(&claims.graph, u);
+            // dfs.next(&claims.graph); // skip self
+            let mut read_back = false;
+            while let Some(candidate) = dfs.next(&claims.graph) {
+                if claims.graph[candidate].reads & !claims.graph[candidate].writes {
+                    read_back = true;
+                    break;
+                }
+            }
+
+            if !read_back {
+                println!("not read back: {}.{}", resource_name, &claims.graph[u].step_name);
+                claims.graph.remove_node(u);
+            }
+        }
+    }
+    for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
+        if pass_name != "PresentationAcquire"
+            && pass_name != "Present"
+            && !submissions.active_resources.values().any(|resource| {
+                resource
+                    .graph
+                    .node_weights()
+                    .any(|claim| claim.pass_name == *pass_name && claim.writes)
+            })
+        {
+            graph2
+                .node_references()
+                .find(|(_, name)| *name == pass_name)
+                .map(|(ix, _)| ix)
+                .into_iter()
+                .for_each(|ix| drop(graph2.remove_node(ix)));
         }
     }
 
@@ -3455,6 +3519,7 @@ fn setup_submissions(
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let step = &claims.graph[u];
             if !graph2.node_references().any(|(_, name)| **name == step.pass_name) {
+                dbg!(&step.pass_name);
                 claims.graph.remove_node(u);
                 break;
             }
@@ -3477,7 +3542,7 @@ fn setup_submissions(
         }
     }
 
-    // Stage 8: Perform a transitive reduction to minimize the number of semaphores that passes need to
+    // Stage 7: Perform a transitive reduction to minimize the number of semaphores that passes need to
     // wait on
     renderer_macro_lib::transitive_reduction_stable(&mut graph2);
 
@@ -3634,9 +3699,9 @@ fn update_submissions(
                                     })
                                     .or_insert(value);
                             }
-                            let signal_semaphores = signal_semaphores
-                                .into_iter()
-                                .map(|(semaphore_ix, value)| {
+                            let signal_semaphore_infos = signal_semaphores
+                                .iter()
+                                .map(|(&semaphore_ix, &value)| {
                                     vk::SemaphoreSubmitInfoKHR::builder()
                                         .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
                                         .value(value)
@@ -3651,11 +3716,35 @@ fn update_submissions(
 
                             let submit = vk::SubmitInfo2KHR::builder()
                                 .wait_semaphore_infos(&wait_semaphores)
-                                .signal_semaphore_infos(&signal_semaphores)
+                                .signal_semaphore_infos(&signal_semaphore_infos)
                                 .command_buffer_infos(&command_buffer_infos)
                                 .build();
 
                             let queue = queue.lock();
+
+                            if log_enabled!(target: "renderer", Debug) {
+                                let mut str = format!("Submitting {pass_name}");
+                                for edge in active_graph.edges_directed(node, Incoming) {
+                                    let incoming_pass_name = &active_graph[edge.source()];
+                                    let &(semaphore_ix, stage_ix) =
+                                        input.timeline_semaphore_mapping.get(incoming_pass_name).unwrap();
+                                    let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+                                    let value = match edge.weight() {
+                                        DependencyType::SameFrame => renderer.frame_number * cycle_value + stage_ix,
+                                        DependencyType::LastFrame => {
+                                            (renderer.frame_number - 1) * cycle_value + stage_ix
+                                        }
+                                        DependencyType::LastAccess => todo!(),
+                                    };
+
+                                    str += &format!("\nWaiting: AutoSemaphores[{semaphore_ix}] <- {value}");
+                                }
+
+                                for (semaphore_ix, value) in signal_semaphores.iter() {
+                                    str += &format!("\nSignaling: AutoSemaphores[{semaphore_ix}] <- {value}");
+                                }
+                                debug!(target: "renderer", "{str}");
+                            }
 
                             unsafe {
                                 scope!("vk::QueueSubmit");

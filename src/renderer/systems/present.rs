@@ -17,7 +17,8 @@ renderer_macros::define_pass!(Present on compute);
 pub(crate) struct PresentData {
     framebuffer_acquire_semaphore: Semaphore,
     render_complete_semaphore: Semaphore,
-    command_util: CommandUtil,
+    pre_present_command_util: CommandUtil,
+    post_present_command_util: CommandUtil,
 }
 
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -42,14 +43,16 @@ impl PresentData {
         PresentData {
             framebuffer_acquire_semaphore,
             render_complete_semaphore,
-            command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
+            pre_present_command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
+            post_present_command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
         }
     }
 
     pub(crate) fn destroy(self, device: &Device) {
         self.framebuffer_acquire_semaphore.destroy(device);
         self.render_complete_semaphore.destroy(device);
-        self.command_util.destroy(device);
+        self.pre_present_command_util.destroy(device);
+        self.post_present_command_util.destroy(device);
     }
 }
 
@@ -206,10 +209,12 @@ impl PresentFramebuffer {
             handle: swapchain_images[image_index.0 as usize],
         };
 
-        let command_buffer = present_data.command_util.reset_and_record(&renderer, &image_index);
+        let command_buffer = present_data
+            .pre_present_command_util
+            .reset_and_record(&renderer, &image_index);
         renderer_macros::barrier!(
             command_buffer,
-            PresentSurface.prepare_present rw in Present transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; {&swapchain_image}
+            PresentSurface.prepare_present r in Present transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; {&swapchain_image}
         );
         let command_buffer = command_buffer.end();
 
@@ -258,7 +263,6 @@ impl PresentFramebuffer {
             scope!("vk::QueuePresentKHR");
             unsafe { swapchain.ext.queue_present(*queue, &present_info) }
         };
-        drop(queue);
         match result {
             Ok(false) => {
                 resized.0 = false;
@@ -276,6 +280,36 @@ impl PresentFramebuffer {
             Err(vk::Result::ERROR_DEVICE_LOST) => panic!("device lost in PresentFramebuffer"),
             _ => panic!("unknown condition in PresentFramebuffer"),
         }
+
+        let command_buffer = present_data
+            .post_present_command_util
+            .reset_and_record(&renderer, &image_index);
+        renderer_macros::barrier!(
+            command_buffer,
+            PresentSurface.post_present r in Present transfer copy layout PRESENT_SRC_KHR after [prepare_present]; {&swapchain_image}
+        );
+        let command_buffer = command_buffer.end();
+
+        {
+            scope!("present::second_submit");
+            let command_buffers = [vk::CommandBufferSubmitInfoKHR::builder()
+                .command_buffer(*command_buffer)
+                .build()];
+            let submit = vk::SubmitInfo2KHR::builder()
+                .command_buffer_infos(&command_buffers)
+                .build();
+
+            unsafe {
+                scope!("vk::QueueSubmit");
+
+                renderer
+                    .device
+                    .synchronization2
+                    .queue_submit2(*queue, &[submit], vk::Fence::null())
+                    .unwrap();
+            }
+        }
+        drop(queue);
 
         submissions.remaining.get_mut().clear();
         swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;

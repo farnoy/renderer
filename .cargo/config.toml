@@ -1,2 +1,3 @@
 [build]
-rustflags = ["-C", "linker=lld"]
+rustflags = ["-C", "linker=lld", "-Awarnings"]
+incremental = true

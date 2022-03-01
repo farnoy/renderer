@@ -9,6 +9,7 @@ use ash::vk;
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use hashbrown::HashMap;
+use log::debug;
 #[cfg(feature = "compress_textures")]
 use num_traits::ToPrimitive;
 use petgraph::prelude::NodeIndex;
@@ -133,6 +134,7 @@ pub(crate) fn traverse_and_decode_scenes(
     }
     for (gltf_path, loaded, buffers) in loaded_scenes.into_iter() {
         scope!("scene_loader::traverse_and_decode_scenes::scene_iter");
+        debug!("loading scene {gltf_path}");
         for scene in loaded.scenes() {
             for node in scene.nodes() {
                 scope!("scene_loader::traverse_and_decode_scenes::scene_iter::node_iter");
@@ -253,7 +255,7 @@ pub(crate) fn upload_loaded_meshes(
                 let mut mapped = buf
                     .map::<[f32; 4]>(&renderer.device)
                     .expect("Failed to map tangent buffer");
-                mapped[..].copy_from_slice(&mesh.tangent_buffer);
+                mapped[..mesh.tangent_buffer.len()].copy_from_slice(&mesh.tangent_buffer);
             }
             buf
         };

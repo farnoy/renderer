@@ -237,7 +237,7 @@ pub(crate) mod systems {
     }
 
     /// Grab-bag for renderer and player controller variables for now
-    #[derive(Clone)]
+    #[derive(Clone, Component)]
     pub(crate) struct RuntimeConfiguration {
         pub(crate) debug_aabbs: bool,
         pub(crate) fly_mode: bool,
@@ -253,7 +253,7 @@ pub(crate) mod systems {
                 debug_aabbs: false,
                 fly_mode: false,
                 freeze_culling: false,
-                rt: true,
+                rt: false,
                 reference_rt: false,
                 compute_cull_workgroup_size: INITIAL_WORKGROUP_SIZE,
             }

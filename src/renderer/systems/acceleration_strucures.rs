@@ -154,9 +154,9 @@ pub(crate) fn build_acceleration_structures(
     mut acceleration_structures_internal: ResMut<AccelerationStructuresInternal>,
     submissions: Res<Submissions>,
     renderer_input: Res<renderer_macro_lib::RendererInput>,
-    queries: QuerySet<(
-        Query<&GltfMesh, With<ModelMatrix>>,
-        Query<(&GltfMesh, &DrawIndex, &ModelMatrix)>,
+    mut queries: QuerySet<(
+        QueryState<&GltfMesh, With<ModelMatrix>>,
+        QueryState<(&GltfMesh, &DrawIndex, &ModelMatrix)>,
     )>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
@@ -374,10 +374,10 @@ pub(crate) fn build_acceleration_structures(
                 renderer.device.synchronization2.cmd_pipeline_barrier2(
                     *command_buffer,
                     &vk::DependencyInfoKHR::builder().memory_barriers(&[vk::MemoryBarrier2KHR::builder()
-                        .src_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
-                        .src_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_WRITE)
-                        .dst_stage_mask(vk::PipelineStageFlags2KHR::ACCELERATION_STRUCTURE_BUILD)
-                        .dst_access_mask(vk::AccessFlags2KHR::ACCELERATION_STRUCTURE_READ)
+                        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+                        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+                        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+                        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
                         .build()]),
                 );
             }
@@ -398,7 +398,7 @@ pub(crate) fn build_acceleration_structures(
         let _tlas_marker = command_buffer.debug_marker_around("TLAS", [0.8, 0.1, 0.1, 1.0]);
         let _guard = renderer_macros::barrier!(
             command_buffer,
-            TLAS.build rw in BuildAccelerationStructures descriptor gltf_mesh.acceleration_set.top_level_as
+            TLAS.build w in BuildAccelerationStructures descriptor gltf_mesh.acceleration_set.top_level_as
         );
 
         let instances_addr = unsafe {
