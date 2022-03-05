@@ -629,7 +629,7 @@ fn main() {
     app.insert_resource(ScenesToLoad {
         scene_paths: vec![
             "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf".to_string(),
-            // "assets/bistro.gltf".to_string(),
+            "assets/bistro.gltf".to_string(),
         ],
         scenes: vec![],
     });

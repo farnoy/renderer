@@ -3305,7 +3305,7 @@ impl Submissions {
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .old_layout(prev_layout)
                     .new_layout(this_layout);
-                if prev_queue != this_queue {
+                if prev_queue != this_queue && prev_queue_runtime != this_queue_runtime {
                     barrier = barrier
                         .src_queue_family_index(prev_queue_runtime)
                         .dst_queue_family_index(this_queue_runtime)
@@ -3637,12 +3637,10 @@ fn update_submissions(
                         let queue = match queue_family {
                             QueueFamily::Graphics => renderer.device.graphics_queue(),
                             QueueFamily::Compute => {
-                                let _virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
-                                // TODO: Disabling virtualizes queues because of https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
-                                let virtualized_ix = 0;
-                                &renderer.device.compute_queues[virtualized_ix % renderer.device.compute_queues.len()]
+                                let &virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                &renderer.device.compute_queue_virtualized(virtualized_ix)
                             }
-                            QueueFamily::Transfer => renderer.device.transfer_queue.as_ref().unwrap(),
+                            QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(0),
                         };
                         let buf = &mut [vk::CommandBuffer::null()];
                         let command_buffers: &[vk::CommandBuffer] = match cb {

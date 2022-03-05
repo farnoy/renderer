@@ -43,6 +43,7 @@ impl PresentData {
         PresentData {
             framebuffer_acquire_semaphore,
             render_complete_semaphore,
+            // TODO: make queue family selection depend on swapchain supporting present from compute
             pre_present_command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
             post_present_command_util: CommandUtil::new(renderer, renderer.device.compute_queue_family),
         }
@@ -173,7 +174,7 @@ impl PresentFramebuffer {
         image_index: Res<ImageIndex>,
         mut resized: ResMut<Resized>,
         mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
-        #[cfg(debug_assertions)] mut submissions: ResMut<Submissions>,
+        mut submissions: ResMut<Submissions>,
     ) {
         scope!("ecs::PresentFramebuffer");
 
@@ -195,7 +196,7 @@ impl PresentFramebuffer {
         );
 
         let queue = if swapchain.supports_present_from_compute {
-            renderer.device.compute_queue_balanced()
+            renderer.device.compute_queue_virtualized(6).lock()
         } else {
             renderer.device.graphics_queue().lock()
         };

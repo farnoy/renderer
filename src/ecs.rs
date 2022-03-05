@@ -253,7 +253,7 @@ pub(crate) mod systems {
                 debug_aabbs: false,
                 fly_mode: false,
                 freeze_culling: false,
-                rt: false,
+                rt: true,
                 reference_rt: false,
                 compute_cull_workgroup_size: INITIAL_WORKGROUP_SIZE,
             }

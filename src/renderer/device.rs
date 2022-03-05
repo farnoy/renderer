@@ -1,4 +1,10 @@
-use std::{ffi::CStr, mem::transmute, ops::Deref, sync::Arc};
+use std::{
+    ffi::CStr,
+    iter::{once, Once},
+    mem::transmute,
+    ops::Deref,
+    sync::Arc,
+};
 
 use ash::{
     self,
@@ -10,8 +16,11 @@ use ash::{
 };
 use cache_padded::CachePadded;
 use crossbeam_utils::Backoff;
+use hashbrown::HashMap;
+use itertools::Itertools;
 use parking_lot::{Mutex, MutexGuard};
 use profiling::scope;
+use smallvec::{smallvec, SmallVec};
 
 mod alloc;
 mod buffer;
@@ -55,11 +64,7 @@ pub(crate) struct Device {
     pub(crate) graphics_queue_family: u32,
     pub(crate) compute_queue_family: u32,
     pub(crate) transfer_queue_family: u32,
-    graphics_queue: CachePadded<Mutex<vk::Queue>>,
-    // TODO: temporarily exposed
-    pub(crate) compute_queues: Vec<CachePadded<Mutex<vk::Queue>>>,
-    // TODO: temporarily exposed
-    pub(crate) transfer_queue: Option<CachePadded<Mutex<vk::Queue>>>,
+    queues: HashMap<u32, Vec<Mutex<vk::Queue>>>,
     #[cfg(feature = "crash_debugging")]
     pub(crate) buffer_marker_fn: vk::AmdBufferMarkerFn,
     #[allow(dead_code)]
@@ -103,66 +108,46 @@ impl Device {
             }
         }
         */
-        let graphics_queue_family = {
-            queue_families
-                .iter()
-                .enumerate()
-                .filter_map(|(ix, info)| unsafe {
-                    let supports_graphic_and_surface = info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                        && surface
-                            .ext
-                            .get_physical_device_surface_support(physical_device, ix as u32, surface.surface)
-                            .unwrap();
-                    if supports_graphic_and_surface {
-                        Some(ix as u32)
-                    } else {
-                        None
-                    }
-                })
-                .next()
-                .unwrap()
-        };
-        let compute_queues_spec = {
+        fn pick_family<F: Fn(u32, vk::QueueFlags) -> bool>(
+            queue_families: &[vk::QueueFamilyProperties],
+            f: F,
+        ) -> Option<(u32, u32)> {
             queue_families
                 .iter()
                 .enumerate()
                 .filter_map(|(ix, info)| {
-                    if info.queue_flags.contains(vk::QueueFlags::COMPUTE)
-                        && !info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                    {
-                        Some((ix as u32, info.queue_count))
+                    let ix = ix as u32;
+                    if f(ix, info.queue_flags) {
+                        Some((ix, info.queue_count))
                     } else {
                         None
                     }
                 })
                 .next()
         };
-        let transfer_queue_family = {
-            queue_families
-                .iter()
-                .enumerate()
-                .filter_map(|(ix, info)| {
-                    if info.queue_flags.contains(vk::QueueFlags::TRANSFER)
-                        && !info.queue_flags.contains(vk::QueueFlags::COMPUTE)
-                    {
-                        Some(ix as u32)
-                    } else {
-                        None
-                    }
-                })
-                .next()
-        };
-        let queues = match (compute_queues_spec, transfer_queue_family) {
-            (Some((compute_queue_family, compute_queue_len)), Some(transfer_queue_family)) => vec![
-                (graphics_queue_family, 1),
-                (compute_queue_family, compute_queue_len),
-                (transfer_queue_family, 1),
-            ],
-            (Some((compute_queue_family, compute_queue_len)), None) => {
-                vec![(graphics_queue_family, 1), (compute_queue_family, compute_queue_len)]
-            }
-            _ => vec![(graphics_queue_family, 1)],
-        };
+        let graphics_queue_spec = pick_family(&queue_families, |ix, flags| unsafe {
+            flags.contains(vk::QueueFlags::GRAPHICS)
+                && surface
+                    .ext
+                    .get_physical_device_surface_support(physical_device, ix as u32, surface.surface)
+                    .unwrap()
+        })
+        .expect("could not find a suitable graphics queue");
+        let compute_queues_spec = pick_family(&queue_families, |ix, flags| {
+            flags.contains(vk::QueueFlags::COMPUTE)
+                && !flags.contains(vk::QueueFlags::GRAPHICS)
+                && cfg!(not(feature = "collapse_compute"))
+        });
+        let transfer_queues_spec = pick_family(&queue_families, |ix, flags| {
+            flags.contains(vk::QueueFlags::TRANSFER)
+                && !flags.contains(vk::QueueFlags::COMPUTE)
+                && cfg!(not(feature = "collapse_transfer"))
+        });
+        let queues = once(graphics_queue_spec)
+            .chain(compute_queues_spec)
+            .chain(transfer_queues_spec)
+            .into_grouping_map()
+            .max();
         let device = {
             let device_extension_names_raw = vec![
                 extensions::khr::Swapchain::name().as_ptr(),
@@ -229,11 +214,11 @@ impl Device {
             let mut priorities = vec![];
             let queue_infos = queues
                 .iter()
-                .map(|&(ref family, ref len)| {
-                    priorities.push(vec![1.0; *len as usize]);
+                .map(|(&family, &len)| {
+                    priorities.push(vec![1.0; len as usize]);
                     let p = priorities.last().unwrap();
                     vk::DeviceQueueCreateInfo::builder()
-                        .queue_family_index(*family)
+                        .queue_family_index(family)
                         .queue_priorities(p)
                         .build()
                 })
@@ -256,17 +241,21 @@ impl Device {
         };
 
         let allocator = alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
-        let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
-        let compute_queues = match compute_queues_spec {
-            Some((compute_queue_family, len)) => (0..len)
-                .map(|ix| unsafe { device.get_device_queue(compute_queue_family, ix) })
-                .collect::<Vec<_>>(),
-            None => vec![],
-        };
-        let transfer_queue = transfer_queue_family
-            .map(|transfer_queue_family| unsafe { device.get_device_queue(transfer_queue_family, 0) });
+        let graphics_queue_family = graphics_queue_spec.0;
+        let compute_queue_family = compute_queues_spec.map(|(f, _)| f).unwrap_or(graphics_queue_family);
+        let transfer_queue_family = transfer_queues_spec.map(|(f, _)| f).unwrap_or(compute_queue_family);
 
-        let compute_queue_family = compute_queues_spec.map(|a| a.0).unwrap_or(graphics_queue_family);
+        let queues = {
+            let mut h = HashMap::new();
+            for (&family, &count) in queues.iter() {
+                for ix in 0..count {
+                    h.entry(family)
+                        .or_insert(vec![])
+                        .push(unsafe { Mutex::new(device.get_device_queue(family, ix)) });
+                }
+            }
+            h
+        };
 
         let fn_ptr_loader =
             |name: &CStr| unsafe { transmute(instance.get_device_proc_addr(device.handle(), name.as_ptr())) };
@@ -279,7 +268,7 @@ impl Device {
         let dynamic_rendering = DynamicRendering::new(instance, &device);
         let acceleration_structure = AccelerationStructure::new(instance, &device);
 
-        let device = Device {
+        let mut device = Device {
             device,
             instance: Arc::clone(instance),
             physical_device,
@@ -287,14 +276,8 @@ impl Device {
             limits: properties.limits,
             graphics_queue_family,
             compute_queue_family,
-            transfer_queue_family: transfer_queue_family.unwrap_or(compute_queue_family),
-            graphics_queue: CachePadded::new(Mutex::new(graphics_queue)),
-            compute_queues: compute_queues
-                .iter()
-                .cloned()
-                .map(|q| CachePadded::new(Mutex::new(q)))
-                .collect(),
-            transfer_queue: transfer_queue.map(|q| CachePadded::new(Mutex::new(q))),
+            transfer_queue_family,
+            queues,
             #[cfg(feature = "crash_debugging")]
             buffer_marker_fn,
             extended_dynamic_state_fn,
@@ -304,38 +287,61 @@ impl Device {
             min_acceleration_structure_scratch_offset_alignment: acceleration_structure_properties
                 .min_acceleration_structure_scratch_offset_alignment,
         };
-        device.set_object_name(graphics_queue, "Graphics Queue");
-        for (ix, compute_queue) in compute_queues.iter().cloned().enumerate() {
-            if compute_queue != graphics_queue {
-                device.set_object_name(compute_queue, &format!("Compute Queue - {}", ix));
+        if cfg!(feature = "vk_names") {
+            let queue_labels: Vec<(vk::Queue, String)> = device
+                .queues
+                .iter_mut()
+                .flat_map(|(&family, queues)| {
+                    queues.iter_mut().enumerate().map(move |(ix, q)| {
+                        let mut usage: SmallVec<[&'static str; 3]> = smallvec![];
+                        if device.graphics_queue_family == family {
+                            usage.push("Graphics");
+                        }
+                        if device.compute_queue_family == family {
+                            usage.push("Compute");
+                        }
+                        if device.transfer_queue_family == family {
+                            usage.push("Transfer");
+                        }
+                        let usage = usage.join("|");
+                        (*q.get_mut(), format!("Queue[{usage}][{ix}]"))
+                    })
+                })
+                .collect();
+            for (q, label) in queue_labels.into_iter() {
+                device.set_object_name(q, &label);
             }
-        }
-        for transfer_queue in transfer_queue.iter() {
-            device.set_object_name(*transfer_queue, "Transfer Queue");
         }
 
         Ok(device)
     }
 
     pub(crate) fn graphics_queue(&self) -> &Mutex<vk::Queue> {
-        &self.graphics_queue
+        self.graphics_queue_virtualized(0)
     }
 
-    pub(crate) fn compute_queue_balanced(&self) -> MutexGuard<vk::Queue> {
-        scope!("helpers::compute_queue_balanced");
-        debug_assert!(
-            !self.compute_queues.is_empty(),
-            "No compute queues to acquire in compute_queue_balanced"
-        );
+    pub(crate) fn graphics_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
+        let queues = self.queues.get(&self.graphics_queue_family).unwrap();
+        &queues[virt_ix % queues.len()]
+    }
 
-        let backoff = Backoff::new();
-        loop {
-            for queue in self.compute_queues.iter() {
-                if let Some(lock) = queue.try_lock() {
-                    return lock;
-                }
-            }
-            backoff.spin();
+    pub(crate) fn compute_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
+        if self.compute_queue_family == self.graphics_queue_family {
+            let queues = self.queues.get(&self.graphics_queue_family).unwrap();
+            let virt_ix = virt_ix + queues.len() / 2; // Stagger the indexing to decrease contention
+            &queues[virt_ix % queues.len()]
+        } else {
+            let queues = self.queues.get(&self.compute_queue_family).unwrap();
+            &queues[virt_ix % queues.len()]
+        }
+    }
+
+    pub(crate) fn transfer_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
+        if self.transfer_queue_family == self.compute_queue_family {
+            self.compute_queue_virtualized(virt_ix)
+        } else {
+            let queues = self.queues.get(&self.transfer_queue_family).unwrap();
+            &queues[virt_ix % queues.len()]
         }
     }
 

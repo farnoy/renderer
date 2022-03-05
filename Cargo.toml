@@ -35,12 +35,12 @@ bevy_system_graph = "0.1.1"
 cache-padded = "1.1.1"
 crossbeam-utils = "0.8.5"
 env_logger = "0.9.0"
-parking_lot = { version = "0.11.0", features = ["deadlock_detection"] }
+parking_lot = { version = "0.12.0", features = ["deadlock_detection"] }
 futures-lite = "1.12.0"
 gltf = { version = "0.16.0", features = ["KHR_materials_pbrSpecularGlossiness"] }
-hashbrown = "0.11.2"
+hashbrown = "0.12.0"
 humansize = "1.1.0"
-image = "0.23"
+image = "0.24"
 imgui = "0.8.0"
 imgui-winit-support = { version = "0.8.0", default-features = false, features = ["winit-25"] }
 indexmap = "1.7.0"
@@ -82,12 +82,15 @@ winapi = "0.3.5"
 
 [features]
 default = ["simba/packed_simd", "smallvec/const_generics"]
+collapse_compute = []
+collapse_transfer = []
 compress_textures = ["intel_tex"]
 vk_names = []
 crash_debugging = []
 standard_validation = ["vk_names"]
 gpu_validation = ["standard_validation"]
 gpu_printf = ["standard_validation"]
+nsight_profiling = ["collapse_compute", "vk_names"]
 silence_validation = ["standard_validation"]
 sync_validation = ["standard_validation"]
 uncapped = []
