@@ -62,10 +62,10 @@ smallvec = { version = "1.2.0", features = ["union", "const_generics", "const_ne
 spirq = { version = "0.5.0", optional = true }
 static_assertions= "1.1.0"
 # tokio = { version = "1", features = ["full", "parking_lot"] }
-tracy-client = { version = "0.12", default-features = false }
+tracy-client = { version = "0.12", default-features = false, optional = true }
 tracing = "0.1"
-tracing-subscriber = "0.3"
-tracing-tracy = { version = "0.8", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+tracing-tracy = { version = "0.8", default-features = false, optional = true }
 winit = "0.25.0"
 
 [build-dependencies]
@@ -94,12 +94,12 @@ crash_debugging = []
 standard_validation = ["vk_names"]
 gpu_validation = ["standard_validation"]
 gpu_printf = ["standard_validation"]
-notracing = ["tracing/max_level_off"]
 nsight_profiling = ["collapse_compute", "vk_names", "uncapped"]
 silence_validation = ["standard_validation"]
 sync_validation = ["standard_validation"]
 uncapped = []
 tracing_on = ["profiling/profile-with-tracy", "tracing-tracy/enable", "tracy-client/enable", "bevy_ecs/trace"]
+tracing_off = ["tracing/max_level_off", "tracing/release_max_level_off"]
 shader_reload = ["notify", "spirq"]
 
 [profile.dev.package.image]

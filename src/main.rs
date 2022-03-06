@@ -48,8 +48,6 @@ use renderer::{
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
-#[cfg(feature = "tracing_on")]
-use tracing_subscriber::layer::SubscriberExt;
 
 use crate::{
     ecs::systems::{shift_runtime_config, FutureRuntimeConfiguration},
@@ -62,9 +60,18 @@ use crate::{
 fn main() {
     profiling::register_thread!("main");
 
-    #[cfg(feature = "tracing_on")]
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()))
-        .expect("set up the subscriber");
+    #[cfg(not(feature = "tracing_off"))]
+    {
+        use tracing_subscriber::{layer::SubscriberExt, Layer};
+        let registry = tracing_subscriber::registry();
+        #[cfg(feature = "tracing-tracy")]
+        let registry = registry.with(tracing_tracy::TracyLayer::new());
+        let registry = registry.with(tracing_subscriber::fmt::layer().pretty().with_filter(
+            tracing_subscriber::filter::targets::Targets::new().with_target("renderer", tracing::Level::WARN),
+        ));
+
+        tracing::subscriber::set_global_default(registry).expect("set up the subscriber");
+    }
 
     let (renderer, swapchain, events_loop) = RenderFrame::new();
 
@@ -863,6 +870,7 @@ fn main() {
 
     app.insert_resource(bevy_tasks::ComputeTaskPool(
         bevy_tasks::TaskPoolBuilder::new()
+            .num_threads(bevy_tasks::physical_core_count() / 2)
             .thread_name("ComputeThread".to_string())
             .build(),
     ));
