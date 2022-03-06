@@ -27,7 +27,6 @@ use bevy_system_graph::*;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use log::{debug, log_enabled, Level::Debug};
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
 use petgraph::{
@@ -2435,26 +2434,40 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let copy_camera = test.root(copy_resource::<Camera>);
     let copy_indices = test.root(copy_resource::<SwapchainIndexToFrameNumber>);
     let setup_submissions = test.root(setup_submissions);
-    let (consolidate_mesh_buffers, upload_loaded_meshes) =
-        setup_submissions.fork((consolidate_mesh_buffers.system(), upload_loaded_meshes.system()));
 
-    let initial = (copy_runtime_config, copy_camera, copy_indices, consolidate_mesh_buffers);
-    let (recreate_main_framebuffer, recreate_base_color, cull, cull_bypass, build_as, shadow_mapping, reference_rt) =
-        initial.join_all((
-            recreate_main_framebuffer.system(),
-            recreate_base_color_descriptor_set.system(),
-            cull_pass.system(),
+    let initial = (
+        copy_runtime_config.clone(),
+        copy_camera.clone(),
+        copy_indices.clone(),
+        setup_submissions.clone(),
+    );
+
+    let recreate_base_color = test.root(recreate_base_color_descriptor_set);
+    let recreate_main_framebuffer = test.root(recreate_main_framebuffer);
+
+    let update_base_color = recreate_base_color.then(update_base_color_descriptors);
+
+    let (consolidate_mesh_buffers, upload_loaded_meshes, cull_bypass, build_as, shadow_mapping, reference_rt) = initial
+        .join_all((
+            consolidate_mesh_buffers.system(),
+            upload_loaded_meshes.system(),
             cull_pass_bypass.system(),
             build_acceleration_structures.system(),
             prepare_shadow_maps.system(),
             reference_raytrace.system(),
         ));
 
-    let depth = recreate_main_framebuffer.then(depth_only_pass.system());
+    let cull = consolidate_mesh_buffers.then(cull_pass);
 
-    let update_base_color = recreate_base_color.then(update_base_color_descriptors);
+    let depth = (recreate_main_framebuffer.clone(), consolidate_mesh_buffers.clone()).join(depth_only_pass);
 
-    let main_pass = (recreate_main_framebuffer, update_base_color, build_as.clone()).join(render_frame);
+    let main_pass = (
+        recreate_main_framebuffer,
+        update_base_color,
+        build_as.clone(),
+        consolidate_mesh_buffers.clone(),
+    )
+        .join(render_frame);
 
     let build_as_submit = build_as.then(submit_pending);
 
@@ -2533,6 +2546,7 @@ impl Submissions {
             .node_weight_mut(NodeIndex::from(node_ix))
             .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
         debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
+        let _span = tracing::info_span!(target: "renderer", "Submitting command buffer", pass_name = self.active_graph.node_weight(NodeIndex::from(node_ix)).unwrap().as_str()).entered();
         *weight = Some(cb);
         update_submissions(
             renderer,
@@ -3707,6 +3721,7 @@ fn update_submissions(
                     // leave None behind so that others won't try to submit this, but will
                     // continue to see it as a blocking dependency
                     MutexGuard::unlocked_fair(&mut graph, || {
+                        scope!("unlocked");
                         let queue_family = input
                             .passes
                             .get(pass_name)
@@ -3798,9 +3813,10 @@ fn update_submissions(
                                 .build();
 
                             let queue = queue.lock();
+                            scope!("queue locked");
 
-                            if log_enabled!(target: "renderer", Debug) {
-                                let mut str = format!("Submitting {pass_name}");
+                            if tracing::enabled!(target: "renderer", tracing::Level::INFO) {
+                                let mut str = format!("Submitting {pass_name} to queue family {queue_family:?}");
                                 for edge in active_graph.edges_directed(node, Incoming) {
                                     let incoming_pass_name = &active_graph[edge.source()];
                                     let &(semaphore_ix, stage_ix) =
@@ -3820,7 +3836,7 @@ fn update_submissions(
                                 for (semaphore_ix, value) in signal_semaphores.iter() {
                                     str += &format!("\nSignaling: AutoSemaphores[{semaphore_ix}] <- {value}");
                                 }
-                                debug!(target: "renderer", "{str}");
+                                tracing::info!(target: "renderer", "{str}");
                             }
 
                             unsafe {
