@@ -208,6 +208,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     .map(|x| quote!({#x}.handle))
                     .unwrap_or(quote!(vk::Image::null()));
                 barrier_calls.extend_one(quote! {
+                    let span = tracing::trace_span!("image", resource_name = #resource_name, step_name = #step_name).entered();
                     submissions.barrier_image(
                         &renderer,
                         &swapchain_index_map,
@@ -220,6 +221,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         &mut acquire_image_barriers,
                         &mut release_image_barriers,
                     );
+                    drop(span);
                 });
             }
         }
@@ -227,6 +229,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     quote! {
         unsafe {
+            let trace_span = tracing::trace_span!("barrier!").entered();
             #validation_errors
             let mut acquire_buffer_barriers = vec![];
             let mut acquire_memory_barriers = vec![];
@@ -260,6 +263,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                             .memory_barriers(&release_memory_barriers)
                             .image_memory_barriers(&release_image_barriers),
                     );
+                    drop(trace_span);
                 }
             })
         }

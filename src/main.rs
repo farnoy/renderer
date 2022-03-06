@@ -23,6 +23,7 @@ use bevy_app::*;
 use bevy_ecs::{
     component::{ComponentDescriptor, StorageType},
     prelude::*,
+    system::SystemState,
 };
 use bevy_tasks::Task;
 use ecs::{
@@ -51,14 +52,20 @@ use renderer::{
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
+#[cfg(feature = "profiling")]
+use tracing_subscriber::layer::SubscriberExt;
 
-use crate::renderer::{
-    initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate, ScenesToLoad,
-    TransferCullPrivate, UploadMeshesData,
-};
+use crate::{renderer::{
+    copy_resource, initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate,
+    ScenesToLoad, TransferCullPrivate, UploadMeshesData,
+}, ecs::systems::{FutureRuntimeConfiguration, copy_runtime_config}};
 
 fn main() {
     profiling::register_thread!("main");
+
+    #[cfg(feature = "profiling")]
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()))
+        .expect("set up the subscriber");
 
     let (renderer, swapchain, events_loop) = RenderFrame::new();
 
@@ -641,6 +648,7 @@ fn main() {
     app.init_resource::<InputActions>();
     app.init_resource::<Camera>();
     app.init_resource::<RuntimeConfiguration>();
+    app.init_resource::<FutureRuntimeConfiguration>();
     app.init_resource::<CopiedResource<RuntimeConfiguration>>();
     app.init_resource::<CopiedResource<Camera>>();
     app.insert_resource(renderer);
@@ -679,12 +687,6 @@ fn main() {
         app.init_non_send_resource::<ShaderReload>();
         app.init_resource::<ReloadedShaders>();
     }
-
-    app.insert_resource(bevy_log::LogSettings {
-        level: bevy_log::Level::WARN,
-        filter: "warn".to_string(),
-    });
-    app.add_plugin(bevy_log::LogPlugin);
 
     #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
     enum UpdatePhase {
@@ -876,12 +878,27 @@ fn main() {
         app.insert_resource(bevy_ecs::schedule::ReportExecutionOrderAmbiguities);
     }
 
+    // Submissions uses a latched value that initializes the execution plan of the next frame, therefore
+    // we need to run it twice at the start so that it prepares a plan for the current frame.
+    {
+        let mut system_state: SystemState<(
+            ResMut<Submissions>,
+            Res<FutureRuntimeConfiguration>,
+            Res<renderer_macro_lib::RendererInput>,
+        )> = SystemState::new(&mut app.world);
+        let (mut submissions, runtime_config, input) = system_state.get_mut(&mut app.world);
+        renderer::setup_submissions(submissions, runtime_config, input);
+        let (mut submissions, runtime_config, input) = system_state.get_mut(&mut app.world);
+        submissions.remaining.get_mut().clear();
+    }
+
     'frame: loop {
         scope!("game-loop");
 
         app.update();
 
-        profiling::finish_frame!();
+        #[cfg(feature = "profiling")]
+        tracy_client::finish_continuous_frame!();
 
         if *quit_handle.lock() {
             unsafe {

@@ -1525,7 +1525,7 @@ pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
     (main_renderpass, main_attachments): (Res<MainRenderpass>, Res<MainAttachments>),
     (image_index, model_data, swapchain_index_map): (Res<ImageIndex>, Res<ModelData>, Res<SwapchainIndexToFrameNumber>),
-    mut runtime_config: ResMut<RuntimeConfiguration>,
+    (runtime_config, mut future_configs): (Res<RuntimeConfiguration>, ResMut<FutureRuntimeConfiguration>),
     (camera_matrices, swapchain): (Res<CameraMatrices>, Res<Swapchain>),
     renderer_input: Res<renderer_macro_lib::RendererInput>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
@@ -1761,7 +1761,7 @@ pub(crate) fn render_frame(
     render_gui(
         &renderer,
         &mut gui_render_data,
-        &mut runtime_config,
+        &mut future_configs,
         &swapchain,
         &mut camera,
         &mut input_handler,
@@ -2238,7 +2238,7 @@ pub(crate) fn writeback_resource<T: Component + Clone>(from: Res<CopiedResource<
 fn render_gui(
     renderer: &RenderFrame,
     gui_render_data: &mut GuiRenderData,
-    runtime_config: &mut RuntimeConfiguration,
+    runtime_config: &mut FutureRuntimeConfiguration,
     swapchain: &Swapchain,
     camera: &mut Camera,
     input_handler: &mut InputHandler,
@@ -2489,27 +2489,38 @@ pub(crate) fn graphics_stage() -> SystemStage {
 
 pub(crate) struct Submissions {
     pub(crate) active_graph: StableDiGraph<String, DependencyType>,
+    pub(crate) upcoming_graph: StableDiGraph<String, DependencyType>,
     pub(crate) active_resources: HashMap<String, ResourceClaims>,
+    /// This stores the resources graph for the next frame. It will be copied to `active_resources`
+    /// on the next frame. This allows us to look ahead to how resources will be used in the
+    /// next frame, and transition them accurately during configuration changes.
+    pub(crate) upcoming_resources: HashMap<String, ResourceClaims>,
     pub(crate) remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
+    pub(crate) upcoming_remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
     /// When the graph is simplified according to conditionals, we pick up inactive nodes and signal
     /// them at the next downstream opportunity. This allows us to increment all the semaphores
     /// appropriately all of the time while toggle freely between conditionals.
     pub(crate) extra_signals: HashMap<NodeIndex, Vec<NodeIndex>>,
-    /// Holds the mapping from a the graph node index of each compute pass to the virtualized index
-    /// of the compute queue to use. This exposes all the underlying parallelism of compute
-    /// submissions. The virtual queue index can be modulo'd with the number of queues exposed by
-    /// the hardware.
-    pub(crate) compute_virtual_queue_indices: HashMap<NodeIndex, usize>,
+    pub(crate) upcoming_extra_signals: HashMap<NodeIndex, Vec<NodeIndex>>,
+    // Holds the mapping from a the graph node index of each compute pass to the virtualized index
+    // of the compute queue to use. This exposes all the underlying parallelism of compute
+    // submissions. The virtual queue index can be modulo'd with the number of queues exposed by
+    // the hardware.
+    // pub(crate) compute_virtual_queue_indices: HashMap<NodeIndex, usize>,
 }
 
 impl Submissions {
     pub(crate) fn new() -> Submissions {
         Submissions {
             active_graph: Default::default(),
+            upcoming_graph: Default::default(),
             active_resources: Default::default(),
+            upcoming_resources: Default::default(),
             remaining: Mutex::default(),
+            upcoming_remaining: Mutex::default(),
             extra_signals: Default::default(),
-            compute_virtual_queue_indices: Default::default(),
+            upcoming_extra_signals: Default::default(),
+            // compute_virtual_queue_indices: Default::default(),
         }
     }
 
@@ -2644,6 +2655,7 @@ impl Submissions {
         #[allow(unused)] release_buffer_barriers: &mut Vec<vk::BufferMemoryBarrier2KHR>,
     ) {
         let claims = self.active_resources.get(resource_name).unwrap();
+        let next_claims = self.upcoming_resources.get(resource_name).unwrap();
 
         debug_assert!(matches!(claims.ty, ResourceDefinitionType::StaticBuffer { .. }));
 
@@ -2699,7 +2711,7 @@ impl Submissions {
         };
         let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
         let outgoing = if let None = outgoing.peek() {
-            outgoing.chain(claims.graph.externals(Incoming)).collect_vec()
+            outgoing.chain(next_claims.graph.externals(Incoming)).collect_vec()
         } else {
             outgoing.collect_vec()
         };
@@ -3064,6 +3076,7 @@ impl Submissions {
         release_image_barriers: &mut Vec<vk::ImageMemoryBarrier2KHR>,
     ) {
         let claims = self.active_resources.get(resource_name).unwrap();
+        let next_claims = self.upcoming_resources.get(resource_name).unwrap();
         let aspect = match claims.ty {
             ResourceDefinitionType::Image { ref aspect } => aspect,
             _ => panic!(),
@@ -3119,9 +3132,9 @@ impl Submissions {
         } else {
             incoming.collect_vec()
         };
-        let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
+        let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).map(|ix| &claims.graph[ix]).peekable();
         let outgoing = if let None = outgoing.peek() {
-            outgoing.chain(claims.graph.externals(Incoming)).collect_vec()
+            outgoing.chain(next_claims.graph.externals(Incoming).map(|ix| &next_claims.graph[ix])).collect_vec()
         } else {
             outgoing.collect_vec()
         };
@@ -3306,12 +3319,14 @@ impl Submissions {
                     .old_layout(prev_layout)
                     .new_layout(this_layout);
                 if prev_queue != this_queue && prev_queue_runtime != this_queue_runtime {
+                    tracing::debug!("queue transition {prev_queue_runtime} {this_queue_runtime}");
                     barrier = barrier
                         .src_queue_family_index(prev_queue_runtime)
                         .dst_queue_family_index(this_queue_runtime)
                 }
             }
             emitted_barriers += 1;
+            tracing::debug!("emitted barrier");
             acquire_image_barriers.push(barrier.build());
         }
         assert!(
@@ -3321,8 +3336,7 @@ impl Submissions {
             step_name
         );
         emitted_barriers = 0;
-        for dep in outgoing {
-            let next_step = &claims.graph[dep];
+        for next_step in outgoing {
             let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
             let next_queue_runtime = get_runtime_queue_family(next_queue);
             let next_layout_in_renderpass = get_layout_from_renderpass(&next_step);
@@ -3381,15 +3395,17 @@ impl Submissions {
     }
 }
 
-fn setup_submissions(
+pub(crate) fn setup_submissions(
     mut submissions: ResMut<Submissions>,
-    runtime_config: Res<RuntimeConfiguration>,
+    future_configs: Res<FutureRuntimeConfiguration>,
     input: Res<renderer_macro_lib::RendererInput>,
 ) {
     scope!("rendering::setup_submissions");
 
     let mut graph2 = input.dependency_graph.clone();
 
+    // Use the config for the next frame to prepare the upcoming plan
+    let runtime_config = &future_configs.0[0];
     let switches: HashMap<String, bool> = [
         ("FREEZE_CULLING".to_string(), runtime_config.freeze_culling),
         ("DEBUG_AABB".to_string(), runtime_config.debug_aabbs),
@@ -3399,8 +3415,22 @@ fn setup_submissions(
     .into_iter()
     .collect();
 
-    submissions.extra_signals.clear();
-    submissions.active_resources = input.resources.clone();
+    submissions.extra_signals = take(&mut submissions.upcoming_extra_signals);
+    submissions.active_resources = take(&mut submissions.upcoming_resources);
+    submissions.active_graph = take(&mut submissions.upcoming_graph);
+    submissions.upcoming_resources = input.resources.clone();
+    {
+        let Submissions {
+            ref mut remaining,
+            ref mut upcoming_remaining,
+            ..
+        } = *submissions;
+        let remaining = remaining.get_mut();
+        let upcoming_remaining = upcoming_remaining.get_mut();
+        assert_eq!(remaining.node_count(), 0);
+        assert_eq!(remaining.edge_count(), 0);
+        *remaining = take(upcoming_remaining);
+    }
 
     let eval_cond = |c: &Conditional| {
         c.conditions.iter().all(|cond| {
@@ -3413,7 +3443,7 @@ fn setup_submissions(
     };
 
     // Stage 1: Cull resource graphs by evaluating conditionals
-    for claims in submissions.active_resources.values_mut() {
+    for claims in submissions.upcoming_resources.values_mut() {
         claims
             .map
             // Drain inactive resource steps
@@ -3431,7 +3461,7 @@ fn setup_submissions(
     }
 
     // Stage 2: Remove resource claims whose results are not read later
-    for (resource_name, claims) in submissions.active_resources.iter_mut() {
+    for (resource_name, claims) in submissions.upcoming_resources.iter_mut() {
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let mut dfs = petgraph::visit::Dfs::new(&claims.graph, u);
             // dfs.next(&claims.graph); // skip self
@@ -3453,7 +3483,7 @@ fn setup_submissions(
     for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
-            && !submissions.active_resources.values().any(|resource| {
+            && !submissions.upcoming_resources.values().any(|resource| {
                 resource
                     .graph
                     .node_weights()
@@ -3468,7 +3498,7 @@ fn setup_submissions(
             debug_assert!(graph2.remove_node(to_remove).is_some());
         }
     }
-    for (resource_name, claims) in submissions.active_resources.iter_mut() {
+    for (resource_name, claims) in submissions.upcoming_resources.iter_mut() {
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let mut dfs = petgraph::visit::Dfs::new(&claims.graph, u);
             // dfs.next(&claims.graph); // skip self
@@ -3489,7 +3519,7 @@ fn setup_submissions(
     for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
-            && !submissions.active_resources.values().any(|resource| {
+            && !submissions.upcoming_resources.values().any(|resource| {
                 resource
                     .graph
                     .node_weights()
@@ -3515,7 +3545,7 @@ fn setup_submissions(
         }
     }
     // Stage 5: Remove resource claims again now that even more passes have been disabled
-    for claims in submissions.active_resources.values_mut() {
+    for claims in submissions.upcoming_resources.values_mut() {
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let step = &claims.graph[u];
             if !graph2.node_references().any(|(_, name)| **name == step.pass_name) {
@@ -3535,7 +3565,11 @@ fn setup_submissions(
             dfs.next(&input.dependency_graph); // skip self
             while let Some(candidate) = dfs.next(&input.dependency_graph) {
                 if graph2.contains_node(candidate) {
-                    submissions.extra_signals.entry(candidate).or_insert(vec![]).push(node);
+                    submissions
+                        .upcoming_extra_signals
+                        .entry(candidate)
+                        .or_insert(vec![])
+                        .push(node);
                     break;
                 }
             }
@@ -3551,51 +3585,49 @@ fn setup_submissions(
     //     &[petgraph::dot::Config::EdgeNoLabel]
     // ));
 
-    let graph = submissions.remaining.get_mut();
-    assert_eq!(graph.node_count(), 0);
-    assert_eq!(graph.edge_count(), 0);
+    let graph = submissions.upcoming_remaining.get_mut();
 
     *graph = graph2.map(|_, _| None, |_, _| ());
     graph.remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
 
-    submissions.compute_virtual_queue_indices = {
-        let toposort = petgraph::algo::toposort(&*graph, None).unwrap();
-        let toposort_compute = toposort
-            .iter()
-            .filter(|ix| {
-                let name = &graph2[**ix];
-                input
-                    .async_passes
-                    .get(name)
-                    .map(|async_pass| async_pass.queue == QueueFamily::Compute)
-                    .unwrap_or(false)
-            })
-            .collect::<Vec<_>>();
+    // submissions.compute_virtual_queue_indices = {
+    //     let toposort = petgraph::algo::toposort(&*graph, None).unwrap();
+    //     let toposort_compute = toposort
+    //         .iter()
+    //         .filter(|ix| {
+    //             let name = &graph2[**ix];
+    //             input
+    //                 .async_passes
+    //                 .get(name)
+    //                 .map(|async_pass| async_pass.queue == QueueFamily::Compute)
+    //                 .unwrap_or(false)
+    //         })
+    //         .collect::<Vec<_>>();
 
-        let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
-        for ix in toposort_compute.iter() {
-            match toposort_grouped_compute.last_mut() {
-                // if no path bridges from the last stage to ix
-                Some(last)
-                    if !last
-                        .iter()
-                        .any(|candidate| has_path_connecting(&*graph, *candidate, **ix, None)) =>
-                {
-                    last.push(**ix);
-                }
-                _ => toposort_grouped_compute.push(vec![**ix]),
-            }
-        }
-        let mut mapping = HashMap::new();
-        for stage in toposort_grouped_compute {
-            for (queue_ix, &node_ix) in stage.iter().enumerate() {
-                assert!(mapping.insert(node_ix, queue_ix).is_none());
-            }
-        }
-        mapping
-    };
+    //     let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
+    //     for ix in toposort_compute.iter() {
+    //         match toposort_grouped_compute.last_mut() {
+    //             // if no path bridges from the last stage to ix
+    //             Some(last)
+    //                 if !last
+    //                     .iter()
+    //                     .any(|candidate| has_path_connecting(&*graph, *candidate, **ix, None)) =>
+    //             {
+    //                 last.push(**ix);
+    //             }
+    //             _ => toposort_grouped_compute.push(vec![**ix]),
+    //         }
+    //     }
+    //     let mut mapping = HashMap::new();
+    //     for stage in toposort_grouped_compute {
+    //         for (queue_ix, &node_ix) in stage.iter().enumerate() {
+    //             assert!(mapping.insert(node_ix, queue_ix).is_none());
+    //         }
+    //     }
+    //     mapping
+    // };
 
-    submissions.active_graph = graph2;
+    submissions.upcoming_graph = graph2;
 }
 
 fn update_submissions(
@@ -3610,7 +3642,7 @@ fn update_submissions(
     let Submissions {
         ref extra_signals,
         ref active_graph,
-        ref compute_virtual_queue_indices,
+        // ref compute_virtual_queue_indices,
         ..
     } = submissions;
 
@@ -3637,7 +3669,8 @@ fn update_submissions(
                         let queue = match queue_family {
                             QueueFamily::Graphics => renderer.device.graphics_queue(),
                             QueueFamily::Compute => {
-                                let &virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                // let &virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
+                                let virtualized_ix = 0;
                                 &renderer.device.compute_queue_virtualized(virtualized_ix)
                             }
                             QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(0),

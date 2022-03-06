@@ -141,6 +141,10 @@ impl Instance {
                 if severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
                     && !message.contains("VUID-VkPresentInfoKHR-pImageIndices-01296")
                 {
+                    // wait before panicking to flush the pending messages
+                    if cfg!(feature = "profiling") {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                     panic!();
                 }
                 0

@@ -21,6 +21,8 @@ use crate::{
     renderer::{right_vector, up_vector, RenderFrame},
 };
 
+use super::systems::FutureRuntimeConfiguration;
+
 #[derive(Debug)]
 pub(crate) struct InputActions {
     pressed: HashSet<VirtualKeyCode>,
@@ -76,7 +78,7 @@ impl InputHandler {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         renderer: Res<RenderFrame>,
-        mut runtime_config: ResMut<RuntimeConfiguration>,
+        mut runtime_config: ResMut<FutureRuntimeConfiguration>,
         mut input_actions: ResMut<InputActions>,
         mut camera: ResMut<Camera>,
         mut input_handler: NonSendMut<InputHandler>,
@@ -91,7 +93,7 @@ impl InputHandler {
         } = *input_handler;
 
         input_actions.promote();
-        let fly_mode = runtime_config.fly_mode;
+        let fly_mode = runtime_config.0[1].fly_mode;
         let mut toggle_fly_mode = false;
         events_loop.run_return(|event, _window_target, control_flow| {
             scope!("input::event_loop");
@@ -184,7 +186,8 @@ impl InputHandler {
             };
             *control_flow = winit::event_loop::ControlFlow::Exit;
         });
-        runtime_config.fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
+        runtime_config.0[0].fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
+        runtime_config.0[1].fly_mode = if toggle_fly_mode { !fly_mode } else { fly_mode };
 
         {
             scope!("input::imgui_prepare_frame");
