@@ -52,7 +52,7 @@ use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
 use tracing_subscriber::layer::SubscriberExt;
 
 use crate::{
-    ecs::systems::FutureRuntimeConfiguration,
+    ecs::systems::{shift_runtime_config, FutureRuntimeConfiguration},
     renderer::{
         initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate, ScenesToLoad,
         TransferCullPrivate, UploadMeshesData, RENDERER_INPUT,
@@ -849,6 +849,7 @@ fn main() {
                     .at_end()
                     .label(CleanupDeletedEntities),
             )
+            .with_system(shift_runtime_config)
             .with_system(
                 (|mut renderer: ResMut<RenderFrame>| {
                     renderer.frame_number += 1;
@@ -879,12 +880,25 @@ fn main() {
     // Submissions uses a latched value that initializes the execution plan of the next frame, therefore
     // we need to run it twice at the start so that it prepares a plan for the current frame.
     {
-        let mut system_state: SystemState<(ResMut<Submissions>, Res<FutureRuntimeConfiguration>)> =
+        let mut runtime_config_system_state: SystemState<ResMut<RuntimeConfiguration>> =
             SystemState::new(&mut app.world);
-        let (submissions, runtime_config) = system_state.get_mut(&mut app.world);
-        renderer::setup_submissions(submissions, runtime_config);
-        let (mut submissions, _runtime_config) = system_state.get_mut(&mut app.world);
+        let mut x = runtime_config_system_state.get_mut(&mut app.world);
+        // bypass caching to recompute the initial plan
+        x.debug_aabbs = !x.debug_aabbs;
+
+        let mut system_state: SystemState<(
+            ResMut<Submissions>,
+            Res<RuntimeConfiguration>,
+            Res<FutureRuntimeConfiguration>,
+        )> = SystemState::new(&mut app.world);
+        let (submissions, runtime_config, future_configs) = system_state.get_mut(&mut app.world);
+        renderer::setup_submissions(submissions, runtime_config, future_configs);
+        let (mut submissions, _runtime_config, _future_configs) = system_state.get_mut(&mut app.world);
         submissions.remaining.get_mut().clear();
+
+        let mut x = runtime_config_system_state.get_mut(&mut app.world);
+        // restore the changed configuration
+        x.debug_aabbs = !x.debug_aabbs;
     }
 
     'frame: loop {

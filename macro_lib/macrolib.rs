@@ -371,8 +371,8 @@ impl Parse for QueueFamily {
         input
             .parse::<kw::graphics>()
             .and(Ok(QueueFamily::Graphics))
-            .or(input.parse::<kw::compute>().and(Ok(QueueFamily::Compute)))
-            .or(input.parse::<kw::transfer>().and(Ok(QueueFamily::Transfer)))
+            .or_else(|_| input.parse::<kw::compute>().and(Ok(QueueFamily::Compute)))
+            .or_else(|_| input.parse::<kw::transfer>().and(Ok(QueueFamily::Transfer)))
     }
 }
 
@@ -505,7 +505,7 @@ impl Parse for Binding {
                 .0
                 .as_ref()
                 .map(|inputs::Sequence((a, _))| a.clone())
-                .unwrap_or(parse_quote!(1))
+                .unwrap_or_else(|| parse_quote!(1))
                 .base10_parse::<u32>()
                 .unwrap(),
             descriptor_type: b.descriptor_type.to_string(),
@@ -769,7 +769,7 @@ fn dump_dependency_graph(data: &RendererInput) -> Result<(), anyhow::Error> {
             })
             .filter(|strings| !strings.is_empty())
             .map(|strings| format!("\n[{}] ", strings.join(", ")))
-            .unwrap_or("".to_string());
+            .unwrap_or_else(|| "".to_string());
         writeln!(
             file,
             "{} [ label = \"{}\n({}, {}){}\", shape = \"rectangle\" ]",
@@ -1031,7 +1031,7 @@ pub fn analyze_shader_types(
                         set_binding_type_names
                             .entry((rusty.name.clone(), rusty_binding.name.clone()))
                             .and_modify(|placed_ty: &mut String| {
-                                if placed_ty != &name {
+                                if placed_ty != name {
                                     let msg = format!(
                                         "set binding type name mismatch:\n\
                                             previous: {:?}\n\

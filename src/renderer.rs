@@ -3410,8 +3410,36 @@ impl Submissions {
     }
 }
 
-pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_configs: Res<FutureRuntimeConfiguration>) {
-    scope!("rendering::setup_submissions");
+pub(crate) fn setup_submissions(
+    mut submissions: ResMut<Submissions>,
+    current_config: Res<RuntimeConfiguration>,
+    future_configs: Res<FutureRuntimeConfiguration>,
+) {
+    let Submissions {
+        ref mut remaining,
+        ref mut upcoming_remaining,
+        ref mut extra_signals,
+        ref mut upcoming_extra_signals,
+        ref mut active_graph,
+        ref mut upcoming_graph,
+        ref mut active_resources,
+        ref mut upcoming_resources,
+        ..
+    } = *submissions;
+
+    if *current_config == future_configs.0[0] {
+        let remaining = remaining.get_mut();
+        let upcoming_remaining = upcoming_remaining.get_mut();
+        assert_eq!(remaining.node_count(), 0);
+        assert_eq!(remaining.edge_count(), 0);
+        remaining.clone_from(upcoming_remaining);
+
+        extra_signals.clone_from(&upcoming_extra_signals);
+        active_resources.clone_from(&upcoming_resources);
+        active_graph.clone_from(&upcoming_graph);
+        return;
+    }
+
     let input = &RENDERER_INPUT;
 
     let mut graph2 = input.dependency_graph.clone();
@@ -3427,16 +3455,11 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     .into_iter()
     .collect();
 
-    submissions.extra_signals = take(&mut submissions.upcoming_extra_signals);
-    submissions.active_resources = take(&mut submissions.upcoming_resources);
-    submissions.active_graph = take(&mut submissions.upcoming_graph);
-    submissions.upcoming_resources = input.resources.clone();
+    *extra_signals = take(upcoming_extra_signals);
+    *active_resources = take(upcoming_resources);
+    *active_graph = take(upcoming_graph);
+    *upcoming_resources = input.resources.clone();
     {
-        let Submissions {
-            ref mut remaining,
-            ref mut upcoming_remaining,
-            ..
-        } = *submissions;
         let remaining = remaining.get_mut();
         let upcoming_remaining = upcoming_remaining.get_mut();
         assert_eq!(remaining.node_count(), 0);
@@ -3455,7 +3478,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     };
 
     // Stage 1: Cull resource graphs by evaluating conditionals
-    for claims in submissions.upcoming_resources.values_mut() {
+    for claims in upcoming_resources.values_mut() {
         claims
             .map
             // Drain inactive resource steps
@@ -3473,7 +3496,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     }
 
     // Stage 2: Remove resource claims whose results are not read later
-    for (resource_name, claims) in submissions.upcoming_resources.iter_mut() {
+    for (resource_name, claims) in upcoming_resources.iter_mut() {
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let mut dfs = petgraph::visit::Dfs::new(&claims.graph, u);
             // dfs.next(&claims.graph); // skip self
@@ -3495,7 +3518,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
-            && !submissions.upcoming_resources.values().any(|resource| {
+            && !upcoming_resources.values().any(|resource| {
                 resource
                     .graph
                     .node_weights()
@@ -3510,7 +3533,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
             debug_assert!(graph2.remove_node(to_remove).is_some());
         }
     }
-    for (resource_name, claims) in submissions.upcoming_resources.iter_mut() {
+    for (resource_name, claims) in upcoming_resources.iter_mut() {
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let mut dfs = petgraph::visit::Dfs::new(&claims.graph, u);
             // dfs.next(&claims.graph); // skip self
@@ -3531,7 +3554,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
-            && !submissions.upcoming_resources.values().any(|resource| {
+            && !upcoming_resources.values().any(|resource| {
                 resource
                     .graph
                     .node_weights()
@@ -3557,7 +3580,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
         }
     }
     // Stage 5: Remove resource claims again now that even more passes have been disabled
-    for claims in submissions.upcoming_resources.values_mut() {
+    for claims in upcoming_resources.values_mut() {
         for u in claims.graph.node_indices().collect::<Vec<_>>() {
             let step = &claims.graph[u];
             if !graph2.node_references().any(|(_, name)| **name == step.pass_name) {
@@ -3577,11 +3600,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
             dfs.next(&input.dependency_graph); // skip self
             while let Some(candidate) = dfs.next(&input.dependency_graph) {
                 if graph2.contains_node(candidate) {
-                    submissions
-                        .upcoming_extra_signals
-                        .entry(candidate)
-                        .or_insert(vec![])
-                        .push(node);
+                    upcoming_extra_signals.entry(candidate).or_insert(vec![]).push(node);
                     break;
                 }
             }
@@ -3597,12 +3616,12 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     //     &[petgraph::dot::Config::EdgeNoLabel]
     // ));
 
-    let graph = submissions.upcoming_remaining.get_mut();
+    let graph = upcoming_remaining.get_mut();
 
     *graph = graph2.map(|_, _| None, |_, _| ());
     graph.remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
 
-    // submissions.compute_virtual_queue_indices = {
+    // compute_virtual_queue_indices = {
     //     let toposort = petgraph::algo::toposort(&*graph, None).unwrap();
     //     let toposort_compute = toposort
     //         .iter()
@@ -3639,7 +3658,7 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     //     mapping
     // };
 
-    submissions.upcoming_graph = graph2;
+    *upcoming_graph = graph2;
 }
 
 fn submit_pending(

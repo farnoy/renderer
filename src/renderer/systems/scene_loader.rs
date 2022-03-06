@@ -154,8 +154,6 @@ pub(crate) fn upload_loaded_meshes(
     mut query: Query<(Entity, &mut Task<LoadedMesh>)>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
-    scope!("scene_loader::upload_loaded_meshes");
-
     if !submissions
         .active_graph
         .contains_node(NodeIndex::from(frame_graph::UploadMeshes::INDEX))
