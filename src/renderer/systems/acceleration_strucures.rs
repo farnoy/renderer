@@ -566,13 +566,7 @@ pub(crate) fn build_acceleration_structures(
     drop(all_marker);
     let command_buffer = command_buffer.end();
 
-    submissions.submit(
-        &renderer,
-        frame_graph::BuildAccelerationStructures::INDEX,
-        Some(*command_buffer),
-        #[cfg(feature = "crash_debugging")]
-        &crash_buffer,
-    );
+    submissions.produce_submission(frame_graph::BuildAccelerationStructures::INDEX, Some(*command_buffer));
 }
 
 impl AccelerationStructures {

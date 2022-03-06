@@ -2454,7 +2454,9 @@ pub(crate) fn graphics_stage() -> SystemStage {
 
     let update_base_color = recreate_base_color.then(update_base_color_descriptors);
 
-    let main_pass = (recreate_main_framebuffer, update_base_color, build_as).join(render_frame);
+    let main_pass = (recreate_main_framebuffer, update_base_color, build_as.clone()).join(render_frame);
+
+    let build_as_submit = build_as.then(submit_pending);
 
     (
         main_pass,
@@ -2464,6 +2466,7 @@ pub(crate) fn graphics_stage() -> SystemStage {
         shadow_mapping,
         upload_loaded_meshes,
         reference_rt,
+        build_as_submit,
     )
         .join(PresentFramebuffer::exec);
 
@@ -2505,6 +2508,16 @@ impl Submissions {
             upcoming_extra_signals: Default::default(),
             // compute_virtual_queue_indices: Default::default(),
         }
+    }
+
+    pub(crate) fn produce_submission(&self, node_ix: u32, cb: Option<vk::CommandBuffer>) {
+        scope!("rendering::produce_submission");
+        let mut g = self.remaining.lock();
+        let weight = g
+            .node_weight_mut(NodeIndex::from(node_ix))
+            .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
+        debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
+        *weight = Some(cb);
     }
 
     pub(crate) fn submit(
@@ -3627,6 +3640,21 @@ pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_con
     // };
 
     submissions.upcoming_graph = graph2;
+}
+
+fn submit_pending(
+    renderer: Res<RenderFrame>,
+    submissions: Res<Submissions>,
+    #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
+) {
+    let graph = submissions.remaining.lock();
+    update_submissions(
+        &renderer,
+        &submissions,
+        graph,
+        #[cfg(feature = "crash_debugging")]
+        &crash_buffer,
+    );
 }
 
 fn update_submissions(
