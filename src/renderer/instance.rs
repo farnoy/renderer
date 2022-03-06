@@ -142,7 +142,7 @@ impl Instance {
                     && !message.contains("VUID-VkPresentInfoKHR-pImageIndices-01296")
                 {
                     // wait before panicking to flush the pending messages
-                    if cfg!(feature = "profiling") {
+                    if cfg!(feature = "tracing_on") {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     panic!();

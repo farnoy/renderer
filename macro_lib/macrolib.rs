@@ -124,7 +124,7 @@ impl Parse for RenderPass {
 
         Ok(RenderPass {
             name: p.name.to_string(),
-            color: p.color.0.map(|x| x.0 .1 .0 .0).unwrap_or(vec![]),
+            color: p.color.0.map(|x| x.0 .1 .0 .0).unwrap_or_default(),
             depth_stencil: p.depth_stencil.0.map(|x| x.0 .1 .0),
         })
     }
@@ -218,7 +218,7 @@ impl Parse for Pass {
                 .as_ref()
                 .cloned()
                 .map(|inputs::Unbrace(inputs::UnArray(x))| x)
-                .unwrap_or(vec![]),
+                .unwrap_or_default(),
         })
     }
 }
@@ -301,7 +301,7 @@ impl Parse for Subpass {
                         .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
                         .collect()
                 })
-                .unwrap_or(vec![]),
+                .unwrap_or_default(),
             depth_stencil_attachments: depth_stencil
                 .as_ref()
                 .cloned()
@@ -315,7 +315,7 @@ impl Parse for Subpass {
                         .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
                         .collect()
                 })
-                .unwrap_or(vec![]),
+                .unwrap_or_default(),
         })
     }
 }
@@ -624,7 +624,7 @@ impl<T> StaticOrDyn<T> {
 
     pub fn as_ref(&self) -> StaticOrDyn<&T> {
         match self {
-            StaticOrDyn::Static(s) => StaticOrDyn::Static(&s),
+            StaticOrDyn::Static(s) => StaticOrDyn::Static(s),
             StaticOrDyn::Dyn => StaticOrDyn::Dyn,
         }
     }
@@ -716,7 +716,7 @@ pub fn analyze() -> anyhow::Result<RendererInput> {
         data.resources = ResourceClaimsBuilder::convert(visitor.resource_claims)?;
 
         let dependency_graph = calculate_depencency_graph(&data)?;
-        let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph, &data.passes, &data.async_passes);
+        let semaphore_mapping = assign_semaphores_to_stages(&dependency_graph);
         data.timeline_semaphore_mapping = semaphore_mapping
             .into_iter()
             .map(|(k, v)| (dependency_graph[k].clone(), v))
@@ -890,7 +890,7 @@ pub fn analyze_shader_types(
             let conditionals = conditionals.into_iter().collect_vec();
             let shader_path = std::path::Path::new(&env::var("OUT_DIR").unwrap()).join(format!(
                 "{}.{}.[{}].spv",
-                pipe.name.to_string(),
+                pipe.name,
                 shader_stage_to_file_extension(&shader_stage),
                 conditionals.join(",")
             ));
@@ -994,10 +994,7 @@ pub fn analyze_shader_types(
                                 let msg = format!(
                                     "Incorrect shader binding at set {} binding {}\
                                     , shader declares {:?}, rusty binding is {}",
-                                    rusty.name.to_string(),
-                                    rusty_binding.name.to_string(),
-                                    spir_ty,
-                                    rusty_ty,
+                                    rusty.name, rusty_binding.name, spir_ty, rusty_ty,
                                 );
                                 errors.extend_one(msg)
                             }
@@ -1005,9 +1002,7 @@ pub fn analyze_shader_types(
                         if *nbind != rusty_binding.count {
                             let msg = format!(
                                 "Wrong descriptor count for set {} binding {}, shader needs {}",
-                                rusty.name.to_string(),
-                                rusty_binding.name.to_string(),
-                                nbind
+                                rusty.name, rusty_binding.name, nbind
                             );
                             errors.extend_one(msg)
                         }
@@ -1394,8 +1389,6 @@ fn calculate_depencency_graph(
 /// mapping from each node to (semaphore_index, stage_within_semaphore_index)
 pub fn assign_semaphores_to_stages(
     graph: &StableDiGraph<String, inputs::DependencyType>,
-    passes: &HashMap<String, Pass>,
-    async_passes: &HashMap<String, AsyncPass>,
 ) -> HashMap<NodeIndex, (usize, u64)> {
     let mut mapping = HashMap::new();
 
@@ -1412,27 +1405,15 @@ pub fn assign_semaphores_to_stages(
     let mut last_semaphore_ix = 0;
     let mut last_stage_ix = 1;
     let mut last_node = presentation_acquire;
-    let mut last_queue_family = QueueFamily::Graphics;
 
     while let Some(this_node) = dfs.next(graph) {
         // TODO: preallocate DfsSpace?
-        // TODO: queue_family matching is a workaround for https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/3590
-
-        last_semaphore_ix += 1;
-        assert!(mapping.insert(this_node, (last_semaphore_ix, 1)).is_none());
-        continue;
-        let queue_family = passes
-            .get(&graph[this_node])
-            .map(|_| QueueFamily::Graphics)
-            .or_else(|| async_passes.get(&graph[this_node]).map(|p| p.queue))
-            .unwrap();
-        if last_queue_family == queue_family && has_path_connecting(graph, last_node, this_node, None) {
+        if has_path_connecting(graph, last_node, this_node, None) {
             last_stage_ix += 1;
             assert!(mapping.insert(this_node, (last_semaphore_ix, last_stage_ix)).is_none());
         } else {
             last_semaphore_ix += 1;
             last_stage_ix = 1;
-            last_queue_family = queue_family;
             assert!(mapping.insert(this_node, (last_semaphore_ix, last_stage_ix)).is_none());
         }
         last_node = this_node;
@@ -1532,24 +1513,24 @@ impl Parse for Pipeline {
                     .samples
                     .map(|x| x.map(|d| d.base10_parse().unwrap()))
                     .unwrap_or(StaticOrDyn::Static(1)),
-                vertex_inputs: g.vertex_inputs.map(|x| x.0 .0).unwrap_or(vec![]),
+                vertex_inputs: g.vertex_inputs.map(|x| x.0 .0).unwrap_or_else(std::vec::Vec::new),
                 stages: g.stages.0 .0.into_iter().map(|x| x.to_string()).collect(),
                 polygon_mode: g
                     .polygon_mode
                     .map(|x| x.map(|x| x.to_string()))
-                    .unwrap_or(StaticOrDyn::Static("FILL".to_string())),
+                    .unwrap_or_else(|| StaticOrDyn::Static("FILL".to_string())),
                 topology_mode: g
                     .topology_mode
                     .map(|x| x.map(|x| x.to_string()))
-                    .unwrap_or(StaticOrDyn::Static("TRIANGLE_LIST".to_string())),
+                    .unwrap_or_else(|| StaticOrDyn::Static("TRIANGLE_LIST".to_string())),
                 front_face_mode: g
                     .front_face_mode
                     .map(|x| x.map(|x| x.to_string()))
-                    .unwrap_or(StaticOrDyn::Static("CLOCKWISE".to_string())),
+                    .unwrap_or_else(|| StaticOrDyn::Static("CLOCKWISE".to_string())),
                 cull_mode: g
                     .cull_mode
                     .map(|x| x.map(|x| x.to_string()))
-                    .unwrap_or(StaticOrDyn::Static("NONE".to_string())),
+                    .unwrap_or_else(|| StaticOrDyn::Static("NONE".to_string())),
                 depth_test_enable: g
                     .depth_test_enable
                     .map(|x| x.map(|x| x.value))
@@ -1561,7 +1542,7 @@ impl Parse for Pipeline {
                 depth_compare_op: g
                     .depth_compare_op
                     .map(|x| x.map(|x| x.to_string()))
-                    .unwrap_or(StaticOrDyn::Static("NEVER".to_string())),
+                    .unwrap_or_else(|| StaticOrDyn::Static("NEVER".to_string())),
                 depth_bounds_enable: g
                     .depth_bounds_enable
                     .map(|x| x.map(|x| x.value))

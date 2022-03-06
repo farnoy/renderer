@@ -215,7 +215,7 @@ impl PresentFramebuffer {
             .reset_and_record(&renderer, &image_index);
         renderer_macros::barrier!(
             command_buffer,
-            PresentSurface.prepare_present r in Present transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; {&swapchain_image}
+            PresentSurface.prepare_present r in Present transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; &swapchain_image
         );
         let command_buffer = command_buffer.end();
 
@@ -287,7 +287,7 @@ impl PresentFramebuffer {
             .reset_and_record(&renderer, &image_index);
         renderer_macros::barrier!(
             command_buffer,
-            PresentSurface.post_present r in Present transfer copy layout PRESENT_SRC_KHR after [prepare_present]; {&swapchain_image}
+            PresentSurface.post_present r in Present transfer copy layout PRESENT_SRC_KHR after [prepare_present]; &swapchain_image
         );
         let command_buffer = command_buffer.end();
 

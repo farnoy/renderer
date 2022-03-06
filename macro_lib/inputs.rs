@@ -1,16 +1,13 @@
 use std::fmt::Debug;
 
-use derive_syn_parse::Parse;
 use proc_macro2::TokenTree;
 use quote::quote;
 use serde::{Deserialize, Serialize};
 use syn::{
     braced, bracketed,
     parse::{Parse, ParseStream, Parser, Result},
-    parse_quote,
     punctuated::Punctuated,
-    token::{Brace, Bracket},
-    Expr, Field, Ident, LitBool, LitInt, Path, Token, Type,
+    Token,
 };
 
 use super::keywords as kw;

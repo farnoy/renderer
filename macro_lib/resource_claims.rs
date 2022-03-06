@@ -153,15 +153,9 @@ impl Parse for ResourceUsageKind {
                     .parse::<kw::descriptor>()
                     .and(input.parse::<Ident>().and_then(|pipe_name| {
                         input.parse::<Token![.]>().and(input.parse::<Ident>().and_then(|set| {
-                            input
-                                .parse::<Token![.]>()
-                                .and(input.parse::<Ident>().and_then(|binding| {
-                                    Ok(Self::Descriptor(
-                                        set.to_string(),
-                                        binding.to_string(),
-                                        pipe_name.to_string(),
-                                    ))
-                                }))
+                            input.parse::<Token![.]>().and(input.parse::<Ident>().map(|binding| {
+                                Self::Descriptor(set.to_string(), binding.to_string(), pipe_name.to_string())
+                            }))
                         }))
                     }))
             })
@@ -279,7 +273,7 @@ impl Parse for ResourceClaimInput {
             after: s
                 .after
                 .map(|Unbracket(UnArray(idents))| idents.into_iter().map(|i| i.to_string()).collect())
-                .unwrap_or(vec![]),
+                .unwrap_or_default(),
             layout: s.layout.map(|i| i.to_string()),
             resource_ident: s.resource_expr,
             reads,

@@ -38,7 +38,6 @@ pub(crate) fn reference_raytrace(
     submissions: Res<Submissions>,
     data: Res<ReferenceRTData>,
     mut priv_data: ResMut<ReferenceRTDataPrivate>,
-    renderer_input: Res<renderer_macro_lib::RendererInput>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("ecs::reference_raytrace");
@@ -66,7 +65,7 @@ pub(crate) fn reference_raytrace(
     let barrier = renderer_macros::barrier!(
         cb,
         TLAS.in_reference r in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [RT, REFERENCE_RT],
-        ReferenceRaytraceOutput.generate w in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as layout GENERAL if [RT, REFERENCE_RT]; {output_image}
+        ReferenceRaytraceOutput.generate w in ReferenceRaytrace descriptor gltf_mesh.acceleration_set.top_level_as layout GENERAL if [RT, REFERENCE_RT]; output_image
     );
 
     unsafe {
@@ -88,7 +87,6 @@ pub(crate) fn reference_raytrace(
         &renderer,
         frame_graph::ReferenceRaytrace::INDEX,
         Some(*cb),
-        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     )
@@ -165,7 +163,7 @@ impl FromWorld for ReferenceRTDataPrivate {
         let main_descriptor_pool: &MainDescriptorPool = world.get_resource().unwrap();
         let rt_data: &ReferenceRTData = world.get_resource().unwrap();
         let set_layout = SmartSetLayout::new(&renderer.device);
-        let set = SmartSet::new(&renderer.device, &main_descriptor_pool, &set_layout, 0);
+        let set = SmartSet::new(&renderer.device, main_descriptor_pool, &set_layout, 0);
         {
             let update = &[vk::DescriptorImageInfo::builder()
                 .image_view(rt_data.output_image_view.handle)

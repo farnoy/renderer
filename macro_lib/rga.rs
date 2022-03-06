@@ -184,7 +184,7 @@ pub(crate) fn dump_rga(
 
     let rga_path = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("rga")
-        .join(format!("{}.{}pso", pipe.name.to_string(), match &pipe.specific {
+        .join(format!("{}.{}pso", pipe.name, match &pipe.specific {
             SpecificPipe::Graphics(_) => 'g',
             SpecificPipe::Compute => 'c',
         }));

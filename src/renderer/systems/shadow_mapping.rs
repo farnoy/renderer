@@ -350,7 +350,6 @@ pub(crate) fn prepare_shadow_maps(
     mut shadow_mapping_internal: ResMut<ShadowMappingDataInternal>,
     model_data: Res<ModelData>,
     submissions: Res<Submissions>,
-    renderer_input: Res<renderer_macro_lib::RendererInput>,
     mesh_query: Query<(&DrawIndex, &Position, &GltfMesh)>,
     shadow_query: Query<(&Position, &ShadowMappingLightMatrices), With<Light>>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
@@ -381,7 +380,7 @@ pub(crate) fn prepare_shadow_maps(
         let _shadow_mapping_marker = command_buffer.debug_marker_around("shadow mapping", [0.8, 0.1, 0.1, 1.0]);
         let _guard = renderer_macros::barrier!(
             command_buffer,
-            ShadowMapAtlas.prepare rw in ShadowMapping attachment in ShadowMappingRP; {&shadow_mapping.depth_image}
+            ShadowMapAtlas.prepare rw in ShadowMapping attachment in ShadowMappingRP; &shadow_mapping.depth_image
         );
 
         ShadowMappingRP::begin(
@@ -486,7 +485,6 @@ pub(crate) fn prepare_shadow_maps(
         &renderer,
         frame_graph::ShadowMapping::INDEX,
         Some(*command_buffer),
-        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

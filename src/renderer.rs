@@ -21,12 +21,12 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::bail;
 use ash::vk;
 use bevy_ecs::{component::Component, prelude::*};
 use bevy_system_graph::*;
 use hashbrown::HashMap;
 use itertools::Itertools;
+use lazy_static::lazy_static;
 use log::{debug, log_enabled, Level::Debug};
 use num_traits::ToPrimitive;
 use parking_lot::{Mutex, MutexGuard};
@@ -204,6 +204,11 @@ const_assert_eq!(
 // }
 
 // pub(crate) use include_bytes_align_as;
+
+lazy_static! {
+    pub(crate) static ref RENDERER_INPUT: renderer_macro_lib::RendererInput =
+        bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+}
 
 renderer_macros::define_timelines! {}
 
@@ -390,7 +395,7 @@ pub(crate) trait Pipeline: Sized {
     const NAME: &'static str;
 
     fn default_shader_stages(switches: &HashMap<String, bool>) -> SmallVec<[Vec<u8>; 4]> {
-        let input: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+        let input = &RENDERER_INPUT;
 
         let pipe = input.pipelines.get(Self::NAME).unwrap();
 
@@ -428,7 +433,7 @@ pub(crate) trait Pipeline: Sized {
     }
 
     fn shader_stages() -> SmallVec<[vk::ShaderStageFlags; 4]> {
-        let input: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+        let input = &RENDERER_INPUT;
 
         let pipe = input.pipelines.get(Self::NAME).unwrap();
 
@@ -445,7 +450,7 @@ pub(crate) trait Pipeline: Sized {
     }
 
     fn varying_subgroup_stages() -> SmallVec<[bool; 4]> {
-        let input: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+        let input = &RENDERER_INPUT;
 
         let pipe = input.pipelines.get(Self::NAME).unwrap();
 
@@ -610,6 +615,7 @@ impl<P: Pipeline> SmartPipeline<P> {
         Self::new_internal(device, layout, specialization, None, dynamic_arguments, &HashMap::new())
     }
 
+    #[allow(unused)]
     pub(crate) fn new_switched(
         device: &Device,
         layout: &SmartPipelineLayout<P::Layout>,
@@ -887,7 +893,7 @@ impl<T: DescriptorSetLayout> SmartSetLayout<T> {
             .flags(flags)
             .push_next(&mut binding_flags);
         let layout = device.new_descriptor_set_layout(&create_info);
-        device.set_object_name(layout.handle, &T::DEBUG_NAME.to_string());
+        device.set_object_name(layout.handle, T::DEBUG_NAME);
 
         SmartSetLayout { layout, t: PhantomData }
     }
@@ -1059,6 +1065,7 @@ renderer_macros::define_resource!(PresentSurface DoubleBuffered = Image COLOR);
 pub(crate) struct MainAttachments {
     #[allow(unused)]
     swapchain_image_views: Vec<ImageView>,
+    #[allow(unused)]
     swapchain_format: vk::Format,
     #[allow(unused)]
     depth_image: Image,
@@ -1090,8 +1097,11 @@ impl MainAttachments {
                 vk::ImageTiling::OPTIMAL,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
+                    | if cfg!(feature = "nsight_profiling") {
+                        vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST
+                    } else {
+                        vk::ImageUsageFlags::empty()
+                    },
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             renderer.device.set_object_name(im.handle, "Depth RT");
@@ -1110,7 +1120,11 @@ impl MainAttachments {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT
                     | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
+                    | if cfg!(feature = "nsight_profiling") {
+                        vk::ImageUsageFlags::TRANSFER_DST
+                    } else {
+                        vk::ImageUsageFlags::empty()
+                    },
                 VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY,
             );
             Color::import(&renderer.device, im)
@@ -1229,10 +1243,17 @@ impl MainFramebuffer {
             &[
                 vk::ImageUsageFlags::COLOR_ATTACHMENT
                     | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
+                    | if cfg!(feature = "nsight_profiling") {
+                        vk::ImageUsageFlags::TRANSFER_DST
+                    } else {
+                        vk::ImageUsageFlags::empty()
+                    },
                 vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
+                    | if cfg!(feature = "nsight_profiling") {
+                        vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST
+                    } else {
+                        vk::ImageUsageFlags::empty()
+                    },
             ],
             (),
             (swapchain.width, swapchain.height),
@@ -1527,7 +1548,6 @@ pub(crate) fn render_frame(
     (image_index, model_data, swapchain_index_map): (Res<ImageIndex>, Res<ModelData>, Res<SwapchainIndexToFrameNumber>),
     (runtime_config, mut future_configs): (Res<RuntimeConfiguration>, ResMut<FutureRuntimeConfiguration>),
     (camera_matrices, swapchain): (Res<CameraMatrices>, Res<Swapchain>),
-    renderer_input: Res<renderer_macro_lib::RendererInput>,
     consolidated_mesh_buffers: Res<ConsolidatedMeshBuffers>,
     (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
@@ -1593,12 +1613,12 @@ pub(crate) fn render_frame(
         IndirectCommandsBuffer.draw_from r in Main indirect buffer after [compact, copy_frozen] if [!DEBUG_AABB],
         IndirectCommandsCount.draw_from r in Main indirect buffer after [draw_depth] if [!DEBUG_AABB],
         TLAS.in_main r in Main descriptor gltf_mesh.acceleration_set.top_level_as after [build] if [!DEBUG_AABB, RT],
-        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps layout DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL after [prepare] if [!DEBUG_AABB]; {&shadow_mapping_data.depth_image},
-        Color.render rw in Main attachment in Main layout COLOR_ATTACHMENT_OPTIMAL; {&main_attachments.color_image},
+        ShadowMapAtlas.apply r in Main descriptor gltf_mesh.shadow_map_set.shadow_maps layout DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL after [prepare] if [!DEBUG_AABB]; &shadow_mapping_data.depth_image,
+        Color.render rw in Main attachment in Main layout COLOR_ATTACHMENT_OPTIMAL; &main_attachments.color_image,
         ConsolidatedPositionBuffer.draw_from r in Main vertex buffer after [in_depth] if [!DEBUG_AABB],
         ConsolidatedNormalBuffer.draw_from r in Main vertex buffer after [consolidate] if [!DEBUG_AABB],
         CulledIndexBuffer.draw_from r in Main index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
-        DepthRT.in_main r in Main attachment in Main layout DEPTH_STENCIL_READ_ONLY_OPTIMAL after [draw_depth] if [!DEBUG_AABB]; {&main_attachments.depth_image},
+        DepthRT.in_main r in Main attachment in Main layout DEPTH_STENCIL_READ_ONLY_OPTIMAL after [draw_depth] if [!DEBUG_AABB]; &main_attachments.depth_image,
     );
     let reference_rt = runtime_config.rt && runtime_config.reference_rt;
     unsafe {
@@ -1787,8 +1807,8 @@ pub(crate) fn render_frame(
     unsafe {
         let _guard = renderer_macros::barrier!(
             command_buffer,
-            Color.resolve r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [render]; {&main_attachments.color_image},
-            PresentSurface.resolve_color w clobber in Main transfer copy layout TRANSFER_DST_OPTIMAL; {&swapchain_image}
+            Color.resolve r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [render]; &main_attachments.color_image,
+            PresentSurface.resolve_color w clobber in Main transfer copy layout TRANSFER_DST_OPTIMAL; &swapchain_image
         );
 
         renderer.device.cmd_resolve_image(
@@ -1825,8 +1845,8 @@ pub(crate) fn render_frame(
         let _rt_copy_marker = command_buffer.debug_marker_around("copy reference RT output", [0.0, 1.0, 1.0, 1.0]);
         let _guard = renderer_macros::barrier!(
             command_buffer,
-            ReferenceRaytraceOutput.in_main r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [generate] if []; {&reference_rt_data.output_image},
-            PresentSurface.blit_reference_rt rw in Main transfer copy layout TRANSFER_DST_OPTIMAL after [resolve_color] if []; {&swapchain_image}
+            ReferenceRaytraceOutput.in_main r in Main transfer copy layout TRANSFER_SRC_OPTIMAL after [generate] if []; &reference_rt_data.output_image,
+            PresentSurface.blit_reference_rt rw in Main transfer copy layout TRANSFER_DST_OPTIMAL after [resolve_color] if []; &swapchain_image
         );
         if reference_rt {
             renderer.device.cmd_blit_image(
@@ -1870,7 +1890,6 @@ pub(crate) fn render_frame(
         &renderer,
         frame_graph::Main::INDEX,
         Some(command_buffer),
-        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
@@ -2216,23 +2235,9 @@ impl<T: FromWorld> FromWorld for CopiedResource<T> {
 /// wrapper. This requires the wrapper to already be present on the [World].
 /// Remember to use [writeback_resource] if the mutations are made to the wrapper.
 pub(crate) fn copy_resource<T: Component + Clone>(from: Res<T>, mut to: ResMut<CopiedResource<T>>) {
-    #[allow(unused_variables)]
-    let scope_name = format!("ecs::copy_resource<{}>", std::any::type_name::<T>());
-    scope!(&scope_name);
+    scope!("ecs::copy_resource");
 
     to.0.clone_from(&from);
-}
-
-/// This system writes back the changes from the coppied wrapper to the original resource.
-/// The mode of operation where writes are redirected to [CopiedResource] are probably less
-/// efficient as they require a writeback
-#[allow(dead_code)]
-pub(crate) fn writeback_resource<T: Component + Clone>(from: Res<CopiedResource<T>>, mut to: ResMut<T>) {
-    #[allow(unused_variables)]
-    let scope_name = format!("ecs::writeback_resource<{}>", std::any::type_name::<T>());
-    scope!(&scope_name);
-
-    to.clone_from(&from.0);
 }
 
 fn render_gui(
@@ -2424,28 +2429,6 @@ pub(crate) fn recreate_main_framebuffer(
 pub(crate) fn graphics_stage() -> SystemStage {
     let stage = SystemStage::parallel();
 
-    // TODO
-    #[cfg(feature = "profiling/profile-with-tracy")]
-    let stage = {
-        let token = profiling::get_token("ecs".to_string(), "graphics_stage".to_string(), 0);
-
-        stage
-            .with_system(
-                (move || {
-                    profiling::enter(token);
-                })
-                .exclusive_system()
-                .at_start(),
-            )
-            .with_system(
-                (|| {
-                    profiling::leave();
-                })
-                .exclusive_system()
-                .at_end(),
-            )
-    };
-
     let test = SystemGraph::new();
 
     let copy_runtime_config = test.root(copy_resource::<RuntimeConfiguration>);
@@ -2529,7 +2512,6 @@ impl Submissions {
         renderer: &RenderFrame,
         node_ix: u32,
         cb: Option<vk::CommandBuffer>,
-        input: &renderer_macro_lib::RendererInput,
         #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
     ) {
         scope!("rendering::submit_command_buffer");
@@ -2543,7 +2525,6 @@ impl Submissions {
             renderer,
             self,
             g,
-            input,
             #[cfg(feature = "crash_debugging")]
             crash_buffer,
         );
@@ -2555,7 +2536,7 @@ impl Submissions {
         for x in read_dir(&src)? {
             remove_file(x?.path())?;
         }
-        let data: renderer_macro_lib::RendererInput = bincode::deserialize(frame_graph::CROSSBAR).unwrap();
+        let data = &RENDERER_INPUT;
         for (res_name, claim) in self.active_resources.iter() {
             let src = src.join(&format!("{}.dot", res_name));
             let mut file = File::create(src)?;
@@ -2643,11 +2624,12 @@ impl Submissions {
         Ok(())
     }
 
+    #[allow(clippy::ptr_arg)]
     pub(crate) fn barrier_buffer(
         &self,
         renderer: &RenderFrame,
         data: &renderer_macro_lib::RendererInput,
-        command_buffer: vk::CommandBuffer,
+        _command_buffer: vk::CommandBuffer,
         resource_name: &str,
         step_name: &str,
         buffer: vk::Buffer,
@@ -2687,8 +2669,7 @@ impl Submissions {
             ResourceUsageKind::Attachment(ref renderpass) => data
                 .renderpasses
                 .get(renderpass)
-                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
-                .flatten(),
+                .and_then(|x| x.depth_stencil.as_ref().map(|d| &d.layout)),
             _ => None,
         };
 
@@ -2704,21 +2685,21 @@ impl Submissions {
         // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
         // iterations of the graph
         let mut incoming = claims.graph.neighbors_directed(this_node, Incoming).peekable();
-        let incoming = if let None = incoming.peek() {
+        let incoming = if incoming.peek().is_none() {
             incoming.chain(claims.graph.externals(Outgoing)).collect_vec()
         } else {
             incoming.collect_vec()
         };
         let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
-        let outgoing = if let None = outgoing.peek() {
+        let _outgoing = if outgoing.peek().is_none() {
             outgoing.chain(next_claims.graph.externals(Incoming)).collect_vec()
         } else {
             outgoing.collect_vec()
         };
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
-        let this_queue_runtime = get_runtime_queue_family(this_queue);
-        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
+        let _this_queue_runtime = get_runtime_queue_family(this_queue);
+        let _this_layout_in_renderpass = get_layout_from_renderpass(this);
         let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
             use vk::{AccessFlags2KHR as A, PipelineStageFlags2KHR as S};
             let mut accesses = A::empty();
@@ -2820,15 +2801,15 @@ impl Submissions {
         let mut emitted_barriers = 0;
 
         for dep in incoming {
-            let this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
+            let _this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
-            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
-            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
+            let _prev_queue_runtime = get_runtime_queue_family(prev_queue);
+            let _prev_layout_in_renderpass = get_layout_from_renderpass(prev_step);
 
             if prev_step.step_name != this.step_name && prev_step.pass_name == this.pass_name {
-                let (src_access, src_stage) = stage_flags(&prev_step, false, true);
-                let (dst_access, dst_stage) = stage_flags(&this, true, true);
+                let (src_access, src_stage) = stage_flags(prev_step, false, true);
+                let (dst_access, dst_stage) = stage_flags(this, true, true);
 
                 assert!(
                     buffer != vk::Buffer::null(),
@@ -2861,11 +2842,12 @@ impl Submissions {
         );
     }
 
+    #[allow(clippy::ptr_arg)]
     pub(crate) fn barrier_acceleration_structure(
         &self,
         renderer: &RenderFrame,
         data: &renderer_macro_lib::RendererInput,
-        command_buffer: vk::CommandBuffer,
+        _command_buffer: vk::CommandBuffer,
         resource_name: &str,
         step_name: &str,
         acquire_memory_barriers: &mut Vec<vk::MemoryBarrier2KHR>,
@@ -2903,8 +2885,7 @@ impl Submissions {
             ResourceUsageKind::Attachment(ref renderpass) => data
                 .renderpasses
                 .get(renderpass)
-                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
-                .flatten(),
+                .and_then(|x| x.depth_stencil.as_ref().map(|d| &d.layout)),
             _ => None,
         };
 
@@ -2920,22 +2901,22 @@ impl Submissions {
         // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
         // iterations of the graph
         let mut incoming = claims.graph.neighbors_directed(this_node, Incoming).peekable();
-        let incoming = if let None = incoming.peek() {
+        let incoming = if incoming.peek().is_none() {
             incoming.chain(claims.graph.externals(Outgoing)).collect_vec()
         } else {
             incoming.collect_vec()
         };
         let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).peekable();
-        let outgoing = if let None = outgoing.peek() {
+        let _outgoing = if outgoing.peek().is_none() {
             outgoing.chain(claims.graph.externals(Incoming)).collect_vec()
         } else {
             outgoing.collect_vec()
         };
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
-        let this_queue_runtime = get_runtime_queue_family(this_queue);
-        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
-        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+        let _this_queue_runtime = get_runtime_queue_family(this_queue);
+        let _this_layout_in_renderpass = get_layout_from_renderpass(this);
+        let _stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
             use vk::{AccessFlags2KHR as A, PipelineStageFlags2KHR as S};
             let mut accesses = A::empty();
             let mut stages = S::empty();
@@ -3036,11 +3017,11 @@ impl Submissions {
         let mut emitted_barriers = 0;
 
         for dep in incoming {
-            let this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
+            let _this_external = !claims.graph.neighbors_directed(this_node, Incoming).any(|_| true);
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
-            let prev_queue_runtime = get_runtime_queue_family(prev_queue);
-            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
+            let _prev_queue_runtime = get_runtime_queue_family(prev_queue);
+            let _prev_layout_in_renderpass = get_layout_from_renderpass(prev_step);
 
             if prev_step.pass_name == this.pass_name {
                 emitted_barriers += 1;
@@ -3068,7 +3049,7 @@ impl Submissions {
         swapchain_index_map: &SwapchainIndexToFrameNumber,
         image_index: &ImageIndex,
         data: &renderer_macro_lib::RendererInput,
-        command_buffer: vk::CommandBuffer,
+        _command_buffer: vk::CommandBuffer,
         resource_name: &str,
         step_name: &str,
         image: vk::Image,
@@ -3110,8 +3091,7 @@ impl Submissions {
             ResourceUsageKind::Attachment(ref renderpass) => data
                 .renderpasses
                 .get(renderpass)
-                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
-                .flatten(),
+                .and_then(|x| x.depth_stencil.as_ref().map(|d| &d.layout)),
             _ => None,
         };
 
@@ -3127,22 +3107,28 @@ impl Submissions {
         // neighbors with wraparound on both ends to make the code aware of dependencies in the prev/next
         // iterations of the graph
         let mut incoming = claims.graph.neighbors_directed(this_node, Incoming).peekable();
-        let incoming = if let None = incoming.peek() {
+        let incoming = if incoming.peek().is_none() {
             incoming.chain(claims.graph.externals(Outgoing)).collect_vec()
         } else {
             incoming.collect_vec()
         };
-        let mut outgoing = claims.graph.neighbors_directed(this_node, Outgoing).map(|ix| &claims.graph[ix]).peekable();
-        let outgoing = if let None = outgoing.peek() {
-            outgoing.chain(next_claims.graph.externals(Incoming).map(|ix| &next_claims.graph[ix])).collect_vec()
+        let mut outgoing = claims
+            .graph
+            .neighbors_directed(this_node, Outgoing)
+            .map(|ix| &claims.graph[ix])
+            .peekable();
+        let outgoing = if outgoing.peek().is_none() {
+            outgoing
+                .chain(next_claims.graph.externals(Incoming).map(|ix| &next_claims.graph[ix]))
+                .collect_vec()
         } else {
             outgoing.collect_vec()
         };
 
         let this_queue = get_queue_family_index_for_pass(&this.pass_name);
         let this_queue_runtime = get_runtime_queue_family(this_queue);
-        let this_layout_in_renderpass = get_layout_from_renderpass(&this);
-        let stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
+        let this_layout_in_renderpass = get_layout_from_renderpass(this);
+        let _stage_flags = |step: &ResourceClaim, include_reads: bool, include_writes: bool| {
             use vk::{AccessFlags2KHR as A, PipelineStageFlags2KHR as S};
             let mut accesses = A::empty();
             let mut stages = S::empty();
@@ -3262,22 +3248,30 @@ impl Submissions {
             let prev_step = &claims.graph[dep];
             let prev_queue = get_queue_family_index_for_pass(&prev_step.pass_name);
             let prev_queue_runtime = get_runtime_queue_family(prev_queue);
-            let prev_layout_in_renderpass = get_layout_from_renderpass(&prev_step);
+            let prev_layout_in_renderpass = get_layout_from_renderpass(prev_step);
 
-            let same_pass = prev_step.pass_name == this.pass_name;
+            let _same_pass = prev_step.pass_name == this.pass_name;
 
             assert!(
                 image != vk::Image::null(),
                 "Expected barrier call to provide resource expr"
             );
-            let this_layout = this.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
-                "did not specify desired image layout {}.{}",
-                &this.pass_name, &this.step_name
-            ));
-            let prev_layout = prev_step.layout.as_ref().or(prev_layout_in_renderpass).expect(&format!(
-                "did not specify desired image layout {}.{}",
-                &prev_step.pass_name, &prev_step.step_name
-            ));
+            let this_layout = this.layout.as_ref().or(this_layout_in_renderpass).unwrap_or_else(|| {
+                panic!(
+                    "did not specify desired image layout {}.{}",
+                    &this.pass_name, &this.step_name
+                )
+            });
+            let prev_layout = prev_step
+                .layout
+                .as_ref()
+                .or(prev_layout_in_renderpass)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "did not specify desired image layout {}.{}",
+                        &prev_step.pass_name, &prev_step.step_name
+                    )
+                });
             let this_layout = convert_layout(this_layout);
             let prev_layout = if this.clobber {
                 vk::ImageLayout::UNDEFINED
@@ -3339,7 +3333,7 @@ impl Submissions {
         for next_step in outgoing {
             let next_queue = get_queue_family_index_for_pass(&next_step.pass_name);
             let next_queue_runtime = get_runtime_queue_family(next_queue);
-            let next_layout_in_renderpass = get_layout_from_renderpass(&next_step);
+            let next_layout_in_renderpass = get_layout_from_renderpass(next_step);
 
             if this_queue == next_queue {
                 continue;
@@ -3349,14 +3343,22 @@ impl Submissions {
                 image != vk::Image::null(),
                 "Expected barrier call to provide resource expr"
             );
-            let this_layout = this.layout.as_ref().or(this_layout_in_renderpass).expect(&format!(
-                "did not specify desired image layout {}.{}",
-                &this.pass_name, &this.step_name
-            ));
-            let next_layout = next_step.layout.as_ref().or(next_layout_in_renderpass).expect(&format!(
-                "did not specify desired image layout {}.{}",
-                &next_step.pass_name, &next_step.step_name
-            ));
+            let this_layout = this.layout.as_ref().or(this_layout_in_renderpass).unwrap_or_else(|| {
+                panic!(
+                    "did not specify desired image layout {}.{}",
+                    &this.pass_name, &this.step_name
+                )
+            });
+            let next_layout = next_step
+                .layout
+                .as_ref()
+                .or(next_layout_in_renderpass)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "did not specify desired image layout {}.{}",
+                        &next_step.pass_name, &next_step.step_name
+                    )
+                });
             let this_layout = convert_layout(this_layout);
             let next_layout = convert_layout(next_layout);
             let aspect = match aspect.as_str() {
@@ -3395,12 +3397,9 @@ impl Submissions {
     }
 }
 
-pub(crate) fn setup_submissions(
-    mut submissions: ResMut<Submissions>,
-    future_configs: Res<FutureRuntimeConfiguration>,
-    input: Res<renderer_macro_lib::RendererInput>,
-) {
+pub(crate) fn setup_submissions(mut submissions: ResMut<Submissions>, future_configs: Res<FutureRuntimeConfiguration>) {
     scope!("rendering::setup_submissions");
+    let input = &RENDERER_INPUT;
 
     let mut graph2 = input.dependency_graph.clone();
 
@@ -3454,7 +3453,7 @@ pub(crate) fn setup_submissions(
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .for_each(|(step_name, step_ix)| {
+            .for_each(|(_step_name, step_ix)| {
                 // dbg!(step_name);
                 claims.graph.remove_node(step_ix).unwrap();
             });
@@ -3537,7 +3536,7 @@ pub(crate) fn setup_submissions(
 
     // Stage 4: Cull the active graph from stuff that does not lead to Present
     let main_node = NodeIndex::from(frame_graph::Present::INDEX);
-    let presentation_acquire = NodeIndex::from(frame_graph::PresentationAcquire::INDEX);
+    let _presentation_acquire = NodeIndex::from(frame_graph::PresentationAcquire::INDEX);
     for u in graph2.node_indices().collect::<Vec<_>>() {
         if !has_path_connecting(&graph2, u, main_node, None) {
             // dbg!(&graph2[u]);
@@ -3634,7 +3633,6 @@ fn update_submissions(
     renderer: &RenderFrame,
     submissions: &Submissions,
     mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
-    input: &renderer_macro_lib::RendererInput,
     #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
     scope!("rendering::update_submissions");
@@ -3645,6 +3643,7 @@ fn update_submissions(
         // ref compute_virtual_queue_indices,
         ..
     } = submissions;
+    let input = &RENDERER_INPUT;
 
     let mut should_continue = true;
     while graph.node_count() > 0 && should_continue {
@@ -3671,7 +3670,7 @@ fn update_submissions(
                             QueueFamily::Compute => {
                                 // let &virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
                                 let virtualized_ix = 0;
-                                &renderer.device.compute_queue_virtualized(virtualized_ix)
+                                renderer.device.compute_queue_virtualized(virtualized_ix)
                             }
                             QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(0),
                         };

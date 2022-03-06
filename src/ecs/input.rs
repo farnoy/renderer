@@ -13,15 +13,11 @@ use winit::{
     platform::run_return::EventLoopExtRunReturn,
 };
 
+use super::systems::FutureRuntimeConfiguration;
 use crate::{
-    ecs::{
-        resources::Camera,
-        systems::{Gui, RuntimeConfiguration},
-    },
+    ecs::{resources::Camera, systems::Gui},
     renderer::{right_vector, up_vector, RenderFrame},
 };
-
-use super::systems::FutureRuntimeConfiguration;
 
 #[derive(Debug)]
 pub(crate) struct InputActions {

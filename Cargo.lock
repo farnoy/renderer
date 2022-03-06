@@ -2556,6 +2556,7 @@ dependencies = [
  "intel_tex",
  "itertools",
  "jobserver",
+ "lazy_static",
  "log",
  "meshopt",
  "nalgebra",

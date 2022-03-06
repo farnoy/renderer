@@ -45,6 +45,7 @@ imgui-winit-support = { version = "0.8.0", default-features = false, features = 
 indexmap = "1.7.0"
 intel_tex = { version = "0.1.4", optional = true }
 itertools = "0.10"
+lazy_static = "1.4"
 log = "0.4.14"
 meshopt = "0.1.9"
 nalgebra = "0.29.0"
@@ -61,10 +62,10 @@ smallvec = { version = "1.2.0", features = ["union", "const_generics", "const_ne
 spirq = { version = "0.5.0", optional = true }
 static_assertions= "1.1.0"
 # tokio = { version = "1", features = ["full", "parking_lot"] }
-tracy-client = { version = "0.12", optional = true }
+tracy-client = { version = "0.12", default-features = false }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tracing-tracy = { version = "0.8", optional = true }
+tracing-tracy = { version = "0.8", default-features = false }
 winit = "0.25.0"
 
 [build-dependencies]
@@ -94,12 +95,11 @@ standard_validation = ["vk_names"]
 gpu_validation = ["standard_validation"]
 gpu_printf = ["standard_validation"]
 notracing = ["tracing/max_level_off"]
-nsight_profiling = ["collapse_compute", "vk_names"]
+nsight_profiling = ["collapse_compute", "vk_names", "uncapped"]
 silence_validation = ["standard_validation"]
 sync_validation = ["standard_validation"]
 uncapped = []
-# TODO: should be called tracing, not profiling?
-profiling = ["profiling/profile-with-tracy", "tracing-tracy", "tracy-client"]
+tracing_on = ["profiling/profile-with-tracy", "tracing-tracy/enable", "tracy-client/enable", "bevy_ecs/trace"]
 shader_reload = ["notify", "spirq"]
 
 [profile.dev.package.image]
@@ -125,7 +125,7 @@ opt-level = 3
 
 [profile.dev]
 opt-level = 1
-debug = false # to speedup incremental compilaton, uncomment to use a debugger
+debug = true # to speedup incremental compilaton, uncomment to use a debugger
 panic = "abort"
 lto = "off"
 

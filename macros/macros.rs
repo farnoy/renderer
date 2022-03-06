@@ -4,7 +4,7 @@ use std::env;
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use petgraph::{visit::IntoNodeReferences, Direction};
+use petgraph::visit::IntoNodeReferences;
 use proc_macro2::TokenStream;
 use proc_macro_error::proc_macro_error;
 use quote::{format_ident, quote, ToTokens};
@@ -15,10 +15,10 @@ use renderer_macro_lib::{
         ResourceBarrierInput, ResourceClaim, ResourceClaimInput, ResourceDefinitionInput, ResourceDefinitionType,
         ResourceUsageKind,
     },
-    Attachment, Binding, Condition, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily,
-    RenderPass, RenderPassAttachment, RendererInput, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
+    Attachment, Binding, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RenderPass,
+    RenderPassAttachment, RendererInput, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
 };
-use syn::{parse_macro_input, parse_quote, parse_str, spanned::Spanned, Ident, LitBool, Path, Type};
+use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
 
 #[proc_macro]
 pub fn define_resource(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -139,25 +139,24 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let claims = data.resources.get(&claim.resource_name).unwrap();
 
         let this_node = *claims.map.get(&claim.step_name).unwrap();
-        let this = &claims.graph[this_node];
-        let get_queue_family_index_for_pass = |pass: &str| {
+        let _this = &claims.graph[this_node];
+        let _get_queue_family_index_for_pass = |pass: &str| {
             data.passes
                 .get(pass)
                 .and(Some(QueueFamily::Graphics))
                 .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
                 .expect("pass not found")
         };
-        let get_runtime_queue_family = |ty: QueueFamily| match ty {
+        let _get_runtime_queue_family = |ty: QueueFamily| match ty {
             QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
             QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
             QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
         };
-        let get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
+        let _get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
             ResourceUsageKind::Attachment(ref renderpass) => data
                 .renderpasses
                 .get(renderpass)
-                .map(|x| x.depth_stencil.as_ref().map(|d| &d.layout))
-                .flatten(),
+                .and_then(|x| x.depth_stencil.as_ref().map(|d| &d.layout)),
             _ => None,
         };
 
@@ -179,7 +178,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 barrier_calls.extend_one(quote! {
                     submissions.barrier_buffer(
                         &renderer,
-                        &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
+                        &crate::renderer::RENDERER_INPUT,
                         *#command_buffer_expr,
                         #resource_name,
                         #step_name,
@@ -193,7 +192,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 barrier_calls.extend_one(quote! {
                     submissions.barrier_acceleration_structure(
                         &renderer,
-                        &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
+                        &crate::renderer::RENDERER_INPUT,
                         *#command_buffer_expr,
                         #resource_name,
                         #step_name,
@@ -213,7 +212,7 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         &renderer,
                         &swapchain_index_map,
                         &image_index,
-                        &bincode::deserialize(crate::renderer::frame_graph::CROSSBAR).unwrap(),
+                        &crate::renderer::RENDERER_INPUT,
                         *#command_buffer_expr,
                         #resource_name,
                         #step_name,
@@ -458,7 +457,7 @@ fn define_frame2() -> TokenStream {
                 .map(|x| x.0)
                 .unwrap()
                 .index();
-            let wait_instance = wait_instance.get(&pass_name.to_string()).unwrap();
+            let wait_instance = wait_instance.get(pass_name).unwrap();
 
             let pass_name_ident = format_ident!("{}", pass_name);
             quote! {
@@ -833,11 +832,7 @@ fn define_renderpass_old(new_data: &RendererInput, pass: &Pass) -> TokenStream {
 }
 
 fn define_framebuffer(new_data: &RendererInput, pass: &Pass) -> TokenStream {
-    let debug_name = format!(
-        "{} framebuffer {} [{{}}]",
-        new_data.name.to_string(),
-        pass.name.to_string()
-    );
+    let debug_name = format!("{} framebuffer {} [{{}}]", new_data.name, pass.name);
     let attachment_count = pass.attachments.len();
     let attachment_ix = pass.attachments.iter().enumerate().map(|(ix, _)| ix).collect_vec();
 
@@ -1079,7 +1074,7 @@ fn define_set_old(
         })
         .collect::<Vec<_>>();
 
-    let layout_debug_name = format!("{} Layout", set_name.to_string());
+    let layout_debug_name = format!("{} Layout", set_name);
     let set_debug_name = set_name.to_string();
 
     quote! {
@@ -1373,13 +1368,13 @@ fn define_pipe_old(
                 .polygon_mode
                 .as_ref()
                 .map(|p| format_ident!("{}", p))
-                .unwrap_or_default(polygon_mode.clone());
+                .unwrap_or_default(polygon_mode);
             let front_face: Ident = parse_quote!(CLOCKWISE);
             let front_face = specific
                 .front_face_mode
                 .as_ref()
                 .map(|p| format_ident!("{}", p))
-                .unwrap_or_default(front_face.clone());
+                .unwrap_or_default(front_face);
             let front_face_dynamic =
                 extract_optional_dyn(&specific.front_face_mode, quote!(vk::DynamicState::FRONT_FACE_EXT,));
             let topology_mode: Ident = parse_quote!(TRIANGLE_LIST);
@@ -1387,7 +1382,7 @@ fn define_pipe_old(
                 .topology_mode
                 .as_ref()
                 .map(|p| format_ident!("{}", p))
-                .unwrap_or_default(topology_mode.clone());
+                .unwrap_or_default(topology_mode);
             let topology_dynamic = extract_optional_dyn(
                 &specific.topology_mode,
                 quote!(vk::DynamicState::PRIMITIVE_TOPOLOGY_EXT,),
@@ -1397,14 +1392,14 @@ fn define_pipe_old(
                 .cull_mode
                 .as_ref()
                 .map(|p| format_ident!("{}", p))
-                .unwrap_or_default(cull_mode.clone());
+                .unwrap_or_default(cull_mode);
             let cull_mode_dynamic = extract_optional_dyn(&specific.cull_mode, quote!(vk::DynamicState::CULL_MODE_EXT,));
             let depth_test_enable = falsy;
             let depth_test_enable = specific
                 .depth_test_enable
                 .as_ref()
                 .map(|p| if *p { truthy } else { falsy })
-                .unwrap_or_default(&depth_test_enable);
+                .unwrap_or_default(depth_test_enable);
             let depth_test_dynamic = extract_optional_dyn(
                 &specific.depth_test_enable,
                 quote!(vk::DynamicState::DEPTH_TEST_ENABLE_EXT,),
@@ -1414,7 +1409,7 @@ fn define_pipe_old(
                 .depth_write_enable
                 .as_ref()
                 .map(|p| if *p { truthy } else { falsy })
-                .unwrap_or_default(&depth_write_enable);
+                .unwrap_or_default(depth_write_enable);
             let depth_write_dynamic = extract_optional_dyn(
                 &specific.depth_write_enable,
                 quote!(vk::DynamicState::DEPTH_WRITE_ENABLE_EXT,),
@@ -1424,7 +1419,7 @@ fn define_pipe_old(
                 .depth_bounds_enable
                 .as_ref()
                 .map(|p| if *p { truthy } else { falsy })
-                .unwrap_or_default(&depth_bounds_enable);
+                .unwrap_or_default(depth_bounds_enable);
             let depth_bounds_dynamic = extract_optional_dyn(
                 &specific.depth_bounds_enable,
                 quote!(vk::DynamicState::DEPTH_BOUNDS_TEST_ENABLE_EXT,),
@@ -1434,7 +1429,7 @@ fn define_pipe_old(
                 .depth_compare_op
                 .as_ref()
                 .map(|p| format_ident!("{}", p))
-                .unwrap_or_default(depth_compare_op.clone());
+                .unwrap_or_default(depth_compare_op);
             let depth_compare_dynamic = extract_optional_dyn(
                 &specific.depth_compare_op,
                 quote!(vk::DynamicState::DEPTH_COMPARE_OP_EXT,),
@@ -1472,7 +1467,7 @@ fn define_pipe_old(
                             let format = format_ident!("{}", format);
                             quote!(.depth_attachment_format(vk::Format::#format))
                         })
-                        .unwrap_or(quote!());
+                        .unwrap_or_default();
                     quote! {
                         let color_attachment_formats = [#(#color_attachment_formats),*];
                         let mut pipeline_rendering = vk::PipelineRenderingCreateInfoKHR::builder()
@@ -1583,7 +1578,7 @@ fn define_pipe_old(
         }
     };
 
-    let pipe_debug_name = format!("{}::Pipeline", pipe.name.to_string());
+    let pipe_debug_name = format!("{}::Pipeline", pipe.name);
     let pipeline_definition2 = quote! {
         pub(crate) struct Pipeline {
             pub(crate) pipeline: crate::renderer::device::Pipeline,
@@ -1621,7 +1616,7 @@ fn define_pipe_old(
         SpecificPipe::Graphics(_) => true,
         SpecificPipe::Compute => false,
     };
-    let name = syn::parse_str::<Ident>(&name).unwrap();
+    let name = syn::parse_str::<Ident>(name).unwrap();
     let descriptor_path = descriptors
         .iter()
         .map(|(x, _)| syn::parse_str::<Path>(x).unwrap())

@@ -1,10 +1,4 @@
-use std::{
-    ffi::CStr,
-    iter::{once, Once},
-    mem::transmute,
-    ops::Deref,
-    sync::Arc,
-};
+use std::{ffi::CStr, iter::once, mem::transmute, ops::Deref, sync::Arc};
 
 use ash::{
     self,
@@ -14,12 +8,9 @@ use ash::{
     },
     vk,
 };
-use cache_padded::CachePadded;
-use crossbeam_utils::Backoff;
 use hashbrown::HashMap;
 use itertools::Itertools;
-use parking_lot::{Mutex, MutexGuard};
-use profiling::scope;
+use parking_lot::Mutex;
 use smallvec::{smallvec, SmallVec};
 
 mod alloc;
@@ -124,7 +115,7 @@ impl Device {
                     }
                 })
                 .next()
-        };
+        }
         let graphics_queue_spec = pick_family(&queue_families, |ix, flags| unsafe {
             flags.contains(vk::QueueFlags::GRAPHICS)
                 && surface
@@ -133,12 +124,12 @@ impl Device {
                     .unwrap()
         })
         .expect("could not find a suitable graphics queue");
-        let compute_queues_spec = pick_family(&queue_families, |ix, flags| {
+        let compute_queues_spec = pick_family(&queue_families, |_ix, flags| {
             flags.contains(vk::QueueFlags::COMPUTE)
                 && !flags.contains(vk::QueueFlags::GRAPHICS)
                 && cfg!(not(feature = "collapse_compute"))
         });
-        let transfer_queues_spec = pick_family(&queue_families, |ix, flags| {
+        let transfer_queues_spec = pick_family(&queue_families, |_ix, flags| {
             flags.contains(vk::QueueFlags::TRANSFER)
                 && !flags.contains(vk::QueueFlags::COMPUTE)
                 && cfg!(not(feature = "collapse_transfer"))
@@ -288,6 +279,7 @@ impl Device {
                 .min_acceleration_structure_scratch_offset_alignment,
         };
         if cfg!(feature = "vk_names") {
+            #[allow(clippy::needless_collect)]
             let queue_labels: Vec<(vk::Queue, String)> = device
                 .queues
                 .iter_mut()

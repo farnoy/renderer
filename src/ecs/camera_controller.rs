@@ -37,10 +37,10 @@ impl Default for Camera {
 pub(crate) fn camera_controller(
     input_actions: Res<InputActions>,
     frame_timing: Res<FrameTiming>,
-    runtime_config: Res<RuntimeConfiguration>,
+    runtime_config: Res<FutureRuntimeConfiguration>,
     mut camera: ResMut<Camera>,
 ) {
-    if !runtime_config.fly_mode {
+    if !runtime_config.0[0].fly_mode {
         return;
     }
 

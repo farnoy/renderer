@@ -259,18 +259,13 @@ pub(crate) mod systems {
             }
         }
     }
-    
-    #[derive(Component, Default)]
-    /// We can't adjust the runtime configuration in the same frame, as we update the GUI in the middle of rendering.
-    /// We also can't have changes take effect in the next frame, because the submission plan has been set already.
-    /// This struct holds the configuration that will be used in the next frame, and the one after.
-    pub(crate) struct FutureRuntimeConfiguration(pub(crate) [RuntimeConfiguration; 2]);
 
-    pub(crate) fn copy_runtime_config(mut runtime_config: ResMut<RuntimeConfiguration>, mut future_configs: ResMut<FutureRuntimeConfiguration>) {
-        runtime_config.clone_from(&future_configs.0[0]);
-        let next = future_configs.0[1].clone();
-        future_configs.0[0] = next;
-    }
+    #[derive(Component, Default)]
+    /// We can't adjust the runtime configuration in the same frame, as we update the GUI in the
+    /// middle of rendering. We also can't have changes take effect in the next frame, because
+    /// the submission plan has been set already. This struct holds the configuration that will
+    /// be used in the next frame, and the one after.
+    pub(crate) struct FutureRuntimeConfiguration(pub(crate) [RuntimeConfiguration; 2]);
 
     pub(crate) struct Gui {
         pub(crate) imgui: imgui::Context,

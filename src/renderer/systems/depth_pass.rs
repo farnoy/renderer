@@ -93,7 +93,6 @@ pub(crate) fn depth_only_pass(
     runtime_config: Res<CopiedResource<RuntimeConfiguration>>,
     camera_matrices: Res<CameraMatrices>,
     submissions: Res<Submissions>,
-    renderer_input: Res<renderer_macro_lib::RendererInput>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
 ) {
     scope!("rendering::depth_only_pass");
@@ -122,7 +121,7 @@ pub(crate) fn depth_only_pass(
         IndirectCommandsCount.draw_depth r in DepthOnly indirect buffer after [compute, copy_frozen] if [!DEBUG_AABB],
         ConsolidatedPositionBuffer.in_depth r in DepthOnly vertex buffer after [in_cull] if [!DEBUG_AABB],
         CulledIndexBuffer.in_depth r in DepthOnly index buffer after [copy_frozen, cull] if [!DEBUG_AABB],
-        DepthRT.draw_depth w in DepthOnly attachment in DepthOnlyRP layout DEPTH_STENCIL_ATTACHMENT_OPTIMAL; {&main_attachments.depth_image}
+        DepthRT.draw_depth w in DepthOnly attachment in DepthOnlyRP layout DEPTH_STENCIL_ATTACHMENT_OPTIMAL; &main_attachments.depth_image
     );
 
     DepthOnlyRP::begin(
@@ -204,7 +203,6 @@ pub(crate) fn depth_only_pass(
         &renderer,
         frame_graph::DepthOnly::INDEX,
         Some(*command_buffer),
-        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

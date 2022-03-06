@@ -20,14 +20,10 @@ pub(crate) mod renderer;
 use std::sync::Arc;
 
 use bevy_app::*;
-use bevy_ecs::{
-    component::{ComponentDescriptor, StorageType},
-    prelude::*,
-    system::SystemState,
-};
+use bevy_ecs::{prelude::*, system::SystemState};
 use bevy_tasks::Task;
 use ecs::{
-    components::{Deleting, Light, Position, Rotation},
+    components::{Light, Position, Rotation},
     resources::{Camera, InputActions, MeshLibrary},
     systems::{
         aabb_calculation, assign_draw_index, calculate_frame_timing, camera_controller, cleanup_deleted_entities,
@@ -52,18 +48,21 @@ use renderer::{
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
-#[cfg(feature = "profiling")]
+#[cfg(feature = "tracing_on")]
 use tracing_subscriber::layer::SubscriberExt;
 
-use crate::{renderer::{
-    copy_resource, initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate,
-    ScenesToLoad, TransferCullPrivate, UploadMeshesData,
-}, ecs::systems::{FutureRuntimeConfiguration, copy_runtime_config}};
+use crate::{
+    ecs::systems::FutureRuntimeConfiguration,
+    renderer::{
+        initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate, ScenesToLoad,
+        TransferCullPrivate, UploadMeshesData, RENDERER_INPUT,
+    },
+};
 
 fn main() {
     profiling::register_thread!("main");
 
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "tracing_on")]
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()))
         .expect("set up the subscriber");
 
@@ -630,9 +629,8 @@ fn main() {
 
     // load_scene(&mut app.world, &renderer, "assets/bistro.gltf");
 
-    app.insert_resource::<renderer_macro_lib::RendererInput>(
-        bincode::deserialize(renderer::frame_graph::CROSSBAR).unwrap(),
-    );
+    lazy_static::initialize(&RENDERER_INPUT);
+
     app.insert_resource(ScenesToLoad {
         scene_paths: vec![
             "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf".to_string(),
@@ -881,14 +879,11 @@ fn main() {
     // Submissions uses a latched value that initializes the execution plan of the next frame, therefore
     // we need to run it twice at the start so that it prepares a plan for the current frame.
     {
-        let mut system_state: SystemState<(
-            ResMut<Submissions>,
-            Res<FutureRuntimeConfiguration>,
-            Res<renderer_macro_lib::RendererInput>,
-        )> = SystemState::new(&mut app.world);
-        let (mut submissions, runtime_config, input) = system_state.get_mut(&mut app.world);
-        renderer::setup_submissions(submissions, runtime_config, input);
-        let (mut submissions, runtime_config, input) = system_state.get_mut(&mut app.world);
+        let mut system_state: SystemState<(ResMut<Submissions>, Res<FutureRuntimeConfiguration>)> =
+            SystemState::new(&mut app.world);
+        let (submissions, runtime_config) = system_state.get_mut(&mut app.world);
+        renderer::setup_submissions(submissions, runtime_config);
+        let (mut submissions, _runtime_config) = system_state.get_mut(&mut app.world);
         submissions.remaining.get_mut().clear();
     }
 
@@ -897,7 +892,7 @@ fn main() {
 
         app.update();
 
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "tracing_on")]
         tracy_client::finish_continuous_frame!();
 
         if *quit_handle.lock() {

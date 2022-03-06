@@ -153,7 +153,6 @@ pub(crate) fn build_acceleration_structures(
     acceleration_structures: Res<AccelerationStructures>,
     mut acceleration_structures_internal: ResMut<AccelerationStructuresInternal>,
     submissions: Res<Submissions>,
-    renderer_input: Res<renderer_macro_lib::RendererInput>,
     mut queries: QuerySet<(
         QueryState<&GltfMesh, With<ModelMatrix>>,
         QueryState<(&GltfMesh, &DrawIndex, &ModelMatrix)>,
@@ -571,7 +570,6 @@ pub(crate) fn build_acceleration_structures(
         &renderer,
         frame_graph::BuildAccelerationStructures::INDEX,
         Some(*command_buffer),
-        &renderer_input,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
