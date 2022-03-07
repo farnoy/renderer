@@ -36,12 +36,12 @@ cache-padded = "1.1.1"
 crossbeam-utils = "0.8.5"
 parking_lot = { version = "0.12.0", features = ["deadlock_detection"] }
 futures-lite = "1.12.0"
-gltf = { version = "0.16.0", features = ["KHR_materials_pbrSpecularGlossiness"] }
+gltf = { version = "1.0", features = ["KHR_materials_pbrSpecularGlossiness"] }
 hashbrown = "0.12.0"
 humansize = "1.1.0"
 image = "0.24"
 imgui = "0.8.0"
-imgui-winit-support = { version = "0.8.0", default-features = false, features = ["winit-25"] }
+imgui-winit-support = { version = "0.8.0", default-features = false, features = ["winit-26"] }
 indexmap = "1.7.0"
 intel_tex = { version = "0.1.4", optional = true }
 itertools = "0.10"
@@ -68,7 +68,7 @@ tracy-client = { version = "0.12", default-features = false, optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 tracing-tracy = { version = "0.8", default-features = false, optional = true }
-winit = "0.25.0"
+winit = "0.26.0"
 
 [build-dependencies]
 renderer-macro-lib = { path = "macro_lib" }
