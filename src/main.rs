@@ -42,9 +42,9 @@ use renderer::{
     update_shadow_map_descriptors, AccelerationStructures, AccelerationStructuresInternal, BaseColorDescriptorSet,
     BaseColorVisitedMarker, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData, CullPassDataPrivate,
     DebugAABBPassData, DepthPassData, GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture, GltfPassData,
-    GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool, MainFramebuffer, MainRenderpass,
-    ModelData, NormalMapVisitedMarker, PresentData, RenderFrame, Resized, SceneLoaderLoadedMesh, ShadowMappingData,
-    ShadowMappingDataInternal, ShadowMappingLightMatrices, Submissions, SwapchainIndexToFrameNumber,
+    GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool, ModelData, NormalMapVisitedMarker,
+    PresentData, RenderFrame, Resized, SceneLoaderLoadedMesh, ShadowMappingData, ShadowMappingDataInternal,
+    ShadowMappingLightMatrices, Submissions, SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
 use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
@@ -66,9 +66,13 @@ fn main() {
         let registry = tracing_subscriber::registry();
         #[cfg(feature = "tracing-tracy")]
         let registry = registry.with(tracing_tracy::TracyLayer::new());
-        let registry = registry.with(tracing_subscriber::fmt::layer().pretty().with_filter(
-            tracing_subscriber::filter::targets::Targets::new().with_target("renderer", tracing::Level::WARN),
-        ));
+        let registry = registry.with(
+            tracing_subscriber::fmt::layer().pretty().with_filter(
+                tracing_subscriber::filter::targets::Targets::new()
+                    .with_target("renderer", tracing::Level::WARN)
+                    .with_target("bevy", tracing::Level::WARN),
+            ),
+        );
 
         tracing::subscriber::set_global_default(registry).expect("set up the subscriber");
     }
@@ -293,7 +297,6 @@ fn main() {
     let model_data = ModelData::new(&renderer, &main_descriptor_pool);
 
     let main_attachments = MainAttachments::new(&renderer, &swapchain);
-    let main_renderpass = MainRenderpass::new(&renderer);
     let shadow_mapping_data =
         ShadowMappingData::new(&renderer, &model_data, &camera_matrices, &mut main_descriptor_pool);
 
@@ -315,7 +318,6 @@ fn main() {
 
     let gltf_pass = GltfPassData::new(
         &renderer,
-        &main_renderpass,
         &model_data,
         &base_color_descriptor_set,
         &shadow_mapping_data,
@@ -671,7 +673,6 @@ fn main() {
     app.init_resource::<ShadowMappingDataInternal>();
     app.init_resource::<DepthPassData>();
     app.insert_resource(present_data);
-    app.insert_resource(main_renderpass);
     app.insert_resource(main_attachments);
     app.insert_resource(acceleration_structures);
     app.init_resource::<AccelerationStructuresInternal>();
@@ -679,7 +680,6 @@ fn main() {
     app.init_resource::<SwapchainIndexToFrameNumber>();
     app.init_resource::<CopiedResource<SwapchainIndexToFrameNumber>>();
     app.init_resource::<DebugAABBPassData>();
-    app.init_resource::<MainFramebuffer>();
     app.init_resource::<ReferenceRTData>();
     app.init_resource::<ReferenceRTDataPrivate>();
     app.insert_non_send_resource(input_handler);
@@ -959,10 +959,6 @@ fn main() {
         .unwrap()
         .destroy(&render_frame.device);
     app.world
-        .remove_resource::<MainRenderpass>()
-        .unwrap()
-        .destroy(&render_frame.device);
-    app.world
         .remove_resource::<MainAttachments>()
         .unwrap()
         .destroy(&render_frame.device);
@@ -1019,10 +1015,6 @@ fn main() {
         .remove_resource::<ReferenceRTDataPrivate>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.world
-        .remove_resource::<MainFramebuffer>()
-        .unwrap()
-        .destroy(&render_frame.device);
 
     let entities = app
         .world

@@ -23,7 +23,7 @@ pub(crate) const MAP_SIZE: u32 = 4096;
 // dimensions of the square texture, 4x4 slots = 16 in total
 pub(crate) const DIM: u32 = 4;
 
-renderer_macros::define_resource! { ShadowMapAtlas = Image DEPTH }
+renderer_macros::define_resource! { ShadowMapAtlas = Image DEPTH D16_UNORM }
 
 renderer_macros::define_set! {
     shadow_map_set {

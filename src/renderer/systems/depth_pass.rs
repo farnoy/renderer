@@ -32,11 +32,11 @@ renderer_macros::define_pipe! {
     }
 }
 
-renderer_macros::define_resource! { DepthRT = Image DEPTH }
+renderer_macros::define_resource! { DepthRT = Image DEPTH D16_UNORM }
 renderer_macros::define_pass! { DepthOnly on graphics }
 renderer_macros::define_renderpass! {
     DepthOnlyRP {
-        depth_stencil { Depth DEPTH_STENCIL_READ_ONLY_OPTIMAL clear => store }
+        depth_stencil { DepthRT DEPTH_STENCIL_READ_ONLY_OPTIMAL clear => store }
     }
 }
 

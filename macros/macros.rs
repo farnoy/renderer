@@ -12,11 +12,11 @@ use renderer_macro_lib::{
     extract_optional_dyn, fetch,
     inputs::{to_rust_type, to_vk_format},
     resource_claims::{
-        ResourceBarrierInput, ResourceClaim, ResourceClaimInput, ResourceDefinitionInput, ResourceDefinitionType,
+        ResourceBarrierInput, ResourceClaimInput, ResourceClaims, ResourceDefinitionInput, ResourceDefinitionType,
         ResourceUsageKind,
     },
-    Attachment, Binding, DescriptorSet, LoadOp, NamedField, Pass, PassLayout, Pipeline, QueueFamily, RenderPass,
-    RenderPassAttachment, RendererInput, SpecificPipe, StaticOrDyn, StoreOp, SubpassDependency,
+    Binding, DescriptorSet, LoadOp, NamedField, Pipeline, RenderPass, RenderPassAttachment, SpecificPipe, StaticOrDyn,
+    StoreOp,
 };
 use syn::{parse_macro_input, parse_quote, parse_str, Ident, LitBool, Path, Type};
 
@@ -140,25 +140,6 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         let this_node = *claims.map.get(&claim.step_name).unwrap();
         let _this = &claims.graph[this_node];
-        let _get_queue_family_index_for_pass = |pass: &str| {
-            data.passes
-                .get(pass)
-                .and(Some(QueueFamily::Graphics))
-                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
-                .expect("pass not found")
-        };
-        let _get_runtime_queue_family = |ty: QueueFamily| match ty {
-            QueueFamily::Graphics => quote!(renderer.device.graphics_queue_family),
-            QueueFamily::Compute => quote!(renderer.device.compute_queue_family),
-            QueueFamily::Transfer => quote!(renderer.device.transfer_queue_family),
-        };
-        let _get_layout_from_renderpass = |step: &ResourceClaim| match step.usage {
-            ResourceUsageKind::Attachment(ref renderpass) => data
-                .renderpasses
-                .get(renderpass)
-                .and_then(|x| x.depth_stencil.as_ref().map(|d| &d.layout)),
-            _ => None,
-        };
 
         // let connected_components = petgraph::algo::connected_components(&claims.graph);
         // if connected_components != 1 {
@@ -207,7 +188,12 @@ pub fn barrier(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     .map(|x| quote!({#x}.handle))
                     .unwrap_or(quote!(vk::Image::null()));
                 barrier_calls.extend_one(quote! {
-                    let span = tracing::trace_span!("image", resource_name = #resource_name, step_name = #step_name).entered();
+                    let span = tracing::trace_span!(
+                        "image",
+                        resource_name = #resource_name, step_name = #step_name,
+                        src_layout = tracing::field::Empty, dst_layout = tracing::field::Empty,
+                        src_queue_family = tracing::field::Empty, dst_queue_family = tracing::field::Empty,
+                    ).entered();
                     submissions.barrier_image(
                         &renderer,
                         &swapchain_index_map,
@@ -357,9 +343,8 @@ fn define_frame2() -> TokenStream {
     let dependency_graph = &new_data.dependency_graph;
 
     let wait_instance = new_data
-        .passes
+        .async_passes
         .keys()
-        .chain(new_data.async_passes.keys())
         .map(|pass| {
             let (signal_out_sem, _) = new_data
                 .timeline_semaphore_mapping
@@ -370,7 +355,6 @@ fn define_frame2() -> TokenStream {
             let signal_timeline_path: Path = parse_quote!(#signal_timeline_ident::#pass_ident);
 
             (pass, quote! {
-
                 impl RenderStage for Stage {
                     type SignalTimelineStage = super::super::#signal_timeline_path;
                     const SIGNAL_AUTO_SEMAPHORE_IX: usize = #signal_out_sem;
@@ -378,119 +362,6 @@ fn define_frame2() -> TokenStream {
             })
         })
         .collect::<HashMap<_, _>>();
-
-    let pass_definitions = new_data
-        .passes
-        .values()
-        .map(|pass| {
-            let pass_name = &pass.name;
-            let format_param_ty = pass
-                .attachments
-                .iter()
-                .filter(|&attachment| new_data.attachments.get(attachment).unwrap().format.is_dyn())
-                .map(|_| quote!(vk::Format))
-                .collect_vec();
-            let attachment_desc = pass
-                .attachments
-                .iter()
-                .map(|attachment| {
-                    let data = new_data.attachments.get(attachment).expect("attachment not found");
-                    let format = &data.format;
-                    let PassLayout {
-                        load_op,
-                        initial_layout,
-                        store_op,
-                        final_layout,
-                    } = pass
-                        .layouts
-                        .iter()
-                        .find(|(name, _)| *name == attachment)
-                        .map(|(_name, layout)| layout)
-                        .expect("No layout info for used attachment");
-                    let load_op = match load_op {
-                        LoadOp::Clear => quote!(CLEAR),
-                        LoadOp::Load => quote!(LOAD),
-                        LoadOp::DontCare => quote!(DONT_CARE),
-                    };
-                    let store_op = match store_op {
-                        StoreOp::Store => quote!(STORE),
-                        StoreOp::Discard => quote!(DONT_CARE),
-                    };
-                    let format = format.clone().map(|s| format_ident!("{}", s));
-                    let format = match format {
-                        StaticOrDyn::Dyn => {
-                            let dyn_ix = pass
-                                .attachments
-                                .iter()
-                                .filter(|&at| new_data.attachments.get(at).unwrap().format.is_dyn())
-                                .position(|at| at == attachment)
-                                .unwrap();
-                            let index = syn::Index::from(dyn_ix);
-                            quote!(attachment_formats.#index)
-                        }
-                        StaticOrDyn::Static(format) => quote!(vk::Format::#format),
-                    };
-                    let samples = format_ident!("TYPE_{}", data.samples);
-                    let initial_layout = format_ident!("{}", initial_layout);
-                    let final_layout = format_ident!("{}", final_layout);
-                    quote! {
-                        vk::AttachmentDescription::builder()
-                            .format(#format)
-                            .samples(vk::SampleCountFlags::#samples)
-                            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-                            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                            .initial_layout(vk::ImageLayout::#initial_layout)
-                            .final_layout(vk::ImageLayout::#final_layout)
-                            .load_op(vk::AttachmentLoadOp::#load_op)
-                            .store_op(vk::AttachmentStoreOp::#store_op)
-                            .build()
-                    }
-                })
-                .collect_vec();
-
-            let attachment_count = attachment_desc.len();
-            let renderpass_definition = define_renderpass_old(&new_data, pass);
-            let framebuffer_definition = define_framebuffer(&new_data, pass);
-            let graph_ix = dependency_graph
-                .node_references()
-                .find(|(_ix, name)| *name == &pass_name.to_string())
-                .map(|x| x.0)
-                .unwrap()
-                .index();
-            let wait_instance = wait_instance.get(pass_name).unwrap();
-
-            let pass_name_ident = format_ident!("{}", pass_name);
-            quote! {
-                #[allow(non_snake_case)]
-                pub(crate) mod #pass_name_ident {
-                    use super::{vk, Device, RenderStage,
-                        RenderFrame, ImageIndex, as_of, as_of_last,
-                        OriginalFramebuffer, OriginalRenderPass};
-
-                    #[derive(Debug, Clone, Copy)]
-                    pub(crate) struct Stage;
-
-                    pub(crate) const INDEX: u32 = #graph_ix as u32;
-
-                    #renderpass_definition
-
-                    #framebuffer_definition
-
-                    #wait_instance
-
-                    pub(crate) fn get_attachment_descriptions(
-                        attachment_formats: (#(#format_param_ty,)*)
-                    ) -> [vk::AttachmentDescription; #attachment_count] {
-                        [
-                            #(
-                                #attachment_desc
-                            ),*
-                        ]
-                    }
-                }
-            }
-        })
-        .collect_vec();
 
     let async_pass_definitions = new_data.async_passes.keys().map(|pass_name| {
         let wait_instance = wait_instance.get(pass_name).unwrap();
@@ -532,16 +403,10 @@ fn define_frame2() -> TokenStream {
         pub(crate) mod #name {
             use ash::vk;
             use super::{Device, RenderStage,
-                        RenderFrame, ImageIndex, as_of, as_of_last,
-                        RenderPass as OriginalRenderPass,
-                        Framebuffer as OriginalFramebuffer};
+                        RenderFrame, ImageIndex, as_of, as_of_last};
             use std::mem::size_of;
 
             pub(crate) static CROSSBAR: &[u8] = include_bytes!(#src);
-
-            #(
-                #pass_definitions
-            )*
 
             #(
                 #async_pass_definitions
@@ -553,421 +418,6 @@ fn define_frame2() -> TokenStream {
 
     expanded
 }
-
-fn define_renderpass_old(new_data: &RendererInput, pass: &Pass) -> TokenStream {
-    let passes_that_need_clearing = pass.attachments.iter().enumerate().map(|(ix, attachment)| {
-        let PassLayout { load_op, .. } = pass
-            .layouts
-            .iter()
-            .find(|(name, _layout)| *name == attachment)
-            .map(|(_name, at)| at)
-            .expect("pass missing attachment in layouts block");
-        (ix, load_op == &LoadOp::Clear)
-    });
-    let passes_that_need_clearing_compact = passes_that_need_clearing
-        .clone()
-        .filter(|(_, need_clearing)| *need_clearing)
-        .map(|(ix, _)| ix)
-        .collect_vec();
-    let passes_that_need_clearing_fetch = passes_that_need_clearing
-        .clone()
-        .zip(
-            passes_that_need_clearing
-                .clone()
-                .scan(0usize, |ix, (_, need_clearing)| {
-                    let ret = Some(*ix);
-                    if need_clearing {
-                        *ix += 1;
-                    }
-                    ret
-                }),
-        )
-        .map(|((_, need_clearing), compact_ix)| {
-            if need_clearing {
-                quote!(clear_values[#compact_ix])
-            } else {
-                quote!(vk::ClearValue::default())
-            }
-        })
-        .collect_vec();
-    let passes_that_need_clearing_len = passes_that_need_clearing_compact.len();
-    let format_param_ty = pass
-        .attachments
-        .iter()
-        .filter(|attachment| {
-            let format = &new_data.attachments.get(*attachment).unwrap().format;
-            format.is_dyn()
-        })
-        .map(|_| quote!(vk::Format))
-        .collect_vec();
-    let debug_name = format!("{} - {}", new_data.name, pass.name);
-
-    let renderpass_begin = format!("{}::{}::begin", new_data.name, pass.name);
-
-    let (subpass_prerequisites, subpass_descriptions) = split2(pass.subpasses.iter().map(|subpass| {
-        let (color_attachment_name, color_attachment_layout) = split2(
-            subpass
-                .color_attachments
-                .iter()
-                .map(|(name, layout)| (name, format_ident!("{}", layout))),
-        );
-        let (resolve_attachment_name, resolve_attachment_layout) = split2(
-            subpass
-                .resolve_attachments
-                .iter()
-                .map(|(name, layout)| (name, format_ident!("{}", layout))),
-        );
-        assert!(
-            resolve_attachment_name.is_empty() || (color_attachment_name.len() == resolve_attachment_name.len()),
-            "If resolving any attachments, must provide one for\
-            each color attachment, ATTACHMENT_UNUSED not supported yet"
-        );
-        let color_attachment_ix = color_attachment_name.iter().map(|&needle| {
-            pass.attachments
-                .iter()
-                .position(|candidate| candidate == needle)
-                .expect("subpass color refers to nonexistent attachment")
-        });
-        let (depth_stencil_attachment_name, depth_stencil_attachment_layout) = split2(
-            subpass
-                .depth_stencil_attachments
-                .iter()
-                .map(|(name, layout)| (name, format_ident!("{}", layout))),
-        );
-        let depth_stencil_attachment_ix = depth_stencil_attachment_name.iter().map(|&needle| {
-            pass.attachments
-                .iter()
-                .position(|candidate| candidate == needle)
-                .expect("subpass depth stencil refers to nonexistent attachment")
-        });
-        let resolve_attachment_ix = resolve_attachment_name.iter().map(|&needle| {
-            pass.attachments
-                .iter()
-                .position(|candidate| candidate == needle)
-                .expect("subpass color refers to nonexistent attachment")
-        });
-
-        let color_attachment_var = format_ident!(
-            "color_attachments_{}_{}",
-            pass.name.to_string(),
-            subpass.name.to_string()
-        );
-        let depth_stencil_var = depth_stencil_attachment_name
-            .iter()
-            .map(|_| {
-                format_ident!(
-                    "depth_stencil_attachment_{}_{}",
-                    pass.name.to_string(),
-                    subpass.name.to_string()
-                )
-            })
-            .collect_vec();
-        let resolve_attachment_var = resolve_attachment_name
-            .iter()
-            .map(|_| {
-                format_ident!(
-                    "resolve_attachments_{}_{}",
-                    pass.name.to_string(),
-                    subpass.name.to_string()
-                )
-            })
-            .collect_vec();
-
-        let resolve_attachment_references = quote! {
-            #(
-                vk::AttachmentReference {
-                    attachment: #resolve_attachment_ix as u32,
-                    layout: vk::ImageLayout::#resolve_attachment_layout,
-                }
-            ),*
-        };
-
-        (
-            quote! {
-                let #color_attachment_var = &[
-                    #(
-                        vk::AttachmentReference {
-                            attachment: #color_attachment_ix as u32,
-                            layout: vk::ImageLayout::#color_attachment_layout,
-                        }
-                    ),*
-                ];
-                #(
-                    let #depth_stencil_var =
-                        vk::AttachmentReference {
-                            attachment: #depth_stencil_attachment_ix as u32,
-                            layout: vk::ImageLayout::#depth_stencil_attachment_layout,
-                        };
-                )*
-                #(
-                    let #resolve_attachment_var = &[
-                        #resolve_attachment_references
-                    ];
-                )*
-            },
-            quote! {
-                vk::SubpassDescription::builder()
-                    .color_attachments(#color_attachment_var)
-                    #( .depth_stencil_attachment(&#depth_stencil_var) )*
-                    #( .resolve_attachments(#resolve_attachment_var) )*
-                    .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                    .build()
-            },
-        )
-    }));
-
-    let subpass_dependency = pass.dependencies.iter().map(|dep| {
-        // (dep.from, dep.to, dep.src_stage, dep.dst_stage, dep.src_access, dep.dst_access);
-        let src_subpass = pass
-            .subpasses
-            .iter()
-            .position(|candidate| candidate.name == dep.src)
-            .expect("did not find src subpass");
-        let dst_subpass = pass
-            .subpasses
-            .iter()
-            .position(|candidate| candidate.name == dep.dst)
-            .expect("did not find src subpass");
-        let SubpassDependency {
-            src_stage: src_stage_mask,
-            dst_stage: dst_stage_mask,
-            src_access: src_access_mask,
-            dst_access: dst_access_mask,
-            ..
-        } = dep;
-        let src_stage_mask = format_ident!("{}", src_stage_mask);
-        let dst_stage_mask = format_ident!("{}", dst_stage_mask);
-        let src_access_mask = format_ident!("{}", src_access_mask);
-        let dst_access_mask = format_ident!("{}", dst_access_mask);
-
-        quote! {
-            vk::SubpassDependency::builder()
-                .src_subpass(#src_subpass as u32)
-                .dst_subpass(#dst_subpass as u32)
-                .src_stage_mask(vk::PipelineStageFlags::#src_stage_mask)
-                .dst_stage_mask(vk::PipelineStageFlags::#dst_stage_mask)
-                .src_access_mask(vk::AccessFlags::#src_access_mask)
-                .dst_access_mask(vk::AccessFlags::#dst_access_mask)
-                .build()
-        }
-    });
-
-    let attachment_count = pass.attachments.len();
-
-    quote! {
-        // TODO: beginning & clearing
-        pub(crate) struct RenderPass {
-            pub(crate) renderpass: OriginalRenderPass,
-        }
-
-        impl RenderPass {
-            pub(crate) fn new(
-                renderer: &RenderFrame,
-                attachment_formats: (#(#format_param_ty,)*)
-            ) -> Self {
-                #(
-                    #subpass_prerequisites
-                )*
-                let subpasses = &[
-                    #( #subpass_descriptions ),*
-                ];
-                let dependencies = &[
-                    #( #subpass_dependency ),*
-                ];
-                let attachments = get_attachment_descriptions(attachment_formats);
-                let renderpass = renderer.device.new_renderpass(
-                    &vk::RenderPassCreateInfo::builder()
-                        .attachments(&attachments)
-                        .subpasses(subpasses)
-                        .dependencies(dependencies)
-                );
-                renderer
-                    .device
-                    .set_object_name(renderpass.handle, #debug_name);
-                RenderPass { renderpass }
-            }
-
-            pub(crate) fn begin(
-                &self,
-                renderer: &RenderFrame,
-                framebuffer: &Framebuffer, // TODO: or compatible
-                command_buffer: vk::CommandBuffer,
-                render_area: vk::Rect2D,
-                attachments: &[vk::ImageView; #attachment_count],
-                clear_values: &[vk::ClearValue; #passes_that_need_clearing_len],
-            ) {
-                use profiling::scope;
-                scope!(#renderpass_begin);
-
-                let mut attachment_info = vk::RenderPassAttachmentBeginInfo::builder()
-                    .attachments(attachments);
-                let clear_values = [
-                    #(
-                        #passes_that_need_clearing_fetch
-                    ),*
-                ];
-                let begin_info = vk::RenderPassBeginInfo::builder()
-                    .push_next(&mut attachment_info)
-                    .render_pass(self.renderpass.handle)
-                    .framebuffer(framebuffer.framebuffer.handle)
-                    .render_area(render_area)
-                    .clear_values(&clear_values);
-
-                unsafe {
-                    scope!("vk::CmdBeginRenderPass");
-
-                    renderer.device.cmd_begin_render_pass(
-                        command_buffer,
-                        &begin_info,
-                        vk::SubpassContents::INLINE,
-                    );
-                }
-            }
-
-            pub(crate) fn destroy(self, device: &Device) {
-                self.renderpass.destroy(device);
-            }
-        }
-    }
-}
-
-fn define_framebuffer(new_data: &RendererInput, pass: &Pass) -> TokenStream {
-    let debug_name = format!("{} framebuffer {} [{{}}]", new_data.name, pass.name);
-    let attachment_count = pass.attachments.len();
-    let attachment_ix = pass.attachments.iter().enumerate().map(|(ix, _)| ix).collect_vec();
-
-    let format_param_ty = pass
-        .attachments
-        .iter()
-        .filter(|attachment| {
-            let format = &new_data.attachments.get(*attachment).unwrap().format;
-            format.is_dyn()
-        })
-        .map(|_| quote!(vk::Format))
-        .collect_vec();
-    let attachment_formats_expr = pass
-        .attachments
-        .iter()
-        .map(|attachment| {
-            let format = &new_data.attachments.get(attachment).unwrap().format;
-            match format {
-                StaticOrDyn::Dyn => {
-                    let dyn_ix = pass
-                        .attachments
-                        .iter()
-                        .filter(|&at| new_data.attachments.get(at).unwrap().format.is_dyn())
-                        .position(|at| at == attachment)
-                        .unwrap();
-                    let index = syn::Index::from(dyn_ix);
-                    quote!(dyn_attachment_formats.#index)
-                }
-                StaticOrDyn::Static(format) => {
-                    let format = format_ident!("{}", format);
-                    quote!(vk::Format::#format)
-                }
-            }
-        })
-        .collect_vec();
-
-    quote! {
-        pub(crate) struct Framebuffer {
-            pub(crate) framebuffer: OriginalFramebuffer,
-        }
-
-        impl Framebuffer {
-            pub(crate) fn new(
-                renderer: &RenderFrame,
-                renderpass: &RenderPass,
-                image_usages: &[vk::ImageUsageFlags; #attachment_count],
-                dyn_attachment_formats: (#(#format_param_ty,)*),
-                (width, height): (u32, u32),
-            ) -> Self {
-                let view_formats: [[vk::Format; 1]; #attachment_count] = [
-                    #([#attachment_formats_expr]),*
-                ];
-                let image_infos: [vk::FramebufferAttachmentImageInfo; #attachment_count] = [
-                    #(
-                        vk::FramebufferAttachmentImageInfo::builder()
-                            .view_formats(&view_formats[#attachment_ix])
-                            .width(width)
-                            .height(height)
-                            .layer_count(1)
-                            .usage(image_usages[#attachment_ix])
-                            .build()
-                    ),*
-                ];
-                let mut attachments_info = vk::FramebufferAttachmentsCreateInfo::builder()
-                    .attachment_image_infos(&image_infos);
-                let attachments = [vk::ImageView::null(); #attachment_count];
-                let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
-                    .flags(vk::FramebufferCreateFlags::IMAGELESS)
-                    .push_next(&mut attachments_info)
-                    .render_pass(renderpass.renderpass.handle)
-                    .attachments(&attachments)
-                    .width(width)
-                    .height(height)
-                    .layers(1);
-                let handle = unsafe {
-                    renderer
-                        .device
-                        .create_framebuffer(&frame_buffer_create_info, None)
-                        .unwrap()
-                };
-                renderer
-                    .device
-                    .set_object_name(handle, #debug_name);
-                Framebuffer { framebuffer: OriginalFramebuffer { handle } }
-            }
-
-            pub(crate) fn destroy(self, device: &Device) {
-                self.framebuffer.destroy(device);
-            }
-        }
-    }
-}
-
-// it could also coalesce some submits into one submit with multiple command buffers
-// but only when no sync points are needed in between
-// need to figure out how to "communicate" between proc macros, particularly the dependency tree
-// #[proc_macro]
-// pub fn submit_coalesced(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-//     let UnArray(stages) = parse_macro_input!(input as UnArray<ArrowPair<Expr, Expr>>);
-
-//     let mut built_up = quote! {
-//         unsafe {
-//             renderer
-//                 .device
-//                 .queue_submit(
-//                     *queue,
-//                     &submits,
-//                     vk::Fence::null(),
-//                 )
-//         }
-//     };
-
-//     for ArrowPair((stage, command_buffers)) in stages.iter().rev() {
-//         built_up = quote! {
-//             #stage::Stage::submit_info(
-//                 &image_index,
-//                 &renderer,
-//                 #command_buffers,
-//                 |submit| {
-//                     submits.push(submit);
-//                     #built_up
-//                 }
-//             )
-//         };
-//     }
-
-//     let out = quote! {
-//         {
-//             let mut submits = vec![];
-//             #built_up
-//         }
-//     };
-
-//     proc_macro::TokenStream::from(out)
-// }
 
 macro_rules! make_split {
     ($name:ident, [$($letter:ident),+] [$($ix:tt),+]) => {
@@ -1142,7 +592,7 @@ pub fn define_pipe(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     define_pipe_old(
         &pipe,
-        &data.attachments,
+        &data.resources,
         &data.renderpasses,
         data.shader_information.push_constant_type_definitions.get(&pipe.name),
     )
@@ -1151,7 +601,7 @@ pub fn define_pipe(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 fn define_pipe_old(
     pipe: &Pipeline,
-    attachments: &HashMap<String, Attachment>,
+    resources: &HashMap<String, ResourceClaims>,
     renderpasses: &HashMap<String, RenderPass>,
     push_constant_type: Option<&String>,
 ) -> TokenStream {
@@ -1445,12 +895,18 @@ fn define_pipe_old(
                 Some(ref renderpass) => {
                     let renderpass = renderpasses.get(renderpass).expect("Dynamic renderpass not found");
                     let color_attachment_formats = renderpass.color.iter().map(|x| {
-                        let format = attachments
+                        let format = resources
                             .get(&x.resource_name)
-                            .expect("Attachment not found")
-                            .format
-                            .as_ref()
-                            .expect("dynamic formats unsupported");
+                            .and_then(|x| {
+                                if let ResourceDefinitionType::Image { ref format, .. } = x.ty {
+                                    Some(format)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                panic!("Resource not found or not an image {name}", name = &x.resource_name)
+                            });
                         let format = format_ident!("{}", format);
                         quote!(vk::Format::#format)
                     });
@@ -1458,12 +914,18 @@ fn define_pipe_old(
                         .depth_stencil
                         .as_ref()
                         .map(|x| {
-                            let format = attachments
+                            let format = resources
                                 .get(&x.resource_name)
-                                .expect("Attachment not found")
-                                .format
-                                .as_ref()
-                                .expect("dynamic formats unsupported");
+                                .and_then(|x| {
+                                    if let ResourceDefinitionType::Image { ref format, .. } = x.ty {
+                                        Some(format)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    panic!("Resource not found or not an image {name}", name = &x.resource_name)
+                                });
                             let format = format_ident!("{}", format);
                             quote!(.depth_attachment_format(vk::Format::#format))
                         })

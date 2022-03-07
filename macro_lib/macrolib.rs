@@ -42,7 +42,6 @@ mod rga;
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct RendererInput {
     pub name: String,
-    pub passes: HashMap<String, Pass>,
     pub async_passes: HashMap<String, AsyncPass>,
     pub renderpasses: HashMap<String, RenderPass>,
     pub resources: HashMap<String, ResourceClaims>,
@@ -161,68 +160,6 @@ impl Parse for RenderPassAttachment {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Pass {
-    pub name: String,
-    pub attachments: Vec<String>,
-    pub layouts: HashMap<String, PassLayout>,
-    pub subpasses: Vec<Subpass>,
-    pub dependencies: Vec<SubpassDependency>,
-}
-
-impl Parse for Pass {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        #[derive(Parse)]
-        pub struct Inner {
-            pub name: Ident,
-            #[brace]
-            #[allow(dead_code)]
-            brace: syn::token::Brace,
-            #[prefix(kw::attachments in brace)]
-            #[inside(brace)]
-            pub attachments: inputs::Unbracket<inputs::UnArray<Ident>>,
-            #[prefix(kw::layouts in brace)]
-            #[brace]
-            #[inside(brace)]
-            #[allow(dead_code)]
-            layouts_brace: syn::token::Brace,
-            #[inside(layouts_brace)]
-            pub layouts: inputs::UnArray<inputs::Sequence<Ident, PassLayout>>,
-            #[inside(brace)]
-            #[allow(dead_code)]
-            subpasses_kw: kw::subpasses,
-            #[inside(brace)]
-            pub subpasses: inputs::Unbrace<inputs::UnArray<Subpass>>,
-            #[inside(brace)]
-            #[allow(dead_code)]
-            dependencies_kw: Option<kw::dependencies>,
-            #[parse_if(dependencies_kw.is_some())]
-            #[inside(brace)]
-            pub dependencies: Option<inputs::Unbrace<inputs::UnArray<SubpassDependency>>>,
-        }
-
-        let p = Inner::parse(input)?;
-
-        Ok(Pass {
-            name: p.name.to_string(),
-            attachments: p.attachments.0 .0.iter().map(|x| x.to_string()).collect(),
-            layouts: HashMap::from_iter(
-                p.layouts
-                    .0
-                    .iter()
-                    .map(|inputs::Sequence((name, layout))| (name.to_string(), layout.clone())),
-            ),
-            subpasses: p.subpasses.0 .0.clone(),
-            dependencies: p
-                .dependencies
-                .as_ref()
-                .cloned()
-                .map(|inputs::Unbrace(inputs::UnArray(x))| x)
-                .unwrap_or_default(),
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassLayout {
     pub load_op: LoadOp,
@@ -243,118 +180,6 @@ impl Parse for PassLayout {
             initial_layout: initial_layout.to_token_stream().to_string(),
             store_op,
             final_layout: final_layout.to_token_stream().to_string(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Subpass {
-    pub name: String,
-    pub color_attachments: Vec<(String, String)>,
-    pub depth_stencil_attachments: Option<(String, String)>,
-    pub resolve_attachments: Vec<(String, String)>,
-}
-
-impl Parse for Subpass {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        #[derive(Parse)]
-        pub struct Inner {
-            pub name: Ident,
-            #[brace]
-            #[allow(dead_code)]
-            brace: syn::token::Brace,
-            #[inside(brace)]
-            #[allow(dead_code)]
-            color_kw: Option<kw::color>,
-            #[inside(brace)]
-            #[parse_if(color_kw.is_some())]
-            pub color: Option<inputs::Unbracket<inputs::UnArray<inputs::ArrowPair<Ident, Ident>>>>,
-            #[inside(brace)]
-            #[allow(dead_code)]
-            depth_stencil_kw: Option<kw::depth_stencil>,
-            #[inside(brace)]
-            #[parse_if(depth_stencil_kw.is_some())]
-            pub depth_stencil: Option<inputs::Unbrace<inputs::ArrowPair<Ident, Ident>>>,
-            #[inside(brace)]
-            #[allow(dead_code)]
-            resolve_kw: Option<kw::resolve>,
-            #[inside(brace)]
-            #[parse_if(resolve_kw.is_some())]
-            pub resolve: Option<inputs::Unbracket<inputs::UnArray<inputs::ArrowPair<Ident, Ident>>>>,
-        }
-        let Inner {
-            name,
-            color,
-            depth_stencil,
-            resolve,
-            ..
-        } = Inner::parse(input)?;
-
-        Ok(Subpass {
-            name: name.to_string(),
-            color_attachments: color
-                .as_ref()
-                .cloned()
-                .map(|b| {
-                    b.0 .0
-                        .into_iter()
-                        .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            depth_stencil_attachments: depth_stencil
-                .as_ref()
-                .cloned()
-                .map(|x| (x.0 .0 .0.to_string(), x.0 .0 .1.to_string())),
-            resolve_attachments: resolve
-                .as_ref()
-                .cloned()
-                .map(|b| {
-                    b.0 .0
-                        .into_iter()
-                        .map(|x| (x.0 .0.to_string(), x.0 .1.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubpassDependency {
-    pub src: String,
-    pub dst: String,
-    pub src_stage: String,
-    pub dst_stage: String,
-    pub src_access: String,
-    pub dst_access: String,
-}
-
-impl Parse for SubpassDependency {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        #[derive(Parse)]
-        pub struct Inner {
-            pub from: Ident,
-            #[allow(dead_code)]
-            arrow_1: syn::Token![=>],
-            pub to: Ident,
-            pub src_stage: Expr,
-            #[allow(dead_code)]
-            arrow_2: syn::Token![=>],
-            pub dst_stage: Expr,
-            pub src_access: Expr,
-            #[allow(dead_code)]
-            arrow_3: syn::Token![=>],
-            pub dst_access: Expr,
-        }
-        let d = Inner::parse(input)?;
-        Ok(SubpassDependency {
-            src: d.from.to_string(),
-            dst: d.to.to_string(),
-            src_stage: d.src_stage.to_token_stream().to_string(),
-            dst_stage: d.dst_stage.to_token_stream().to_string(),
-            src_access: d.src_access.to_token_stream().to_string(),
-            dst_access: d.dst_access.to_token_stream().to_string(),
         })
     }
 }
@@ -783,18 +608,8 @@ fn dump_dependency_graph(data: &RendererInput) -> Result<(), anyhow::Error> {
     for edge in graph.edge_references() {
         let source = graph[edge.source()].as_str();
         let target = graph[edge.target()].as_str();
-        let source_queue = data
-            .passes
-            .get(source)
-            .map(|_| QueueFamily::Graphics)
-            .or_else(|| data.async_passes.get(source).map(|p| p.queue))
-            .unwrap();
-        let target_queue = data
-            .passes
-            .get(target)
-            .map(|_| QueueFamily::Graphics)
-            .or_else(|| data.async_passes.get(target).map(|p| p.queue))
-            .unwrap();
+        let source_queue = data.async_passes.get(source).map(|p| p.queue).unwrap();
+        let target_queue = data.async_passes.get(target).map(|p| p.queue).unwrap();
         let color = if source_queue == target_queue { "blue" } else { "red" };
         writeln!(
             file,
@@ -837,18 +652,8 @@ fn dump_resource_graphs(data: &RendererInput) -> Result<(), anyhow::Error> {
         for edge in claim.graph.edge_references() {
             let source = &claim.graph[edge.source()];
             let target = &claim.graph[edge.target()];
-            let source_queue = data
-                .passes
-                .get(&source.pass_name)
-                .map(|_| QueueFamily::Graphics)
-                .or_else(|| data.async_passes.get(&source.pass_name).map(|p| p.queue))
-                .unwrap();
-            let target_queue = data
-                .passes
-                .get(&target.pass_name)
-                .map(|_| QueueFamily::Graphics)
-                .or_else(|| data.async_passes.get(&target.pass_name).map(|p| p.queue))
-                .unwrap();
+            let source_queue = data.async_passes.get(&source.pass_name).map(|p| p.queue).unwrap();
+            let target_queue = data.async_passes.get(&target.pass_name).map(|p| p.queue).unwrap();
             let color = if source.pass_name == target.pass_name {
                 "green"
             } else if source_queue == target_queue {
@@ -1205,12 +1010,8 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
         if node.mac.path == parse_quote!(renderer_macros::define_frame) {
             if let Ok(parsed) = parse2::<RendererInput>(node.mac.tokens.clone()) {
                 self.data.name = parsed.name;
-                self.data.passes.extend(parsed.passes);
-                self.data.async_passes.extend(parsed.async_passes);
-                self.data.descriptor_sets.extend(parsed.descriptor_sets);
-                self.data.attachments.extend(parsed.attachments);
-                self.data.pipelines.extend(parsed.pipelines);
             } else {
+                println!("cargo:warning=define_frame error");
                 self.had_errors = true;
             }
         } else if node.mac.path == parse_quote!(renderer_macros::define_resource) {
@@ -1219,6 +1020,7 @@ impl<'ast> Visit<'ast> for AnalysisVisitor {
                 claim.ty = Some(parsed.ty);
                 claim.double_buffered = parsed.double_buffered;
             } else {
+                println!("cargo:warning=define_resource error: {node:?}");
                 self.had_errors = true;
             }
         } else if node.mac.path == parse_quote!(renderer_macros::define_set) {
@@ -1585,58 +1387,10 @@ impl Parse for RendererInput {
         pub struct Inner {
             #[allow(dead_code)]
             pub(crate) name: Ident,
-            #[brace]
-            #[allow(dead_code)]
-            brace: syn::token::Brace,
-            #[prefix(kw::attachments in brace)]
-            #[brace]
-            #[inside(brace)]
-            #[allow(dead_code)]
-            attachments_brace: syn::token::Brace,
-            #[inside(attachments_brace)]
-            pub(crate) attachments: inputs::UnArray<Ident>,
-            #[prefix(kw::formats in brace)]
-            #[brace]
-            #[inside(brace)]
-            #[allow(dead_code)]
-            formats_brace: syn::token::Brace,
-            #[inside(formats_brace)]
-            pub(crate) formats: inputs::UnArray<StaticOrDyn<Expr>>,
-            #[prefix(kw::samples in brace)]
-            #[brace]
-            #[inside(brace)]
-            #[allow(dead_code)]
-            samples_brace: syn::token::Brace,
-            #[inside(samples_brace)]
-            pub(crate) samples: inputs::UnArray<syn::LitInt>,
-            #[prefix(kw::passes in brace)]
-            #[brace]
-            #[inside(brace)]
-            #[allow(dead_code)]
-            passes_brace: syn::token::Brace,
-            #[inside(passes_brace)]
-            pub(crate) passes: inputs::UnArray<Pass>,
         }
         let input = Inner::parse(input)?;
-        let passes = input.passes.0;
-        let attachments = input
-            .attachments
-            .0
-            .into_iter()
-            .zip(input.samples.0.into_iter())
-            .zip(input.formats.0.into_iter())
-            .map(|((name, samples), format)| {
-                (name.to_string(), Attachment {
-                    name: name.to_string(),
-                    format: format.map(|x| x.to_token_stream().to_string()),
-                    samples: samples.base10_parse().unwrap(),
-                })
-            })
-            .collect();
         Ok(RendererInput {
             name: input.name.to_string(),
-            passes: HashMap::from_iter(passes.into_iter().map(|pass| (pass.name.to_string(), pass))),
-            attachments,
             ..Default::default()
         })
     }

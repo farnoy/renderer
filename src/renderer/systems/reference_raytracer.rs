@@ -15,7 +15,7 @@ use crate::renderer::{
 };
 
 renderer_macros::define_pass!(ReferenceRaytrace on compute);
-renderer_macros::define_resource!(ReferenceRaytraceOutput = Image COLOR);
+renderer_macros::define_resource!(ReferenceRaytraceOutput = Image COLOR R8G8B8A8_UNORM);
 
 renderer_macros::define_set! {
     rt_output_set {
@@ -102,7 +102,7 @@ impl FromWorld for ReferenceRTData {
         let renderer = world.get_resource::<RenderFrame>().unwrap();
         let swapchain = world.get_resource::<Swapchain>().unwrap();
         let image = renderer.device.new_image_exclusive(
-            vk::Format::R8G8B8A8_SNORM,
+            vk::Format::R8G8B8A8_UNORM,
             vk::Extent3D {
                 width: swapchain.width,
                 height: swapchain.height,
@@ -126,7 +126,7 @@ impl FromWorld for ReferenceRTData {
                 )
                 .image(image.handle)
                 .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SNORM)
+                .format(vk::Format::R8G8B8A8_UNORM)
                 .subresource_range(
                     vk::ImageSubresourceRange::builder()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)

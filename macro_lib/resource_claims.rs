@@ -187,7 +187,7 @@ pub struct ResourceDefinitionInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceDefinitionType {
     StaticBuffer { type_name: String },
-    Image { aspect: String },
+    Image { aspect: String, format: String },
     AccelerationStructure,
 }
 
@@ -317,6 +317,7 @@ impl Parse for ResourceDefinitionInput {
         struct ImageResource {
             _static_buffer_kw: kw::Image,
             aspect: syn::Ident,
+            format: syn::Ident,
         }
         #[derive(Parse)]
         struct Inner {
@@ -336,11 +337,12 @@ impl Parse for ResourceDefinitionInput {
                     type_name: type_name.to_token_stream().to_string(),
                 },
             }),
-            InnerEnum::Image(ImageResource { aspect, .. }) => Ok(ResourceDefinitionInput {
+            InnerEnum::Image(ImageResource { aspect, format, .. }) => Ok(ResourceDefinitionInput {
                 resource_name: s.resource_name.to_string(),
                 double_buffered,
                 ty: ResourceDefinitionType::Image {
                     aspect: aspect.to_string(),
+                    format: format.to_string(),
                 },
             }),
             InnerEnum::AccelerationStructure => Ok(ResourceDefinitionInput {

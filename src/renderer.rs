@@ -52,8 +52,8 @@ pub(crate) use self::systems::crash_debugging::CrashBuffer;
 pub(crate) use self::systems::shader_reload::{reload_shaders, ReloadedShaders, ShaderReload};
 use self::{
     device::{
-        Buffer, DescriptorPool, Device, DoubleBuffered, Framebuffer, Image, ImageView, RenderPass, Sampler, Shader,
-        StaticBuffer, StrictCommandPool, StrictRecordingCommandBuffer, VmaMemoryUsage,
+        Buffer, DescriptorPool, Device, DoubleBuffered, Image, ImageView, Sampler, Shader, StaticBuffer,
+        StrictCommandPool, StrictRecordingCommandBuffer, VmaMemoryUsage,
     },
     helpers::command_util::CommandUtil,
     systems::{
@@ -211,47 +211,19 @@ lazy_static! {
 
 renderer_macros::define_timelines! {}
 
-renderer_macros::define_frame! {
-    frame_graph {
-        attachments {
-            Color,
-            Depth,
-        }
-        formats {
-            B8G8R8A8_UNORM,
-            D16_UNORM,
-        }
-        samples {
-            4,
-            4,
-        }
-        passes {
-            Main {
-                attachments [Color, Depth]
-                layouts {
-                    Depth load DEPTH_STENCIL_READ_ONLY_OPTIMAL => discard DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-                    Color clear UNDEFINED => store COLOR_ATTACHMENT_OPTIMAL,
-                }
-                subpasses {
-                    GltfPass {
-                        color [Color => COLOR_ATTACHMENT_OPTIMAL]
-                        depth_stencil { Depth => DEPTH_STENCIL_READ_ONLY_OPTIMAL }
-                    },
-                }
-            }
-        }
+renderer_macros::define_frame!(frame_graph);
+
+renderer_macros::define_renderpass! {
+    MainRP {
+        color [ Color COLOR_ATTACHMENT_OPTIMAL clear => store ]
+        depth_stencil { DepthRT DEPTH_STENCIL_READ_ONLY_OPTIMAL load => discard }
     }
 }
 
-// renderer_macros::define_renderpass! {
-//     MainRP {
-//         color [Color COLOR_ATTACHMENT_OPTIMAL clear => store]
-//         depth_stencil { Depth DEPTH_STENCIL_READ_ONLY_OPTIMAL load => discard }
-//     }
-// }
-
 // purely virtual, just to have a synchronization point at the start of the frame
 renderer_macros::define_pass!(PresentationAcquire on graphics);
+
+renderer_macros::define_pass!(Main on graphics);
 
 renderer_macros::define_set!(
     model_set {
@@ -290,6 +262,7 @@ renderer_macros::define_pipe!(
             11 => shadow_map_dim_squared: u32,
         ]
         graphics
+        dynamic renderpass MainRP
         samples 4
         vertex_inputs [position: vec3, normal: vec3, uv: vec2, tangent: vec4]
         stages [VERTEX, FRAGMENT]
@@ -302,6 +275,7 @@ renderer_macros::define_pipe! {
     debug_aabb {
         descriptors [camera_set]
         graphics
+        dynamic renderpass MainRP
         samples 4
         stages [VERTEX, FRAGMENT]
         polygon mode LINE
@@ -969,25 +943,6 @@ pub(crate) fn binding_size<B: DescriptorBufferBinding>() -> vk::DeviceSize {
     B::SIZE
 }
 
-pub(crate) struct MainRenderpass {
-    pub(crate) renderpass: frame_graph::Main::RenderPass,
-}
-
-impl MainRenderpass {
-    pub(crate) fn new(renderer: &RenderFrame) -> Self {
-        let renderpass = frame_graph::Main::RenderPass::new(renderer, ());
-        renderer
-            .device
-            .set_object_name(renderpass.renderpass.handle, "MainRenderpass");
-
-        MainRenderpass { renderpass }
-    }
-
-    pub(crate) fn destroy(self, device: &Device) {
-        self.renderpass.destroy(device);
-    }
-}
-
 impl RenderFrame {
     pub(crate) fn new() -> (RenderFrame, Swapchain, winit::event_loop::EventLoop<()>) {
         let (instance, events_loop) = Instance::new();
@@ -1059,8 +1014,8 @@ impl MainDescriptorPool {
     }
 }
 
-renderer_macros::define_resource!(Color = Image COLOR);
-renderer_macros::define_resource!(PresentSurface DoubleBuffered = Image COLOR);
+renderer_macros::define_resource!(Color = Image COLOR B8G8R8A8_UNORM);
+renderer_macros::define_resource!(PresentSurface DoubleBuffered = Image COLOR B8G8R8A8_UNORM);
 pub(crate) struct MainAttachments {
     #[allow(unused)]
     swapchain_image_views: Vec<ImageView>,
@@ -1215,57 +1170,6 @@ impl MainAttachments {
     }
 }
 
-pub(crate) struct MainFramebuffer {
-    pub(crate) framebuffer: frame_graph::Main::Framebuffer,
-}
-
-impl FromWorld for MainFramebuffer {
-    fn from_world(world: &mut World) -> Self {
-        let renderer = world.get_resource::<RenderFrame>().unwrap();
-        let main_renderpass = world.get_resource::<MainRenderpass>().unwrap();
-        let swapchain = world.get_resource::<Swapchain>().unwrap();
-        Self::new(renderer, main_renderpass, swapchain)
-    }
-}
-
-impl MainFramebuffer {
-    pub(crate) fn new(
-        renderer: &RenderFrame,
-        main_renderpass: &MainRenderpass,
-        swapchain: &Swapchain,
-    ) -> MainFramebuffer {
-        let framebuffer = frame_graph::Main::Framebuffer::new(
-            renderer,
-            &main_renderpass.renderpass,
-            // TRANSFER is sometimes added by Nsight Graphics and it would make vkCmdBeginRenderpass not match the
-            // images, so add it manually
-            &[
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_SRC
-                    | if cfg!(feature = "nsight_profiling") {
-                        vk::ImageUsageFlags::TRANSFER_DST
-                    } else {
-                        vk::ImageUsageFlags::empty()
-                    },
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                    | if cfg!(feature = "nsight_profiling") {
-                        vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST
-                    } else {
-                        vk::ImageUsageFlags::empty()
-                    },
-            ],
-            (),
-            (swapchain.width, swapchain.height),
-        );
-
-        MainFramebuffer { framebuffer }
-    }
-
-    pub(crate) fn destroy(self, device: &Device) {
-        self.framebuffer.destroy(device);
-    }
-}
-
 pub(crate) struct CameraMatrices {
     pub(crate) set_layout: SmartSetLayout<camera_set::Layout>,
     buffer: DoubleBuffered<BufferType<camera_set::bindings::matrices>>,
@@ -1363,7 +1267,6 @@ pub(crate) struct GltfPassData {
 impl GltfPassData {
     pub(crate) fn new(
         renderer: &RenderFrame,
-        main_renderpass: &MainRenderpass,
         model_data: &ModelData,
         base_color: &BaseColorDescriptorSet,
         shadow_mapping: &ShadowMappingData,
@@ -1515,12 +1418,8 @@ impl GltfPassData {
             shadow_map_dim: SHADOW_MAP_DIM,
             shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
         };
-        let gltf_pipeline = SmartPipeline::new(
-            &renderer.device,
-            &gltf_pipeline_layout,
-            spec,
-            (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
-        );
+        let gltf_pipeline = SmartPipeline::new(&renderer.device, &gltf_pipeline_layout, spec, ());
+
         let command_util = CommandUtil::new(renderer, renderer.device.graphics_queue_family);
 
         GltfPassData {
@@ -1543,7 +1442,7 @@ impl GltfPassData {
 
 pub(crate) fn render_frame(
     renderer: Res<RenderFrame>,
-    (main_renderpass, main_attachments): (Res<MainRenderpass>, Res<MainAttachments>),
+    main_attachments: Res<MainAttachments>,
     (image_index, model_data, swapchain_index_map): (Res<ImageIndex>, Res<ModelData>, Res<SwapchainIndexToFrameNumber>),
     (runtime_config, mut future_configs): (Res<RuntimeConfiguration>, ResMut<FutureRuntimeConfiguration>),
     (camera_matrices, swapchain): (Res<CameraMatrices>, Res<Swapchain>),
@@ -1551,11 +1450,7 @@ pub(crate) fn render_frame(
     (debug_aabb_pass_data, shadow_mapping_data): (Res<DebugAABBPassData>, Res<ShadowMappingData>),
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
     cull_pass_data: Res<CullPassData>,
-    (main_framebuffer, acceleration_structures, reference_rt_data): (
-        Res<MainFramebuffer>,
-        Res<AccelerationStructures>,
-        Res<ReferenceRTData>,
-    ),
+    (acceleration_structures, reference_rt_data): (Res<AccelerationStructures>, Res<ReferenceRTData>),
     (submissions, mut gltf_pass, mut gui_render_data, mut camera, mut input_handler, mut gui): (
         Res<Submissions>,
         ResMut<GltfPassData>,
@@ -1595,7 +1490,7 @@ pub(crate) fn render_frame(
                 shadow_map_dim: SHADOW_MAP_DIM,
                 shadow_map_dim_squared: SHADOW_MAP_DIM * SHADOW_MAP_DIM,
             },
-            (main_renderpass.renderpass.renderpass.handle, 0), // FIXME
+            (),
             &[runtime_config.rt]
                 .into_iter()
                 .map(|rt| ("RT".to_owned(), rt))
@@ -1636,9 +1531,8 @@ pub(crate) fn render_frame(
                 height: swapchain.height,
             },
         }]);
-        main_renderpass.renderpass.begin(
+        MainRP::begin(
             &renderer,
-            &main_framebuffer.framebuffer,
             *command_buffer,
             vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
@@ -1758,7 +1652,7 @@ pub(crate) fn render_frame(
                 1,
             );
         }
-        renderer.device.cmd_end_render_pass(*command_buffer);
+        renderer.device.dynamic_rendering.cmd_end_rendering(*command_buffer);
     }
     drop(guard);
     drop(main_renderpass_marker);
@@ -2407,9 +2301,7 @@ pub(crate) fn camera_matrices_upload(
 
 pub(crate) fn recreate_main_framebuffer(
     renderer: Res<RenderFrame>,
-    main_renderpass: Res<MainRenderpass>,
     mut attachments: ResMut<MainAttachments>,
-    mut framebuffer: ResMut<MainFramebuffer>,
     resized: Res<Resized>,
     swapchain: Res<Swapchain>,
 ) {
@@ -2418,11 +2310,6 @@ pub(crate) fn recreate_main_framebuffer(
     }
 
     replace(&mut *attachments, MainAttachments::new(&renderer, &swapchain)).destroy(&renderer.device);
-    replace(
-        &mut *framebuffer,
-        MainFramebuffer::new(&renderer, &main_renderpass, &swapchain),
-    )
-    .destroy(&renderer.device);
 }
 
 pub(crate) fn graphics_stage() -> SystemStage {
@@ -2435,12 +2322,7 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let copy_indices = test.root(copy_resource::<SwapchainIndexToFrameNumber>);
     let setup_submissions = test.root(setup_submissions);
 
-    let initial = (
-        copy_runtime_config.clone(),
-        copy_camera.clone(),
-        copy_indices.clone(),
-        setup_submissions.clone(),
-    );
+    let initial = (copy_runtime_config, copy_camera, copy_indices, setup_submissions);
 
     let recreate_base_color = test.root(recreate_base_color_descriptor_set);
     let recreate_main_framebuffer = test.root(recreate_main_framebuffer);
@@ -2465,7 +2347,7 @@ pub(crate) fn graphics_stage() -> SystemStage {
         recreate_main_framebuffer,
         update_base_color,
         build_as.clone(),
-        consolidate_mesh_buffers.clone(),
+        consolidate_mesh_buffers,
     )
         .join(render_frame);
 
@@ -2505,7 +2387,8 @@ pub(crate) struct Submissions {
     // of the compute queue to use. This exposes all the underlying parallelism of compute
     // submissions. The virtual queue index can be modulo'd with the number of queues exposed by
     // the hardware.
-    // pub(crate) compute_virtual_queue_indices: HashMap<NodeIndex, usize>,
+    pub(crate) virtual_queue_indices: HashMap<NodeIndex, usize>,
+    pub(crate) upcoming_virtual_queue_indices: HashMap<NodeIndex, usize>,
 }
 
 impl Submissions {
@@ -2519,7 +2402,8 @@ impl Submissions {
             upcoming_remaining: Mutex::default(),
             extra_signals: Default::default(),
             upcoming_extra_signals: Default::default(),
-            // compute_virtual_queue_indices: Default::default(),
+            virtual_queue_indices: Default::default(),
+            upcoming_virtual_queue_indices: Default::default(),
         }
     }
 
@@ -2575,18 +2459,8 @@ impl Submissions {
             for edge in claim.graph.edge_references() {
                 let source = &claim.graph[edge.source()];
                 let target = &claim.graph[edge.target()];
-                let source_queue = data
-                    .passes
-                    .get(&source.pass_name)
-                    .map(|_| QueueFamily::Graphics)
-                    .or_else(|| data.async_passes.get(&source.pass_name).map(|p| p.queue))
-                    .unwrap();
-                let target_queue = data
-                    .passes
-                    .get(&target.pass_name)
-                    .map(|_| QueueFamily::Graphics)
-                    .or_else(|| data.async_passes.get(&target.pass_name).map(|p| p.queue))
-                    .unwrap();
+                let source_queue = data.async_passes.get(&source.pass_name).map(|p| p.queue).unwrap();
+                let target_queue = data.async_passes.get(&target.pass_name).map(|p| p.queue).unwrap();
                 let color = if source.pass_name == target.pass_name {
                     "green"
                 } else if source_queue == target_queue {
@@ -2625,18 +2499,8 @@ impl Submissions {
         for edge in graph.edge_references() {
             let source = graph[edge.source()].as_str();
             let target = graph[edge.target()].as_str();
-            let source_queue = data
-                .passes
-                .get(source)
-                .map(|_| QueueFamily::Graphics)
-                .or_else(|| data.async_passes.get(source).map(|p| p.queue))
-                .unwrap();
-            let target_queue = data
-                .passes
-                .get(target)
-                .map(|_| QueueFamily::Graphics)
-                .or_else(|| data.async_passes.get(target).map(|p| p.queue))
-                .unwrap();
+            let source_queue = data.async_passes.get(source).map(|p| p.queue).unwrap();
+            let target_queue = data.async_passes.get(target).map(|p| p.queue).unwrap();
             let color = if source_queue == target_queue { "blue" } else { "red" };
             writeln!(
                 file,
@@ -2681,10 +2545,9 @@ impl Submissions {
             }
         };
         let get_queue_family_index_for_pass = |pass: &str| {
-            data.passes
+            data.async_passes
                 .get(pass)
-                .and(Some(QueueFamily::Graphics))
-                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .map(|async_pass| async_pass.queue)
                 .expect("pass not found")
         };
         let get_runtime_queue_family = |ty: QueueFamily| match ty {
@@ -2897,10 +2760,9 @@ impl Submissions {
             }
         };
         let get_queue_family_index_for_pass = |pass: &str| {
-            data.passes
+            data.async_passes
                 .get(pass)
-                .and(Some(QueueFamily::Graphics))
-                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .map(|async_pass| async_pass.queue)
                 .expect("pass not found")
         };
         let get_runtime_queue_family = |ty: QueueFamily| match ty {
@@ -3086,7 +2948,7 @@ impl Submissions {
         let claims = self.active_resources.get(resource_name).unwrap();
         let next_claims = self.upcoming_resources.get(resource_name).unwrap();
         let aspect = match claims.ty {
-            ResourceDefinitionType::Image { ref aspect } => aspect,
+            ResourceDefinitionType::Image { ref aspect, .. } => aspect,
             _ => panic!(),
         };
 
@@ -3103,10 +2965,9 @@ impl Submissions {
             }
         };
         let get_queue_family_index_for_pass = |pass: &str| {
-            data.passes
+            data.async_passes
                 .get(pass)
-                .and(Some(QueueFamily::Graphics))
-                .or_else(|| data.async_passes.get(pass).map(|async_pass| async_pass.queue))
+                .map(|async_pass| async_pass.queue)
                 .expect("pass not found")
         };
         let get_runtime_queue_family = |ty: QueueFamily| match ty {
@@ -3328,26 +3189,32 @@ impl Submissions {
                     || claims.double_buffered && swapchain_index_map.map[image_index.0 as usize] == 0)
             {
                 // TODO: improve this with explicit clobber?
+                tracing::Span::current().record("src_layout", &"UNDEFINED");
+                tracing::Span::current().record("dst_layout", &format_args!("{this_layout:?}"));
+                tracing::Span::current().record("src_queue_family", &"QUEUE_FAMILY_IGNORED");
+                tracing::Span::current().record("dst_queue_family", &"QUEUE_FAMILY_IGNORED");
                 barrier = barrier
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .old_layout(vk::ImageLayout::UNDEFINED)
                     .new_layout(this_layout);
             } else {
+                if prev_layout != this_layout {
+                    tracing::Span::current().record("src_layout", &format_args!("{prev_layout:?}"));
+                    tracing::Span::current().record("dst_layout", &format_args!("{this_layout:?}"));
+                }
+                if prev_queue_runtime != this_queue_runtime {
+                    tracing::Span::current().record("src_queue_family", &prev_queue_runtime);
+                    tracing::Span::current().record("dst_queue_family", &this_queue_runtime);
+                }
                 barrier = barrier
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .src_queue_family_index(prev_queue_runtime)
+                    .dst_queue_family_index(this_queue_runtime)
                     .old_layout(prev_layout)
                     .new_layout(this_layout);
-                if prev_queue != this_queue && prev_queue_runtime != this_queue_runtime {
-                    tracing::debug!("queue transition {prev_queue_runtime} {this_queue_runtime}");
-                    barrier = barrier
-                        .src_queue_family_index(prev_queue_runtime)
-                        .dst_queue_family_index(this_queue_runtime)
-                }
             }
             emitted_barriers += 1;
-            tracing::debug!("emitted barrier");
+            tracing::debug!("emitted acquire barrier");
             acquire_image_barriers.push(barrier.build());
         }
         assert!(
@@ -3362,7 +3229,7 @@ impl Submissions {
             let next_queue_runtime = get_runtime_queue_family(next_queue);
             let next_layout_in_renderpass = get_layout_from_renderpass(next_step);
 
-            if this_queue == next_queue {
+            if this_queue == next_queue || this_queue_runtime == next_queue_runtime {
                 continue;
             }
 
@@ -3394,6 +3261,15 @@ impl Submissions {
                 _ => todo!("unimplemented Image aspect"),
             };
             emitted_barriers += 1;
+            if this_layout != next_layout {
+                tracing::Span::current().record("src_layout", &format_args!("{this_layout:?}"));
+                tracing::Span::current().record("dst_layout", &format_args!("{next_layout:?}"));
+            }
+            if this_queue_runtime != next_queue_runtime {
+                tracing::Span::current().record("src_queue_family", &this_queue_runtime);
+                tracing::Span::current().record("dst_queue_family", &next_queue_runtime);
+            }
+            tracing::debug!("emitted release barrier");
             release_image_barriers.push(
                 vk::ImageMemoryBarrier2KHR::builder()
                     .src_queue_family_index(this_queue_runtime)
@@ -3438,7 +3314,8 @@ pub(crate) fn setup_submissions(
         ref mut upcoming_graph,
         ref mut active_resources,
         ref mut upcoming_resources,
-        ..
+        ref mut virtual_queue_indices,
+        ref mut upcoming_virtual_queue_indices,
     } = *submissions;
 
     if *current_config == future_configs.0[0] {
@@ -3448,9 +3325,10 @@ pub(crate) fn setup_submissions(
         assert_eq!(remaining.edge_count(), 0);
         remaining.clone_from(upcoming_remaining);
 
-        extra_signals.clone_from(&upcoming_extra_signals);
-        active_resources.clone_from(&upcoming_resources);
-        active_graph.clone_from(&upcoming_graph);
+        extra_signals.clone_from(upcoming_extra_signals);
+        active_resources.clone_from(upcoming_resources);
+        active_graph.clone_from(upcoming_graph);
+        virtual_queue_indices.clone_from(upcoming_virtual_queue_indices);
         return;
     }
 
@@ -3529,7 +3407,7 @@ pub(crate) fn setup_submissions(
         }
     }
     // Stage 3: Remove passes that don't modify (by writing) any active resource
-    for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
+    for pass_name in input.async_passes.keys() {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
             && !upcoming_resources.values().any(|resource| {
@@ -3565,7 +3443,7 @@ pub(crate) fn setup_submissions(
             }
         }
     }
-    for pass_name in input.async_passes.keys().chain(input.passes.keys()) {
+    for pass_name in input.async_passes.keys() {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
             && !upcoming_resources.values().any(|resource| {
@@ -3635,42 +3513,44 @@ pub(crate) fn setup_submissions(
     *graph = graph2.map(|_, _| None, |_, _| ());
     graph.remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
 
-    // compute_virtual_queue_indices = {
-    //     let toposort = petgraph::algo::toposort(&*graph, None).unwrap();
-    //     let toposort_compute = toposort
-    //         .iter()
-    //         .filter(|ix| {
-    //             let name = &graph2[**ix];
-    //             input
-    //                 .async_passes
-    //                 .get(name)
-    //                 .map(|async_pass| async_pass.queue == QueueFamily::Compute)
-    //                 .unwrap_or(false)
-    //         })
-    //         .collect::<Vec<_>>();
+    *upcoming_virtual_queue_indices = {
+        let mut mapping = HashMap::new();
+        let toposort = petgraph::algo::toposort(&*graph, None).unwrap();
+        let mut compute_indices = |family| {
+            let toposort_compute = toposort.iter().filter(|ix| {
+                let name = &graph2[**ix];
+                input
+                    .async_passes
+                    .get(name)
+                    .map(|async_pass| async_pass.queue == family)
+                    .unwrap()
+            });
 
-    //     let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
-    //     for ix in toposort_compute.iter() {
-    //         match toposort_grouped_compute.last_mut() {
-    //             // if no path bridges from the last stage to ix
-    //             Some(last)
-    //                 if !last
-    //                     .iter()
-    //                     .any(|candidate| has_path_connecting(&*graph, *candidate, **ix, None)) =>
-    //             {
-    //                 last.push(**ix);
-    //             }
-    //             _ => toposort_grouped_compute.push(vec![**ix]),
-    //         }
-    //     }
-    //     let mut mapping = HashMap::new();
-    //     for stage in toposort_grouped_compute {
-    //         for (queue_ix, &node_ix) in stage.iter().enumerate() {
-    //             assert!(mapping.insert(node_ix, queue_ix).is_none());
-    //         }
-    //     }
-    //     mapping
-    // };
+            let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
+            for &ix in toposort_compute {
+                match toposort_grouped_compute.last_mut() {
+                    // if no path bridges from the last stage to ix
+                    Some(last)
+                        if !last
+                            .iter()
+                            .any(|candidate| has_path_connecting(&*graph, *candidate, ix, None)) =>
+                    {
+                        last.push(ix);
+                    }
+                    _ => toposort_grouped_compute.push(vec![ix]),
+                }
+            }
+            for stage in toposort_grouped_compute {
+                for (queue_ix, &node_ix) in stage.iter().enumerate() {
+                    assert!(mapping.insert(node_ix, queue_ix).is_none());
+                }
+            }
+        };
+        compute_indices(QueueFamily::Graphics);
+        compute_indices(QueueFamily::Compute);
+        compute_indices(QueueFamily::Transfer);
+        mapping
+    };
 
     *upcoming_graph = graph2;
 }
@@ -3701,7 +3581,7 @@ fn update_submissions(
     let Submissions {
         ref extra_signals,
         ref active_graph,
-        // ref compute_virtual_queue_indices,
+        ref virtual_queue_indices,
         ..
     } = submissions;
     let input = &RENDERER_INPUT;
@@ -3722,19 +3602,12 @@ fn update_submissions(
                     // continue to see it as a blocking dependency
                     MutexGuard::unlocked_fair(&mut graph, || {
                         scope!("unlocked");
-                        let queue_family = input
-                            .passes
-                            .get(pass_name)
-                            .and(Some(QueueFamily::Graphics))
-                            .unwrap_or_else(|| input.async_passes.get(pass_name).expect("failed to find pass").queue);
+                        let queue_family = input.async_passes.get(pass_name).expect("failed to find pass").queue;
+                        let virtualized_ix = virtual_queue_indices[&node];
                         let queue = match queue_family {
-                            QueueFamily::Graphics => renderer.device.graphics_queue(),
-                            QueueFamily::Compute => {
-                                // let &virtualized_ix = compute_virtual_queue_indices.get(&node).unwrap();
-                                let virtualized_ix = 0;
-                                renderer.device.compute_queue_virtualized(virtualized_ix)
-                            }
-                            QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(0),
+                            QueueFamily::Graphics => renderer.device.graphics_queue_virtualized(virtualized_ix),
+                            QueueFamily::Compute => renderer.device.compute_queue_virtualized(virtualized_ix),
+                            QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(virtualized_ix),
                         };
                         let buf = &mut [vk::CommandBuffer::null()];
                         let command_buffers: &[vk::CommandBuffer] = match cb {

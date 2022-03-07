@@ -18,7 +18,6 @@ mod buffer;
 mod commands;
 mod descriptors;
 mod double_buffered;
-mod framebuffer;
 mod image;
 mod image_view;
 mod mapping;
@@ -33,7 +32,6 @@ pub(crate) use self::{
     commands::{StrictCommandPool, StrictRecordingCommandBuffer},
     descriptors::{DescriptorPool, DescriptorSet, DescriptorSetLayout},
     double_buffered::DoubleBuffered,
-    framebuffer::Framebuffer,
     image::Image,
     image_view::ImageView,
     pipeline::{Pipeline, PipelineLayout},
@@ -319,9 +317,7 @@ impl Device {
 
     pub(crate) fn compute_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
         if self.compute_queue_family == self.graphics_queue_family {
-            let queues = self.queues.get(&self.graphics_queue_family).unwrap();
-            let virt_ix = virt_ix + queues.len() / 2; // Stagger the indexing to decrease contention
-            &queues[virt_ix % queues.len()]
+            self.graphics_queue_virtualized(3 + virt_ix)
         } else {
             let queues = self.queues.get(&self.compute_queue_family).unwrap();
             &queues[virt_ix % queues.len()]
@@ -330,7 +326,7 @@ impl Device {
 
     pub(crate) fn transfer_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
         if self.transfer_queue_family == self.compute_queue_family {
-            self.compute_queue_virtualized(virt_ix)
+            self.compute_queue_virtualized(4 + virt_ix)
         } else {
             let queues = self.queues.get(&self.transfer_queue_family).unwrap();
             &queues[virt_ix % queues.len()]
@@ -473,10 +469,6 @@ impl Device {
         Pipeline::new_compute_pipelines(self, create_infos)
     }
 
-    pub(super) fn new_renderpass(&self, create_info: &vk::RenderPassCreateInfoBuilder) -> RenderPass {
-        RenderPass::new(self, create_info)
-    }
-
     pub(crate) fn vk(&self) -> &AshDevice {
         &self.device
     }
@@ -518,37 +510,5 @@ impl Drop for Device {
             alloc::destroy(self.allocator);
             self.device.destroy_device(None);
         }
-    }
-}
-
-pub(crate) struct RenderPass {
-    pub(crate) handle: vk::RenderPass,
-}
-
-impl RenderPass {
-    pub(super) fn new(device: &Device, create_info: &vk::RenderPassCreateInfoBuilder) -> RenderPass {
-        let handle = unsafe {
-            device
-                .device
-                .create_render_pass(create_info, None)
-                .expect("Failed to create renderpass")
-        };
-        RenderPass { handle }
-    }
-
-    pub(crate) fn destroy(mut self, device: &Device) {
-        unsafe { device.destroy_render_pass(self.handle, None) }
-        self.handle = vk::RenderPass::null();
-    }
-}
-
-#[cfg(debug_assertions)]
-impl Drop for RenderPass {
-    fn drop(&mut self) {
-        debug_assert_eq!(
-            self.handle,
-            vk::RenderPass::null(),
-            "RenderPass not destroyed before Drop"
-        );
     }
 }
