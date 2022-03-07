@@ -23,7 +23,12 @@ impl PipelineLayout {
             .set_layouts(&descriptor_set_layout_handles)
             .push_constant_ranges(push_constant_ranges);
 
-        let pipeline_layout = unsafe { device.device.create_pipeline_layout(&create_info, None).unwrap() };
+        let pipeline_layout = unsafe {
+            device
+                .device
+                .create_pipeline_layout(&create_info, device.instance.allocation_callbacks())
+                .unwrap()
+        };
 
         PipelineLayout {
             handle: pipeline_layout,
@@ -31,7 +36,7 @@ impl PipelineLayout {
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {
-        unsafe { device.destroy_pipeline_layout(self.handle, None) }
+        unsafe { device.destroy_pipeline_layout(self.handle, device.instance.allocation_callbacks()) }
         self.handle = vk::PipelineLayout::null();
     }
 }
@@ -76,7 +81,11 @@ impl Pipeline {
         let graphics_pipelines = unsafe {
             device
                 .device
-                .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    &[create_info],
+                    device.instance.allocation_callbacks(),
+                )
                 .expect("Unable to create graphics pipeline")
         };
 
@@ -93,7 +102,11 @@ impl Pipeline {
         unsafe {
             device
                 .device
-                .create_compute_pipelines(vk::PipelineCache::null(), infos.as_slice(), None)
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    infos.as_slice(),
+                    device.instance.allocation_callbacks(),
+                )
                 .expect("Unable to create compute pipelines")
                 .into_iter()
                 .map(|handle| Pipeline { handle })
@@ -106,7 +119,7 @@ impl Pipeline {
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {
-        unsafe { device.destroy_pipeline(self.handle, None) }
+        unsafe { device.destroy_pipeline(self.handle, device.instance.allocation_callbacks()) }
         self.handle = vk::Pipeline::null();
     }
 }

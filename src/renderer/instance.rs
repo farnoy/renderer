@@ -1,6 +1,10 @@
 #[cfg(feature = "vk_names")]
 use std::borrow::Cow;
-use std::{ffi::CString, ops::Deref, sync::Arc};
+use std::{
+    ffi::{c_void, CString},
+    ops::Deref,
+    sync::Arc,
+};
 
 use ash::{
     self,
@@ -18,7 +22,11 @@ pub(crate) struct Instance {
     pub(crate) window: winit::window::Window,
     #[allow(dead_code)]
     debug: Debug,
+    allocation_callbacks: vk::AllocationCallbacks,
 }
+
+unsafe impl Send for Instance {}
+unsafe impl Sync for Instance {}
 
 #[cfg(feature = "vk_names")]
 struct Debug {
@@ -86,11 +94,16 @@ impl Instance {
             .enabled_extension_names(&extension_names_raw)
             .push_next(&mut validation_features);
 
-        let instance = unsafe { entry.create_instance(&create_info, None).expect("create instance") };
+        let allocation_callbacks = vk::AllocationCallbacks::builder()
+            .pfn_allocation(Some(vulkan_alloc))
+            .pfn_reallocation(Some(vulkan_realloc))
+            .pfn_free(Some(vulkan_free))
+            .build();
+
+        let instance = unsafe { entry.create_instance(&create_info, Some(&allocation_callbacks)).expect("create instance") };
 
         #[cfg(feature = "vk_names")]
         {
-            use std::ffi::c_void;
             let debug_utils = DebugUtils::new(entry.vk(), &instance);
 
             unsafe extern "system" fn vulkan_debug_callback(
@@ -173,7 +186,7 @@ impl Instance {
 
             let debug_messenger = unsafe {
                 debug_utils
-                    .create_debug_utils_messenger(&*create_info, None)
+                    .create_debug_utils_messenger(&*create_info, Some(&allocation_callbacks))
                     .expect("failed to create debug utils messenger")
             };
 
@@ -186,6 +199,7 @@ impl Instance {
                         utils: debug_utils,
                         messenger: debug_messenger,
                     },
+                    allocation_callbacks,
                 },
                 events_loop,
             )
@@ -199,6 +213,7 @@ impl Instance {
                     window,
                     entry: Arc::new(entry),
                     debug: Debug,
+                    allocation_callbacks,
                 },
                 events_loop,
             )
@@ -207,6 +222,10 @@ impl Instance {
 
     pub(crate) fn vk(&self) -> &AshInstance {
         &self.handle
+    }
+
+    pub(crate) fn allocation_callbacks(&self) -> Option<&vk::AllocationCallbacks> {
+        Some(&self.allocation_callbacks)
     }
 
     #[cfg(feature = "vk_names")]
@@ -229,11 +248,11 @@ impl Drop for Instance {
         unsafe {
             self.debug
                 .utils
-                .destroy_debug_utils_messenger(self.debug.messenger, None);
+                .destroy_debug_utils_messenger(self.debug.messenger, self.allocation_callbacks());
         }
 
         unsafe {
-            self.handle.destroy_instance(None);
+            self.handle.destroy_instance(self.allocation_callbacks());
         }
     }
 }
@@ -255,4 +274,30 @@ fn extension_names() -> Vec<*const i8> {
     }
 
     base
+}
+
+#[no_mangle]
+unsafe extern "system" fn vulkan_alloc(
+    _user_data: *mut c_void,
+    size: usize,
+    alignment: usize,
+    _scope: vk::SystemAllocationScope,
+) -> *mut c_void {
+    libmimalloc_sys::mi_malloc_aligned(size, alignment)
+}
+
+#[no_mangle]
+unsafe extern "system" fn vulkan_realloc(
+    _user_data: *mut c_void,
+    original: *mut c_void,
+    size: usize,
+    alignment: usize,
+    _scope: vk::SystemAllocationScope,
+) -> *mut c_void {
+    libmimalloc_sys::mi_realloc_aligned(original, size, alignment)
+}
+
+#[no_mangle]
+unsafe extern "system" fn vulkan_free(_user_data: *mut c_void, ptr: *mut c_void) {
+    libmimalloc_sys::mi_free(ptr);
 }

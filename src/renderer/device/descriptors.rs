@@ -23,7 +23,12 @@ impl DescriptorPool {
             .max_sets(max_sets)
             .pool_sizes(pool_sizes);
 
-        let handle = unsafe { device.device.create_descriptor_pool(&create_info, None).unwrap() };
+        let handle = unsafe {
+            device
+                .device
+                .create_descriptor_pool(&create_info, device.instance.allocation_callbacks())
+                .unwrap()
+        };
 
         DescriptorPool { handle }
     }
@@ -41,20 +46,29 @@ impl DescriptorPool {
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {
-        unsafe { device.destroy_descriptor_pool(self.handle, None) }
+        unsafe { device.destroy_descriptor_pool(self.handle, device.instance.allocation_callbacks()) }
         self.handle = vk::DescriptorPool::null();
     }
 }
 
 impl DescriptorSetLayout {
     pub(super) fn new(device: &Device, create_info: &vk::DescriptorSetLayoutCreateInfo) -> DescriptorSetLayout {
-        let handle = unsafe { device.device.create_descriptor_set_layout(create_info, None).unwrap() };
+        let handle = unsafe {
+            device
+                .device
+                .create_descriptor_set_layout(create_info, device.instance.allocation_callbacks())
+                .unwrap()
+        };
 
         DescriptorSetLayout { handle }
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {
-        unsafe { device.device.destroy_descriptor_set_layout(self.handle, None) }
+        unsafe {
+            device
+                .device
+                .destroy_descriptor_set_layout(self.handle, device.instance.allocation_callbacks())
+        }
         self.handle = vk::DescriptorSetLayout::null();
     }
 }

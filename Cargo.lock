@@ -1586,6 +1586,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fc7aa29613bd6a620df431842069224d8bc9011086b1db4c0e0cd47fa03ec9a"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.24"
+source = "git+https://github.com/BlackDex/mimalloc_rust?branch=add-dev-repo-support#26fc715495702e62d67fb9594745064488f9b5f3"
+dependencies = [
+ "cc",
+ "cty",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1672,14 @@ dependencies = [
  "cc",
  "failure",
  "float-cmp",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.28"
+source = "git+https://github.com/BlackDex/mimalloc_rust?branch=add-dev-repo-support#26fc715495702e62d67fb9594745064488f9b5f3"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]
@@ -2557,8 +2574,10 @@ dependencies = [
  "itertools",
  "jobserver",
  "lazy_static",
+ "libmimalloc-sys",
  "log",
  "meshopt",
+ "mimalloc",
  "nalgebra",
  "nalgebra-glm",
  "ncollide3d",

@@ -46,8 +46,10 @@ indexmap = "1.7.0"
 intel_tex = { version = "0.1.4", optional = true }
 itertools = "0.10"
 lazy_static = "1.4"
+libmimalloc-sys = { git = "https://github.com/BlackDex/mimalloc_rust", branch = "add-dev-repo-support", default-features = false, features = ["v2_dev", "extended"] }
 log = "0.4.14"
 meshopt = "0.1.9"
+mimalloc = { git = "https://github.com/BlackDex/mimalloc_rust", branch = "add-dev-repo-support", default-features = false, features = ["v2_dev", "debug_in_debug"] }
 nalgebra = "0.29.0"
 nalgebra-glm = "0.15.0"
 ncollide3d = "0.32.0"
@@ -98,6 +100,7 @@ nsight_profiling = ["collapse_compute", "vk_names"]
 silence_validation = ["standard_validation"]
 sync_validation = ["standard_validation"]
 uncapped = []
+trace_alloc = []
 tracing_on = ["profiling/profile-with-tracy", "tracing-tracy/enable", "tracy-client/enable", "bevy_ecs/trace"]
 tracing_off = ["tracing/max_level_off", "tracing/release_max_level_off"]
 shader_reload = ["notify", "spirq"]

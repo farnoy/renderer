@@ -32,6 +32,7 @@ use ecs::{
     },
 };
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
+use mimalloc::MiMalloc;
 use parking_lot::Mutex;
 use profiling::scope;
 #[cfg(feature = "crash_debugging")]
@@ -56,6 +57,14 @@ use crate::{
         TransferCullPrivate, UploadMeshesData, RENDERER_INPUT,
     },
 };
+
+#[cfg(all(feature = "tracy-client", feature = "trace_alloc"))]
+#[global_allocator]
+static GLOBAL: tracy_client::ProfiledAllocator<MiMalloc> = tracy_client::ProfiledAllocator::new(MiMalloc, 64);
+
+#[cfg(not(all(feature = "tracy-client", feature = "trace_alloc")))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     profiling::register_thread!("main");

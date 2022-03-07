@@ -19,6 +19,7 @@ pub use renderer_vma::*;
 pub fn create(
     entry: &ash::Entry,
     instance: &ash::Instance,
+    allocation_callbacks: Option<&vk::AllocationCallbacks>,
     device: vk::Device,
     pdevice: vk::PhysicalDevice,
 ) -> prelude::VkResult<VmaAllocator> {
@@ -158,7 +159,9 @@ pub fn create(
         device,
         physicalDevice: pdevice,
         preferredLargeHeapBlockSize: 0,
-        pAllocationCallbacks: ptr::null(),
+        pAllocationCallbacks: allocation_callbacks
+            .map(|a| a as *const vk::AllocationCallbacks)
+            .unwrap_or(ptr::null()),
         pDeviceMemoryCallbacks: ptr::null(),
         frameInUseCount: 1,
         pHeapSizeLimit: ptr::null(),

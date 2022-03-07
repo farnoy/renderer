@@ -12,12 +12,12 @@ pub(crate) struct Surface {
     pub(crate) surface: vk::SurfaceKHR,
     pub(crate) ext: extensions::khr::Surface,
     pub(crate) surface_format: vk::SurfaceFormatKHR,
-    _instance: Arc<Instance>, // destructor ordering
+    instance: Arc<Instance>,
 }
 
 impl Surface {
     pub(crate) fn new(instance: &Arc<Instance>) -> Surface {
-        let surface = unsafe { create_surface(instance.entry.vk(), instance.vk(), &instance.window).unwrap() };
+        let surface = unsafe { create_surface(instance.entry.vk(), instance, &instance.window).unwrap() };
 
         let pdevices = unsafe { instance.enumerate_physical_devices().expect("Physical device error") };
         let physical_device = pdevices[0];
@@ -47,14 +47,17 @@ impl Surface {
             surface,
             ext: surface_loader,
             surface_format,
-            _instance: Arc::clone(instance),
+            instance: Arc::clone(instance),
         }
     }
 }
 
 impl Drop for Surface {
     fn drop(&mut self) {
-        unsafe { self.ext.destroy_surface(self.surface, None) }
+        unsafe {
+            self.ext
+                .destroy_surface(self.surface, self.instance.allocation_callbacks())
+        }
     }
 }
 
@@ -66,6 +69,7 @@ pub(crate) struct Swapchain {
     pub(crate) height: u32,
     pub(crate) desired_image_count: u32,
     pub(crate) supports_present_from_compute: bool,
+    instance: Arc<Instance>,
 }
 
 impl Swapchain {
@@ -130,7 +134,11 @@ impl Swapchain {
             })
             .clipped(true)
             .image_array_layers(1);
-        let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None).unwrap() };
+        let swapchain = unsafe {
+            swapchain_loader
+                .create_swapchain(&swapchain_create_info, instance.allocation_callbacks())
+                .unwrap()
+        };
 
         device.set_object_name(swapchain, "Window surface");
 
@@ -142,6 +150,7 @@ impl Swapchain {
             height: surface_resolution.height,
             desired_image_count,
             supports_present_from_compute,
+            instance: Arc::clone(instance),
         }
     }
 
@@ -180,8 +189,12 @@ impl Swapchain {
             .old_swapchain(self.swapchain)
             .image_array_layers(1);
         unsafe {
-            let new_swapchain = self.ext.create_swapchain(&swapchain_create_info, None).unwrap();
-            self.ext.destroy_swapchain(self.swapchain, None);
+            let new_swapchain = self
+                .ext
+                .create_swapchain(&swapchain_create_info, self.instance.allocation_callbacks())
+                .unwrap();
+            self.ext
+                .destroy_swapchain(self.swapchain, self.instance.allocation_callbacks());
             self.swapchain = new_swapchain;
         };
 
@@ -192,14 +205,17 @@ impl Swapchain {
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
-        unsafe { self.ext.destroy_swapchain(self.swapchain, None) }
+        unsafe {
+            self.ext
+                .destroy_swapchain(self.swapchain, self.instance.allocation_callbacks())
+        }
     }
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
 unsafe fn create_surface(
     entry: &ash::Entry,
-    instance: &ash::Instance,
+    instance: &Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use winit::platform::unix::WindowExtUnix;
@@ -209,13 +225,13 @@ unsafe fn create_surface(
         .window(x11_window as vk::Window)
         .dpy(x11_display as *mut vk::Display);
     let xlib_surface_loader = XlibSurface::new(entry, instance);
-    xlib_surface_loader.create_xlib_surface(&x11_create_info, None)
+    xlib_surface_loader.create_xlib_surface(&x11_create_info, instance.allocation_callbacks())
 }
 
 #[cfg(windows)]
 unsafe fn create_surface(
     entry: &ash::Entry,
-    instance: &ash::Instance,
+    instance: &Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use std::ffi::c_void;
@@ -227,5 +243,5 @@ unsafe fn create_surface(
         .hinstance(hinstance)
         .hwnd(hwnd as *const c_void);
     let win32_surface_loader = Win32Surface::new(entry, instance);
-    win32_surface_loader.create_win32_surface(&win32_create_info, None)
+    win32_surface_loader.create_win32_surface(&win32_create_info, instance.allocation_callbacks())
 }

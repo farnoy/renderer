@@ -23,14 +23,19 @@ pub(crate) struct Event {
 impl Semaphore {
     pub(super) fn new(device: &Device) -> Semaphore {
         let create_info = vk::SemaphoreCreateInfo::builder();
-        let semaphore = unsafe { device.device.create_semaphore(&create_info, None).unwrap() };
+        let semaphore = unsafe {
+            device
+                .device
+                .create_semaphore(&create_info, device.instance.allocation_callbacks())
+                .unwrap()
+        };
 
         Semaphore { handle: semaphore }
     }
 
     pub(crate) fn destroy(mut self, device: &Device) {
         unsafe {
-            device.destroy_semaphore(self.handle, None);
+            device.destroy_semaphore(self.handle, device.instance.allocation_callbacks());
         }
         self.handle = vk::Semaphore::null();
     }
@@ -42,7 +47,11 @@ impl TimelineSemaphore {
             .semaphore_type(vk::SemaphoreType::TIMELINE)
             .initial_value(initial_value);
         let create_info = vk::SemaphoreCreateInfo::builder().push_next(&mut create_type_info);
-        let semaphore = unsafe { device.create_semaphore(&create_info, None).unwrap() };
+        let semaphore = unsafe {
+            device
+                .create_semaphore(&create_info, device.instance.allocation_callbacks())
+                .unwrap()
+        };
 
         TimelineSemaphore { handle: semaphore }
     }
@@ -64,7 +73,7 @@ impl TimelineSemaphore {
 
     pub(crate) fn destroy(mut self, device: &Device) {
         unsafe {
-            device.destroy_semaphore(self.handle, None);
+            device.destroy_semaphore(self.handle, device.instance.allocation_callbacks());
         }
         self.handle = vk::Semaphore::null();
     }
@@ -76,7 +85,7 @@ impl Fence {
         let fence = unsafe {
             device
                 .device
-                .create_fence(&create_info, None)
+                .create_fence(&create_info, device.instance.allocation_callbacks())
                 .expect("Create fence failed.")
         };
         Fence { handle: fence }
@@ -84,7 +93,7 @@ impl Fence {
 
     pub(crate) fn destroy(mut self, device: &Device) {
         unsafe {
-            device.destroy_fence(self.handle, None);
+            device.destroy_fence(self.handle, device.instance.allocation_callbacks());
         }
         self.handle = vk::Fence::null();
     }
@@ -98,7 +107,7 @@ impl Event {
         let event = unsafe {
             device
                 .device
-                .create_event(&create_info, None)
+                .create_event(&create_info, device.instance.allocation_callbacks())
                 .expect("Create event failed.")
         };
         Event { handle: event }
@@ -114,7 +123,7 @@ impl Event {
     #[allow(unused)]
     pub(crate) fn destroy(mut self, device: &Device) {
         unsafe {
-            device.destroy_event(self.handle, None);
+            device.destroy_event(self.handle, device.instance.allocation_callbacks());
         }
         self.handle = vk::Event::null();
     }

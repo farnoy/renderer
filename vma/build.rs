@@ -61,6 +61,7 @@ fn main() {
         .blocklist_type("VmaAllocation")
         .blocklist_type("VmaAllocationCreateInfo")
         .blocklist_type("VmaAllocationInfo")
+        .blocklist_type("VkAllocationCallbacks")
         .blocklist_type("VkBuffer")
         .blocklist_type("VkBufferCreateInfo")
         .blocklist_type("VkImage")

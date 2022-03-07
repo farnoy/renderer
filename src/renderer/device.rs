@@ -226,10 +226,17 @@ impl Device {
                 .push_next(&mut features_synchronization)
                 .push_next(&mut features_dynamic_rendering);
 
-            unsafe { instance.create_device(physical_device, &device_create_info, None)? }
+            unsafe { instance.create_device(physical_device, &device_create_info, instance.allocation_callbacks())? }
         };
 
-        let allocator = alloc::create(entry.vk(), &**instance, device.handle(), physical_device).unwrap();
+        let allocator = alloc::create(
+            entry.vk(),
+            &**instance,
+            instance.allocation_callbacks(),
+            device.handle(),
+            physical_device,
+        )
+        .unwrap();
         let graphics_queue_family = graphics_queue_spec.0;
         let compute_queue_family = compute_queues_spec.map(|(f, _)| f).unwrap_or(graphics_queue_family);
         let transfer_queue_family = transfer_queues_spec.map(|(f, _)| f).unwrap_or(compute_queue_family);
@@ -331,6 +338,10 @@ impl Device {
             let queues = self.queues.get(&self.transfer_queue_family).unwrap();
             &queues[virt_ix % queues.len()]
         }
+    }
+
+    pub(crate) fn allocation_callbacks(&self) -> Option<&vk::AllocationCallbacks> {
+        self.instance.allocation_callbacks()
     }
 
     pub(crate) fn allocation_stats(&self) -> alloc::VmaStats {
@@ -508,7 +519,7 @@ impl Drop for Device {
         unsafe {
             self.device.device_wait_idle().unwrap();
             alloc::destroy(self.allocator);
-            self.device.destroy_device(None);
+            self.device.destroy_device(self.instance.allocation_callbacks());
         }
     }
 }

@@ -60,7 +60,7 @@ impl BottomLevelAccelerationStructure {
         unsafe {
             device
                 .acceleration_structure
-                .destroy_acceleration_structure(self.handle, None);
+                .destroy_acceleration_structure(self.handle, device.allocation_callbacks());
             self.handle = vk::AccelerationStructureKHR::null();
         }
         self.buffer.destroy(device);
@@ -138,7 +138,9 @@ impl AccelerationStructuresInternal {
             .for_each(|b| b.into_iter().for_each(|b| b.destroy(device)));
         self.top_level_handles.into_iter().for_each(|b| {
             b.into_iter().for_each(|b| unsafe {
-                device.acceleration_structure.destroy_acceleration_structure(b, None);
+                device
+                    .acceleration_structure
+                    .destroy_acceleration_structure(b, device.allocation_callbacks());
             })
         });
         self.instances_buffer.into_iter().for_each(|b| b.destroy(device));
@@ -197,7 +199,7 @@ pub(crate) fn build_acceleration_structures(
             renderer
                 .device
                 .acceleration_structure
-                .destroy_acceleration_structure(previous_handle, None);
+                .destroy_acceleration_structure(previous_handle, renderer.device.allocation_callbacks());
         }
     }
 
@@ -270,7 +272,7 @@ pub(crate) fn build_acceleration_structures(
                                 .buffer(buffer.handle)
                                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
                                 .size(build_sizes.acceleration_structure_size),
-                            None,
+                            renderer.device.allocation_callbacks(),
                         )
                         .unwrap()
                 };
@@ -511,7 +513,7 @@ pub(crate) fn build_acceleration_structures(
                         .buffer(top_level_buffer.handle)
                         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
                         .size(build_sizes.acceleration_structure_size),
-                    None,
+                    renderer.device.allocation_callbacks(),
                 )
                 .unwrap()
         };

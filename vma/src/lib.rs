@@ -9,6 +9,7 @@
 
 use ash::vk;
 
+type VkAllocationCallbacks = vk::AllocationCallbacks;
 type VkFlags = vk::Flags;
 type VkBuffer = vk::Buffer;
 type VkBufferCreateInfo = vk::BufferCreateInfo;

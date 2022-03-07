@@ -45,7 +45,12 @@ impl StrictCommandPool {
         let pool_create_info = vk::CommandPoolCreateInfo::builder()
             // .flags(vk::CommandPoolCreateFlags::TRANSIENT)
             .queue_family_index(queue_family);
-        let pool = unsafe { device.device.create_command_pool(&pool_create_info, None).unwrap() };
+        let pool = unsafe {
+            device
+                .device
+                .create_command_pool(&pool_create_info, device.instance.allocation_callbacks())
+                .unwrap()
+        };
         device.set_object_name(pool, name);
 
         StrictCommandPool {
@@ -84,7 +89,7 @@ impl StrictCommandPool {
 
     pub(crate) fn destroy(mut self, device: &Device) {
         unsafe {
-            device.destroy_command_pool(self.handle, None);
+            device.destroy_command_pool(self.handle, device.instance.allocation_callbacks());
         }
         self.handle = vk::CommandPool::null();
     }

@@ -105,7 +105,7 @@ impl ShadowMappingData {
                             layer_count: 1,
                         })
                         .image(depth_image.handle),
-                    None,
+                    renderer.device.allocation_callbacks(),
                 )
                 .unwrap();
 

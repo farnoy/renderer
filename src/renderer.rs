@@ -1103,7 +1103,12 @@ impl MainAttachments {
                         layer_count: 1,
                     })
                     .image(image);
-                let handle = unsafe { renderer.device.create_image_view(&create_view_info, None).unwrap() };
+                let handle = unsafe {
+                    renderer
+                        .device
+                        .create_image_view(&create_view_info, renderer.device.allocation_callbacks())
+                        .unwrap()
+                };
 
                 ImageView { handle }
             })
