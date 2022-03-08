@@ -3753,8 +3753,8 @@ fn update_submissions(
                 let queue = queue.lock();
                 scope!("queue locked");
 
-                if tracing::enabled!(target: "renderer", tracing::Level::INFO) {
-                    let _span = tracing::info_span!("logging submission").entered();
+                if tracing::enabled!(target: "renderer", tracing::Level::DEBUG) {
+                    let _span = tracing::debug_span!("logging submission").entered();
                     let mut str = format!("Submitting {pass_name} to queue family {queue_family:?}[{virtualized_ix}]");
                     for edge in active_graph.edges_directed(node, Incoming) {
                         let incoming_pass_name = &active_graph[edge.source()];
@@ -3773,7 +3773,7 @@ fn update_submissions(
                     for (semaphore_ix, value) in signal_semaphores.iter() {
                         str += &format!("\nSignaling: AutoSemaphores[{semaphore_ix}] <- {value}");
                     }
-                    tracing::info!(target: "renderer", "{str}");
+                    tracing::debug!(target: "renderer", "{str}");
                 }
 
                 unsafe {
