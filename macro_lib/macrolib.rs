@@ -1194,7 +1194,8 @@ pub fn assign_semaphores_to_stages(
 ) -> HashMap<NodeIndex, (usize, u64)> {
     let mut mapping = HashMap::new();
 
-    // Start from PresentationAcquire
+    // Start from PresentationAcquire, we need it to have a unique timeline because acquiring the image
+    // can happen before presenting the previous frame, so it breaks our linear progression
     let presentation_acquire = graph
         .node_indices()
         .find(|&c| graph[c] == "PresentationAcquire")
@@ -1204,8 +1205,8 @@ pub fn assign_semaphores_to_stages(
     dfs.next(graph); // Skip PresentationAcquire which we set up before the loop
     mapping.insert(presentation_acquire, (0, 1));
 
-    let mut last_semaphore_ix = 0;
-    let mut last_stage_ix = 1;
+    let mut last_semaphore_ix = 1;
+    let mut last_stage_ix = 0;
     let mut last_node = presentation_acquire;
 
     while let Some(this_node) = dfs.next(graph) {

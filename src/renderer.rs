@@ -154,7 +154,7 @@ pub(crate) struct RenderFrame {
     pub(crate) buffer_count: usize,
 }
 
-#[derive(Clone, Component)]
+#[derive(Clone, Component, Debug)]
 pub(crate) struct SwapchainIndexToFrameNumber {
     pub(crate) map: DoubleBuffered<u64>,
 }

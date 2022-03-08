@@ -218,6 +218,8 @@ impl PresentFramebuffer {
             handle: swapchain_images[image_index.0 as usize],
         };
 
+        frame_graph::Present::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
+
         let command_buffer = present_data
             .pre_present_command_util
             .reset_and_record(&renderer, &image_index);
@@ -304,8 +306,16 @@ impl PresentFramebuffer {
             let command_buffers = [vk::CommandBufferSubmitInfoKHR::builder()
                 .command_buffer(*command_buffer)
                 .build()];
+            let signal_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
+                .semaphore(renderer.auto_semaphores.0[frame_graph::Present::Stage::SIGNAL_AUTO_SEMAPHORE_IX].handle)
+                .value(
+                    as_of::<<frame_graph::Present::Stage as RenderStage>::SignalTimelineStage>(renderer.frame_number),
+                )
+                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                .build()];
             let submit = vk::SubmitInfo2KHR::builder()
                 .command_buffer_infos(&command_buffers)
+                .signal_semaphore_infos(signal_semaphores)
                 .build();
 
             unsafe {

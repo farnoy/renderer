@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use smallvec::SmallVec;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct DoubleBuffered<T> {
     data: SmallVec<[T; 3]>,
 }
