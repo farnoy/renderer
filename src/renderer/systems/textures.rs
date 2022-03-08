@@ -1,4 +1,4 @@
-use std::{cmp::max, mem::replace, slice, sync::Arc};
+use std::{cmp::max, slice, sync::Arc};
 
 use ash::vk;
 use bevy_ecs::prelude::*;

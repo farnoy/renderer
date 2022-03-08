@@ -20,7 +20,7 @@ pub(crate) mod renderer;
 use std::sync::Arc;
 
 use bevy_app::*;
-use bevy_ecs::{prelude::*, system::SystemState};
+use bevy_ecs::prelude::*;
 use bevy_tasks::Task;
 use ecs::{
     components::{Light, Position, Rotation},
@@ -898,25 +898,10 @@ fn main() {
     // Submissions uses a latched value that initializes the execution plan of the next frame, therefore
     // we need to run it twice at the start so that it prepares a plan for the current frame.
     {
-        let mut runtime_config_system_state: SystemState<ResMut<RuntimeConfiguration>> =
-            SystemState::new(&mut app.world);
-        let mut x = runtime_config_system_state.get_mut(&mut app.world);
-        // bypass caching to recompute the initial plan
-        x.debug_aabbs = !x.debug_aabbs;
-
-        let mut system_state: SystemState<(
-            ResMut<Submissions>,
-            Res<RuntimeConfiguration>,
-            Res<FutureRuntimeConfiguration>,
-        )> = SystemState::new(&mut app.world);
-        let (submissions, runtime_config, future_configs) = system_state.get_mut(&mut app.world);
-        renderer::setup_submissions(submissions, runtime_config, future_configs);
-        let (mut submissions, _runtime_config, _future_configs) = system_state.get_mut(&mut app.world);
-        submissions.remaining.get_mut().clear();
-
-        let mut x = runtime_config_system_state.get_mut(&mut app.world);
-        // restore the changed configuration
-        x.debug_aabbs = !x.debug_aabbs;
+        let mut system = renderer::setup_submissions.system();
+        system.initialize(&mut app.world);
+        system.run(false, &mut app.world);
+        system.run(false, &mut app.world);
     }
 
     'frame: loop {

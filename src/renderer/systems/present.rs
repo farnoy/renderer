@@ -2,6 +2,7 @@ use std::u64;
 
 use ash::vk;
 use bevy_ecs::prelude::*;
+use petgraph::prelude::*;
 use profiling::scope;
 
 use super::super::{device::Semaphore, RenderFrame, Swapchain};
@@ -9,7 +10,7 @@ use super::super::{device::Semaphore, RenderFrame, Swapchain};
 use crate::renderer::CrashBuffer;
 use crate::renderer::{
     as_of, as_of_last, frame_graph, helpers::command_util::CommandUtil, Device, RenderStage, Resized, Submissions,
-    SwapchainIndexToFrameNumber,
+    SwapchainIndexToFrameNumber, TrackedSubmission,
 };
 
 renderer_macros::define_pass!(Present on compute);
@@ -182,7 +183,6 @@ impl PresentFramebuffer {
         {
             use petgraph::visit::IntoNodeReferences;
 
-            use crate::renderer::TrackedSubmission;
             let graph = submissions.remaining.get_mut();
             debug_assert!(
                 graph
@@ -330,7 +330,14 @@ impl PresentFramebuffer {
         }
         drop(queue);
 
-        submissions.remaining.get_mut().clear();
+        if cfg!(debug_assertions) {
+            *submissions
+                .remaining
+                .get_mut()
+                .node_weight_mut(NodeIndex::from(frame_graph::Present::INDEX))
+                .unwrap() = TrackedSubmission::Submitted;
+        }
+
         swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;
     }
 }

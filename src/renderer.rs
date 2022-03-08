@@ -89,9 +89,9 @@ pub(crate) use self::{
             ShadowMappingDataInternal, ShadowMappingLightMatrices,
         },
         textures::{
-            cleanup_base_color_markers, synchronize_base_color_textures_visit,
-            update_base_color_descriptors, BaseColorDescriptorPrivate, BaseColorDescriptorSet, BaseColorVisitedMarker,
-            GltfMeshBaseColorTexture, GltfMeshNormalTexture, NormalMapVisitedMarker,
+            cleanup_base_color_markers, synchronize_base_color_textures_visit, update_base_color_descriptors,
+            BaseColorDescriptorPrivate, BaseColorDescriptorSet, BaseColorVisitedMarker, GltfMeshBaseColorTexture,
+            GltfMeshNormalTexture, NormalMapVisitedMarker,
         },
     },
 };
@@ -2325,7 +2325,11 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let copy_runtime_config = test.root(copy_resource::<RuntimeConfiguration>);
     let copy_camera = test.root(copy_resource::<Camera>);
     let copy_indices = test.root(copy_resource::<SwapchainIndexToFrameNumber>);
-    let setup_submissions = test.root(setup_submissions);
+
+    fn const_true() -> bool {
+        true
+    }
+    let setup_submissions = test.root(const_true.chain(setup_submissions));
 
     let initial = (copy_runtime_config, copy_camera, copy_indices, setup_submissions);
 
@@ -3311,6 +3315,8 @@ impl Submissions {
 }
 
 pub(crate) fn setup_submissions(
+    In(cache_plan): In<bool>,
+    mut last_modified: Local<bool>,
     mut submissions: ResMut<Submissions>,
     current_config: Res<RuntimeConfiguration>,
     future_configs: Res<FutureRuntimeConfiguration>,
@@ -3328,19 +3334,15 @@ pub(crate) fn setup_submissions(
         ref mut upcoming_virtual_queue_indices,
     } = *submissions;
 
-    if *current_config == future_configs.0[0] {
+    if !*last_modified && cache_plan && *current_config == future_configs.0[0] {
+        let _span = tracing::info_span!("cached submission plan").entered();
         let remaining = remaining.get_mut();
-        let upcoming_remaining = upcoming_remaining.get_mut();
-        assert_eq!(remaining.node_count(), 0);
-        assert_eq!(remaining.edge_count(), 0);
-        remaining.clone_from(upcoming_remaining);
-
-        extra_signals.clone_from(upcoming_extra_signals);
-        active_resources.clone_from(upcoming_resources);
-        active_graph.clone_from(upcoming_graph);
-        virtual_queue_indices.clone_from(upcoming_virtual_queue_indices);
+        for tracked in remaining.node_weights_mut() {
+            *tracked = TrackedSubmission::Preparing;
+        }
         return;
     }
+    *last_modified = !*last_modified;
 
     let input = &RENDERER_INPUT;
 
@@ -3361,6 +3363,7 @@ pub(crate) fn setup_submissions(
     *active_resources = take(upcoming_resources);
     *active_graph = take(upcoming_graph);
     *upcoming_resources = input.resources.clone();
+    *virtual_queue_indices = take(upcoming_virtual_queue_indices);
     {
         let remaining = remaining.get_mut();
         let upcoming_remaining = upcoming_remaining.get_mut();
