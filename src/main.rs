@@ -53,8 +53,8 @@ use renderer::{reload_shaders, ReloadedShaders, ShaderReload};
 use crate::{
     ecs::systems::{shift_runtime_config, FutureRuntimeConfiguration},
     renderer::{
-        initiate_scene_loader, traverse_and_decode_scenes, ReferenceRTData, ReferenceRTDataPrivate, ScenesToLoad,
-        TransferCullPrivate, UploadMeshesData, RENDERER_INPUT,
+        initiate_scene_loader, traverse_and_decode_scenes, BaseColorDescriptorPrivate, ReferenceRTData,
+        ReferenceRTDataPrivate, ScenesToLoad, TransferCullPrivate, UploadMeshesData, RENDERER_INPUT,
     },
 };
 
@@ -673,6 +673,7 @@ fn main() {
     app.insert_resource(main_descriptor_pool);
     app.insert_resource(camera_matrices);
     app.insert_resource(base_color_descriptor_set);
+    app.init_resource::<BaseColorDescriptorPrivate>();
     app.insert_resource(model_data);
     app.init_resource::<UploadMeshesData>();
     app.init_resource::<CullPassData>();

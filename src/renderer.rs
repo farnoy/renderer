@@ -89,9 +89,9 @@ pub(crate) use self::{
             ShadowMappingDataInternal, ShadowMappingLightMatrices,
         },
         textures::{
-            cleanup_base_color_markers, recreate_base_color_descriptor_set, synchronize_base_color_textures_visit,
-            update_base_color_descriptors, BaseColorDescriptorSet, BaseColorVisitedMarker, GltfMeshBaseColorTexture,
-            GltfMeshNormalTexture, NormalMapVisitedMarker,
+            cleanup_base_color_markers, synchronize_base_color_textures_visit,
+            update_base_color_descriptors, BaseColorDescriptorPrivate, BaseColorDescriptorSet, BaseColorVisitedMarker,
+            GltfMeshBaseColorTexture, GltfMeshNormalTexture, NormalMapVisitedMarker,
         },
     },
 };
@@ -2329,10 +2329,9 @@ pub(crate) fn graphics_stage() -> SystemStage {
 
     let initial = (copy_runtime_config, copy_camera, copy_indices, setup_submissions);
 
-    let recreate_base_color = test.root(recreate_base_color_descriptor_set);
     let recreate_main_framebuffer = test.root(recreate_main_framebuffer);
 
-    let update_base_color = recreate_base_color.then(update_base_color_descriptors);
+    let update_base_color = test.root(update_base_color_descriptors);
 
     let (consolidate_mesh_buffers, upload_loaded_meshes, cull_bypass, build_as, shadow_mapping, reference_rt) = initial
         .join_all((

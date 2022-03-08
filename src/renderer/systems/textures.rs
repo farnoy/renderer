@@ -1,4 +1,4 @@
-use std::{mem::replace, sync::Arc};
+use std::{cmp::max, mem::replace, slice, sync::Arc};
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -7,9 +7,9 @@ use profiling::scope;
 use crate::{
     ecs::components::Deleting,
     renderer::{
-        device::DoubleBuffered, frame_graph, systems::present::ImageIndex, textures_set, CopiedResource, Device,
-        DrawIndex, Image, ImageView, MainDescriptorPool, RenderFrame, RenderStage, Sampler, SmartSet, SmartSetLayout,
-        SwapchainIndexToFrameNumber,
+        device::DoubleBuffered, frame_graph, systems::present::ImageIndex, textures_set, CopiedResource,
+        DescriptorSetLayout, Device, DrawIndex, Image, ImageView, MainDescriptorPool, RenderFrame, RenderStage,
+        Sampler, SmartSet, SmartSetLayout, SwapchainIndexToFrameNumber,
     },
 };
 
@@ -17,6 +17,10 @@ pub(crate) struct BaseColorDescriptorSet {
     pub(crate) layout: SmartSetLayout<textures_set::Layout>,
     pub(crate) set: DoubleBuffered<SmartSet<textures_set::Set>>,
     sampler: Sampler,
+}
+
+pub(crate) struct BaseColorDescriptorPrivate {
+    max_used_binding: DoubleBuffered<usize>,
 }
 
 #[derive(Component)]
@@ -62,6 +66,15 @@ impl BaseColorDescriptorSet {
             .into_iter()
             .for_each(|s| s.destroy(&main_descriptor_pool.0, device));
         self.layout.destroy(device);
+    }
+}
+
+impl FromWorld for BaseColorDescriptorPrivate {
+    fn from_world(world: &mut World) -> Self {
+        let renderer: &RenderFrame = world.get_resource().unwrap();
+        Self {
+            max_used_binding: renderer.new_buffered(|_| 0),
+        }
     }
 }
 
@@ -159,72 +172,103 @@ pub(crate) fn synchronize_base_color_textures_visit(
     }
 }
 
-pub(crate) fn recreate_base_color_descriptor_set(
-    renderer: Res<RenderFrame>,
-    image_index: Res<ImageIndex>,
-    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
-    mut base_color_descriptor_set: ResMut<BaseColorDescriptorSet>,
-    main_descriptor_pool: Res<MainDescriptorPool>,
-) {
-    scope!("ecs::recreate_base_color_descriptor_set");
-
-    frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
-
-    let new_set = SmartSet::new(
-        &renderer.device,
-        &main_descriptor_pool,
-        &base_color_descriptor_set.layout,
-        image_index.0,
-    );
-
-    replace(base_color_descriptor_set.set.current_mut(image_index.0), new_set)
-        .destroy(&main_descriptor_pool.0, &renderer.device);
-}
-
 pub(crate) fn update_base_color_descriptors(
     renderer: Res<RenderFrame>,
     image_index: Res<ImageIndex>,
     swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
     base_color_descriptor_set: Res<BaseColorDescriptorSet>,
+    mut base_color_descriptor_private: ResMut<BaseColorDescriptorPrivate>,
     query: Query<(&DrawIndex, &BaseColorVisitedMarker, &NormalMapVisitedMarker)>,
 ) {
-    scope!("ecs::update_base_color_descriptors");
+    let max_previously_used = base_color_descriptor_private
+        .max_used_binding
+        .current_mut(image_index.0);
+    let max_this_time = max(query.iter().len(), *max_previously_used);
+    let binding_size = <textures_set::Layout as DescriptorSetLayout>::binding_layout()[0]
+        .descriptor_count
+        .try_into()
+        .unwrap();
+    assert!(max_this_time <= binding_size);
+    let null_image = vk::DescriptorImageInfo::builder()
+        .image_view(vk::ImageView::null())
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .sampler(base_color_descriptor_set.sampler.handle)
+        .build();
+    // only need space for the # of draw_ids * 2 bindings
+    let mut image_infos = Vec::with_capacity(query.iter().len() * 2);
+    // 2 bindings * array count
+    let mut writes = Vec::with_capacity(max_this_time * 2);
+
+    for (draw_id, base_color, normal_map) in &mut query.iter() {
+        image_infos.push(
+            vk::DescriptorImageInfo::builder()
+                .image_view(base_color.image_view.handle)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .sampler(base_color_descriptor_set.sampler.handle)
+                .build(),
+        );
+        let base_color_update = image_infos.last().unwrap();
+        writes.push(
+            vk::WriteDescriptorSet::builder()
+                .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
+                .dst_binding(0)
+                .dst_array_element(draw_id.0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(slice::from_ref(base_color_update))
+                .build(),
+        );
+        image_infos.push(
+            vk::DescriptorImageInfo::builder()
+                .image_view(normal_map.image_view.handle)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .sampler(base_color_descriptor_set.sampler.handle)
+                .build(),
+        );
+        let normal_map_update = image_infos.last().unwrap();
+        writes.push(
+            vk::WriteDescriptorSet::builder()
+                .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
+                .dst_binding(1)
+                .dst_array_element(draw_id.0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(slice::from_ref(normal_map_update))
+                .build(),
+        );
+    }
+
+    for ix in (query.iter().len())..(max_this_time) {
+        writes.push(
+            vk::WriteDescriptorSet::builder()
+                .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
+                .dst_binding(0)
+                .dst_array_element(ix.try_into().unwrap())
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(slice::from_ref(&null_image))
+                .build(),
+        );
+        writes.push(
+            vk::WriteDescriptorSet::builder()
+                .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
+                .dst_binding(1)
+                .dst_array_element(ix.try_into().unwrap())
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(slice::from_ref(&null_image))
+                .build(),
+        );
+    }
+
+    debug_assert_eq!(image_infos.capacity(), query.iter().len() * 2);
+    debug_assert_eq!(image_infos.len(), query.iter().len() * 2);
+    debug_assert_eq!(writes.capacity(), max_this_time * 2);
+    debug_assert_eq!(writes.len(), max_this_time * 2);
 
     frame_graph::Main::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
 
-    for (draw_id, base_color, normal_map) in &mut query.iter() {
-        let base_color_update = &[vk::DescriptorImageInfo::builder()
-            .image_view(base_color.image_view.handle)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .sampler(base_color_descriptor_set.sampler.handle)
-            .build()];
-        let normal_map_update = &[vk::DescriptorImageInfo::builder()
-            .image_view(normal_map.image_view.handle)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .sampler(base_color_descriptor_set.sampler.handle)
-            .build()];
-        unsafe {
-            renderer.device.device.update_descriptor_sets(
-                &[
-                    vk::WriteDescriptorSet::builder()
-                        .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
-                        .dst_binding(0)
-                        .dst_array_element(draw_id.0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(base_color_update)
-                        .build(),
-                    vk::WriteDescriptorSet::builder()
-                        .dst_set(base_color_descriptor_set.set.current(image_index.0).set.handle)
-                        .dst_binding(1)
-                        .dst_array_element(draw_id.0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(normal_map_update)
-                        .build(),
-                ],
-                &[],
-            );
-        }
+    unsafe {
+        renderer.device.update_descriptor_sets(&writes, &[]);
     }
+
+    *max_previously_used = max_this_time;
 }
 
 pub(crate) fn cleanup_base_color_markers(world: &mut World) {

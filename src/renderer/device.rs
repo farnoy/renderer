@@ -170,7 +170,7 @@ impl Device {
                 depth_bounds: 0,
                 multi_draw_indirect: 1,
                 vertex_pipeline_stores_and_atomics: 1,
-                robust_buffer_access: 1, // TODO: disable at some point?
+                robust_buffer_access: 1,
                 fill_mode_non_solid: 1,
                 draw_indirect_first_instance: 1,
                 shader_storage_buffer_array_dynamic_indexing: 1,
