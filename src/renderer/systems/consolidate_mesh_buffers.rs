@@ -164,8 +164,7 @@ pub(crate) fn consolidate_mesh_buffers(
     drop(marker);
     let command_buffer = command_buffer.end();
 
-    submissions.submit(
-        &renderer,
+    submissions.produce_submission(
         frame_graph::ConsolidateMeshBuffers::INDEX,
         Some(*command_buffer),
         #[cfg(feature = "crash_debugging")]

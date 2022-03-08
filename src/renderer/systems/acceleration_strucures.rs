@@ -189,12 +189,15 @@ pub(crate) fn build_acceleration_structures(
     // Free up structures used for this swapchain previously
     // TODO: inefficient and these can be reused in some cases
     if let Some(previous_scratch) = top_level_scratch_buffers.current_mut(image_index.0).take() {
+        let _span = tracing::trace_span!("destroy previous top level scratch buffer").entered();
         previous_scratch.destroy(&renderer.device);
     }
     if let Some(previous_buffer) = top_level_buffers.current_mut(image_index.0).take() {
+        let _span = tracing::trace_span!("destroy previous top level buffer").entered();
         previous_buffer.destroy(&renderer.device);
     }
     if let Some(previous_handle) = top_level_handles.current_mut(image_index.0).take() {
+        let _span = tracing::trace_span!("destroy previous TLAS").entered();
         unsafe {
             renderer
                 .device

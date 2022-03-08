@@ -1785,8 +1785,7 @@ pub(crate) fn render_frame(
 
     let command_buffer = *command_buffer.end();
 
-    submissions.submit(
-        &renderer,
+    submissions.produce_submission(
         frame_graph::Main::INDEX,
         Some(command_buffer),
         #[cfg(feature = "crash_debugging")]
@@ -2345,24 +2344,22 @@ pub(crate) fn graphics_stage() -> SystemStage {
             reference_raytrace.system(),
         ));
 
+    let consolidate_mesh_buffers_submit = consolidate_mesh_buffers.then(submit_pending);
+    let build_as_submit = build_as.then(submit_pending);
+
     let cull = consolidate_mesh_buffers.then(cull_pass);
 
     let depth = (recreate_main_framebuffer.clone(), consolidate_mesh_buffers.clone()).join(depth_only_pass);
 
-    let main_pass = (
-        recreate_main_framebuffer,
-        update_base_color,
-        build_as.clone(),
-        consolidate_mesh_buffers,
-    )
-        .join(render_frame);
+    let main_pass = (recreate_main_framebuffer, build_as, consolidate_mesh_buffers).join(render_frame);
 
-    let build_as_submit = build_as.then(submit_pending);
+    let main_pass_submit = (update_base_color, main_pass).join(submit_pending);
 
     (
-        main_pass,
+        main_pass_submit,
         cull,
         cull_bypass,
+        consolidate_mesh_buffers_submit,
         depth,
         shadow_mapping,
         upload_loaded_meshes,
@@ -3755,6 +3752,7 @@ fn update_submissions(
                 scope!("queue locked");
 
                 if tracing::enabled!(target: "renderer", tracing::Level::INFO) {
+                    let _span = tracing::info_span!("logging submission").entered();
                     let mut str = format!("Submitting {pass_name} to queue family {queue_family:?}[{virtualized_ix}]");
                     for edge in active_graph.edges_directed(node, Incoming) {
                         let incoming_pass_name = &active_graph[edge.source()];
