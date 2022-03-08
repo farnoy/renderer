@@ -64,6 +64,13 @@ pub(crate) struct Device {
     pub(crate) min_acceleration_structure_scratch_offset_alignment: u32,
 }
 
+/// If the compute queues are unavailable, they will be mapped to the graphics queues at this
+/// virtual offset
+const COMPUTE_QUEUE_VIRTUAL_STAGGER: usize = 3;
+/// If the transfer queues are unavailable, they will be mapped to the compute queues at this
+/// virtual offset
+const TRANSFER_QUEUE_VIRTUAL_STAGGER: usize = 4;
+
 impl Device {
     pub(crate) fn new(instance: &Arc<Instance>, surface: &Surface) -> Result<Device, vk::Result> {
         let Instance { ref entry, .. } = **instance;
@@ -317,6 +324,35 @@ impl Device {
         self.graphics_queue_virtualized(0)
     }
 
+    /// Translates the virtual queue index into the final effective index that will be used,
+    /// compensated for both collapsed queue families and runtime queue counts
+    pub(crate) fn graphics_queue_virtualized_to_effective_ix(&self, virt_ix: usize) -> usize {
+        let queues = self.queues.get(&self.graphics_queue_family).unwrap();
+        virt_ix % queues.len()
+    }
+
+    /// Translates the virtual queue index into the final effective index that will be used,
+    /// compensated for both collapsed queue families and runtime queue counts
+    pub(crate) fn compute_queue_virtualized_to_effective_ix(&self, virt_ix: usize) -> usize {
+        if self.compute_queue_family == self.graphics_queue_family {
+            self.graphics_queue_virtualized_to_effective_ix(COMPUTE_QUEUE_VIRTUAL_STAGGER + virt_ix)
+        } else {
+            let queues = self.queues.get(&self.compute_queue_family).unwrap();
+            virt_ix % queues.len()
+        }
+    }
+
+    /// Translates the virtual queue index into the final effective index that will be used,
+    /// compensated for both collapsed queue families and runtime queue counts
+    pub(crate) fn transfer_queue_virtualized_to_effective_ix(&self, virt_ix: usize) -> usize {
+        if self.transfer_queue_family == self.compute_queue_family {
+            self.compute_queue_virtualized_to_effective_ix(TRANSFER_QUEUE_VIRTUAL_STAGGER + virt_ix)
+        } else {
+            let queues = self.queues.get(&self.transfer_queue_family).unwrap();
+            virt_ix % queues.len()
+        }
+    }
+
     pub(crate) fn graphics_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
         let queues = self.queues.get(&self.graphics_queue_family).unwrap();
         &queues[virt_ix % queues.len()]
@@ -324,7 +360,7 @@ impl Device {
 
     pub(crate) fn compute_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
         if self.compute_queue_family == self.graphics_queue_family {
-            self.graphics_queue_virtualized(3 + virt_ix)
+            self.graphics_queue_virtualized(COMPUTE_QUEUE_VIRTUAL_STAGGER + virt_ix)
         } else {
             let queues = self.queues.get(&self.compute_queue_family).unwrap();
             &queues[virt_ix % queues.len()]
@@ -333,7 +369,7 @@ impl Device {
 
     pub(crate) fn transfer_queue_virtualized(&self, virt_ix: usize) -> &Mutex<vk::Queue> {
         if self.transfer_queue_family == self.compute_queue_family {
-            self.compute_queue_virtualized(4 + virt_ix)
+            self.compute_queue_virtualized(TRANSFER_QUEUE_VIRTUAL_STAGGER + virt_ix)
         } else {
             let queues = self.queues.get(&self.transfer_queue_family).unwrap();
             &queues[virt_ix % queues.len()]

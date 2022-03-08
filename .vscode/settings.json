@@ -6,13 +6,16 @@
   "rust-analyzer.cargo.allFeatures": false,
   "rust-analyzer.cargo.features": [
     "standard_validation",
-    "crash_debugging",
-    "shader_reload"
+    "tracing_on"
   ],
   "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.checkOnSave.extraArgs": ["--target-dir", "target-rust-analyzer"],
   "rust-analyzer.updates.channel": "nightly",
   "editor.rulers": [
     120
   ],
   "editor.minimap.maxColumn": 80,
+  "rust-analyzer.checkOnSave.allTargets": false,
+  "rust-analyzer.hoverActions.references": true,
+  "editor.wordBasedSuggestions": false
 }

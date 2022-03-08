@@ -104,6 +104,7 @@ trace_alloc = []
 tracing_on = ["profiling/profile-with-tracy", "tracing-tracy/enable", "tracy-client/enable", "bevy_ecs/trace"]
 tracing_off = ["tracing/max_level_off", "tracing/release_max_level_off"]
 shader_reload = ["notify", "spirq"]
+submit_ooo = []
 
 [profile.dev.package.image]
 opt-level = 3
@@ -128,7 +129,7 @@ opt-level = 3
 
 [profile.dev]
 opt-level = 1
-debug = true # to speedup incremental compilaton, uncomment to use a debugger
+debug = false # to speedup incremental compilaton, uncomment to use a debugger
 panic = "abort"
 lto = "off"
 

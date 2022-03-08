@@ -180,14 +180,22 @@ impl PresentFramebuffer {
 
         #[cfg(debug_assertions)]
         {
+            use petgraph::visit::IntoNodeReferences;
+
+            use crate::renderer::TrackedSubmission;
             let graph = submissions.remaining.get_mut();
-            debug_assert_eq!(graph.node_count(), 1);
-            debug_assert_eq!(
-                graph.node_indices().next().unwrap().index() as u32,
-                frame_graph::Present::INDEX,
-                "The only remaining node must be Present"
+            debug_assert!(
+                graph
+                    .node_references()
+                    .filter(|(ix, _)| ix.index() != frame_graph::Present::INDEX as usize)
+                    .all(|(_, x)| *x == TrackedSubmission::Submitted),
+                "All remaining submissions before Present must have been submitted"
             );
-            debug_assert_eq!(graph.edge_count(), 0);
+            debug_assert_eq!(
+                graph.node_weight(petgraph::stable_graph::NodeIndex::from(frame_graph::Present::INDEX)),
+                Some(&TrackedSubmission::Preparing),
+                "Present must be in Preparing state"
+            );
         }
 
         assert!(

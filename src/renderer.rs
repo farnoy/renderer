@@ -14,6 +14,7 @@ use std::{
     cmp::max,
     env,
     fs::{read_dir, remove_file, File},
+    hint::unreachable_unchecked,
     io::Write,
     marker::PhantomData,
     mem::{replace, size_of, take},
@@ -2373,6 +2374,14 @@ pub(crate) fn graphics_stage() -> SystemStage {
     stage.with_system_set(test.into())
 }
 
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) enum TrackedSubmission {
+    Preparing,
+    Executable(Option<vk::CommandBuffer>),
+    Submitting,
+    Submitted,
+}
+
 pub(crate) struct Submissions {
     pub(crate) active_graph: StableDiGraph<String, DependencyType>,
     pub(crate) upcoming_graph: StableDiGraph<String, DependencyType>,
@@ -2381,8 +2390,8 @@ pub(crate) struct Submissions {
     /// on the next frame. This allows us to look ahead to how resources will be used in the
     /// next frame, and transition them accurately during configuration changes.
     pub(crate) upcoming_resources: HashMap<String, ResourceClaims>,
-    pub(crate) remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
-    pub(crate) upcoming_remaining: Mutex<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
+    pub(crate) remaining: Mutex<StableDiGraph<TrackedSubmission, ()>>,
+    pub(crate) upcoming_remaining: Mutex<StableDiGraph<TrackedSubmission, ()>>,
     /// When the graph is simplified according to conditionals, we pick up inactive nodes and signal
     /// them at the next downstream opportunity. This allows us to increment all the semaphores
     /// appropriately all of the time while toggle freely between conditionals.
@@ -2418,8 +2427,8 @@ impl Submissions {
         let weight = g
             .node_weight_mut(NodeIndex::from(node_ix))
             .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
-        debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
-        *weight = Some(cb);
+        debug_assert!(*weight == TrackedSubmission::Preparing, "node_ix = {}", node_ix);
+        *weight = TrackedSubmission::Executable(cb);
     }
 
     pub(crate) fn submit(
@@ -2434,9 +2443,9 @@ impl Submissions {
         let weight = g
             .node_weight_mut(NodeIndex::from(node_ix))
             .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
-        debug_assert!(weight.is_none(), "node_ix = {}", node_ix);
+        debug_assert!(*weight == TrackedSubmission::Preparing, "node_ix = {}", node_ix);
         let _span = tracing::info_span!(target: "renderer", "Submitting command buffer", pass_name = self.active_graph.node_weight(NodeIndex::from(node_ix)).unwrap().as_str()).entered();
-        *weight = Some(cb);
+        *weight = TrackedSubmission::Executable(cb);
         update_submissions(
             renderer,
             self,
@@ -3359,8 +3368,7 @@ pub(crate) fn setup_submissions(
     {
         let remaining = remaining.get_mut();
         let upcoming_remaining = upcoming_remaining.get_mut();
-        assert_eq!(remaining.node_count(), 0);
-        assert_eq!(remaining.edge_count(), 0);
+        debug_assert!(remaining.node_weights().all(|x| *x == TrackedSubmission::Submitted));
         *remaining = take(upcoming_remaining);
     }
 
@@ -3515,7 +3523,7 @@ pub(crate) fn setup_submissions(
 
     let graph = upcoming_remaining.get_mut();
 
-    *graph = graph2.map(|_, _| None, |_, _| ());
+    *graph = graph2.map(|_, _| TrackedSubmission::Preparing, |_, _| ());
     graph.remove_node(NodeIndex::from(frame_graph::PresentationAcquire::INDEX));
 
     *upcoming_virtual_queue_indices = {
@@ -3531,24 +3539,8 @@ pub(crate) fn setup_submissions(
                     .unwrap()
             });
 
-            let mut toposort_grouped_compute: Vec<Vec<NodeIndex>> = vec![];
-            for &ix in toposort_compute {
-                match toposort_grouped_compute.last_mut() {
-                    // if no path bridges from the last stage to ix
-                    Some(last)
-                        if !last
-                            .iter()
-                            .any(|candidate| has_path_connecting(&*graph, *candidate, ix, None)) =>
-                    {
-                        last.push(ix);
-                    }
-                    _ => toposort_grouped_compute.push(vec![ix]),
-                }
-            }
-            for stage in toposort_grouped_compute {
-                for (queue_ix, &node_ix) in stage.iter().enumerate() {
-                    assert!(mapping.insert(node_ix, queue_ix).is_none());
-                }
+            for (queue_ix, &node_ix) in toposort_compute.enumerate() {
+                assert!(mapping.insert(node_ix, queue_ix).is_none());
             }
         };
         compute_indices(QueueFamily::Graphics);
@@ -3578,9 +3570,10 @@ fn submit_pending(
 fn update_submissions(
     renderer: &RenderFrame,
     submissions: &Submissions,
-    mut graph: MutexGuard<StableDiGraph<Option<Option<vk::CommandBuffer>>, ()>>,
+    mut graph: MutexGuard<StableDiGraph<TrackedSubmission, ()>>,
     #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
+    use petgraph::visit::Reversed;
     scope!("rendering::update_submissions");
 
     let Submissions {
@@ -3591,156 +3584,217 @@ fn update_submissions(
     } = submissions;
     let input = &RENDERER_INPUT;
 
-    let mut should_continue = true;
-    while graph.node_count() > 0 && should_continue {
-        should_continue = false;
-        let roots = graph.externals(Incoming).collect::<Vec<_>>();
-        'inner: for node in roots {
-            match (active_graph.node_weight(node), graph.node_weight_mut(node)) {
-                (_, None) => break 'inner, // someone else changed it up while we were unlocked
-                (None, Some(_)) => {
-                    dbg!("redundant submit skipped", node);
+    // helpers that will be used to detect hazards
+    let runtime_queue_family = |q| match q {
+        QueueFamily::Graphics => renderer.device.graphics_queue_family,
+        QueueFamily::Compute => renderer.device.compute_queue_family,
+        QueueFamily::Transfer => renderer.device.transfer_queue_family,
+    };
+    let effective_ix = |q, virt_ix| match q {
+        QueueFamily::Graphics => renderer.device.graphics_queue_virtualized_to_effective_ix(virt_ix),
+        QueueFamily::Compute => renderer.device.compute_queue_virtualized_to_effective_ix(virt_ix),
+        QueueFamily::Transfer => renderer.device.transfer_queue_virtualized_to_effective_ix(virt_ix),
+    };
+
+    let mut roots = graph.externals(Outgoing).collect::<Vec<_>>();
+    debug_assert!(roots.len() == 1);
+    let target = roots.pop().unwrap();
+
+    loop {
+        let mut node = None;
+        let mut bfs = Bfs::new(Reversed(&*graph), target);
+
+        // Find something we can submit
+        while let Some(candidate) = bfs.next(Reversed(&*graph)) {
+            match graph[candidate] {
+                TrackedSubmission::Executable(_) => {}
+                _ => continue,
+            }
+            let candidate_queue_family = input.async_passes[&active_graph[candidate]].queue;
+            let candidate_runtime_queue = runtime_queue_family(candidate_queue_family);
+            let candidate_effective_ix = effective_ix(candidate_queue_family, virtual_queue_indices[&candidate]);
+            let mut bfs = Bfs::new(Reversed(&*graph), candidate);
+            bfs.next(Reversed(&*graph)); // skip self
+            let mut compatible_ancestors = true;
+            while let Some(ancestor) = bfs.next(Reversed(&*graph)) {
+                if graph[ancestor] == TrackedSubmission::Submitted {
+                    continue;
                 }
-                (Some(pass_name), Some(ref mut cb @ Some(_))) => {
-                    let cb = cb.take().unwrap();
-                    // leave None behind so that others won't try to submit this, but will
-                    // continue to see it as a blocking dependency
-                    MutexGuard::unlocked_fair(&mut graph, || {
-                        scope!("unlocked");
-                        let queue_family = input.async_passes.get(pass_name).expect("failed to find pass").queue;
-                        let virtualized_ix = virtual_queue_indices[&node];
-                        let queue = match queue_family {
-                            QueueFamily::Graphics => renderer.device.graphics_queue_virtualized(virtualized_ix),
-                            QueueFamily::Compute => renderer.device.compute_queue_virtualized(virtualized_ix),
-                            QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(virtualized_ix),
-                        };
-                        let buf = &mut [vk::CommandBuffer::null()];
-                        let command_buffers: &[vk::CommandBuffer] = match cb {
-                            Some(cmd) => {
-                                buf[0] = cmd;
-                                buf
-                            }
-                            None => &[],
-                        };
-                        let submit_result = {
-                            let wait_semaphores = active_graph
-                                .edges_directed(node, Incoming)
-                                .map(|edge| {
-                                    let incoming_pass_name = &active_graph[edge.source()];
-                                    let &(semaphore_ix, stage_ix) =
-                                        input.timeline_semaphore_mapping.get(incoming_pass_name).unwrap();
-                                    let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
-                                    let value = match edge.weight() {
-                                        DependencyType::SameFrame => renderer.frame_number * cycle_value + stage_ix,
-                                        DependencyType::LastFrame => {
-                                            (renderer.frame_number - 1) * cycle_value + stage_ix
-                                        }
-                                        DependencyType::LastAccess => todo!(),
-                                    };
 
-                                    vk::SemaphoreSubmitInfoKHR::builder()
-                                        .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
-                                        .value(value)
-                                        .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                        .build()
-                                })
-                                .collect::<Vec<_>>();
-                            let mut signal_semaphores = HashMap::new();
-                            {
-                                // Signal this submission
-                                let &(semaphore_ix, stage_ix) =
-                                    input.timeline_semaphore_mapping.get(pass_name).unwrap();
-                                let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
-
-                                signal_semaphores.insert(semaphore_ix, renderer.frame_number * cycle_value + stage_ix);
-                            };
-                            // Signal extra submissions that are inactive in the current configuration
-                            for &extra in extra_signals.get(&node).unwrap_or(&vec![]) {
-                                let extra_pass_name = &input.dependency_graph[extra];
-                                let &(semaphore_ix, stage_ix) =
-                                    input.timeline_semaphore_mapping.get(extra_pass_name).unwrap();
-                                let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
-
-                                let value = renderer.frame_number * cycle_value + stage_ix;
-                                signal_semaphores
-                                    .entry(semaphore_ix)
-                                    .and_modify(|existing| {
-                                        *existing = max(*existing, value);
-                                    })
-                                    .or_insert(value);
-                            }
-                            let signal_semaphore_infos = signal_semaphores
-                                .iter()
-                                .map(|(&semaphore_ix, &value)| {
-                                    vk::SemaphoreSubmitInfoKHR::builder()
-                                        .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
-                                        .value(value)
-                                        .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                                        .build()
-                                })
-                                .collect::<Vec<_>>();
-                            let command_buffer_infos = command_buffers
-                                .iter()
-                                .map(|cb| vk::CommandBufferSubmitInfoKHR::builder().command_buffer(*cb).build())
-                                .collect::<Vec<_>>();
-
-                            let submit = vk::SubmitInfo2KHR::builder()
-                                .wait_semaphore_infos(&wait_semaphores)
-                                .signal_semaphore_infos(&signal_semaphore_infos)
-                                .command_buffer_infos(&command_buffer_infos)
-                                .build();
-
-                            let queue = queue.lock();
-                            scope!("queue locked");
-
-                            if tracing::enabled!(target: "renderer", tracing::Level::INFO) {
-                                let mut str = format!("Submitting {pass_name} to queue family {queue_family:?}");
-                                for edge in active_graph.edges_directed(node, Incoming) {
-                                    let incoming_pass_name = &active_graph[edge.source()];
-                                    let &(semaphore_ix, stage_ix) =
-                                        input.timeline_semaphore_mapping.get(incoming_pass_name).unwrap();
-                                    let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
-                                    let value = match edge.weight() {
-                                        DependencyType::SameFrame => renderer.frame_number * cycle_value + stage_ix,
-                                        DependencyType::LastFrame => {
-                                            (renderer.frame_number - 1) * cycle_value + stage_ix
-                                        }
-                                        DependencyType::LastAccess => todo!(),
-                                    };
-
-                                    str += &format!("\nWaiting: AutoSemaphores[{semaphore_ix}] <- {value}");
-                                }
-
-                                for (semaphore_ix, value) in signal_semaphores.iter() {
-                                    str += &format!("\nSignaling: AutoSemaphores[{semaphore_ix}] <- {value}");
-                                }
-                                tracing::info!(target: "renderer", "{str}");
-                            }
-
-                            unsafe {
-                                scope!("vk::QueueSubmit");
-                                renderer
-                                    .device
-                                    .synchronization2
-                                    .queue_submit2(*queue, &[submit], vk::Fence::null())
-                            }
-                        };
-
-                        match submit_result {
-                            Ok(()) => {}
-                            Err(res) => {
-                                #[cfg(feature = "crash_debugging")]
-                                crash_buffer.dump(&renderer.device);
-                                panic!("Submit failed, frame={}, error={:?}", renderer.frame_number, res);
-                            }
-                        };
-                    });
-                    // we can clean it up now to unlock downstream submissions
-                    graph.remove_node(node).expect("remove node failed");
-                    should_continue = true;
+                // OOO submits are legal[1] in Vulkan, this code just makes sure that we don't have a circular
+                // dependency within the same runtime queue, which would deadlock that queue. The Nvidia driver
+                // exposes virtual queues and makes room for OOO submits, but the theoretical
+                // benefits are immediately negated in practice and it ends up being slower if we submit work
+                // that waits on a timeline semaphore before a matching signal operation is submitted. On top
+                // of that, vkQueuePresentKHR() gets 10x slower as well, from ~100us to ~1ms.
+                //
+                // [1]: 6.6. Queue Forward Progress <https://www.khronos.org/registry/vulkan/specs/1.3-extensions/html/chap6.html#commandbuffers-submission-progress>
+                if cfg!(feature = "submit_ooo") {
+                    let ancestor_queue_family = input.async_passes[&active_graph[ancestor]].queue;
+                    // TODO: are there more opportunities?
+                    let ancestor_runtime_queue = runtime_queue_family(ancestor_queue_family);
+                    let ancestor_effective_ix = effective_ix(ancestor_queue_family, virtual_queue_indices[&ancestor]);
+                    if candidate_runtime_queue == ancestor_runtime_queue
+                        && candidate_effective_ix == ancestor_effective_ix
+                    {
+                        compatible_ancestors = false;
+                        break;
+                    }
+                } else {
+                    compatible_ancestors = false;
+                    break;
                 }
-                _ => {}
+            }
+            if compatible_ancestors {
+                node = Some(candidate);
+                break;
             }
         }
+
+        let node = match node {
+            Some(node) => node,
+            None => break,
+        };
+        let cb = match graph[node] {
+            TrackedSubmission::Executable(ref mut cb) => cb.take(),
+            _ => {
+                if cfg!(debug_assertions) {
+                    unreachable!()
+                } else {
+                    // SAFETY: should be fine as we tested for Executable while searching for the candidate in the loop
+                    // above
+                    unsafe { unreachable_unchecked() }
+                }
+            }
+        };
+
+        *graph.node_weight_mut(node).unwrap() = TrackedSubmission::Submitting;
+        MutexGuard::unlocked(&mut graph, || {
+            scope!("unlocked");
+            let pass_name = &active_graph[node];
+            let queue_family = input.async_passes[pass_name].queue;
+            let virtualized_ix = virtual_queue_indices[&node];
+            let queue = match queue_family {
+                QueueFamily::Graphics => renderer.device.graphics_queue_virtualized(virtualized_ix),
+                QueueFamily::Compute => renderer.device.compute_queue_virtualized(virtualized_ix),
+                QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(virtualized_ix),
+            };
+            let buf = &mut [vk::CommandBuffer::null()];
+            let command_buffers: &[vk::CommandBuffer] = match cb {
+                Some(cmd) => {
+                    buf[0] = cmd;
+                    buf
+                }
+                None => &[],
+            };
+            let submit_result = {
+                let wait_semaphores = active_graph
+                    .edges_directed(node, Incoming)
+                    .map(|edge| {
+                        let incoming_pass_name = &active_graph[edge.source()];
+                        let &(semaphore_ix, stage_ix) =
+                            input.timeline_semaphore_mapping.get(incoming_pass_name).unwrap();
+                        let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+                        let value = match edge.weight() {
+                            DependencyType::SameFrame => renderer.frame_number * cycle_value + stage_ix,
+                            DependencyType::LastFrame => (renderer.frame_number - 1) * cycle_value + stage_ix,
+                            DependencyType::LastAccess => todo!(),
+                        };
+
+                        vk::SemaphoreSubmitInfoKHR::builder()
+                            .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
+                            .value(value)
+                            .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .build()
+                    })
+                    .collect::<Vec<_>>();
+                let mut signal_semaphores = HashMap::new();
+                {
+                    // Signal this submission
+                    let &(semaphore_ix, stage_ix) = input.timeline_semaphore_mapping.get(pass_name).unwrap();
+                    let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+
+                    signal_semaphores.insert(semaphore_ix, renderer.frame_number * cycle_value + stage_ix);
+                };
+                // Signal extra submissions that are inactive in the current configuration
+                for &extra in extra_signals.get(&node).unwrap_or(&vec![]) {
+                    let extra_pass_name = &input.dependency_graph[extra];
+                    let &(semaphore_ix, stage_ix) = input.timeline_semaphore_mapping.get(extra_pass_name).unwrap();
+                    let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+
+                    let value = renderer.frame_number * cycle_value + stage_ix;
+                    signal_semaphores
+                        .entry(semaphore_ix)
+                        .and_modify(|existing| {
+                            *existing = max(*existing, value);
+                        })
+                        .or_insert(value);
+                }
+                let signal_semaphore_infos = signal_semaphores
+                    .iter()
+                    .map(|(&semaphore_ix, &value)| {
+                        vk::SemaphoreSubmitInfoKHR::builder()
+                            .semaphore(renderer.auto_semaphores.0[semaphore_ix].handle)
+                            .value(value)
+                            .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .build()
+                    })
+                    .collect::<Vec<_>>();
+                let command_buffer_infos = command_buffers
+                    .iter()
+                    .map(|cb| vk::CommandBufferSubmitInfoKHR::builder().command_buffer(*cb).build())
+                    .collect::<Vec<_>>();
+
+                let submit = vk::SubmitInfo2KHR::builder()
+                    .wait_semaphore_infos(&wait_semaphores)
+                    .signal_semaphore_infos(&signal_semaphore_infos)
+                    .command_buffer_infos(&command_buffer_infos)
+                    .build();
+
+                let queue = queue.lock();
+                scope!("queue locked");
+
+                if tracing::enabled!(target: "renderer", tracing::Level::INFO) {
+                    let mut str = format!("Submitting {pass_name} to queue family {queue_family:?}[{virtualized_ix}]");
+                    for edge in active_graph.edges_directed(node, Incoming) {
+                        let incoming_pass_name = &active_graph[edge.source()];
+                        let &(semaphore_ix, stage_ix) =
+                            input.timeline_semaphore_mapping.get(incoming_pass_name).unwrap();
+                        let &cycle_value = input.timeline_semaphore_cycles.get(&semaphore_ix).unwrap();
+                        let value = match edge.weight() {
+                            DependencyType::SameFrame => renderer.frame_number * cycle_value + stage_ix,
+                            DependencyType::LastFrame => (renderer.frame_number - 1) * cycle_value + stage_ix,
+                            DependencyType::LastAccess => todo!(),
+                        };
+
+                        str += &format!("\nWaiting: AutoSemaphores[{semaphore_ix}] <- {value}");
+                    }
+
+                    for (semaphore_ix, value) in signal_semaphores.iter() {
+                        str += &format!("\nSignaling: AutoSemaphores[{semaphore_ix}] <- {value}");
+                    }
+                    tracing::info!(target: "renderer", "{str}");
+                }
+
+                unsafe {
+                    scope!("vk::QueueSubmit");
+                    renderer
+                        .device
+                        .synchronization2
+                        .queue_submit2(*queue, &[submit], vk::Fence::null())
+                }
+            };
+
+            match submit_result {
+                Ok(()) => {}
+                Err(res) => {
+                    #[cfg(feature = "crash_debugging")]
+                    crash_buffer.dump(&renderer.device);
+                    panic!("Submit failed, frame={}, error={:?}", renderer.frame_number, res);
+                }
+            };
+        });
+        // we can clean it up now to unlock downstream submissions
+        *graph.node_weight_mut(node).unwrap() = TrackedSubmission::Submitted;
     }
 }

@@ -1,4 +1,5 @@
 /target/
+/target-rust-analyzer/
 **/*.rs.bk
 /*.o
 /*.a

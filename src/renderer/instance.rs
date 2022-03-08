@@ -100,7 +100,11 @@ impl Instance {
             .pfn_free(Some(vulkan_free))
             .build();
 
-        let instance = unsafe { entry.create_instance(&create_info, Some(&allocation_callbacks)).expect("create instance") };
+        let instance = unsafe {
+            entry
+                .create_instance(&create_info, Some(&allocation_callbacks))
+                .expect("create instance")
+        };
 
         #[cfg(feature = "vk_names")]
         {
@@ -116,10 +120,8 @@ impl Instance {
                 let message_id = (*data).p_message_id_name;
                 if !message_id.is_null() {
                     let s = CStr::from_ptr(message_id).to_string_lossy();
-                    if s == "VUID-vkCmdClearAttachments-pRects-00016"
-                        || s == "VUID-vkDestroyAccelerationStructureKHR-accelerationStructure-02442"
-                        || s == "VUID-vkResetCommandPool-commandPool-00040"
-                    {
+                    // We may submit out of order, and validation layers can't verify it
+                    if cfg!(feature = "submit_ooo") && s == "UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout" {
                         return 0;
                     }
                     print!("[ {} ] ", s);
