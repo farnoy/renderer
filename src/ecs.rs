@@ -378,7 +378,7 @@ pub(crate) mod systems {
                 dump_graphs
             });
 
-            if dump_graphs.unwrap_or(false) {
+            if false && dump_graphs.unwrap_or(false) {
                 if let Err(e) = submissions.dump_live_graphs() {
                     eprintln!("dump_live_graphs() ERROR: {}", e);
                 }

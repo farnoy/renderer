@@ -129,7 +129,7 @@ opt-level = 3
 
 [profile.dev]
 opt-level = 1
-debug = false # to speedup incremental compilaton, uncomment to use a debugger
+debug = true # to speedup incremental compilaton, uncomment to use a debugger
 panic = "abort"
 lto = "off"
 
