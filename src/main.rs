@@ -24,7 +24,7 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::Task;
 use ecs::{
     components::{Light, Position, Rotation},
-    resources::{Camera, InputActions, MeshLibrary},
+    resources::{Camera, InputActions},
     systems::{
         aabb_calculation, assign_draw_index, calculate_frame_timing, camera_controller, cleanup_deleted_entities,
         launch_projectiles_test, model_matrix_calculation, project_camera, update_projectiles, FrameTiming, Gui,
@@ -38,13 +38,13 @@ use profiling::scope;
 #[cfg(feature = "crash_debugging")]
 use renderer::CrashBuffer;
 use renderer::{
-    acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, graphics_stage, load_gltf,
+    acquire_framebuffer, camera_matrices_upload, cleanup_base_color_markers, coarse_culling, graphics_stage,
     model_matrices_upload, shadow_mapping_mvp_calculation, synchronize_base_color_textures_visit, up_vector,
     update_shadow_map_descriptors, AccelerationStructures, AccelerationStructuresInternal, BaseColorDescriptorSet,
     BaseColorVisitedMarker, CameraMatrices, ConsolidatedMeshBuffers, CopiedResource, CullPassData, CullPassDataPrivate,
     DebugAABBPassData, DepthPassData, GltfMesh, GltfMeshBaseColorTexture, GltfMeshNormalTexture, GltfPassData,
-    GuiRenderData, ImageIndex, LoadedMesh, MainAttachments, MainDescriptorPool, ModelData, NormalMapVisitedMarker,
-    PresentData, RenderFrame, Resized, SceneLoaderLoadedMesh, ShadowMappingData, ShadowMappingDataInternal,
+    GuiRenderData, ImageIndex, MainAttachments, MainDescriptorPool, ModelData, NormalMapVisitedMarker, PresentData,
+    RenderFrame, Resized, SceneLoaderLoadedMesh, ShadowMappingData, ShadowMappingDataInternal,
     ShadowMappingLightMatrices, Submissions, SwapchainIndexToFrameNumber,
 };
 #[cfg(feature = "shader_reload")]
@@ -334,30 +334,6 @@ fn main() {
         &acceleration_structures,
     );
 
-    let LoadedMesh {
-        vertex_buffer,
-        normal_buffer,
-        tangent_buffer,
-        uv_buffer,
-        index_buffers,
-        vertex_len,
-        aabb,
-        base_color,
-        normal_map,
-    } = load_gltf(
-        &renderer,
-        "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf",
-        // "vendor/glTF-Sample-Models/2.0/BoxTextured/glTF/BoxTextured.gltf",
-    );
-
-    let vertex_buffer = Arc::new(vertex_buffer);
-    let normal_buffer = Arc::new(normal_buffer);
-    let uv_buffer = Arc::new(uv_buffer);
-    let tangent_buffer = Arc::new(tangent_buffer);
-    let index_buffers = Arc::new(index_buffers);
-    let base_color = Arc::new(base_color);
-    let normal_map = Arc::new(normal_map);
-
     let max_entities = 30;
     debug_assert!(max_entities > 7); // 7 static ones
 
@@ -453,20 +429,6 @@ fn main() {
     //         aabb,
     //     )
     // };
-
-    let mesh_library = MeshLibrary {
-        projectile: GltfMesh {
-            vertex_buffer: Arc::clone(&vertex_buffer),
-            normal_buffer: Arc::clone(&normal_buffer),
-            tangent_buffer: Arc::clone(&tangent_buffer),
-            uv_buffer: Arc::clone(&uv_buffer),
-            index_buffers: Arc::clone(&index_buffers),
-            vertex_len,
-            aabb,
-        },
-        projectile_base_color: Arc::clone(&base_color),
-        projectile_normal_map: Arc::clone(&normal_map),
-    };
 
     // objects
     // app.world.spawn_batch(vec![
@@ -629,14 +591,6 @@ fn main() {
     //     )
     // }));
 
-    drop(vertex_buffer);
-    drop(normal_buffer);
-    drop(tangent_buffer);
-    drop(uv_buffer);
-    drop(index_buffers);
-    drop(base_color);
-    drop(normal_map);
-
     // drop(dmgh_vertex_buffer);
     // drop(dmgh_normal_buffer);
     // drop(dmgh_tangent_buffer);
@@ -650,15 +604,11 @@ fn main() {
     lazy_static::initialize(&RENDERER_INPUT);
 
     app.insert_resource(ScenesToLoad {
-        scene_paths: vec![
-            "vendor/glTF-Sample-Models/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf".to_string(),
-            "assets/bistro.gltf".to_string(),
-        ],
+        scene_paths: vec![],
         scenes: vec![],
     });
     app.insert_resource(Submissions::new());
     app.insert_resource(swapchain);
-    app.insert_resource(mesh_library);
     app.insert_resource(Resized(false));
     app.init_resource::<FrameTiming>();
     app.init_resource::<InputActions>();
@@ -998,10 +948,6 @@ fn main() {
         .remove_resource::<ModelData>()
         .unwrap()
         .destroy(&render_frame.device, &main_descriptor_pool);
-    app.world
-        .remove_resource::<MeshLibrary>()
-        .unwrap()
-        .destroy(&render_frame.device);
     app.world
         .remove_resource::<ReferenceRTData>()
         .unwrap()

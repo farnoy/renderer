@@ -183,7 +183,6 @@ pub(crate) mod systems {
     pub(crate) fn launch_projectiles_test(
         mut commands: Commands,
         input_actions: Res<InputActions>,
-        mesh_library: Res<MeshLibrary>,
         camera: Res<Camera>,
         renderer: Res<RenderFrame>,
         mut last_frame_launched: Local<u64>, // stores frame number so we can debounce the launches
@@ -198,9 +197,6 @@ pub(crate) mod systems {
                 Rotation(camera.rotation),
                 Scale(1.0),
                 ModelMatrix::default(),
-                GltfMeshBaseColorTexture(Arc::clone(&mesh_library.projectile_base_color)),
-                GltfMeshNormalTexture(Arc::clone(&mesh_library.projectile_normal_map)),
-                mesh_library.projectile.clone(),
                 AABB::default(),
                 CoarseCulled(false),
                 DrawIndex::default(),

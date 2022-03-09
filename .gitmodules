@@ -1,6 +1,3 @@
-[submodule "glTF-Sample-Models"]
-	path = vendor/glTF-Sample-Models
-	url = https://github.com/KhronosGroup/glTF-Sample-Models.git
 [submodule "vendor/VulkanMemoryAllocator"]
 	path = vendor/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
