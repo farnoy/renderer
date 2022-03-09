@@ -29,7 +29,7 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use petgraph::{
     algo::has_path_connecting,
     prelude::*,
@@ -95,10 +95,13 @@ pub(crate) use self::{
         },
     },
 };
-use crate::ecs::{
-    components::{ModelMatrix, AABB},
-    resources::Camera,
-    systems::*,
+use crate::{
+    ecs::{
+        components::{ModelMatrix, AABB},
+        resources::Camera,
+        systems::*,
+    },
+    renderer::systems::present::pre_present,
 };
 
 pub(crate) fn up_vector() -> na::Unit<na::Vector3<f32>> {
@@ -1787,7 +1790,7 @@ pub(crate) fn render_frame(
 
     submissions.produce_submission(
         frame_graph::Main::INDEX,
-        Some(command_buffer),
+        command_buffer,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
@@ -2326,29 +2329,40 @@ pub(crate) fn graphics_stage() -> SystemStage {
     let copy_camera = test.root(copy_resource::<Camera>);
     let copy_indices = test.root(copy_resource::<SwapchainIndexToFrameNumber>);
 
-    fn const_true() -> bool {
-        true
-    }
-    let setup_submissions = test.root(const_true.chain(setup_submissions));
+    let setup_submissions = test.root((|| true).chain(setup_submissions));
 
-    let initial = (copy_runtime_config, copy_camera, copy_indices, setup_submissions);
+    let initial = (
+        copy_runtime_config,
+        copy_camera,
+        copy_indices,
+        setup_submissions.clone(),
+    );
 
     let recreate_main_framebuffer = test.root(recreate_main_framebuffer);
 
     let update_base_color = test.root(update_base_color_descriptors);
 
-    let (consolidate_mesh_buffers, upload_loaded_meshes, cull_bypass, build_as, shadow_mapping, reference_rt) = initial
-        .join_all((
-            consolidate_mesh_buffers.system(),
-            upload_loaded_meshes.system(),
-            cull_pass_bypass.system(),
-            build_acceleration_structures.system(),
-            prepare_shadow_maps.system(),
-            reference_raytrace.system(),
-        ));
+    let (
+        consolidate_mesh_buffers,
+        upload_loaded_meshes,
+        cull_bypass,
+        build_as,
+        shadow_mapping,
+        reference_rt,
+        pre_present,
+    ) = initial.join_all((
+        consolidate_mesh_buffers.system(),
+        upload_loaded_meshes.system(),
+        cull_pass_bypass.system(),
+        build_acceleration_structures.system(),
+        prepare_shadow_maps.system(),
+        reference_raytrace.system(),
+        pre_present.system(),
+    ));
 
-    let consolidate_mesh_buffers_submit = consolidate_mesh_buffers.then(submit_pending);
-    let build_as_submit = build_as.then(submit_pending);
+    let consolidate_mesh_buffers_submit =
+        consolidate_mesh_buffers.then((|| frame_graph::ConsolidateMeshBuffers::INDEX).chain(submit_pending));
+    let build_as_submit = build_as.then((|| frame_graph::BuildAccelerationStructures::INDEX).chain(submit_pending));
 
     let cull = consolidate_mesh_buffers.then(cull_pass);
 
@@ -2356,9 +2370,11 @@ pub(crate) fn graphics_stage() -> SystemStage {
 
     let main_pass = (recreate_main_framebuffer, build_as, consolidate_mesh_buffers).join(render_frame);
 
-    let main_pass_submit = (update_base_color, main_pass).join(submit_pending);
+    let main_pass_submit =
+        (update_base_color.clone(), main_pass.clone()).join((|| frame_graph::Main::INDEX).chain(submit_pending));
 
     (
+        main_pass,
         main_pass_submit,
         cull,
         cull_bypass,
@@ -2368,16 +2384,29 @@ pub(crate) fn graphics_stage() -> SystemStage {
         upload_loaded_meshes,
         reference_rt,
         build_as_submit,
+        update_base_color,
+        setup_submissions,
+        pre_present,
     )
         .join(PresentFramebuffer::exec);
 
-    stage.with_system_set(test.into())
+    stage.with_system_set(test.into()).with_system(
+        (|renderer: Res<RenderFrame>,
+          mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
+          image_index: Res<ImageIndex>| {
+            swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;
+        })
+        .system()
+        .exclusive_system()
+        .at_end(),
+    )
 }
 
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) enum TrackedSubmission {
     Preparing,
-    Executable(Option<vk::CommandBuffer>),
+    /// Command buffer to submit and an extra semaphore to signal, both are optional
+    Executable(vk::CommandBuffer, vk::Semaphore),
     Submitting,
     Submitted,
 }
@@ -2391,6 +2420,7 @@ pub(crate) struct Submissions {
     /// next frame, and transition them accurately during configuration changes.
     pub(crate) upcoming_resources: HashMap<String, ResourceClaims>,
     pub(crate) remaining: Mutex<StableDiGraph<TrackedSubmission, ()>>,
+    pub(crate) remaining_condvar: Condvar,
     pub(crate) upcoming_remaining: Mutex<StableDiGraph<TrackedSubmission, ()>>,
     /// When the graph is simplified according to conditionals, we pick up inactive nodes and signal
     /// them at the next downstream opportunity. This allows us to increment all the semaphores
@@ -2413,6 +2443,7 @@ impl Submissions {
             active_resources: Default::default(),
             upcoming_resources: Default::default(),
             remaining: Mutex::default(),
+            remaining_condvar: Condvar::new(),
             upcoming_remaining: Mutex::default(),
             extra_signals: Default::default(),
             upcoming_extra_signals: Default::default(),
@@ -2421,21 +2452,40 @@ impl Submissions {
         }
     }
 
-    pub(crate) fn produce_submission(&self, node_ix: u32, cb: Option<vk::CommandBuffer>) {
+    pub(crate) fn produce_submission(&self, node_ix: u32, cb: vk::CommandBuffer) {
         scope!("rendering::produce_submission");
         let mut g = self.remaining.lock();
         let weight = g
             .node_weight_mut(NodeIndex::from(node_ix))
             .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
         debug_assert!(*weight == TrackedSubmission::Preparing, "node_ix = {}", node_ix);
-        *weight = TrackedSubmission::Executable(cb);
+        *weight = TrackedSubmission::Executable(cb, vk::Semaphore::null());
+        self.remaining_condvar.notify_one();
     }
 
     pub(crate) fn submit(
         &self,
         renderer: &RenderFrame,
         node_ix: u32,
-        cb: Option<vk::CommandBuffer>,
+        cb: vk::CommandBuffer,
+        #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
+    ) {
+        self.submit_and_signal(
+            renderer,
+            node_ix,
+            cb,
+            vk::Semaphore::null(),
+            #[cfg(feature = "crash_debugging")]
+            crash_buffer,
+        )
+    }
+
+    pub(crate) fn submit_and_signal(
+        &self,
+        renderer: &RenderFrame,
+        node_ix: u32,
+        cb: vk::CommandBuffer,
+        semaphore: vk::Semaphore,
         #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
     ) {
         scope!("rendering::submit_command_buffer");
@@ -2445,11 +2495,12 @@ impl Submissions {
             .unwrap_or_else(|| panic!("Node not found while submitting {}", node_ix));
         debug_assert!(*weight == TrackedSubmission::Preparing, "node_ix = {}", node_ix);
         let _span = tracing::info_span!(target: "renderer", "Submitting command buffer", pass_name = self.active_graph.node_weight(NodeIndex::from(node_ix)).unwrap().as_str()).entered();
-        *weight = TrackedSubmission::Executable(cb);
+        *weight = TrackedSubmission::Executable(cb, semaphore);
         update_submissions(
             renderer,
             self,
             g,
+            node_ix,
             #[cfg(feature = "crash_debugging")]
             crash_buffer,
         );
@@ -3332,6 +3383,7 @@ pub(crate) fn setup_submissions(
         ref mut upcoming_resources,
         ref mut virtual_queue_indices,
         ref mut upcoming_virtual_queue_indices,
+        ..
     } = *submissions;
 
     if !*last_modified && cache_plan && *current_config == future_configs.0[0] {
@@ -3422,6 +3474,7 @@ pub(crate) fn setup_submissions(
     for pass_name in input.async_passes.keys() {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
+            && pass_name != "PrePresent"
             && !upcoming_resources.values().any(|resource| {
                 resource
                     .graph
@@ -3458,6 +3511,7 @@ pub(crate) fn setup_submissions(
     for pass_name in input.async_passes.keys() {
         if pass_name != "PresentationAcquire"
             && pass_name != "Present"
+            && pass_name != "PrePresent"
             && !upcoming_resources.values().any(|resource| {
                 resource
                     .graph
@@ -3552,6 +3606,7 @@ pub(crate) fn setup_submissions(
 }
 
 fn submit_pending(
+    In(target): In<u32>,
     renderer: Res<RenderFrame>,
     submissions: Res<Submissions>,
     #[cfg(feature = "crash_debugging")] crash_buffer: Res<CrashBuffer>,
@@ -3561,6 +3616,7 @@ fn submit_pending(
         &renderer,
         &submissions,
         graph,
+        target,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
@@ -3570,6 +3626,7 @@ fn update_submissions(
     renderer: &RenderFrame,
     submissions: &Submissions,
     mut graph: MutexGuard<StableDiGraph<TrackedSubmission, ()>>,
+    _target: u32, // will be used to guarantee it submits until target before returning
     #[cfg(feature = "crash_debugging")] crash_buffer: &CrashBuffer,
 ) {
     use petgraph::visit::Reversed;
@@ -3579,6 +3636,7 @@ fn update_submissions(
         ref extra_signals,
         ref active_graph,
         ref virtual_queue_indices,
+        ref remaining_condvar,
         ..
     } = submissions;
     let input = &RENDERER_INPUT;
@@ -3597,16 +3655,19 @@ fn update_submissions(
 
     let mut roots = graph.externals(Outgoing).collect::<Vec<_>>();
     debug_assert!(roots.len() == 1);
-    let target = roots.pop().unwrap();
+    let root = roots.pop().unwrap();
 
+    // Leads to deadlocks https://github.com/bevyengine/bevy/issues/4161
+    //
+    // while graph[NodeIndex::from(target)] != TrackedSubmission::Submitted {
     loop {
         let mut node = None;
-        let mut bfs = Bfs::new(Reversed(&*graph), target);
+        let mut bfs = Bfs::new(Reversed(&*graph), root);
 
         // Find something we can submit
         while let Some(candidate) = bfs.next(Reversed(&*graph)) {
             match graph[candidate] {
-                TrackedSubmission::Executable(_) => {}
+                TrackedSubmission::Executable(..) => {}
                 _ => continue,
             }
             let candidate_queue_family = input.async_passes[&active_graph[candidate]].queue;
@@ -3652,10 +3713,18 @@ fn update_submissions(
 
         let node = match node {
             Some(node) => node,
-            None => break,
+            None => {
+                // Leads to deadlocks: https://github.com/bevyengine/bevy/issues/4161
+                //
+                // let _span = tracing::debug_span!("condvar wait").entered();
+                // tracing::debug!("can't make progress, waiting for condvar");
+                // remaining_condvar.wait(&mut graph);
+                // continue;
+                break;
+            }
         };
-        let cb = match graph[node] {
-            TrackedSubmission::Executable(ref mut cb) => cb.take(),
+        let (cb, extra_semaphore) = match graph[node] {
+            TrackedSubmission::Executable(cb, extra_semaphore) => (cb, extra_semaphore),
             _ => {
                 if cfg!(debug_assertions) {
                     unreachable!()
@@ -3679,12 +3748,11 @@ fn update_submissions(
                 QueueFamily::Transfer => renderer.device.transfer_queue_virtualized(virtualized_ix),
             };
             let buf = &mut [vk::CommandBuffer::null()];
-            let command_buffers: &[vk::CommandBuffer] = match cb {
-                Some(cmd) => {
-                    buf[0] = cmd;
-                    buf
-                }
-                None => &[],
+            let command_buffers: &[vk::CommandBuffer] = if cb != vk::CommandBuffer::null() {
+                buf[0] = cb;
+                buf
+            } else {
+                &[]
             };
             let submit_result = {
                 let wait_semaphores = active_graph
@@ -3729,7 +3797,7 @@ fn update_submissions(
                         })
                         .or_insert(value);
                 }
-                let signal_semaphore_infos = signal_semaphores
+                let mut signal_semaphore_infos = signal_semaphores
                     .iter()
                     .map(|(&semaphore_ix, &value)| {
                         vk::SemaphoreSubmitInfoKHR::builder()
@@ -3739,6 +3807,14 @@ fn update_submissions(
                             .build()
                     })
                     .collect::<Vec<_>>();
+                if extra_semaphore != vk::Semaphore::null() {
+                    signal_semaphore_infos.push(
+                        vk::SemaphoreSubmitInfoKHR::builder()
+                            .semaphore(extra_semaphore)
+                            .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
+                            .build(),
+                    );
+                }
                 let command_buffer_infos = command_buffers
                     .iter()
                     .map(|cb| vk::CommandBufferSubmitInfoKHR::builder().command_buffer(*cb).build())
@@ -3797,4 +3873,6 @@ fn update_submissions(
         // we can clean it up now to unlock downstream submissions
         *graph.node_weight_mut(node).unwrap() = TrackedSubmission::Submitted;
     }
+
+    remaining_condvar.notify_one();
 }

@@ -606,7 +606,7 @@ pub(crate) fn upload_loaded_meshes(
     submissions.submit(
         &renderer,
         frame_graph::UploadMeshes::INDEX,
-        Some(*command_buffer),
+        *command_buffer,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

@@ -121,7 +121,11 @@ impl Instance {
                 if !message_id.is_null() {
                     let s = CStr::from_ptr(message_id).to_string_lossy();
                     // We may submit out of order, and validation layers can't verify it
-                    if cfg!(feature = "submit_ooo") && s == "UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout" {
+                    if cfg!(feature = "submit_ooo")
+                        && (s == "UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout"
+                            || s == "UNASSIGNED-VkImageMemoryBarrier-image-00004"
+                            || s == "VUID-VkPresentInfoKHR-pImageIndices-01296")
+                    {
                         return 0;
                     }
                     print!("[ {} ] ", s);

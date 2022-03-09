@@ -86,7 +86,7 @@ pub(crate) fn reference_raytrace(
     submissions.submit(
         &renderer,
         frame_graph::ReferenceRaytrace::INDEX,
-        Some(*cb),
+        *cb,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     )

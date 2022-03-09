@@ -202,7 +202,7 @@ pub(crate) fn depth_only_pass(
     submissions.submit(
         &renderer,
         frame_graph::DepthOnly::INDEX,
-        Some(*command_buffer),
+        *command_buffer,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

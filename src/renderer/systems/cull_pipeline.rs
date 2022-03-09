@@ -351,7 +351,7 @@ pub(crate) fn cull_pass_bypass(
         submissions.submit(
             &renderer,
             frame_graph::TransferCull::INDEX,
-            None,
+            vk::CommandBuffer::null(),
             #[cfg(feature = "crash_debugging")]
             &crash_buffer,
         );
@@ -414,7 +414,7 @@ pub(crate) fn cull_pass_bypass(
     submissions.submit(
         &renderer,
         frame_graph::TransferCull::INDEX,
-        Some(*cull_cb),
+        *cull_cb,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
@@ -449,7 +449,7 @@ pub(crate) fn cull_pass(
         submissions.submit(
             &renderer,
             frame_graph::ComputeCull::INDEX,
-            None,
+            vk::CommandBuffer::null(),
             #[cfg(feature = "crash_debugging")]
             &crash_buffer,
         );
@@ -609,7 +609,7 @@ pub(crate) fn cull_pass(
     submissions.submit(
         &renderer,
         frame_graph::ComputeCull::INDEX,
-        Some(*cull_cb),
+        *cull_cb,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );

@@ -13,6 +13,7 @@ use crate::renderer::{
     SwapchainIndexToFrameNumber, TrackedSubmission,
 };
 
+renderer_macros::define_pass!(PrePresent on compute);
 renderer_macros::define_pass!(Present on compute);
 
 pub(crate) struct PresentData {
@@ -167,6 +168,40 @@ impl AcquireFramebuffer {
     }
 }
 
+pub(crate) fn pre_present(
+    renderer: Res<RenderFrame>,
+    mut present_data: ResMut<PresentData>,
+    image_index: Res<ImageIndex>,
+    swapchain: Res<Swapchain>,
+    swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
+    submissions: Res<Submissions>,
+) {
+    let swapchain_images = unsafe { swapchain.ext.get_swapchain_images(swapchain.swapchain).unwrap() };
+
+    struct SwapchainImageWrapper {
+        handle: vk::Image,
+    }
+    let swapchain_image = SwapchainImageWrapper {
+        handle: swapchain_images[image_index.0 as usize],
+    };
+
+    let command_buffer = present_data
+        .pre_present_command_util
+        .reset_and_record(&renderer, &image_index);
+    renderer_macros::barrier!(
+        command_buffer,
+        PresentSurface.prepare_present r in PrePresent transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; &swapchain_image
+    );
+    let command_buffer = command_buffer.end();
+
+    submissions.submit_and_signal(
+        &renderer,
+        frame_graph::PrePresent::INDEX,
+        *command_buffer,
+        present_data.render_complete_semaphore.handle,
+    );
+}
+
 impl PresentFramebuffer {
     pub(crate) fn exec(
         renderer: Res<RenderFrame>,
@@ -174,22 +209,20 @@ impl PresentFramebuffer {
         mut swapchain: ResMut<Swapchain>,
         image_index: Res<ImageIndex>,
         mut resized: ResMut<Resized>,
-        mut swapchain_index_map: ResMut<SwapchainIndexToFrameNumber>,
-        mut submissions: ResMut<Submissions>,
+        swapchain_index_map: Res<SwapchainIndexToFrameNumber>,
+        submissions: Res<Submissions>,
     ) {
         scope!("ecs::PresentFramebuffer");
 
         #[cfg(debug_assertions)]
         {
-            use petgraph::visit::IntoNodeReferences;
+            // use petgraph::visit::IntoNodeReferences;
 
-            let graph = submissions.remaining.get_mut();
-            debug_assert!(
-                graph
-                    .node_references()
-                    .filter(|(ix, _)| ix.index() != frame_graph::Present::INDEX as usize)
-                    .all(|(_, x)| *x == TrackedSubmission::Submitted),
-                "All remaining submissions before Present must have been submitted"
+            let graph = submissions.remaining.lock();
+            debug_assert_eq!(
+                graph.node_weight(petgraph::stable_graph::NodeIndex::from(frame_graph::PrePresent::INDEX)),
+                Some(&TrackedSubmission::Submitted),
+                "PrePresent must be Submitted"
             );
             debug_assert_eq!(
                 graph.node_weight(petgraph::stable_graph::NodeIndex::from(frame_graph::Present::INDEX)),
@@ -219,48 +252,6 @@ impl PresentFramebuffer {
         };
 
         frame_graph::Present::Stage::wait_previous(&renderer, &image_index, &swapchain_index_map);
-
-        let command_buffer = present_data
-            .pre_present_command_util
-            .reset_and_record(&renderer, &image_index);
-        renderer_macros::barrier!(
-            command_buffer,
-            PresentSurface.prepare_present r in Present transfer copy layout PRESENT_SRC_KHR after [blit_reference_rt]; &swapchain_image
-        );
-        let command_buffer = command_buffer.end();
-
-        {
-            scope!("present::first_submit");
-            let wait_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
-                .semaphore(renderer.auto_semaphores.0[frame_graph::Main::Stage::SIGNAL_AUTO_SEMAPHORE_IX].handle)
-                .value(as_of::<<frame_graph::Main::Stage as RenderStage>::SignalTimelineStage>(
-                    renderer.frame_number,
-                ))
-                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                .build()];
-            let signal_semaphores = &[vk::SemaphoreSubmitInfoKHR::builder()
-                .semaphore(present_data.render_complete_semaphore.handle)
-                .stage_mask(vk::PipelineStageFlags2KHR::ALL_COMMANDS)
-                .build()];
-            let command_buffers = [vk::CommandBufferSubmitInfoKHR::builder()
-                .command_buffer(*command_buffer)
-                .build()];
-            let submit = vk::SubmitInfo2KHR::builder()
-                .wait_semaphore_infos(wait_semaphores)
-                .signal_semaphore_infos(signal_semaphores)
-                .command_buffer_infos(&command_buffers)
-                .build();
-
-            unsafe {
-                scope!("vk::QueueSubmit");
-
-                renderer
-                    .device
-                    .synchronization2
-                    .queue_submit2(*queue, &[submit], vk::Fence::null())
-                    .unwrap();
-            }
-        }
 
         let wait_semaphores = &[present_data.render_complete_semaphore.handle];
         let swapchains = &[swapchain.swapchain];
@@ -333,11 +324,9 @@ impl PresentFramebuffer {
         if cfg!(debug_assertions) {
             *submissions
                 .remaining
-                .get_mut()
+                .lock()
                 .node_weight_mut(NodeIndex::from(frame_graph::Present::INDEX))
                 .unwrap() = TrackedSubmission::Submitted;
         }
-
-        swapchain_index_map.map[image_index.0 as usize] = renderer.frame_number;
     }
 }

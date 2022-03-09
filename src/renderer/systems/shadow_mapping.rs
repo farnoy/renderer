@@ -484,7 +484,7 @@ pub(crate) fn prepare_shadow_maps(
     submissions.submit(
         &renderer,
         frame_graph::ShadowMapping::INDEX,
-        Some(*command_buffer),
+        *command_buffer,
         #[cfg(feature = "crash_debugging")]
         &crash_buffer,
     );
